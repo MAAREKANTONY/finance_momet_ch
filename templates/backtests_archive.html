@@ -1,0 +1,66 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Archive des backtests</h2>
+
+  <div class="card">
+    <form method="get" class="row" style="align-items:end;">
+      <div>
+        <label>Recherche</label><br/>
+        <input name="q" value="{{ q }}" placeholder="nom / description" style="min-width:260px;"/>
+      </div>
+      <div>
+        <label>Scénario</label><br/>
+        <select name="scenario">
+          <option value="">Tous</option>
+          {% for s in scenarios %}
+            <option value="{{ s.id }}" {% if scenario_id|default:"" == s.id|stringformat:"s" %}selected{% endif %}>{{ s.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label>Status</label><br/>
+        <select name="status">
+          <option value="">Tous</option>
+          {% for st in statuses %}
+            <option value="{{ st }}" {% if status == st %}selected{% endif %}>{{ st }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <button class="btn" type="submit">Filtrer</button>
+        <a class="btn" href="{% url 'backtesting_page' %}">Nouveau backtest</a>
+      </div>
+    </form>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Nom</th>
+        <th>Scénario</th>
+        <th>Stratégie</th>
+        <th>Status</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for r in runs %}
+        <tr>
+          <td>{{ r.created_at|date:"Y-m-d H:i" }}</td>
+          <td>
+            <a href="{% url 'backtest_run_detail' r.id %}"><strong>{{ r.name|default:"(sans nom)" }}</strong></a>
+            {% if r.description %}<div class="muted">{{ r.description }}</div>{% endif %}
+          </td>
+          <td>{{ r.scenario.name }}</td>
+          <td>{{ r.strategy.name }}</td>
+          <td><span class="pill">{{ r.status }}</span></td>
+          <td><a class="btn" href="{% url 'backtest_run_export_xlsx' r.id %}">Excel</a></td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6">Aucun backtest.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

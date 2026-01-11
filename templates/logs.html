@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Logs (jobs asynchrones)</h2>
+
+<div class="card">
+  <form method="get" class="row" style="gap:10px; align-items:end;">
+    <div>
+      <label>Niveau</label>
+      <select name="level">
+        <option value="" {% if not level %}selected{% endif %}>Tous</option>
+        <option value="INFO" {% if level == 'INFO' %}selected{% endif %}>INFO</option>
+        <option value="ERROR" {% if level == 'ERROR' %}selected{% endif %}>ERROR</option>
+      </select>
+    </div>
+    <div style="flex:1;">
+      <label>Job</label>
+      <input type="text" name="job" value="{{ job }}" placeholder="compute_metrics, fetch_daily_bars, send_daily_alerts..." style="width:100%;" />
+    </div>
+    <div>
+      <button class="btn" type="submit">Filtrer</button>
+      <a class="btn" href="{% url 'logs_page' %}">Reset</a>
+    </div>
+  </form>
+</div>
+
+<div class="card" style="overflow:auto;">
+  <table>
+    <thead>
+      <tr>
+        <th>Date/Heure</th><th>Niveau</th><th>Job</th><th>Scénario</th><th>Action</th><th>Message</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for l in logs %}
+      <tr>
+        <td class="muted">{{ l.created_at }}</td>
+        <td>{% if l.level == 'ERROR' %}❌{% else %}✅{% endif %} {{ l.level }}</td>
+        <td>{{ l.job }}</td>
+        <td>{% if l.scenario %}{{ l.scenario.name }}{% else %}—{% endif %}</td>
+        <td>{% if l.symbol %}{{ l.symbol.ticker }}{% else %}—{% endif %}</td>
+        <td>
+          <div>{{ l.message }}</div>
+          {% if l.traceback %}
+            <details style="margin-top:6px;">
+              <summary>Traceback</summary>
+              <pre style="white-space:pre-wrap;">{{ l.traceback }}</pre>
+            </details>
+          {% endif %}
+        </td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="muted">Aucun log.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+{% endblock %}

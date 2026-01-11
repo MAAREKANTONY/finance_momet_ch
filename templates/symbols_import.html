@@ -1,0 +1,11 @@
+{% extends "base.html" %}
+{% block content %}
+  <h2>Import de tickers (CSV / Excel)</h2>
+  <p>Colonnes attendues: <b>ticker code</b>, <b>ticker market</b>, <b>scenario list</b> (séparés par des virgules).</p>
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button class="btn" type="submit">Importer</button>
+  </form>
+  <p style="margin-top:10px;">Les erreurs et tickers/scénarios introuvables sont enregistrés dans l'onglet <a href="{% url 'logs_page' %}">Logs</a>.</p>
+{% endblock %}

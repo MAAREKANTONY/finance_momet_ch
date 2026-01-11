@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Backtest run #{{ run.id }}</h2>
+
+<div class="card">
+  <div class="card-body">
+    <p><strong>Status:</strong> {{ run.status }}</p>
+    <p><strong>Scenario:</strong> {{ run.scenario.name }}</p>
+    <p><strong>Strategy:</strong> {{ run.strategy.name }}</p>
+    <p><strong>Période:</strong> {{ run.start_date }} → {{ run.end_date }}</p>
+    <p>
+      <strong>Paramètres:</strong>
+      X={{ run.min_ratio_p }}%,
+      CT={{ run.trade_capital }},
+      CP={{ run.total_capital|default:"∞" }}
+    </p>
+
+    <form method="post" action="{% url 'backtest_run_rerun' run.id %}" style="display:inline;">
+      {% csrf_token %}
+      <button class="btn btn-warning" type="submit">Relancer ce backtest</button>
+    </form>
+
+    <a class="btn btn-secondary" href="{% url 'backtests_archive' %}">Retour à l’archive</a>
+  </div>
+</div>
+
+<hr/>
+
+<h3>Courbes globales</h3>
+<div class="row">
+  <div class="col-md-12">
+    <h5>S_G_N (moyenne)</h5>
+    <canvas id="globalSgnChart" height="90"></canvas>
+  </div>
+</div>
+<div class="row mt-4">
+  <div class="col-md-12">
+    <h5>BT (somme)</h5>
+    <canvas id="globalBtChart" height="90"></canvas>
+  </div>
+</div>
+<div class="row mt-4">
+  <div class="col-md-12">
+    <h5>BMJ (moyenne)</h5>
+    <canvas id="globalBmjChart" height="90"></canvas>
+  </div>
+</div>
+
+<hr/>
+
+<h3>Trades</h3>
+{% if trades %}
+<table class="table table-striped">
+  <thead>
+    <tr>
+      <th>Ticker</th>
+      <th>Entrée</th>
+      <th>Prix entrée</th>
+      <th>Sortie</th>
+      <th>Prix sortie</th>
+      <th>Quantité</th>
+      <th>Gain %</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for t in trades %}
+    <tr>
+      <td>{{ t.symbol.ticker }}</td>
+      <td>{{ t.entry_date }}</td>
+      <td>{{ t.entry_price }}</td>
+      <td>{{ t.exit_date }}</td>
+      <td>{{ t.exit_price }}</td>
+      <td>{{ t.quantity }}</td>
+      <td>{{ t.gain_pct|floatformat:2 }}</td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p>Aucun trade enregistré (pour l’instant).</p>
+{% endif %}
+
+<hr/>
+
+<h3>Détails par ticker</h3>
+<p class="text-muted">
+Astuce : si tu as beaucoup de tickers, la page peut être un peu lourde. Les graphs sont générés côté navigateur.
+</p>
+
+<div id="perTickerContainer"></div>
+
+{{ global_chart_labels|json_script:"global-labels" }}
+{{ global_sgn_values|json_script:"global-sgn" }}
+{{ global_bt_values|json_script:"global-bt" }}
+{{ global_bmj_values|json_script:"global-bmj" }}
+{{ per_ticker_data|json_script:"per-ticker-data" }}
+
+<script>
+(function() {
+  const labels = JSON.parse(document.getElementById("global-labels").textContent);
+  const sgn = JSON.parse(document.getElementById("global-sgn").textContent);
+  const bt = JSON.parse(document.getElementById("global-bt").textContent);
+  const bmj = JSON.parse(document.getElementById("global-bmj").textContent);
+  const perTicker = JSON.parse(document.getElementById("per-ticker-data").textContent);
+
+  function makeLineChart(canvasId, labels, values, title) {
+    const ctx = document.getElementById(canvasId);
+    if (!ctx || !window.Chart) return;
+    new Chart(ctx, {
+      type: "line",
+      data: {
+        labels: labels,
+        datasets: [{
+          label: title,
+          data: values,
+          tension: 0.2,
+          pointRadius: 0,
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: { legend: { display: false } },
+        scales: { x: { display: false } }
+      }
+    });
+  }
+
+  makeLineChart("globalSgnChart", labels, sgn, "S_G_N");
+  makeLineChart("globalBtChart", labels, bt, "BT");
+  makeLineChart("globalBmjChart", labels, bmj, "BMJ");
+
+  const container = document.getElementById("perTickerContainer");
+  if (!container) return;
+
+  const tickers = Object.keys(perTicker).sort();
+  const maxTickersToRender = 50;
+  const shown = tickers.slice(0, maxTickersToRender);
+
+  if (tickers.length > maxTickersToRender) {
+    const warn = document.createElement("div");
+    warn.className = "alert alert-info";
+    warn.innerText = `Affichage limité à ${maxTickersToRender} tickers sur ${tickers.length}.`;
+    container.appendChild(warn);
+  }
+
+  shown.forEach((tkr, idx) => {
+    const data = perTicker[tkr];
+    const safeId = "tkr_" + idx;
+
+    const wrapper = document.createElement("details");
+    wrapper.className = "mb-3";
+    wrapper.open = false;
+
+    const summary = document.createElement("summary");
+    summary.innerHTML = `<strong>${tkr}</strong>`;
+    wrapper.appendChild(summary);
+
+    const charts = document.createElement("div");
+    charts.className = "mt-2";
+    charts.innerHTML = `
+      <div class="row">
+        <div class="col-md-4"><small>S_G_N</small><canvas id="${safeId}_sgn" height="70"></canvas></div>
+        <div class="col-md-4"><small>BT</small><canvas id="${safeId}_bt" height="70"></canvas></div>
+        <div class="col-md-4"><small>BMJ</small><canvas id="${safeId}_bmj" height="70"></canvas></div>
+      </div>
+      <div class="mt-3 table-responsive">
+        <table class="table table-sm">
+          <thead>
+            <tr>
+              <th>Date</th><th>Ratio_P</th><th>N</th><th>G (dernier)</th><th>S_G_N</th><th>BT</th><th>BMJ</th>
+            </tr>
+          </thead>
+          <tbody id="${safeId}_tbody"></tbody>
+        </table>
+      </div>
+    `;
+    wrapper.appendChild(charts);
+    container.appendChild(wrapper);
+
+    makeLineChart(`${safeId}_sgn`, data.labels, data.sgn, "S_G_N");
+    makeLineChart(`${safeId}_bt`, data.labels, data.bt, "BT");
+    makeLineChart(`${safeId}_bmj`, data.labels, data.bmj, "BMJ");
+
+    const tbody = document.getElementById(`${safeId}_tbody`);
+    if (tbody) {
+      for (let i=0; i<data.labels.length; i++) {
+        const tr = document.createElement("tr");
+        const rp = (data.ratio_p[i] === null || data.ratio_p[i] === undefined) ? "" : data.ratio_p[i].toFixed(2);
+        tr.innerHTML = `
+          <td>${data.labels[i]}</td>
+          <td>${rp}</td>
+          <td>${data.trade_n[i]}</td>
+          <td>${data.last_g[i].toFixed(4)}</td>
+          <td>${data.sgn[i].toFixed(4)}</td>
+          <td>${data.bt[i].toFixed(4)}</td>
+          <td>${data.bmj[i].toFixed(4)}</td>
+        `;
+        tbody.appendChild(tr);
+      }
+    }
+  });
+})();
+</script>
+
+{% endblock %}

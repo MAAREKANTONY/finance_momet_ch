@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Backtesting</h2>
+
+  <h3>Nouveau backtest</h3>
+  <form method="post" action="{% url 'backtest_run_create' %}">
+    {% csrf_token %}
+    <div class="grid">
+      {{ form.as_p }}
+    </div>
+    <button class="btn" type="submit">Créer</button>
+  </form>
+
+  <p style="margin-top:10px;">
+    Astuce: tu peux définir des capitaux initiaux spécifiques par action via
+    <a href="{% url 'backtest_capital_overrides_page' %}">Capitaux par action</a>.
+  </p>
+
+  <h3 style="margin-top:18px;">Historique</h3>
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Créé</th>
+        <th>Nom</th>
+        <th>Scénario</th>
+        <th>Stratégie</th>
+        <th>CP</th>
+        <th>CT</th>
+        <th>X (ratio_p min)</th>
+        <th>Statut</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in runs %}
+        <tr>
+          <td>{{ run.created_at }}</td>
+          <td>{{ run.name|default:"" }}</td>
+          <td>{{ run.scenario.name }}</td>
+          <td>{{ run.strategy.name }}</td>
+          <td>{{ run.capital_total }}</td>
+          <td>{{ run.capital_per_symbol }}</td>
+          <td>{{ run.min_ratio_p }}</td>
+          <td>{{ run.status }}</td>
+          <td><a href="{% url 'backtest_run_detail' run.id %}">Ouvrir</a></td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="9">Aucun backtest.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+{% endblock %}

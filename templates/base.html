@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Stock Alert App</title>
+  <style>
+    body { font-family: system-ui, Arial, sans-serif; margin: 24px; }
+    header { display:flex; justify-content:space-between; align-items:center; margin-bottom: 16px; }
+    nav a { margin-right: 12px; }
+    table { border-collapse: collapse; width: 100%; }
+    th, td { border: 1px solid #ddd; padding: 8px; vertical-align: top; }
+    th { background: #f3f3f3; text-align:left; }
+    .muted { color: #666; }
+    .card { border:1px solid #ddd; padding:16px; border-radius:12px; margin-bottom:16px; }
+    .btn { display:inline-block; padding:8px 12px; border:1px solid #ccc; border-radius:8px; text-decoration:none; background:white; cursor:pointer; }
+    .btn.danger { border-color:#f2b1b1; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; }
+    input, select, textarea { padding:8px; border:1px solid #ccc; border-radius:8px; }
+    .flash { padding:10px 12px; border:1px solid #ddd; border-radius:10px; margin: 10px 0; }
+    .flash.success { border-color:#a8d8b9; background:#f2fff7; }
+    .flash.error { border-color:#f2b1b1; background:#fff5f5; }
+    .pill { display:inline-block; padding:2px 8px; border:1px solid #ddd; border-radius:999px; font-size:12px; color:#444; }
+    .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+<header>
+  <div>
+    <strong>Stock Alert App</strong>
+    <span class="muted">— watchlist • scénarios • alertes</span>
+  </div>
+  <div>
+    {% if user.is_authenticated %}
+      <span class="muted">{{ user.username }}</span>
+      <a class="btn" href="/admin/">Admin</a>
+      <a class="btn" href="{% url 'logout' %}">Logout</a>
+    {% else %}
+      <a class="btn" href="{% url 'login' %}">Login</a>
+    {% endif %}
+  </div>
+</header>
+
+<nav>
+  <a href="{% url 'dashboard' %}">Dashboard</a>
+  <a href="{% url 'symbols_page' %}">Tickers</a>
+  <a href="{% url 'symbols_import' %}">Import tickers</a>
+  <a href="{% url 'scenarios_page' %}">Scénarios</a>
+  <a href="{% url 'alerts_table' %}">Alertes</a>
+  <a href="{% url 'backtesting_page' %}">Backtesting</a>
+  <a href="{% url 'backtests_archive' %}">Archive backtests</a>
+  <a href="{% url 'email_settings' %}">Email</a>
+  <a href="{% url 'logs_page' %}">Logs</a>
+</nav>
+
+{% if messages %}
+  {% for m in messages %}
+    <div class="flash {% if m.tags %}{{ m.tags }}{% endif %}">{{ m }}</div>
+  {% endfor %}
+{% endif %}
+
+<hr/>
+
+{% block content %}{% endblock %}
+</body>
+</html>

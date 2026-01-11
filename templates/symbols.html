@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Tickers (watchlist)</h2>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Ajouter via recherche (API)</h3>
+    <div class="muted">Tape les premières lettres du nom ou le symbole (ex: "AAP", "Tesla", "MC").</div>
+    <div style="margin-top: 10px;">
+      <input id="searchBox" type="text" placeholder="Rechercher..." style="width: 100%;">
+      <div id="results" style="margin-top: 10px;"></div>
+    </div>
+
+    <form id="addFromSearch" method="post" action="{% url 'symbol_add' %}" style="display:none;">
+      {% csrf_token %}
+      <input type="hidden" name="ticker" id="f_ticker">
+      <input type="hidden" name="exchange" id="f_exchange">
+      <input type="hidden" name="name" id="f_name">
+      <input type="hidden" name="instrument_type" id="f_instrument_type">
+      <input type="hidden" name="country" id="f_country">
+      <input type="hidden" name="currency" id="f_currency">
+    </form>
+  </div>
+
+  <div class="card">
+    <h3>Ajouter manuellement</h3>
+    <form method="post" action="{% url 'symbol_add' %}">
+      {% csrf_token %}
+      {{ manual_form.as_p }}
+      <button class="btn" type="submit">Ajouter</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Liste</h3>
+  <table>
+    <thead><tr><th>Ticker</th><th>Exchange</th><th>Nom</th><th>Type</th><th>Scénarios</th><th>Actif</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for s in symbols %}
+        <tr>
+          <td><strong>{{ s.ticker }}</strong></td>
+          <td>{{ s.exchange }}</td>
+          <td class="muted">{{ s.name }}</td>
+          <td>{{ s.instrument_type }}</td>
+          <td class="muted">
+            {% for sc in s.scenarios.all %}{{ sc.name }}{% if sc.is_default %} ⭐{% endif %}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}
+            <div><a href="{% url 'symbol_scenarios_edit' s.id %}">Gérer</a></div>
+          </td>
+          <td>{% if s.active %}✅{% else %}—{% endif %}</td>
+          <td>
+            <form method="post" action="{% url 'symbol_toggle' s.id %}" style="display:inline;">
+              {% csrf_token %}
+              <button class="btn" type="submit">{% if s.active %}Désactiver{% else %}Activer{% endif %}</button>
+            </form>
+            <form method="post" action="{% url 'symbol_delete' s.id %}" style="display:inline;" onsubmit="return confirm('Supprimer ce ticker ?');">
+              {% csrf_token %}
+              <button class="btn danger" type="submit">Supprimer</button>
+            </form>
+          </td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="6" class="muted">Aucun ticker</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<script>
+const box = document.getElementById("searchBox");
+const results = document.getElementById("results");
+let timer = null;
+
+function esc(s){ return (s||"").replace(/</g,"&lt;").replace(/>/g,"&gt;"); }
+
+async function doSearch(q){
+  if(!q){ results.innerHTML = ""; return; }
+  const r = await fetch(`/api/symbol_search/?q=${encodeURIComponent(q)}`);
+  const data = await r.json();
+  if(data.error){
+    results.innerHTML = `<div class="flash error">${esc(data.error)}</div>`;
+    return;
+  }
+  const items = data.data || [];
+  if(items.length === 0){
+    results.innerHTML = `<div class="muted">Aucun résultat</div>`;
+    return;
+  }
+  results.innerHTML = items.map((it) => {
+    const line1 = `<strong>${esc(it.symbol)}</strong> ${it.exchange ? `<span class="pill">${esc(it.exchange)}</span>` : ""} ${it.instrument_type ? `<span class="pill">${esc(it.instrument_type)}</span>` : ""}`;
+    const line2 = `${esc(it.name || "")}`;
+    return `<div class="card" style="padding:10px; border-radius:10px; margin-top:8px;">
+      <div>${line1}</div>
+      <div class="muted">${line2}</div>
+      <button class="btn" onclick='addSymbol(${JSON.stringify(it)})'>Ajouter</button>
+    </div>`;
+  }).join("");
+}
+
+function addSymbol(it){
+  document.getElementById("f_ticker").value = it.symbol || "";
+  document.getElementById("f_exchange").value = it.exchange || "";
+  document.getElementById("f_name").value = it.name || "";
+  document.getElementById("f_instrument_type").value = it.instrument_type || "";
+  document.getElementById("f_country").value = it.country || "";
+  document.getElementById("f_currency").value = it.currency || "";
+  document.getElementById("addFromSearch").submit();
+}
+
+box.addEventListener("input", () => {
+  clearTimeout(timer);
+  timer = setTimeout(() => doSearch(box.value.trim()), 250);
+});
+</script>
+{% endblock %}

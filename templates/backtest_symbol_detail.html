@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block content %}
+  <h2>Backtest #{{ run.id }} — {{ symbol.ticker }}</h2>
+  <p class="muted">
+    Scénario: <strong>{{ run.scenario.name }}</strong> — Stratégie: <strong>{{ run.strategy.name }}</strong>
+  </p>
+
+  <div style="margin:10px 0;">
+    <a class="btn" href="{% url 'backtest_run_detail' run.id %}">Retour run</a>
+    <a class="btn" href="{% url 'backtest_run_export_xlsx' run.id %}">Exporter Excel (run)</a>
+  </div>
+
+  <div class="grid2">
+    <div class="card">
+      <h3>Courbes</h3>
+      <canvas id="chartSgn" height="120"></canvas>
+      <div class="muted" style="margin-top:8px;">S_G_N (gain moyen par trade) dans le temps.</div>
+      <hr style="margin:12px 0;"/>
+      <canvas id="chartBt" height="120"></canvas>
+      <div class="muted" style="margin-top:8px;">BT (bénéfice total) dans le temps.</div>
+      <hr style="margin:12px 0;"/>
+      <canvas id="chartBmj" height="120"></canvas>
+      <div class="muted" style="margin-top:8px;">BMJ (bénéfice moyen/jour) dans le temps.</div>
+    </div>
+    <div class="card">
+      <h3>Trades</h3>
+      <table>
+        <thead>
+          <tr>
+            <th>Buy signal</th>
+            <th>Buy exec</th>
+            <th>Buy price</th>
+            <th>Sell signal</th>
+            <th>Sell exec</th>
+            <th>Sell price</th>
+            <th>PnL %</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for t in trades %}
+            <tr>
+              <td>{{ t.buy_signal_date }}</td>
+              <td>{{ t.buy_exec_date }}</td>
+              <td>{{ t.buy_price }}</td>
+              <td>{{ t.sell_signal_date|default:"" }}</td>
+              <td>{{ t.sell_exec_date|default:"" }}</td>
+              <td>{{ t.sell_price|default:"" }}</td>
+              <td>{{ t.pnl_pct|default:"" }}</td>
+            </tr>
+          {% empty %}
+            <tr><td colspan="7">Aucun trade.</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <h3 style="margin-top:18px;">Données journalières</h3>
+  <table>
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Tradable</th>
+        <th>N</th>
+        <th>G</th>
+        <th>S_G_N</th>
+        <th>BT</th>
+        <th>BMJ</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in stats %}
+        <tr>
+          <td>{{ s.date }}</td>
+          <td>{{ s.tradable }}</td>
+          <td>{{ s.N }}</td>
+          <td>{{ s.G }}</td>
+          <td>{{ s.S_G_N }}</td>
+          <td>{{ s.BT }}</td>
+          <td>{{ s.BMJ }}</td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="7">Aucune donnée.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    const data = {{ chart|safe }};
+    function mkChart(elId, label, values) {
+      const ctx = document.getElementById(elId);
+      return new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: data.dates,
+          datasets: [{ label, data: values, tension: 0.2 }]
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { display: true } },
+          scales: { x: { display: true }, y: { display: true } }
+        }
+      });
+    }
+    mkChart('chartSgn', 'S_G_N', data.sgn);
+    mkChart('chartBt', 'BT', data.bt);
+    mkChart('chartBmj', 'BMJ', data.bmj);
+  </script>
+{% endblock %}
