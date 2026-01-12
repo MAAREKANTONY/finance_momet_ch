@@ -11,4 +11,23 @@
 </div>
 <p class="muted">P = (a*F + b*H + c*L + d*O)/(a+b+c+d)</p>
 <p class="muted">Historique: l'app récupère environ <strong>260 * history_years</strong> jours de trading par ticker.</p>
+
+<script>
+  (function(){
+    const hasOtherDefault = {{ has_other_default|yesno:"true,false" }};
+    const form = document.querySelector('form');
+    if (!form) return;
+    const isDefault = document.getElementById('id_is_default');
+    if (!isDefault) return;
+    form.addEventListener('submit', function(e){
+      if (isDefault.checked && hasOtherDefault) {
+        const ok = confirm("Un scénario par défaut existe déjà. Définir celui-ci comme défaut va désactiver le précédent. Continuer ?");
+        if (!ok) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }
+    });
+  })();
+</script>
 {% endblock %}

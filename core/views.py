@@ -12,7 +12,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
 import zipfile as pyzip
 
-from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings
+from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog
 from .forms import ScenarioForm, EmailRecipientForm, SymbolManualForm, EmailSettingsForm
 from .services.provider_twelvedata import TwelveDataClient
 
@@ -324,10 +324,19 @@ def symbol_add(request):
     country = (request.POST.get("country") or "").strip()
     currency = (request.POST.get("currency") or "").strip()
 
+    default_scenario = Scenario.objects.filter(is_default=True, active=True).first()
+
     if ticker:
         obj, created = Symbol.objects.get_or_create(
-            ticker=ticker, exchange=exchange,
-            defaults={"name": name, "instrument_type": instrument_type, "country": country, "currency": currency, "active": True}
+            ticker=ticker,
+            exchange=exchange,
+            defaults={
+                "name": name,
+                "instrument_type": instrument_type,
+                "country": country,
+                "currency": currency,
+                "active": True,
+            },
         )
         if not created:
             Symbol.objects.filter(id=obj.id).update(
@@ -337,12 +346,22 @@ def symbol_add(request):
                 currency=currency or obj.currency,
                 active=True,
             )
+
+        # Toujours associer au scénario par défaut si présent
+        if default_scenario:
+            obj.scenarios.add(default_scenario)
+
         messages.success(request, f"Ajouté: {ticker} {('('+exchange+')') if exchange else ''}")
         return redirect("symbols_page")
 
     form = SymbolManualForm(request.POST)
     if form.is_valid():
         sym = form.save()
+        chosen = list(form.cleaned_data.get("scenarios") or [])
+        if default_scenario and default_scenario not in chosen:
+            chosen.append(default_scenario)
+        if chosen:
+            sym.scenarios.set(chosen)
         messages.success(request, f"Ajouté: {sym}")
     else:
         messages.error(request, "Erreur: symbole invalide.")
@@ -374,6 +393,7 @@ def scenarios_page(request):
 
 @login_required
 def scenario_create(request):
+    has_other_default = Scenario.objects.filter(is_default=True).exists()
     if request.method == "POST":
         form = ScenarioForm(request.POST)
         if form.is_valid():
@@ -382,12 +402,13 @@ def scenario_create(request):
             return redirect("scenarios_page")
     else:
         form = ScenarioForm()
-    return render(request, "scenario_form.html", {"form": form, "mode": "create"})
+    return render(request, "scenario_form.html", {"form": form, "mode": "create", "has_other_default": has_other_default})
 
 
 @login_required
 def scenario_edit(request, pk: int):
     scenario = get_object_or_404(Scenario, pk=pk)
+    has_other_default = Scenario.objects.filter(is_default=True).exclude(pk=scenario.pk).exists()
     if request.method == "POST":
         form = ScenarioForm(request.POST, instance=scenario)
         if form.is_valid():
@@ -396,7 +417,7 @@ def scenario_edit(request, pk: int):
             return redirect("scenarios_page")
     else:
         form = ScenarioForm(instance=scenario)
-    return render(request, "scenario_form.html", {"form": form, "mode": "edit", "scenario": scenario})
+    return render(request, "scenario_form.html", {"form": form, "mode": "edit", "scenario": scenario, "has_other_default": has_other_default})
 
 
 @login_required
@@ -527,10 +548,20 @@ def api_symbol_search(request):
     return JsonResponse({"data": out})
 
 from django.core.paginator import Paginator
-from .models import JobLog
 
+
+@login_required
 def logs_page(request):
-    logs = JobLog.objects.all().order_by("-created_at")
-    paginator = Paginator(logs, 50)
+    """Log viewer to help debug async/background jobs."""
+    level = (request.GET.get("level") or "").upper().strip()
+    job = (request.GET.get("job") or "").strip()
+
+    qs = JobLog.objects.all().order_by("-created_at")
+    if level in {"INFO", "WARNING", "ERROR"}:
+        qs = qs.filter(level=level)
+    if job:
+        qs = qs.filter(job__icontains=job)
+
+    paginator = Paginator(qs, 50)
     page = paginator.get_page(request.GET.get("page"))
-    return render(request, "logs.html", {"page": page})
+    return render(request, "logs.html", {"page": page, "level": level, "job": job})

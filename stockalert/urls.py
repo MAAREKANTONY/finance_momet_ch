@@ -32,4 +32,6 @@ urlpatterns = [
     path("settings/email/send_now/", views.send_mail_now, name="send_mail_now"),
 
     path("api/symbol_search/", views.api_symbol_search, name="api_symbol_search"),
+
+    path("logs/", views.logs_page, name="logs_page"),
 ]

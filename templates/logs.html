@@ -1,16 +1,73 @@
-
 {% extends "base.html" %}
 {% block content %}
+
 <h2>Logs</h2>
-<table>
-<tr><th>Date</th><th>Niveau</th><th>Job</th><th>Message</th></tr>
-{% for log in page %}
-<tr>
-<td>{{ log.created_at }}</td>
-<td>{{ log.level }}</td>
-<td>{{ log.job }}</td>
-<td>{{ log.message }}</td>
-</tr>
-{% endfor %}
-</table>
+
+<div class="card">
+  <form method="get" style="display:flex; gap:12px; flex-wrap: wrap; align-items:end;">
+    <div>
+      <label class="muted">Level</label>
+      <select name="level">
+        <option value="" {% if not level %}selected{% endif %}>All</option>
+        <option value="INFO" {% if level == "INFO" %}selected{% endif %}>INFO</option>
+        <option value="WARNING" {% if level == "WARNING" %}selected{% endif %}>WARNING</option>
+        <option value="ERROR" {% if level == "ERROR" %}selected{% endif %}>ERROR</option>
+      </select>
+    </div>
+    <div>
+      <label class="muted">Job</label>
+      <input type="text" name="job" value="{{ job|default:'' }}" placeholder="compute-metrics, fetch-bars..." />
+    </div>
+    <button class="btn" type="submit">Filtrer</button>
+    <a class="btn" href="{% url 'logs_page' %}">Reset</a>
+  </form>
+</div>
+
+<div class="card" style="overflow-x:auto;">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Date</th>
+        <th>Level</th>
+        <th>Job</th>
+        <th>Message</th>
+        <th>Scenario</th>
+        <th>Symbol</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for log in page.object_list %}
+      <tr>
+        <td>{{ log.created_at }}</td>
+        <td>{{ log.level }}</td>
+        <td>{{ log.job }}</td>
+        <td style="min-width:420px;">
+          <div style="white-space: pre-wrap;">{{ log.message }}</div>
+          {% if log.traceback %}
+            <details style="margin-top:6px;">
+              <summary class="muted">Traceback</summary>
+              <pre style="white-space: pre-wrap;">{{ log.traceback }}</pre>
+            </details>
+          {% endif %}
+        </td>
+        <td>{{ log.scenario|default:"" }}</td>
+        <td>{{ log.symbol|default:"" }}</td>
+      </tr>
+      {% empty %}
+      <tr><td colspan="6" class="muted">Aucun log.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div style="display:flex; gap:10px; align-items:center;">
+  {% if page.has_previous %}
+    <a class="btn" href="?page={{ page.previous_page_number }}&level={{ level }}&job={{ job }}">← Prev</a>
+  {% endif %}
+  <span class="muted">Page {{ page.number }} / {{ page.paginator.num_pages }}</span>
+  {% if page.has_next %}
+    <a class="btn" href="?page={{ page.next_page_number }}&level={{ level }}&job={{ job }}">Next →</a>
+  {% endif %}
+</div>
+
 {% endblock %}
