@@ -1,5 +1,6 @@
 from django.db import models
-
+from django.core.validators import MinValueValidator
+from django.db.models import Q
 class Symbol(models.Model):
     ticker = models.CharField(max_length=64)
     exchange = models.CharField(max_length=64, blank=True, default="")
