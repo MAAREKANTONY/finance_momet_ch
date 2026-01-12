@@ -13,7 +13,6 @@ from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipie
 from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
 from .services.joblog import log_info, log_error
-from .services.backtesting import run_backtest
 
 def parse_date(s: str) -> date:
     return datetime.fromisoformat(s.replace("Z","")).date()
@@ -26,7 +25,7 @@ def desired_outputsize_years(years: int) -> int:
 
 @shared_task
 def fetch_daily_bars_task():
-    log_info("fetch_daily_bars", "START")
+    log_info(\"fetch_daily_bars\", \"START\")
     client = TwelveDataClient()
     symbols = Symbol.objects.filter(active=True).all()
     max_years = Scenario.objects.filter(active=True).order_by("-history_years").values_list("history_years", flat=True).first() or 2
@@ -65,14 +64,14 @@ def fetch_daily_bars_task():
 
 @shared_task
 def compute_metrics_task(recompute_all: bool = False):
+    log_info("compute_metrics", f"START recompute_all={recompute_all}")
     """Compute metrics and alerts.
 
     Default behavior is **incremental** (recompute the recent window + new days).
     If scenario variables changed since last compute, we do a **full recompute** for that scenario.
     If recompute_all=True, force full recompute for all scenarios.
     """
-    log_info("compute_metrics", f"START recompute_all={recompute_all}")
-    scenarios = Scenario.objects.filter(active=True).all()
+        scenarios = Scenario.objects.filter(active=True).all()
 
     def scenario_hash(s: Scenario) -> str:
         payload = "|".join([
@@ -220,8 +219,6 @@ def send_daily_alerts_task():
         log_error("send_daily_alerts", f"ERROR: {e}", traceback.format_exc())
         raise
     return "sent"
-
-
 @shared_task
 def check_and_send_scheduled_alerts_task():
     """Runs every minute. If configured time matches and not sent today, send daily alerts."""
@@ -247,9 +244,3 @@ def check_and_send_scheduled_alerts_task():
         return "scheduled_sent"
 
     return "not_due"
-
-
-@shared_task
-def run_backtest_task(run_id: int):
-    """Run a backtest and persist results."""
-    return run_backtest(run_id)

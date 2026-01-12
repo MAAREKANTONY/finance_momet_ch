@@ -1,6 +1,6 @@
 from django import forms
 from django.core.validators import MinValueValidator
-from .models import Scenario, EmailRecipient, Symbol, EmailSettings, BacktestRun
+from .models import Scenario, EmailRecipient, Symbol, EmailSettings
 
 class ScenarioForm(forms.ModelForm):
     def clean_e(self):
@@ -11,14 +11,7 @@ class ScenarioForm(forms.ModelForm):
 
     class Meta:
         model = Scenario
-        fields = [
-            "name", "description", "is_default",
-            "a", "b", "c", "d", "e",
-            "n1", "n2", "n3", "n4",
-            "history_years",
-            "backtest_default_capital",
-            "active",
-        ]
+        fields = ["name", "description", "is_default", "a", "b", "c", "d", "e", "n1", "n2", "n3", "n4", "history_years", "active"]
         widgets = {"description": forms.Textarea(attrs={"rows": 3})}
 
 class EmailRecipientForm(forms.ModelForm):
@@ -49,16 +42,3 @@ class SymbolScenariosForm(forms.Form):
         widget=forms.SelectMultiple(attrs={"size": 10}),
         help_text="Scénarios associés à ce ticker."
     )
-
-
-class SymbolImportForm(forms.Form):
-    file = forms.FileField(help_text="CSV ou Excel (.xlsx) avec colonnes: ticker code, ticker market, scenario list")
-
-
-class BacktestRunForm(forms.ModelForm):
-    class Meta:
-        model = BacktestRun
-        fields = ["scenario", "strategy", "name", "description", "capital_total", "capital_per_symbol", "min_ratio_p"]
-        widgets = {
-            "description": forms.Textarea(attrs={"rows": 3}),
-        }

@@ -14,7 +14,6 @@ urlpatterns = [
     path("data/export/scenarios.zip", views.data_export_all_scenarios_zip, name="data_export_all_scenarios_zip"),
 
     path("symbols/", views.symbols_page, name="symbols_page"),
-    path("symbols/import/", views.symbols_import, name="symbols_import"),
     path("symbols/add/", views.symbol_add, name="symbol_add"),
     path("symbols/<int:pk>/toggle/", views.symbol_toggle_active, name="symbol_toggle"),
     path("symbols/<int:pk>/delete/", views.symbol_delete, name="symbol_delete"),
@@ -35,18 +34,6 @@ urlpatterns = [
     path("settings/email/send_now/", views.send_mail_now, name="send_mail_now"),
 
     path("logs/", views.logs_page, name="logs_page"),
-
-    path("backtesting/", views.backtesting_page, name="backtesting_page"),
-    # aliases kept for template stability
-    path("backtesting/create/", views.backtesting_run, name="backtest_run_create"),
-    path("backtesting/capitals/", views.backtest_capital_overrides_page, name="backtest_capital_overrides_page"),
-    path("backtesting/save-capitals/", views.backtesting_save_capitals, name="backtesting_save_capitals"),
-    path("backtesting/run/", views.backtesting_run, name="backtesting_run"),
-    path("backtesting/run/<int:run_id>/", views.backtest_run_detail, name="backtest_run_detail"),
-    path('backtests/<int:run_id>/rerun/', views.backtest_run_rerun, name='backtest_run_rerun'),
-    path("backtesting/run/<int:run_id>/export.xlsx", views.backtest_run_export_xlsx, name="backtest_run_export_xlsx"),
-    path("backtests/", views.backtests_archive, name="backtests_archive"),
-    path("backtests/run/<int:run_id>/symbol/<int:symbol_id>/", views.backtest_symbol_detail, name="backtest_symbol_detail"),
 
     path("api/symbol_search/", views.api_symbol_search, name="api_symbol_search"),
 ]

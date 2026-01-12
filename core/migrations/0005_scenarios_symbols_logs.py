@@ -57,6 +57,6 @@ class Migration(migrations.Migration):
         ),
         migrations.AddConstraint(
             model_name="scenario",
-            constraint=models.UniqueConstraint(fields=('is_default',), condition=Q(is_default=True), name="scenario_single_default"),
+            constraint=models.UniqueConstraint(fields=(), condition=Q(is_default=True), name="scenario_single_default"),
         ),
     ]

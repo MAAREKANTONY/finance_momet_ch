@@ -24,7 +24,6 @@
     .grid2 { display:grid; grid-template-columns: 1fr 1fr; gap: 16px; }
     @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
 <header>
@@ -46,13 +45,9 @@
 <nav>
   <a href="{% url 'dashboard' %}">Dashboard</a>
   <a href="{% url 'symbols_page' %}">Tickers</a>
-  <a href="{% url 'symbols_import' %}">Import tickers</a>
   <a href="{% url 'scenarios_page' %}">Scénarios</a>
   <a href="{% url 'alerts_table' %}">Alertes</a>
-  <a href="{% url 'backtesting_page' %}">Backtesting</a>
-  <a href="{% url 'backtests_archive' %}">Archive backtests</a>
   <a href="{% url 'email_settings' %}">Email</a>
-  <a href="{% url 'logs_page' %}">Logs</a>
 </nav>
 
 {% if messages %}
