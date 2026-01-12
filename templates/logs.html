@@ -1,0 +1,16 @@
+
+{% extends "base.html" %}
+{% block content %}
+<h2>Logs</h2>
+<table>
+<tr><th>Date</th><th>Niveau</th><th>Job</th><th>Message</th></tr>
+{% for log in page %}
+<tr>
+<td>{{ log.created_at }}</td>
+<td>{{ log.level }}</td>
+<td>{{ log.job }}</td>
+<td>{{ log.message }}</td>
+</tr>
+{% endfor %}
+</table>
+{% endblock %}

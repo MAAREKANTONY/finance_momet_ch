@@ -525,3 +525,12 @@ def api_symbol_search(request):
             }
         )
     return JsonResponse({"data": out})
+
+from django.core.paginator import Paginator
+from .models import JobLog
+
+def logs_page(request):
+    logs = JobLog.objects.all().order_by("-created_at")
+    paginator = Paginator(logs, 50)
+    page = paginator.get_page(request.GET.get("page"))
+    return render(request, "logs.html", {"page": page})

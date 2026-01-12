@@ -24,7 +24,7 @@ class Scenario(models.Model):
     b = models.DecimalField(max_digits=18, decimal_places=6, default=1)
     c = models.DecimalField(max_digits=18, decimal_places=6, default=1)
     d = models.DecimalField(max_digits=18, decimal_places=6, default=1)
-    e = models.DecimalField(max_digits=18, decimal_places=6, default=1)
+    e = models.DecimalField(max_digits=18, decimal_places=6, validators=[MinValueValidator(0.0001)])
 
     n1 = models.PositiveIntegerField(default=5)
     n2 = models.PositiveIntegerField(default=3)
@@ -50,7 +50,7 @@ class DailyBar(models.Model):
     open = models.DecimalField(max_digits=18, decimal_places=6)
     high = models.DecimalField(max_digits=18, decimal_places=6)
     low = models.DecimalField(max_digits=18, decimal_places=6)
-    close = models.DecimalField(max_digits=18, decimal_places=6)
+    close = models.DecimalField(max_digits=18, decimal_places=6, validators=[MinValueValidator(0.0001)])
     change_amount = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     change_pct = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     source = models.CharField(max_length=64, default="twelvedata")
