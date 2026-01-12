@@ -35,7 +35,7 @@
 <div class="card">
   <h3>Liste</h3>
   <table>
-    <thead><tr><th>Ticker</th><th>Exchange</th><th>Nom</th><th>Type</th><th>Scénarios</th><th>Actif</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Ticker</th><th>Exchange</th><th>Nom</th><th>Type</th><th>Actif</th><th>Actions</th></tr></thead>
     <tbody>
       {% for s in symbols %}
         <tr>
@@ -43,10 +43,6 @@
           <td>{{ s.exchange }}</td>
           <td class="muted">{{ s.name }}</td>
           <td>{{ s.instrument_type }}</td>
-          <td class="muted">
-            {% for sc in s.scenarios.all %}{{ sc.name }}{% if sc.is_default %} ⭐{% endif %}{% if not forloop.last %}, {% endif %}{% empty %}—{% endfor %}
-            <div><a href="{% url 'symbol_scenarios_edit' s.id %}">Gérer</a></div>
-          </td>
           <td>{% if s.active %}✅{% else %}—{% endif %}</td>
           <td>
             <form method="post" action="{% url 'symbol_toggle' s.id %}" style="display:inline;">

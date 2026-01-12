@@ -1,6 +1,4 @@
 from django.db import models
-from django.core.validators import MinValueValidator
-from django.db.models import Q
 
 class Symbol(models.Model):
     ticker = models.CharField(max_length=64)
@@ -15,12 +13,6 @@ class Symbol(models.Model):
         unique_together = ("ticker", "exchange")
         indexes = [models.Index(fields=["ticker", "exchange", "active"])]
 
-    class Meta:
-        constraints = [
-            models.CheckConstraint(check=Q(e__gt=0), name='scenario_e_gt_0'),
-            models.UniqueConstraint(fields=[], condition=Q(is_default=True), name='scenario_single_default')
-        ]
-
     def __str__(self):
         return f"{self.ticker}{(':'+self.exchange) if self.exchange else ''}"
 
@@ -28,13 +20,11 @@ class Scenario(models.Model):
     name = models.CharField(max_length=120)
     description = models.TextField(blank=True, default="")
 
-    is_default = models.BooleanField(default=False)
-
     a = models.DecimalField(max_digits=18, decimal_places=6, default=1)
     b = models.DecimalField(max_digits=18, decimal_places=6, default=1)
     c = models.DecimalField(max_digits=18, decimal_places=6, default=1)
     d = models.DecimalField(max_digits=18, decimal_places=6, default=1)
-    e = models.DecimalField(max_digits=18, decimal_places=6, default=1, validators=[MinValueValidator(0.0001)])
+    e = models.DecimalField(max_digits=18, decimal_places=6, default=1)
 
     n1 = models.PositiveIntegerField(default=5)
     n2 = models.PositiveIntegerField(default=3)
@@ -43,9 +33,6 @@ class Scenario(models.Model):
 
     history_years = models.PositiveIntegerField(default=2)
 
-    # Symbols associated to this scenario
-    symbols = models.ManyToManyField('Symbol', through='SymbolScenario', related_name='scenarios', blank=True)
-
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -53,12 +40,6 @@ class Scenario(models.Model):
     # Used to decide between incremental compute and full recompute when config changes.
     last_computed_config_hash = models.CharField(max_length=64, blank=True, default="")
     last_full_recompute_at = models.DateTimeField(null=True, blank=True)
-
-    class Meta:
-        constraints = [
-            models.CheckConstraint(check=Q(e__gt=0), name='scenario_e_gt_0'),
-            models.UniqueConstraint(fields=[], condition=Q(is_default=True), name='scenario_single_default')
-        ]
 
     def __str__(self):
         return self.name
@@ -69,7 +50,7 @@ class DailyBar(models.Model):
     open = models.DecimalField(max_digits=18, decimal_places=6)
     high = models.DecimalField(max_digits=18, decimal_places=6)
     low = models.DecimalField(max_digits=18, decimal_places=6)
-    close = models.DecimalField(max_digits=18, decimal_places=6, default=1, validators=[MinValueValidator(0.0001)])
+    close = models.DecimalField(max_digits=18, decimal_places=6)
     change_amount = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     change_pct = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     source = models.CharField(max_length=64, default="twelvedata")
@@ -109,33 +90,6 @@ class DailyMetric(models.Model):
     class Meta:
         unique_together = ("symbol", "scenario", "date")
         indexes = [models.Index(fields=["symbol", "scenario", "date"])]
-
-
-
-class SymbolScenario(models.Model):
-    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
-    scenario = models.ForeignKey(Scenario, on_delete=models.CASCADE)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ("symbol", "scenario")
-        indexes = [models.Index(fields=["scenario", "symbol"])]
-
-    def __str__(self):
-        return f"{self.symbol} ↔ {self.scenario}"
-
-class JobLog(models.Model):
-    created_at = models.DateTimeField(auto_now_add=True)
-    level = models.CharField(max_length=10, default="INFO")  # INFO / ERROR
-    job = models.CharField(max_length=80)
-    message = models.TextField(blank=True, default="")
-    traceback = models.TextField(blank=True, default="")
-    scenario = models.ForeignKey(Scenario, null=True, blank=True, on_delete=models.SET_NULL)
-    symbol = models.ForeignKey(Symbol, null=True, blank=True, on_delete=models.SET_NULL)
-
-    class Meta:
-        ordering = ["-created_at"]
-        indexes = [models.Index(fields=["created_at", "level", "job"])]
 
 class Alert(models.Model):
     symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)

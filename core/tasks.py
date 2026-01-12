@@ -3,7 +3,6 @@ from decimal import Decimal
 from datetime import datetime, date
 from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
-import traceback
 
 import hashlib
 from datetime import timedelta
@@ -12,7 +11,6 @@ from django.db.models import Max
 from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings
 from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
-from .services.joblog import log_info, log_error
 
 def parse_date(s: str) -> date:
     return datetime.fromisoformat(s.replace("Z","")).date()
@@ -25,7 +23,6 @@ def desired_outputsize_years(years: int) -> int:
 
 @shared_task
 def fetch_daily_bars_task():
-    log_info(\"fetch_daily_bars\", \"START\")
     client = TwelveDataClient()
     symbols = Symbol.objects.filter(active=True).all()
     max_years = Scenario.objects.filter(active=True).order_by("-history_years").values_list("history_years", flat=True).first() or 2
@@ -59,19 +56,18 @@ def fetch_daily_bars_task():
             change_pct = (change_amount / prev_bar.close) * Decimal("100") if prev_bar.close != 0 else None
             DailyBar.objects.filter(id=last_bar.id).update(change_amount=change_amount, change_pct=change_pct)
 
-    log_info("fetch_daily_bars", f"SUCCESS outputsize={outputsize}")
     return f"ok outputsize={outputsize}"
 
 @shared_task
 def compute_metrics_task(recompute_all: bool = False):
-    log_info("compute_metrics", f"START recompute_all={recompute_all}")
     """Compute metrics and alerts.
 
     Default behavior is **incremental** (recompute the recent window + new days).
     If scenario variables changed since last compute, we do a **full recompute** for that scenario.
     If recompute_all=True, force full recompute for all scenarios.
     """
-        scenarios = Scenario.objects.filter(active=True).all()
+    symbols = Symbol.objects.filter(active=True).all()
+    scenarios = Scenario.objects.filter(active=True).all()
 
     def scenario_hash(s: Scenario) -> str:
         payload = "|".join([
@@ -81,13 +77,6 @@ def compute_metrics_task(recompute_all: bool = False):
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
     for scenario in scenarios:
-        # auto-attach unassigned symbols to default scenario
-        if getattr(scenario, 'is_default', False):
-            from .models import SymbolScenario
-            unassigned = Symbol.objects.filter(active=True).exclude(id__in=SymbolScenario.objects.values('symbol_id'))
-            for sym_u in unassigned:
-                SymbolScenario.objects.get_or_create(symbol=sym_u, scenario=scenario)
-        symbols = scenario.symbols.filter(active=True).all()  # after any auto-attach
         cur_hash = scenario_hash(scenario)
         needs_full = recompute_all or (scenario.last_computed_config_hash and scenario.last_computed_config_hash != cur_hash)
 
@@ -128,19 +117,16 @@ def compute_metrics_task(recompute_all: bool = False):
                 for d in bars_qs.values_list("date", flat=True):
                     compute_for_symbol_scenario(sym, scenario, d)
             except Exception as e:
-                log_error("compute_metrics", f"error {sym} {scenario}: {e}", traceback.format_exc(), scenario=scenario, symbol=sym)
+                print(f"[compute] error {sym} {scenario}: {e}")
                 continue
 
         # Mark scenario as computed with current hash
         Scenario.objects.filter(id=scenario.id).update(last_computed_config_hash=cur_hash)
 
-    log_info("compute_metrics", "SUCCESS")
-    log_info("send_daily_alerts", "SUCCESS")
     return "ok"
 
 @shared_task
 def send_daily_alerts_task():
-    log_info("send_daily_alerts", "START")
     """
     Sends a single recap email for the most recent alert date.
     Includes RATIO_P and AMP_H trend indicators per (symbol, scenario).
@@ -213,11 +199,7 @@ def send_daily_alerts_task():
         to=recipients,
     )
     msg.attach_alternative(html, "text/html")
-    try:
-        msg.send()
-    except Exception as e:
-        log_error("send_daily_alerts", f"ERROR: {e}", traceback.format_exc())
-        raise
+    msg.send()
     return "sent"
 @shared_task
 def check_and_send_scheduled_alerts_task():

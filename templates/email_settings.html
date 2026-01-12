@@ -21,10 +21,6 @@
     <h3>Actions manuelles</h3>
     <div class="muted">Utile pour tester sans attendre l’horaire.</div>
     <div class="row" style="margin-top:10px;">
-      <form method="post" action="{% url 'run_fetch_now' %}">
-        {% csrf_token %}
-        <button class="btn" type="submit">Collecter TwelveData</button>
-      </form>
       <form method="post" action="{% url 'run_compute_now' %}">
         {% csrf_token %}
         <button class="btn" type="submit">Lancer les calculs</button>

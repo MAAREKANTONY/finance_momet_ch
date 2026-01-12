@@ -188,7 +188,7 @@ def data_export_scenario_xlsx(request, scenario_id: int):
     date_from = (request.GET.get("from") or "").strip()
     date_to = (request.GET.get("to") or "").strip()
 
-    symbols_qs = scenario.symbols.filter(active=True)
+    symbols_qs = Symbol.objects.filter(active=True)
     if ticker:
         symbols_qs = symbols_qs.filter(ticker=ticker)
     if exchange:
@@ -212,7 +212,7 @@ def data_export_all_scenarios_zip(request):
     date_from = (request.GET.get("from") or "").strip()
     date_to = (request.GET.get("to") or "").strip()
 
-    symbols_qs = scenario.symbols.filter(active=True)
+    symbols_qs = Symbol.objects.filter(active=True)
     if ticker:
         symbols_qs = symbols_qs.filter(ticker=ticker)
     if exchange:
@@ -337,20 +337,12 @@ def symbol_add(request):
                 currency=currency or obj.currency,
                 active=True,
             )
-        # auto-assign default scenario
-        default_s = Scenario.objects.filter(is_default=True, active=True).first()
-        if default_s:
-            SymbolScenario.objects.get_or_create(symbol=obj, scenario=default_s)
         messages.success(request, f"Ajouté: {ticker} {('('+exchange+')') if exchange else ''}")
         return redirect("symbols_page")
 
     form = SymbolManualForm(request.POST)
     if form.is_valid():
         sym = form.save()
-        # auto-assign default scenario
-        default_s = Scenario.objects.filter(is_default=True, active=True).first()
-        if default_s:
-            SymbolScenario.objects.get_or_create(symbol=sym, scenario=default_s)
         messages.success(request, f"Ajouté: {sym}")
     else:
         messages.error(request, "Erreur: symbole invalide.")
@@ -533,43 +525,3 @@ def api_symbol_search(request):
             }
         )
     return JsonResponse({"data": out})
-
-
-@login_required
-def symbol_scenarios_edit(request, pk: int):
-    sym = get_object_or_404(Symbol, pk=pk)
-    if request.method == "POST":
-        form = SymbolScenariosForm(request.POST)
-        if form.is_valid():
-            selected = list(form.cleaned_data["scenarios"])
-            # Replace associations
-            SymbolScenario.objects.filter(symbol=sym).exclude(scenario__in=selected).delete()
-            for sc in selected:
-                SymbolScenario.objects.get_or_create(symbol=sym, scenario=sc)
-            messages.success(request, "Associations ticker ↔ scénarios mises à jour.")
-            return redirect("symbols_page")
-    else:
-        form = SymbolScenariosForm(initial={"scenarios": sym.scenarios.all()})
-    return render(request, "symbol_scenarios.html", {"symbol": sym, "form": form})
-
-
-@login_required
-@require_POST
-def run_fetch_now(request):
-    from .tasks import fetch_daily_bars_task
-    fetch_daily_bars_task.delay()
-    messages.success(request, "Collecte TwelveData lancée (asynchrone).")
-    return redirect("email_settings")
-
-
-@login_required
-def logs_page(request):
-    level = (request.GET.get("level") or "").strip().upper()
-    job = (request.GET.get("job") or "").strip()
-    qs = JobLog.objects.all()
-    if level:
-        qs = qs.filter(level=level)
-    if job:
-        qs = qs.filter(job__icontains=job)
-    logs = qs[:500]
-    return render(request, "logs.html", {"logs": logs, "level": level, "job": job})

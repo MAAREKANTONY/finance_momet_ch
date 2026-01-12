@@ -17,7 +17,6 @@ urlpatterns = [
     path("symbols/add/", views.symbol_add, name="symbol_add"),
     path("symbols/<int:pk>/toggle/", views.symbol_toggle_active, name="symbol_toggle"),
     path("symbols/<int:pk>/delete/", views.symbol_delete, name="symbol_delete"),
-    path("symbols/<int:pk>/scenarios/", views.symbol_scenarios_edit, name="symbol_scenarios_edit"),
 
     path("scenarios/", views.scenarios_page, name="scenarios_page"),
     path("scenarios/new/", views.scenario_create, name="scenario_create"),
@@ -28,12 +27,9 @@ urlpatterns = [
     path("settings/email/<int:pk>/toggle/", views.email_recipient_toggle, name="email_recipient_toggle"),
     path("settings/email/<int:pk>/delete/", views.email_recipient_delete, name="email_recipient_delete"),
 
-    path("settings/email/run_fetch/", views.run_fetch_now, name="run_fetch_now"),
     path("settings/email/run_compute/", views.run_compute_now, name="run_compute_now"),
     path("settings/email/recompute_all/", views.run_recompute_all_now, name="run_recompute_all_now"),
     path("settings/email/send_now/", views.send_mail_now, name="send_mail_now"),
-
-    path("logs/", views.logs_page, name="logs_page"),
 
     path("api/symbol_search/", views.api_symbol_search, name="api_symbol_search"),
 ]

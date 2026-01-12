@@ -11,7 +11,7 @@
     <tbody>
       {% for s in scenarios %}
         <tr>
-          <td><strong>{{ s.name }}{% if s.is_default %} ⭐{% endif %}</strong>{% if s.description %}<div class="muted">{{ s.description }}</div>{% endif %}</td>
+          <td><strong>{{ s.name }}</strong>{% if s.description %}<div class="muted">{{ s.description }}</div>{% endif %}</td>
           <td class="muted">a={{ s.a }} b={{ s.b }} c={{ s.c }} d={{ s.d }} e={{ s.e }}<br/>N1={{ s.n1 }} N2={{ s.n2 }} N3={{ s.n3 }}</td>
           <td>{{ s.history_years }} an(s)</td>
           <td>{% if s.active %}✅{% else %}—{% endif %}</td>

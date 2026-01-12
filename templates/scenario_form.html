@@ -9,18 +9,6 @@
     <a class="btn" href="{% url 'scenarios_page' %}">Annuler</a>
   </form>
 </div>
-<script>
-  (function(){
-    const cb = document.querySelector('input[name="is_default"]');
-    if(!cb) return;
-    cb.addEventListener('change', function(){
-      if(cb.checked){
-        const ok = confirm("Définir ce scénario comme scénario par défaut ? Cela désactivera le scénario par défaut précédent.");
-        if(!ok) cb.checked = false;
-      }
-    });
-  })();
-</script>
 <p class="muted">P = (a*F + b*H + c*L + d*O)/(a+b+c+d)</p>
 <p class="muted">Historique: l'app récupère environ <strong>260 * history_years</strong> jours de trading par ticker.</p>
 {% endblock %}

@@ -49,13 +49,9 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
         metric, _ = DailyMetric.objects.update_or_create(symbol=symbol, scenario=scenario, date=trading_date, defaults={"P": P, "M": M, "M1": M1, "X": X, "X1": X1})
         return metric, None
 
-    # Use smoothed extrema for channel computation
-    if e is None or D(e) == 0:
-        T = Q = S = None
-    else:
-        T = (M1 - X1) / e
-        Q = M1 - T
-        S = M1 + T
+    T = (M - X) / e
+    Q = M - T
+    S = M + T
 
     K1 = P - M1
     K2 = P - X1
