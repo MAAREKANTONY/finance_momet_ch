@@ -43,6 +43,7 @@
       </form>
       {% if bt.results %}
         <a class="btn" style="margin-left:8px;" href="{% url 'backtest_results' bt.id %}">Voir résultats</a>
+        <a class="btn" style="margin-left:8px;" href="{% url 'backtest_export_excel_compact' bt.id %}">Exporter Excel (compact Sheets)</a>
         <a class="btn" style="margin-left:8px;" href="{% url 'backtest_export_excel' bt.id %}">Exporter Excel</a>
       {% endif %}
       {% if bt.status == 'RUNNING' %}<span class="muted">En cours… rafraîchis la page dans quelques secondes.</span>{% endif %}

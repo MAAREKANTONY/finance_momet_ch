@@ -10,6 +10,7 @@
     <a class="btn" href="{% url 'backtest_detail' bt.id %}">← Retour</a>
     <a class="btn" href="{% url 'backtest_export_debug_csv' bt.id %}?ticker={{ ticker }}&line={{ line_index }}">Exporter CSV debug</a>
     <a class="btn" href="{% url 'backtest_export_excel' bt.id %}">Exporter Excel</a>
+    <a class="btn" href="{% url 'backtest_export_excel_compact' bt.id %}">Exporter Excel (compact Sheets)</a>
     {% if is_truncated %}
       <a class="btn" href="{% url 'backtest_results' bt.id %}?ticker={{ ticker }}&line={{ line_index }}&all=1">Afficher toutes les lignes</a>
     {% endif %}

@@ -1,4 +1,5 @@
 import csv
+import os
 from io import BytesIO
 from typing import Iterable
 from django.contrib import messages
@@ -1152,4 +1153,266 @@ def backtest_export_excel(request, pk: int):
         content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
     response["Content-Disposition"] = f'attachment; filename="backtest_{bt.id}_export.xlsx"'
+    return response
+
+
+@login_required
+def backtest_export_excel_compact(request, pk: int):
+    """Google Sheets-friendly compact export.
+
+    This export is designed for many tickers:
+    - Settings / Universe / Summary sheets
+    - A single "Daily" sheet containing all daily rows across (ticker, line)
+    - Charts are embedded as PNG images (Sheets displays images reliably)
+
+    Query params:
+      - charts=0|1  (default 1) include charts as images
+      - chart_ticker=MSFT (optional, default = first ticker)
+      - chart_line=1 (optional, default = 1)
+    """
+
+    bt = get_object_or_404(Backtest, pk=pk)
+    results = bt.results or {}
+    tickers_map = results.get("tickers") or {}
+    if not tickers_map:
+        messages.warning(request, "Aucun résultat à exporter (lance le backtest).")
+        return redirect("backtest_detail", pk=pk)
+
+    charts_enabled = request.GET.get("charts", "1") != "0"
+    chart_ticker = request.GET.get("chart_ticker")
+    try:
+        chart_line = int(request.GET.get("chart_line", "1"))
+    except Exception:
+        chart_line = 1
+
+    def _to_float(x):
+        if x is None or x == "":
+            return None
+        try:
+            return float(x)
+        except Exception:
+            try:
+                return float(str(x))
+            except Exception:
+                return None
+
+    def _pct(x):
+        """Stored as ratio (e.g. 0.0123) -> percent (1.23)."""
+        f = _to_float(x)
+        return None if f is None else f * 100.0
+
+    def _auto_width(ws, max_col=30):
+        for col in range(1, min(ws.max_column, max_col) + 1):
+            letter = get_column_letter(col)
+            max_len = 0
+            for cell in ws[letter]:
+                if cell.value is None:
+                    continue
+                max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[letter].width = min(max(10, max_len + 2), 45)
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    # -------- Settings --------
+    ws = wb.create_sheet("Settings")
+    ws.append(["Clé", "Valeur"])
+    ws["A1"].font = Font(bold=True)
+    ws["B1"].font = Font(bold=True)
+    meta = results.get("meta") or {}
+    rows = [
+        ("Backtest ID", bt.id),
+        ("Nom", bt.name),
+        ("Description", bt.description or ""),
+        ("Scénario", getattr(bt.scenario, "name", "") if bt.scenario_id else ""),
+        ("Période début", bt.start_date.isoformat() if bt.start_date else ""),
+        ("Période fin", bt.end_date.isoformat() if bt.end_date else ""),
+        ("CP (capital total)", bt.capital_total),
+        ("CT (capital par ticker)", bt.capital_per_ticker),
+        ("X (seuil ratio_p %)", bt.ratio_threshold),
+        ("Clôture fin backtest", "Oui" if bt.close_positions_at_end else "Non"),
+        ("Statut", bt.status),
+        ("global_cash_end", meta.get("global_cash_end", "")),
+        ("engine_version", meta.get("engine_version", "")),
+    ]
+    for k, v in rows:
+        ws.append([k, v])
+    _auto_width(ws)
+
+    # -------- Universe --------
+    ws_u = wb.create_sheet("Universe")
+    ws_u.append(["Ticker", "Exchange"])
+    ws_u["A1"].font = Font(bold=True)
+    ws_u["B1"].font = Font(bold=True)
+    uni = bt.universe_snapshot or []
+    if isinstance(uni, list):
+        for item in uni:
+            if isinstance(item, dict):
+                ws_u.append([item.get("ticker", ""), item.get("exchange", "")])
+            else:
+                ws_u.append([str(item), ""])
+    _auto_width(ws_u)
+
+    # -------- Summary --------
+    ws_s = wb.create_sheet("Summary")
+    ws_s.append([
+        "Ticker", "Line #", "BUY", "SELL", "Allocated",
+        "N", "S_G_N (%)", "BT (%)", "NB_JOUR_OUVRES", "BMJ (%)", "Cash end",
+    ])
+    ws_s.freeze_panes = "A2"
+    for cell in ws_s[1]:
+        cell.font = Font(bold=True)
+
+    # Also build a flat list of all daily rows for compact sheet
+    daily_rows = []
+
+    # Pick a default chart target
+    if not chart_ticker:
+        chart_ticker = next(iter(tickers_map.keys()))
+
+    for ticker, tentry in tickers_map.items():
+        strategies = (tentry or {}).get("strategies") or []
+        for sidx, strat in enumerate(strategies, start=1):
+            fin = strat.get("final") or {}
+            ws_s.append([
+                ticker,
+                sidx,
+                strat.get("buy"),
+                strat.get("sell"),
+                "Oui" if strat.get("allocated") else "Non",
+                fin.get("N"),
+                _pct(fin.get("S_G_N")),
+                _pct(fin.get("BT")),
+                fin.get("NB_JOUR_OUVRES"),
+                _pct(fin.get("BMJ")),
+                _to_float(fin.get("cash_ticker_end")),
+            ])
+
+            daily = strat.get("daily") or []
+            for r in daily:
+                daily_rows.append({
+                    "date": r.get("date"),
+                    "ticker": ticker,
+                    "line": sidx,
+                    "buy": strat.get("buy"),
+                    "sell": strat.get("sell"),
+                    "close": _to_float(r.get("price_close")),
+                    "ratio_p_pct": _to_float(r.get("ratio_P_pct")),
+                    "tradable": bool(r.get("tradable")),
+                    "alerts": ",".join(r.get("alerts") or []),
+                    "action": r.get("action") or "",
+                    "G_pct": _pct(r.get("action_G")),
+                    "N": r.get("N"),
+                    "S_G_N_pct": _pct(r.get("S_G_N")),
+                    "BT_pct": _pct(r.get("BT")),
+                    "NB_JOUR_OUVRES": r.get("NB_JOUR_OUVRES"),
+                    "BMJ_pct": _pct(r.get("BMJ")),
+                    "cash": _to_float(r.get("cash_ticker")),
+                    "shares": r.get("shares"),
+                })
+
+    _auto_width(ws_s)
+
+    # -------- Daily (compact) --------
+    ws_d = wb.create_sheet("Daily")
+    header = [
+        "Date", "Ticker", "Line #", "BUY", "SELL",
+        "Close", "Ratio_p (%)", "Tradable", "Alerts", "Action",
+        "G (%)", "N", "S_G_N (%)", "BT (%)",
+        "NB_JOUR_OUVRES", "BMJ (%)", "Cash", "Shares",
+    ]
+    ws_d.append(header)
+    ws_d.freeze_panes = "A2"
+    for cell in ws_d[1]:
+        cell.font = Font(bold=True)
+
+    # stable ordering
+    daily_rows.sort(key=lambda x: (x.get("date") or "", x.get("ticker") or "", x.get("line") or 0))
+    for r in daily_rows:
+        ws_d.append([
+            r["date"], r["ticker"], r["line"], r["buy"], r["sell"],
+            r["close"], r["ratio_p_pct"], "Oui" if r["tradable"] else "Non",
+            r["alerts"], r["action"], r["G_pct"], r["N"], r["S_G_N_pct"], r["BT_pct"],
+            r["NB_JOUR_OUVRES"], r["BMJ_pct"], r["cash"], r["shares"],
+        ])
+    _auto_width(ws_d, max_col=18)
+
+    # -------- Charts (PNG for Sheets) --------
+    if charts_enabled:
+        ws_c = wb.create_sheet("Charts")
+        ws_c.append(["Charts (images) – affichage compatible Google Sheets"])  # simple title
+        ws_c["A1"].font = Font(bold=True)
+
+        # Build chart series for selected ticker/line
+        # Default: first available if not found
+        selected = None
+        for t, tentry in tickers_map.items():
+            if t != chart_ticker:
+                continue
+            strategies = (tentry or {}).get("strategies") or []
+            if 1 <= chart_line <= len(strategies):
+                selected = (t, chart_line, strategies[chart_line - 1])
+            break
+        if selected is None:
+            # fallback: first ticker/first strategy
+            t = next(iter(tickers_map.keys()))
+            strategies = (tickers_map[t] or {}).get("strategies") or []
+            if strategies:
+                selected = (t, 1, strategies[0])
+
+        if selected is not None:
+            t, ln, strat = selected
+            daily = strat.get("daily") or []
+            x = [r.get("date") for r in daily]
+            y_sgn = [_pct(r.get("S_G_N")) for r in daily]
+            y_bt = [_pct(r.get("BT")) for r in daily]
+            y_bmj = [_pct(r.get("BMJ")) for r in daily]
+
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+                from openpyxl.drawing.image import Image as XLImage
+                import tempfile
+
+                def _plot_series(title, y, filename):
+                    plt.figure()
+                    plt.plot(x, y)
+                    plt.title(title)
+                    plt.xlabel("Date")
+                    plt.ylabel("%")
+                    plt.xticks(rotation=45, ha="right")
+                    plt.tight_layout()
+                    plt.savefig(filename, format="png", dpi=140)
+                    plt.close()
+
+                with tempfile.TemporaryDirectory() as td:
+                    f1 = os.path.join(td, "sgn.png")
+                    f2 = os.path.join(td, "bt.png")
+                    f3 = os.path.join(td, "bmj.png")
+                    _plot_series(f"{t} L{ln} – S_G_N (%)", y_sgn, f1)
+                    _plot_series(f"{t} L{ln} – BT (%)", y_bt, f2)
+                    _plot_series(f"{t} L{ln} – BMJ (%)", y_bmj, f3)
+
+                    img1 = XLImage(f1)
+                    img2 = XLImage(f2)
+                    img3 = XLImage(f3)
+                    # positions
+                    ws_c.add_image(img1, "A3")
+                    ws_c.add_image(img2, "A25")
+                    ws_c.add_image(img3, "A47")
+
+            except Exception:
+                # If matplotlib isn't available or something fails, keep workbook without charts.
+                ws_c.append(["(Charts indisponibles dans cet environnement)"])
+
+    # Return file
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    response = HttpResponse(
+        bio.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="backtest_{bt.id}_export_compact.xlsx"'
     return response
