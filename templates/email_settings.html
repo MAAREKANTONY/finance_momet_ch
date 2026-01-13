@@ -29,6 +29,10 @@
         {% csrf_token %}
         <button class="btn" type="submit">Recompute complet</button>
       </form>
+      <form method="post" action="{% url 'fetch_bars_now' %}">
+        {% csrf_token %}
+        <button class="btn" type="submit">Collecter les données</button>
+      </form>
       <form method="post" action="{% url 'send_mail_now' %}">
         {% csrf_token %}
         <button class="btn" type="submit">Envoyer l’email maintenant</button>

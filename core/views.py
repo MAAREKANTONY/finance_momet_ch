@@ -1,5 +1,6 @@
 import csv
 from io import BytesIO
+from typing import Iterable
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import JsonResponse, HttpResponse
@@ -7,14 +8,20 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.db.models import Max
 from django.views.decorators.http import require_POST
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
 import zipfile as pyzip
 
 from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog
-from .forms import ScenarioForm, EmailRecipientForm, SymbolManualForm, EmailSettingsForm
+from .forms import ScenarioForm, EmailRecipientForm, SymbolManualForm, EmailSettingsForm, SymbolScenariosForm, SymbolImportForm
 from .services.provider_twelvedata import TwelveDataClient
+
+try:
+    # Celery is optional in dev; we keep the import defensive so the web container can boot.
+    from .tasks import fetch_daily_bars_task
+except Exception:  # pragma: no cover
+    fetch_daily_bars_task = None
 
 
 @login_required
@@ -386,6 +393,178 @@ def symbol_delete(request, pk: int):
 
 
 @login_required
+def symbol_scenarios_edit(request, pk: int):
+    """Manage scenario links from the ticker side."""
+
+    symbol = get_object_or_404(Symbol, pk=pk)
+    default_scenario = Scenario.objects.filter(is_default=True, active=True).first()
+
+    if request.method == "POST":
+        form = SymbolScenariosForm(request.POST)
+        if form.is_valid():
+            selected = list(form.cleaned_data["scenarios"])
+            # Always keep default scenario linked if it exists
+            if default_scenario and default_scenario not in selected:
+                selected.append(default_scenario)
+            symbol.scenarios.set(selected)
+            messages.success(request, "Scénarios mis à jour.")
+            JobLog.objects.create(job="symbol_scenarios", level="INFO", message=f"Updated scenarios for {symbol}")
+            return redirect("symbols_page")
+        messages.error(request, "Formulaire invalide.")
+    else:
+        initial = symbol.scenarios.filter(active=True)
+        form = SymbolScenariosForm(initial={"scenarios": initial})
+
+    return render(
+        request,
+        "symbol_scenarios.html",
+        {"symbol": symbol, "form": form, "default_scenario": default_scenario},
+    )
+
+
+def _iter_symbol_rows_from_csv(file_obj) -> Iterable[dict]:
+    """Yield dict rows from a CSV (auto-detect delimiter)."""
+
+    content = file_obj.read()
+    if isinstance(content, bytes):
+        # try utf-8 first, fallback to latin-1
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+    else:
+        text = str(content)
+
+    sample = text[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except Exception:
+        dialect = csv.excel
+    reader = csv.DictReader(text.splitlines(), dialect=dialect)
+    for row in reader:
+        yield {k.strip() if isinstance(k, str) else k: (v.strip() if isinstance(v, str) else v) for k, v in row.items()}
+
+
+def _iter_symbol_rows_from_xlsx(file_obj) -> Iterable[dict]:
+    wb = load_workbook(filename=file_obj, read_only=True, data_only=True)
+    ws = wb.active
+    rows = ws.iter_rows(values_only=True)
+    headers = next(rows, None)
+    if not headers:
+        return
+    headers = [str(h).strip() if h is not None else "" for h in headers]
+    for values in rows:
+        d = {}
+        for i, h in enumerate(headers):
+            if not h:
+                continue
+            v = values[i] if i < len(values) else None
+            if isinstance(v, str):
+                v = v.strip()
+            d[h] = v
+        yield d
+
+
+@login_required
+def symbols_import(request):
+    """Bulk import tickers from CSV/XLSX.
+
+    Expected columns (case-insensitive):
+      - ticker code (MSFT)
+      - ticker market (NASDAQ)
+      - scenario list (scenario1, scenario2)
+    """
+
+    if request.method == "POST":
+        form = SymbolImportForm(request.POST, request.FILES)
+        if form.is_valid():
+            f = form.cleaned_data["file"]
+            filename = (getattr(f, "name", "") or "").lower()
+            default_scenario = Scenario.objects.filter(is_default=True, active=True).first()
+
+            created = updated = skipped = 0
+            missing_scenarios = 0
+            errors: list[str] = []
+
+            try:
+                if filename.endswith(".xlsx") or filename.endswith(".xlsm") or filename.endswith(".xltx"):
+                    row_iter = _iter_symbol_rows_from_xlsx(f)
+                else:
+                    row_iter = _iter_symbol_rows_from_csv(f)
+            except Exception as e:
+                messages.error(request, f"Impossible de lire le fichier: {e}")
+                JobLog.objects.create(job="import_symbols", level="ERROR", message="Import failed", traceback=str(e))
+                return redirect("symbols_page")
+
+            def _get(row: dict, *keys: str) -> str:
+                for k in keys:
+                    for rk, rv in row.items():
+                        if str(rk).strip().lower() == k:
+                            return "" if rv is None else str(rv).strip()
+                return ""
+
+            for idx, row in enumerate(row_iter, start=2):
+                ticker = _get(row, "ticker code", "ticker", "code", "ticker_code")
+                market = _get(row, "ticker market", "market", "exchange", "ticker_market")
+                scen_list = _get(row, "scenario list", "scenarios", "scenario", "scenario_list")
+
+                if not ticker:
+                    skipped += 1
+                    continue
+
+                try:
+                    sym, was_created = Symbol.objects.get_or_create(
+                        ticker=ticker,
+                        exchange=market,
+                        defaults={"active": True},
+                    )
+                    if was_created:
+                        created += 1
+                    else:
+                        updated += 1
+                        if not sym.active:
+                            sym.active = True
+                            sym.save(update_fields=["active"])
+
+                    selected_scenarios: list[Scenario] = []
+                    if default_scenario:
+                        selected_scenarios.append(default_scenario)
+
+                    if scen_list:
+                        for name in [s.strip() for s in scen_list.split(",") if s.strip()]:
+                            scen = Scenario.objects.filter(name__iexact=name).first()
+                            if scen and scen.active:
+                                if scen not in selected_scenarios:
+                                    selected_scenarios.append(scen)
+                            else:
+                                missing_scenarios += 1
+
+                    if selected_scenarios:
+                        sym.scenarios.add(*selected_scenarios)
+                except Exception as e:
+                    skipped += 1
+                    msg = f"Ligne {idx}: erreur pour ticker={ticker} market={market}: {e}"
+                    errors.append(msg)
+
+            summary = (
+                f"Import tickers terminé. created={created}, updated={updated}, skipped={skipped}, "
+                f"scenario_not_found={missing_scenarios}."
+            )
+            details = "\n".join(errors[:80])
+            JobLog.objects.create(
+                job="import_symbols",
+                level="ERROR" if errors else "INFO",
+                message=summary + ("\n" + details if details else ""),
+            )
+            messages.success(request, summary)
+            return redirect("symbols_page")
+    else:
+        form = SymbolImportForm()
+
+    return render(request, "symbols_import.html", {"form": form})
+
+
+@login_required
 def scenarios_page(request):
     scenarios = Scenario.objects.all().order_by("-active", "name")
     return render(request, "scenarios.html", {"scenarios": scenarios})
@@ -464,6 +643,20 @@ def email_settings_page(request):
     )
 
 
+@login_required
+@require_POST
+def fetch_bars_now(request):
+    """Manual trigger for fetching daily bars (market data)."""
+    try:
+        fetch_daily_bars_task.delay()
+        JobLog.objects.create(level="INFO", job="fetch_bars_now", message="Fetch des daily bars demandé (Celery).")
+        messages.success(request, "Collecte demandée (en background via Celery).")
+    except Exception as e:
+        JobLog.objects.create(level="ERROR", job="fetch_bars_now", message=str(e))
+        messages.error(request, f"Erreur collecte: {e}")
+    return redirect("email_settings")
+
+
 
 
 @login_required
@@ -492,6 +685,20 @@ def run_recompute_all_now(request):
         messages.success(request, "Recompute complet lancé (tous scénarios, via Celery).")
     except Exception as e:
         messages.error(request, f"Erreur recompute complet: {e}")
+    return redirect("email_settings")
+
+
+@login_required
+@require_POST
+def fetch_bars_now(request):
+    """Fetch daily bars immediately (useful for manual refresh)."""
+    try:
+        fetch_daily_bars_task.delay()
+        JobLog.objects.create(level="INFO", job="fetch_bars", message="Fetch daily bars demandé (Celery).")
+        messages.success(request, "Collecte demandée (en background via Celery).")
+    except Exception as e:
+        JobLog.objects.create(level="ERROR", job="fetch_bars", message="Erreur lancement fetch", traceback=str(e))
+        messages.error(request, f"Erreur lancement collecte: {e}")
     return redirect("email_settings")
 
 

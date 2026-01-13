@@ -2,6 +2,10 @@
 {% block content %}
 <h2>Tickers (watchlist)</h2>
 
+<div class="row" style="gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
+  <a class="btn" href="{% url 'symbols_import' %}">Importer tickers (CSV/Excel)</a>
+</div>
+
 <div class="grid2">
   <div class="card">
     <h3>Ajouter via recherche (API)</h3>
@@ -45,6 +49,7 @@
           <td>{{ s.instrument_type }}</td>
           <td>{% if s.active %}✅{% else %}—{% endif %}</td>
           <td>
+            <a href="{% url 'symbol_scenarios_edit' s.id %}">Scénarios</a>&nbsp;|&nbsp;
             <form method="post" action="{% url 'symbol_toggle' s.id %}" style="display:inline;">
               {% csrf_token %}
               <button class="btn" type="submit">{% if s.active %}Désactiver{% else %}Activer{% endif %}</button>

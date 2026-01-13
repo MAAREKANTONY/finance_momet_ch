@@ -73,3 +73,20 @@ class EmailSettingsForm(forms.ModelForm):
             "send_hour": forms.NumberInput(attrs={"min": 0, "max": 23}),
             "send_minute": forms.NumberInput(attrs={"min": 0, "max": 59}),
         }
+
+
+class SymbolScenariosForm(forms.Form):
+    """Assign one or many scenarios to an existing ticker."""
+
+    scenarios = forms.ModelMultipleChoiceField(
+        queryset=Scenario.objects.filter(active=True),
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        label="Scénarios",
+    )
+
+
+class SymbolImportForm(forms.Form):
+    """Import tickers from CSV/XLSX."""
+
+    file = forms.FileField(label="Fichier (CSV ou Excel .xlsx)")
