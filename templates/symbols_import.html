@@ -8,6 +8,18 @@
     <strong>Ticker code</strong> (ex: MSFT) — <strong>Ticker market</strong> (ex: NASDAQ) — <strong>Scenario list</strong> (ex: scenario1, scenario2)
   </p>
 
+  <details style="margin-top:10px;">
+    <summary><strong>Exemple CSV</strong> (copie/colle dans un fichier .csv)</summary>
+    <pre style="background:#f6f6f6;padding:10px;overflow:auto;">
+Ticker code,Ticker market,Scenario list
+MSFT,NASDAQ,test 1
+GOOG,NASDAQ,test 1
+AAPL,NASDAQ,
+</pre>
+    <p class="muted">Astuce: le fichier peut aussi être <strong>sans en-têtes</strong> (colonnes: ticker, exchange, scenarios).</p>
+  </details>
+
+
   <form method="post" enctype="multipart/form-data">
     {% csrf_token %}
     {{ form.as_p }}

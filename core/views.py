@@ -426,7 +426,67 @@ def symbol_scenarios_edit(request, pk: int):
 
 
 def _iter_symbol_rows_from_csv(file_obj) -> Iterable[dict]:
-    """Yield dict rows from a CSV (auto-detect delimiter)."""
+    """Yield dict rows from a CSV.
+
+    Supports:
+      - header-based CSV (DictReader)
+      - headerless CSV with columns: ticker, exchange, scenarios
+    """
+
+    content = file_obj.read()
+    if isinstance(content, bytes):
+        # try utf-8 first, fallback to latin-1
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            text = content.decode("latin-1")
+    else:
+        text = str(content)
+
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    if not lines:
+        return
+
+    sample = "\n".join(lines[:50])[:4096]
+    try:
+        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t|")
+    except Exception:
+        dialect = csv.excel
+
+    # First pass: read first row to decide if it looks like headers
+    reader0 = csv.reader(lines, dialect=dialect)
+    first_row = next(reader0, [])
+    norm = [str(c).strip().lower() for c in first_row]
+
+    header_keywords = {
+        "ticker", "code", "ticker code", "ticker_code",
+        "exchange", "market", "ticker market", "ticker_market",
+        "scenario", "scenarios", "scenario list", "scenario_list",
+    }
+    looks_like_header = any(any(k in cell for k in header_keywords) for cell in norm)
+
+    if looks_like_header:
+        reader = csv.DictReader(lines, dialect=dialect)
+        for row in reader:
+            yield {
+                (k.strip() if isinstance(k, str) else k): (v.strip() if isinstance(v, str) else v)
+                for k, v in (row or {}).items()
+            }
+    else:
+        # headerless mode: map columns by position
+        # col0=ticker, col1=exchange, col2=scenarios
+        reader = csv.reader(lines, dialect=dialect)
+        for values in reader:
+            if not values:
+                continue
+            d = {}
+            if len(values) >= 1:
+                d["ticker"] = str(values[0]).strip()
+            if len(values) >= 2:
+                d["exchange"] = str(values[1]).strip()
+            if len(values) >= 3:
+                d["scenario list"] = str(values[2]).strip()
+            yield d
 
     content = file_obj.read()
     if isinstance(content, bytes):
@@ -449,24 +509,54 @@ def _iter_symbol_rows_from_csv(file_obj) -> Iterable[dict]:
 
 
 def _iter_symbol_rows_from_xlsx(file_obj) -> Iterable[dict]:
+    """Yield dict rows from an Excel file.
+
+    Supports:
+      - header row
+      - headerless (assumes first columns: ticker, exchange, scenarios)
+    """
     wb = load_workbook(filename=file_obj, read_only=True, data_only=True)
     ws = wb.active
     rows = ws.iter_rows(values_only=True)
-    headers = next(rows, None)
-    if not headers:
-        return
-    headers = [str(h).strip() if h is not None else "" for h in headers]
-    for values in rows:
-        d = {}
-        for i, h in enumerate(headers):
-            if not h:
-                continue
-            v = values[i] if i < len(values) else None
-            if isinstance(v, str):
-                v = v.strip()
-            d[h] = v
-        yield d
 
+    first = next(rows, None)
+    if not first:
+        return
+
+    first_norm = [str(h).strip().lower() if h is not None else "" for h in first]
+    header_keywords = (
+        "ticker", "code", "exchange", "market", "scenario"
+    )
+    looks_like_header = any(any(k in cell for k in header_keywords) for cell in first_norm)
+
+    if looks_like_header:
+        headers = [str(h).strip() if h is not None else "" for h in first]
+        for values in rows:
+            d = {}
+            for i, h in enumerate(headers):
+                if not h:
+                    continue
+                v = values[i] if i < len(values) else None
+                if isinstance(v, str):
+                    v = v.strip()
+                d[h] = v
+            yield d
+    else:
+        # headerless: first row is data
+        def emit(values):
+            d = {}
+            if len(values) >= 1 and values[0] is not None:
+                d["ticker"] = str(values[0]).strip()
+            if len(values) >= 2 and values[1] is not None:
+                d["exchange"] = str(values[1]).strip()
+            if len(values) >= 3 and values[2] is not None:
+                d["scenario list"] = str(values[2]).strip()
+            return d
+
+        yield emit(first)
+        for values in rows:
+            if values:
+                yield emit(values)
 
 @login_required
 def symbols_import(request):
@@ -1167,8 +1257,13 @@ def backtest_export_excel_compact(request, pk: int):
 
     Query params:
       - charts=0|1  (default 1) include charts as images
-      - chart_ticker=MSFT (optional, default = first ticker)
-      - chart_line=1 (optional, default = 1)
+      - chart_mode=top|all|first
+          * top   : (default) génère des charts pour les meilleurs couples (ticker, ligne) selon BT final
+          * all   : génère des charts pour tous les couples (ticker, ligne), avec limite de sécurité
+          * first : un seul couple (ticker, ligne) (comportement historique)
+      - chart_limit=6 (optionnel, défaut 6) nombre max de graphiques à insérer dans l'onglet Charts
+      - chart_ticker=MSFT (optionnel, utilisé uniquement si chart_mode=first)
+      - chart_line=1 (optionnel, utilisé uniquement si chart_mode=first)
     """
 
     bt = get_object_or_404(Backtest, pk=pk)
@@ -1179,6 +1274,12 @@ def backtest_export_excel_compact(request, pk: int):
         return redirect("backtest_detail", pk=pk)
 
     charts_enabled = request.GET.get("charts", "1") != "0"
+    chart_mode = (request.GET.get("chart_mode") or "top").lower().strip()
+    try:
+        chart_limit = int(request.GET.get("chart_limit", "6"))
+    except Exception:
+        chart_limit = 6
+
     chart_ticker = request.GET.get("chart_ticker")
     try:
         chart_line = int(request.GET.get("chart_line", "1"))
@@ -1271,8 +1372,9 @@ def backtest_export_excel_compact(request, pk: int):
         chart_ticker = next(iter(tickers_map.keys()))
 
     for ticker, tentry in tickers_map.items():
-        strategies = (tentry or {}).get("strategies") or []
-        for sidx, strat in enumerate(strategies, start=1):
+        lines = (tentry or {}).get("lines") or []
+        for strat in lines:
+            sidx = int(strat.get("line_index", 0) or 0) or 1
             fin = strat.get("final") or {}
             ws_s.append([
                 ticker,
@@ -1342,69 +1444,119 @@ def backtest_export_excel_compact(request, pk: int):
         ws_c = wb.create_sheet("Charts")
         ws_c.append(["Charts (images) – affichage compatible Google Sheets"])  # simple title
         ws_c["A1"].font = Font(bold=True)
+        ws_c.append([
+            "Note: pour rester léger, l’export compact limite le nombre de graphiques (chart_limit). "
+            "Utilise ?chart_mode=all&chart_limit=XX si besoin."
+        ])
 
-        # Build chart series for selected ticker/line
-        # Default: first available if not found
-        selected = None
+        # Build list of (ticker, line_index, strat) candidates
+        candidates = []
         for t, tentry in tickers_map.items():
-            if t != chart_ticker:
-                continue
-            strategies = (tentry or {}).get("strategies") or []
-            if 1 <= chart_line <= len(strategies):
-                selected = (t, chart_line, strategies[chart_line - 1])
-            break
-        if selected is None:
-            # fallback: first ticker/first strategy
-            t = next(iter(tickers_map.keys()))
-            strategies = (tickers_map[t] or {}).get("strategies") or []
-            if strategies:
-                selected = (t, 1, strategies[0])
+            lines = (tentry or {}).get("lines") or []
+            for strat in lines:
+                ln = int(strat.get("line_index", 0) or 0) or 1
+                fin = strat.get("final") or {}
+                bt_final = _to_float(fin.get("BT"))
+                candidates.append((t, ln, strat, bt_final if bt_final is not None else -10**9))
 
-        if selected is not None:
-            t, ln, strat = selected
-            daily = strat.get("daily") or []
-            x = [r.get("date") for r in daily]
-            y_sgn = [_pct(r.get("S_G_N")) for r in daily]
-            y_bt = [_pct(r.get("BT")) for r in daily]
-            y_bmj = [_pct(r.get("BMJ")) for r in daily]
+        # Decide which ones to chart
+        selected = []
+        if chart_mode == "first":
+            # Use explicit ticker/line if possible, else fallback to first
+            chosen = None
+            if chart_ticker:
+                for t, ln, strat, _score in candidates:
+                    if t == chart_ticker and ln == chart_line:
+                        chosen = (t, ln, strat)
+                        break
+            if chosen is None and candidates:
+                t, ln, strat, _score = candidates[0]
+                chosen = (t, ln, strat)
+            if chosen is not None:
+                selected = [chosen]
+        else:
+            # top or all
+            candidates_sorted = sorted(candidates, key=lambda x: x[3], reverse=True)
+            if chart_mode == "all":
+                selected = [(t, ln, strat) for (t, ln, strat, _score) in candidates_sorted[: max(1, chart_limit)]]
+                if len(candidates_sorted) > chart_limit:
+                    ws_c.append([f"(Charts tronqués: {chart_limit} / {len(candidates_sorted)} couples (ticker, ligne).)"])
+            else:
+                # default: top
+                selected = [(t, ln, strat) for (t, ln, strat, _score) in candidates_sorted[: max(1, chart_limit)]]
 
-            try:
-                import matplotlib
-                matplotlib.use("Agg")
-                import matplotlib.pyplot as plt
-                from openpyxl.drawing.image import Image as XLImage
-                import tempfile
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+            import matplotlib.dates as mdates
+            from datetime import datetime
+            from openpyxl.drawing.image import Image as XLImage
+            from io import BytesIO
 
-                def _plot_series(title, y, filename):
-                    plt.figure()
-                    plt.plot(x, y)
-                    plt.title(title)
-                    plt.xlabel("Date")
-                    plt.ylabel("%")
-                    plt.xticks(rotation=45, ha="right")
-                    plt.tight_layout()
-                    plt.savefig(filename, format="png", dpi=140)
-                    plt.close()
+            def _parse_dates(date_strs):
+                out = []
+                for ds in date_strs:
+                    if not ds:
+                        out.append(None)
+                        continue
+                    try:
+                        # expected ISO date
+                        out.append(datetime.strptime(ds, "%Y-%m-%d"))
+                    except Exception:
+                        out.append(None)
+                return out
 
-                with tempfile.TemporaryDirectory() as td:
-                    f1 = os.path.join(td, "sgn.png")
-                    f2 = os.path.join(td, "bt.png")
-                    f3 = os.path.join(td, "bmj.png")
-                    _plot_series(f"{t} L{ln} – S_G_N (%)", y_sgn, f1)
-                    _plot_series(f"{t} L{ln} – BT (%)", y_bt, f2)
-                    _plot_series(f"{t} L{ln} – BMJ (%)", y_bmj, f3)
+            def _format_date_axis(ax):
+                locator = mdates.AutoDateLocator(minticks=3, maxticks=9)
+                ax.xaxis.set_major_locator(locator)
+                ax.xaxis.set_major_formatter(mdates.ConciseDateFormatter(locator))
+                for label in ax.get_xticklabels():
+                    label.set_rotation(0)
+                    label.set_fontsize(8)
 
-                    img1 = XLImage(f1)
-                    img2 = XLImage(f2)
-                    img3 = XLImage(f3)
-                    # positions
-                    ws_c.add_image(img1, "A3")
-                    ws_c.add_image(img2, "A25")
-                    ws_c.add_image(img3, "A47")
+            def _plot_combo_bytes(ticker, ln, x_dates, y_sgn, y_bt, y_bmj):
+                """One image per (ticker,line) with 3 stacked subcharts."""
+                buf = BytesIO()
+                fig, axes = plt.subplots(3, 1, figsize=(10.5, 7.2), sharex=True)
 
-            except Exception:
-                # If matplotlib isn't available or something fails, keep workbook without charts.
-                ws_c.append(["(Charts indisponibles dans cet environnement)"])
+                axes[0].plot(x_dates, y_sgn)
+                axes[0].set_title(f"{ticker} L{ln} – S_G_N (%)")
+                axes[0].set_ylabel("%")
+
+                axes[1].plot(x_dates, y_bt)
+                axes[1].set_title(f"{ticker} L{ln} – BT (%)")
+                axes[1].set_ylabel("%")
+
+                axes[2].plot(x_dates, y_bmj)
+                axes[2].set_title(f"{ticker} L{ln} – BMJ (%)")
+                axes[2].set_ylabel("%")
+                axes[2].set_xlabel("Date")
+                _format_date_axis(axes[2])
+
+                fig.tight_layout()
+                fig.savefig(buf, format="png", dpi=140)
+                plt.close(fig)
+                buf.seek(0)
+                return buf
+
+            # Insert images stacked vertically
+            anchor_row = 4
+            for (t, ln, strat) in selected:
+                daily = strat.get("daily") or []
+                x_raw = [r.get("date") for r in daily]
+                x_dates = _parse_dates(x_raw)
+                y_sgn = [_pct(r.get("S_G_N")) for r in daily]
+                y_bt = [_pct(r.get("BT")) for r in daily]
+                y_bmj = [_pct(r.get("BMJ")) for r in daily]
+
+                img = XLImage(_plot_combo_bytes(t, ln, x_dates, y_sgn, y_bt, y_bmj))
+                ws_c.add_image(img, f"A{anchor_row}")
+                anchor_row += 32  # spacing between blocks
+
+        except Exception:
+            # If matplotlib isn't available or something fails, keep workbook without charts.
+            ws_c.append(["(Charts indisponibles dans cet environnement)"])
 
     # Return file
     bio = BytesIO()
