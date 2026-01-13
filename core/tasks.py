@@ -9,6 +9,9 @@ from datetime import timedelta
 from django.db.models import Max
 
 from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings
+from .models import Backtest
+from .services.backtesting.prep import prepare_backtest_data
+from .services.backtesting.engine import run_backtest as engine_run_backtest
 from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
 
@@ -226,3 +229,33 @@ def check_and_send_scheduled_alerts_task():
         return "scheduled_sent"
 
     return "not_due"
+
+@shared_task
+def run_backtest_task(backtest_id: int):
+    """Run a backtest end-to-end (Feature 3).
+
+    Steps:
+    1) Mark Backtest as RUNNING
+    2) Ensure prerequisite data exists (fetch bars / compute metrics) if missing
+    3) Run the backtest engine (minimal implementation)
+    4) Persist results JSON and mark DONE (or FAILED)
+    """
+    bt = Backtest.objects.filter(id=backtest_id).first()
+    if not bt:
+        return f"backtest {backtest_id} not found"
+
+    Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.RUNNING, error_message="")
+    try:
+        prep_report = prepare_backtest_data(bt)
+        engine_result = engine_run_backtest(bt)
+        results = engine_result.results
+        results["prep"] = {
+            "did_fetch_bars": prep_report.did_fetch_bars,
+            "did_compute_metrics": prep_report.did_compute_metrics,
+            "notes": prep_report.notes,
+        }
+        Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.DONE, results=results, error_message="")
+        return "ok"
+    except Exception as e:
+        Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.FAILED, error_message=str(e))
+        raise

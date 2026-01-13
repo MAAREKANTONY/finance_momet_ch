@@ -3,6 +3,7 @@ from __future__ import annotations
 from django.core.validators import MinValueValidator
 from django.db import models, transaction
 from django.db.models import Q
+from django.conf import settings as django_settings
 
 
 class Symbol(models.Model):
@@ -97,6 +98,84 @@ class SymbolScenario(models.Model):
 
     def __str__(self) -> str:
         return f"{self.symbol} ↔ {self.scenario}"
+
+
+
+
+class Backtest(models.Model):
+    """A saved backtest configuration and (optionally) its computed results.
+
+    Feature 1 scope:
+    - Store settings (scenario, dates, capital params, threshold, selected signal lines)
+    - Store an immutable snapshot of the tickers universe at creation time
+    - Store run status and opaque JSON results (engine will populate later)
+    """
+
+    class Status(models.TextChoices):
+        PENDING = "PENDING", "Pending"
+        RUNNING = "RUNNING", "Running"
+        DONE = "DONE", "Done"
+        FAILED = "FAILED", "Failed"
+
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+
+    scenario = models.ForeignKey(
+        "Scenario",
+        on_delete=models.PROTECT,
+        related_name="backtests",
+    )
+
+    start_date = models.DateField(null=True, blank=True)
+    end_date = models.DateField(null=True, blank=True)
+
+    # CP: total capital. 0 means infinite (no global constraint).
+    capital_total = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+
+    # CT: capital allocated per ticker / per position (first activation).
+    capital_per_ticker = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+
+    # X: ratio_p threshold expressed in percent (e.g. 5.00 means 5%).
+    ratio_threshold = models.DecimalField(max_digits=6, decimal_places=2, default=0)
+
+    # Selected lines/rules for (buy_signal, sell_signal).
+    # Stored as a list of objects, e.g. [{"buy":"A1","sell":"B1"}, ...]
+    signal_lines = models.JSONField(default=list, blank=True)
+
+    # Default behaviour chosen: close open positions on the last available day.
+    close_positions_at_end = models.BooleanField(default=True)
+
+    # Extensibility bucket (data source, slippage, fees, etc.)
+    settings = models.JSONField(default=dict, blank=True)
+
+    # Snapshot of the tickers at creation time (to keep runs reproducible even if scenario changes).
+    universe_snapshot = models.JSONField(default=list, blank=True)
+
+    # Opaque results bucket (engine will populate later).
+    results = models.JSONField(default=dict, blank=True)
+
+    status = models.CharField(max_length=10, choices=Status.choices, default=Status.PENDING)
+    error_message = models.TextField(blank=True, default="")
+
+    created_by = models.ForeignKey(
+        django_settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="backtests",
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["scenario", "created_at"]),
+            models.Index(fields=["status", "created_at"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.name} ({self.scenario.name})"
 
 
 class DailyBar(models.Model):

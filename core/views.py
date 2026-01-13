@@ -12,9 +12,10 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
 import zipfile as pyzip
+import json
 
-from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog
-from .forms import ScenarioForm, EmailRecipientForm, SymbolManualForm, EmailSettingsForm, SymbolScenariosForm, SymbolImportForm
+from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog, Backtest
+from .forms import ScenarioForm, EmailRecipientForm, SymbolManualForm, EmailSettingsForm, SymbolScenariosForm, SymbolImportForm, BacktestForm, BACKTEST_SIGNAL_CHOICES
 from .services.provider_twelvedata import TwelveDataClient
 
 try:
@@ -772,3 +773,66 @@ def logs_page(request):
     paginator = Paginator(qs, 50)
     page = paginator.get_page(request.GET.get("page"))
     return render(request, "logs.html", {"page": page, "level": level, "job": job})
+
+
+
+@login_required
+def backtests_page(request):
+    """Archive page: list saved backtests with a simple search."""
+    qs = Backtest.objects.select_related("scenario").all()
+    q = (request.GET.get("q") or "").strip()
+    scenario_id = (request.GET.get("scenario") or "").strip()
+
+    if q:
+        qs = qs.filter(Q(name__icontains=q) | Q(description__icontains=q))
+    if scenario_id:
+        qs = qs.filter(scenario_id=scenario_id)
+
+    scenarios = Scenario.objects.all().order_by("name")
+    return render(
+        request,
+        "backtests_list.html",
+        {"backtests": qs[:200], "q": q, "scenarios": scenarios, "scenario_id": scenario_id},
+    )
+
+
+@login_required
+def backtest_create(request):
+    """Create a Backtest configuration (no computation in Feature 1)."""
+    if request.method == "POST":
+        form = BacktestForm(request.POST)
+        if form.is_valid():
+            bt = form.save(commit=False)
+            bt.created_by = request.user if request.user.is_authenticated else None
+            # Snapshot current scenario universe for reproducibility
+            symbols = (
+                bt.scenario.symbols.all()
+                .order_by("ticker", "exchange")
+                .values_list("ticker", "exchange")
+            )
+            bt.universe_snapshot = [{"ticker": t, "exchange": e} for t, e in symbols]
+            bt.save()
+            messages.success(request, "Backtest enregistré (configuration).")
+            return redirect("backtest_detail", pk=bt.pk)
+    else:
+        form = BacktestForm()
+    return render(request, "backtest_create.html", {"form": form, "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES)})
+
+
+@login_required
+def backtest_detail(request, pk: int):
+    bt = get_object_or_404(Backtest.objects.select_related("scenario"), pk=pk)
+    return render(request, "backtest_detail.html", {"bt": bt})
+
+
+@login_required
+def backtest_run(request, pk: int):
+    """Launch a backtest run asynchronously."""
+    bt = get_object_or_404(Backtest, pk=pk)
+    if request.method != "POST":
+        return redirect("backtest_detail", pk=pk)
+
+    Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.PENDING, error_message="")
+    run_backtest_task.delay(bt.id)
+    messages.success(request, "Backtest lancé (traitement en arrière-plan).")
+    return redirect("backtest_detail", pk=pk)

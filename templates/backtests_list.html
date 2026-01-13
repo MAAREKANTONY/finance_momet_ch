@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Backtests</h2>
+
+<form method="get" class="row" style="gap:12px; align-items:flex-end;">
+  <div>
+    <label for="id_q">Recherche</label><br/>
+    <input id="id_q" type="text" name="q" value="{{ q }}" placeholder="Nom ou description" style="min-width:260px;"/>
+  </div>
+
+  <div>
+    <label for="id_scenario">Scénario</label><br/>
+    <select id="id_scenario" name="scenario" style="min-width:220px;">
+      <option value="">Tous</option>
+      {% for s in scenarios %}
+        <option value="{{ s.id }}" {% if scenario_id|default:'' == s.id|stringformat:'s' %}selected{% endif %}>{{ s.name }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div>
+    <button type="submit">Filtrer</button>
+    <a class="btn" href="{% url 'backtest_create' %}">+ Nouveau backtest</a>
+  </div>
+</form>
+
+<hr/>
+
+{% if backtests %}
+  <table class="table">
+    <thead>
+      <tr>
+        <th>Nom</th>
+        <th>Scénario</th>
+        <th>Période</th>
+        <th>Statut</th>
+        <th>Créé le</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for bt in backtests %}
+        <tr>
+          <td><a href="{% url 'backtest_detail' bt.id %}">{{ bt.name }}</a></td>
+          <td>{{ bt.scenario.name }}</td>
+          <td>
+            {% if bt.start_date %}{{ bt.start_date }}{% else %}—{% endif %}
+            →
+            {% if bt.end_date %}{{ bt.end_date }}{% else %}—{% endif %}
+          </td>
+          <td>{{ bt.status }}</td>
+          <td>{{ bt.created_at|date:"Y-m-d H:i" }}</td>
+        </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <p class="muted">Affichage limité aux 200 derniers résultats.</p>
+{% else %}
+  <p>Aucun backtest enregistré.</p>
+{% endif %}
+
+{% endblock %}

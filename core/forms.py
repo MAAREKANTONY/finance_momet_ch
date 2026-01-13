@@ -1,6 +1,17 @@
 from django import forms
 
-from .models import EmailRecipient, EmailSettings, Scenario, Symbol
+BACKTEST_SIGNAL_CHOICES = [
+    ("A1", "A1 (K1 croise 0 vers le haut)"),
+    ("B1", "B1 (K1 croise 0 vers le bas)"),
+    ("C1", "C1 (K2 croise 0 vers le haut)"),
+    ("D1", "D1 (K2 croise 0 vers le bas)"),
+    ("E1", "E1 (K3 croise 0 vers le haut)"),
+    ("F1", "F1 (K3 croise 0 vers le bas)"),
+    ("G1", "G1 (K4 croise 0 vers le haut)"),
+    ("H1", "H1 (K4 croise 0 vers le bas)"),
+]
+
+from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest
 
 class ScenarioForm(forms.ModelForm):
     symbols = forms.ModelMultipleChoiceField(
@@ -90,3 +101,40 @@ class SymbolImportForm(forms.Form):
     """Import tickers from CSV/XLSX."""
 
     file = forms.FileField(label="Fichier (CSV ou Excel .xlsx)")
+
+
+class BacktestForm(forms.ModelForm):
+    """Create/Edit a Backtest configuration (engine results will be computed later)."""
+
+    class Meta:
+        model = Backtest
+        fields = [
+            "name",
+            "description",
+            "scenario",
+            "start_date",
+            "end_date",
+            "capital_total",
+            "capital_per_ticker",
+            "ratio_threshold",
+            "signal_lines",
+            "close_positions_at_end",
+        ]
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3}),
+            "start_date": forms.DateInput(attrs={"type": "date"}),
+            "end_date": forms.DateInput(attrs={"type": "date"}),
+        }
+
+    def clean_signal_lines(self):
+        """Accept JSON list; keep validation minimal for Feature 1."""
+        value = self.cleaned_data.get("signal_lines")
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list):
+            raise forms.ValidationError("signal_lines must be a JSON list")
+        # Lightweight sanity check: each item should at least be a dict with buy/sell keys (optional at this stage).
+        for item in value:
+            if not isinstance(item, dict):
+                raise forms.ValidationError("Each signal line must be an object")
+        return value

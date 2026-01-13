@@ -37,4 +37,8 @@ urlpatterns = [
     path("api/symbol_search/", views.api_symbol_search, name="api_symbol_search"),
 
     path("logs/", views.logs_page, name="logs_page"),
+    path("backtests/", views.backtests_page, name="backtests_page"),
+    path("backtests/new/", views.backtest_create, name="backtest_create"),
+    path("backtests/<int:pk>/", views.backtest_detail, name="backtest_detail"),
+    path("backtests/<int:pk>/run/", views.backtest_run, name="backtest_run"),
 ]
