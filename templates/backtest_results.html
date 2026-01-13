@@ -1,0 +1,184 @@
+{% extends "base.html" %}
+{% load backtest_extras %}
+{% block content %}
+<div class="card">
+  <h2>Résultats Backtest #{{ bt.id }} — {{ bt.name }}</h2>
+  <div class="muted">
+    Scénario: <b>{{ bt.scenario.name }}</b> • Période: <b>{{ results.meta.start_date }}</b> → <b>{{ results.meta.end_date }}</b>
+  </div>
+  <div style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+    <a class="btn" href="{% url 'backtest_detail' bt.id %}">← Retour</a>
+    <a class="btn" href="{% url 'backtest_export_debug_csv' bt.id %}?ticker={{ ticker }}&line={{ line_index }}">Exporter CSV debug</a>
+    <a class="btn" href="{% url 'backtest_export_excel' bt.id %}">Exporter Excel</a>
+    {% if is_truncated %}
+      <a class="btn" href="{% url 'backtest_results' bt.id %}?ticker={{ ticker }}&line={{ line_index }}&all=1">Afficher toutes les lignes</a>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h3>Sélection</h3>
+  <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+    <label>Ticker / Ligne</label>
+    <select id="tickerLineSelect">
+      {% for opt in ticker_options %}
+        {% with val=opt.ticker|add:"|"|add:opt.line_index|stringformat:"s" %}
+        <option value="{{ opt.ticker }}|{{ opt.line_index }}" {% if opt.ticker == ticker and opt.line_index|add:0 == line_index %}selected{% endif %}>
+          {{ opt.ticker }} — L{{ opt.line_index }} (BUY {{ opt.buy }} / SELL {{ opt.sell }})
+        </option>
+        {% endwith %}
+      {% endfor %}
+    </select>
+
+    <label>Courbe</label>
+    <select id="metricSelect">
+      <option value="S_G_N">S_G_N (moyenne des gains par coup)</option>
+      <option value="BT">BT (bénéfice total cumulé)</option>
+      <option value="BMJ">BMJ (bénéfice moyen / jour ouvré)</option>
+    </select>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Légende & définitions</h3>
+  <div class="muted" style="line-height:1.5;">
+    <p>
+      <b>Important :</b> les grandeurs <b>G</b>, <b>S_G_N</b>, <b>BT</b> et <b>BMJ</b> sont stockées comme des <b>ratios</b>
+      (ex : <code>0.01</code> = <b>+1%</b>). L'interface les affiche en pourcentage.
+    </p>
+    <ul>
+      <li><b>ratio_p (%)</b> : indicateur utilisé pour décider si le ticker est <i>tradable</i> (ratio_p &ge; X). Il est calculé par tes jobs d'alertes.</li>
+      <li><b>Action</b> : BUY / SELL / FORCED_SELL (clôture forcée fin de période). SELL est prioritaire si BUY et SELL le même jour.</li>
+      <li><b>G</b> : gain du <i>coup</i> clôturé ce jour (uniquement les jours de SELL). <code>G = (prix_vente - prix_achat) / prix_achat</code>.</li>
+      <li><b>N</b> : nombre total de coups clôturés (BUY+SELL complétés) jusqu'à la date.</li>
+      <li><b>S_G_N</b> : moyenne cumulée des gains par coup : <code>S_G_N = (ΣG) / N</code>.</li>
+      <li><b>BT</b> : bénéfice total cumulé (somme des gains) : <code>BT = ΣG</code> (équivalent à <code>S_G_N × N</code>).</li>
+      <li><b>NB_JOUR_OUVRES</b> : nombre de jours où le ticker est tradable (<code>ratio_p ≥ X</code>) <b>et</b> sans position ouverte (au début de la journée).</li>
+      <li><b>BMJ</b> : bénéfice moyen par jour ouvré : <code>BMJ = BT / NB_JOUR_OUVRES</code>.</li>
+      <li><b>Cash</b> : cash restant pour ce ticker/ligne après achats/ventes (arrondi au nombre entier d'actions).</li>
+      <li><b>Shares</b> : nombre d'actions détenues en fin de journée.</li>
+    </ul>
+  </div>
+</div>
+
+<div class="card">
+  <h3>Synthèse — {{ ticker }} / L{{ line_index }}</h3>
+  <table>
+    <tr>
+      <th>BUY</th><td>{{ line.buy }}</td>
+      <th>SELL</th><td>{{ line.sell }}</td>
+      <th>Allocated</th><td>{{ line.allocated }}</td>
+    </tr>
+    <tr>
+      <th>N</th><td>{{ final.N }}</td>
+      <th>S_G_N</th><td>{{ final.S_G_N|pct:3 }}</td>
+      <th>BT</th><td>{{ final.BT|pct:3 }}</td>
+    </tr>
+    <tr>
+      <th>NB_JOUR_OUVRES</th><td>{{ final.NB_JOUR_OUVRES }}</td>
+      <th>BMJ</th><td colspan="3">{{ final.BMJ|pct:4 }}</td>
+    </tr>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Courbe</h3>
+  <canvas id="chart" height="120"></canvas>
+  <div class="muted" style="margin-top:8px;">
+    Note: la courbe est calculée à partir du JSON stocké (pas de recalcul serveur).
+  </div>
+</div>
+
+<div class="card">
+  <h3>Données journalières {% if is_truncated %}(dernières 200 lignes){% endif %}</h3>
+  <div style="overflow:auto; max-height:560px;">
+    <table>
+      <thead>
+        <tr>
+          <th>Date</th>
+          <th>Close</th>
+          <th>Ratio_p (%)</th>
+          <th>Action</th>
+          <th>G</th>
+          <th>N</th>
+          <th>S_G_N</th>
+          <th>BT</th>
+          <th>NB_JOUR_OUVRES</th>
+          <th>BMJ</th>
+          <th>Cash</th>
+          <th>Shares</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in daily %}
+        <tr>
+          <td>{{ r.date }}</td>
+          <td>{{ r.price_close }}</td>
+          <td>{% if r.ratio_P_pct %}{{ r.ratio_P_pct|num:2 }}%{% endif %}</td>
+          <td>{{ r.action }}</td>
+          <td>{{ r.action_G|pct:3 }}</td>
+          <td>{{ r.N }}</td>
+          <td>{{ r.S_G_N|pct:3 }}</td>
+          <td>{{ r.BT|pct:3 }}</td>
+          <td>{{ r.NB_JOUR_OUVRES }}</td>
+          <td>{{ r.BMJ|pct:4 }}</td>
+          <td>{{ r.cash_ticker }}</td>
+          <td>{{ r.shares }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  const rows = {{ daily_json|safe }};
+  function toNumber(v) {
+    if (v === null || v === undefined || v === "") return null;
+    const x = Number(v);
+    return Number.isFinite(x) ? x : null;
+  }
+
+  const labels = rows.map(r => r.date);
+  // Values are stored as ratios (1.0 == 100%). We display charts in percent.
+  const series = {
+    "S_G_N": rows.map(r => {
+      const v = toNumber(r.S_G_N);
+      return v === null ? null : (v * 100);
+    }),
+    "BT": rows.map(r => {
+      const v = toNumber(r.BT);
+      return v === null ? null : (v * 100);
+    }),
+    "BMJ": rows.map(r => {
+      const v = toNumber(r.BMJ);
+      return v === null ? null : (v * 100);
+    }),
+  };
+
+  const ctx = document.getElementById("chart").getContext("2d");
+  let chart = new Chart(ctx, {
+    type: "line",
+    data: { labels, datasets: [{ label: "S_G_N (%)", data: series["S_G_N"] }] },
+    options: { responsive: true, spanGaps: true }
+  });
+
+  function updateChart(metric) {
+    chart.data.datasets[0].label = metric + " (%)";
+    chart.data.datasets[0].data = series[metric];
+    chart.update();
+  }
+
+  document.getElementById("metricSelect").addEventListener("change", (e) => updateChart(e.target.value));
+
+  document.getElementById("tickerLineSelect").addEventListener("change", (e) => {
+    const [tk, line] = e.target.value.split("|");
+    const url = new URL(window.location.href);
+    url.searchParams.set("ticker", tk);
+    url.searchParams.set("line", line);
+    url.searchParams.delete("all");
+    window.location.href = url.toString();
+  });
+</script>
+{% endblock %}

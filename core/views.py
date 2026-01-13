@@ -11,6 +11,7 @@ from django.views.decorators.http import require_POST
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
+from openpyxl.chart import LineChart, Reference
 import zipfile as pyzip
 import json
 
@@ -833,6 +834,322 @@ def backtest_run(request, pk: int):
         return redirect("backtest_detail", pk=pk)
 
     Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.PENDING, error_message="")
+    from .tasks import run_backtest_task
     run_backtest_task.delay(bt.id)
     messages.success(request, "Backtest lancé (traitement en arrière-plan).")
     return redirect("backtest_detail", pk=pk)
+
+@login_required
+def backtest_results(request, pk: int):
+    """Readable results view for a computed backtest.
+
+    Uses the JSON stored in Backtest.results (no recomputation here).
+    """
+    bt = get_object_or_404(Backtest.objects.select_related("scenario"), pk=pk)
+    results = bt.results or {}
+    tickers_map = results.get("tickers") or {}
+
+    if not tickers_map:
+        messages.warning(request, "Aucun résultat disponible pour ce backtest (lance-le d'abord).")
+        return redirect("backtest_detail", pk=pk)
+
+    # Selected ticker / line
+    ticker = request.GET.get("ticker") or next(iter(tickers_map.keys()))
+    tentry = tickers_map.get(ticker) or next(iter(tickers_map.values()))
+    ticker = ticker if ticker in tickers_map else next(iter(tickers_map.keys()))
+
+    try:
+        line_index = int(request.GET.get("line", "1"))
+    except ValueError:
+        line_index = 1
+
+    lines = tentry.get("lines") or []
+    line = next((l for l in lines if int(l.get("line_index", 0)) == line_index), None)
+    if line is None and lines:
+        line = lines[0]
+        line_index = int(line.get("line_index", 1))
+
+    daily = (line or {}).get("daily") or []
+    final = (line or {}).get("final") or {}
+
+    # Truncate very large series for UI rendering (default: last 200 days)
+    show_all = request.GET.get("all") == "1"
+    limit = 200
+    total_daily_count = len(daily)
+    is_truncated = (total_daily_count > limit) and (not show_all)
+    if is_truncated:
+        daily = daily[-limit:]
+
+
+    # For dropdowns in UI
+    ticker_options = []
+    for tk, te in tickers_map.items():
+        for l in (te.get("lines") or []):
+            ticker_options.append({
+                "ticker": tk,
+                "line_index": l.get("line_index"),
+                "buy": l.get("buy"),
+                "sell": l.get("sell"),
+            })
+
+    return render(
+        request,
+        "backtest_results.html",
+        {
+            "bt": bt,
+            "results": results,
+            "ticker": ticker,
+            "line_index": line_index,
+            "line": line,
+            "daily": daily,
+            "daily_json": json.dumps(daily),
+            "final": final,
+            "is_truncated": is_truncated,
+            "total_daily_count": total_daily_count,
+            "ticker_options": ticker_options,
+        },
+    )
+
+
+@login_required
+def backtest_export_debug_csv(request, pk: int):
+    """Export a debug CSV for one (ticker, line) from Backtest.results."""
+    bt = get_object_or_404(Backtest, pk=pk)
+    results = bt.results or {}
+    tickers_map = results.get("tickers") or {}
+    if not tickers_map:
+        messages.warning(request, "Aucun résultat à exporter (lance le backtest).")
+        return redirect("backtest_detail", pk=pk)
+
+    ticker = request.GET.get("ticker") or next(iter(tickers_map.keys()))
+    tentry = tickers_map.get(ticker) or next(iter(tickers_map.values()))
+    ticker = ticker if ticker in tickers_map else next(iter(tickers_map.keys()))
+
+    try:
+        line_index = int(request.GET.get("line", "1"))
+    except ValueError:
+        line_index = 1
+    lines = tentry.get("lines") or []
+    line = next((l for l in lines if int(l.get("line_index", 0)) == line_index), None)
+    if line is None and lines:
+        line = lines[0]
+        line_index = int(line.get("line_index", 1))
+
+    daily = (line or {}).get("daily") or []
+    if not daily:
+        messages.warning(request, "Pas de données journalières pour cet export.")
+        return redirect("backtest_results", pk=pk)
+
+    # Build a stable header (union of keys)
+    header_keys = []
+    seen = set()
+    for row in daily:
+        for k in row.keys():
+            if k not in seen:
+                seen.add(k)
+                header_keys.append(k)
+
+    response = HttpResponse(content_type="text/csv; charset=utf-8")
+    filename = f"backtest_{bt.id}_{ticker}_L{line_index}_debug.csv"
+    response["Content-Disposition"] = f'attachment; filename="{filename}"'
+
+    writer = csv.writer(response)
+    writer.writerow(header_keys)
+    for row in daily:
+        writer.writerow([row.get(k, "") for k in header_keys])
+
+    return response
+
+
+@login_required
+def backtest_export_excel(request, pk: int):
+    """Export full backtest results to Excel (settings + universe + summary + daily sheets + charts)."""
+    bt = get_object_or_404(Backtest, pk=pk)
+    results = bt.results or {}
+    tickers_map = results.get("tickers") or {}
+    if not tickers_map:
+        messages.warning(request, "Aucun résultat à exporter (lance le backtest).")
+        return redirect("backtest_detail", pk=pk)
+
+    def _to_float(x):
+        if x is None or x == "":
+            return None
+        try:
+            return float(x)
+        except Exception:
+            try:
+                return float(str(x))
+            except Exception:
+                return None
+
+    def _pct_ratio_to_percent(x):
+        """Stored as ratio (0.01==1%) -> percent value (1.0)."""
+        f = _to_float(x)
+        return None if f is None else f * 100.0
+
+    def _auto_width(ws, max_col=40):
+        for col in range(1, min(ws.max_column, max_col) + 1):
+            letter = get_column_letter(col)
+            max_len = 0
+            for cell in ws[letter]:
+                if cell.value is None:
+                    continue
+                max_len = max(max_len, len(str(cell.value)))
+            ws.column_dimensions[letter].width = min(max(10, max_len + 2), 55)
+
+    wb = Workbook()
+    wb.remove(wb.active)
+
+    # --- Settings ---
+    ws = wb.create_sheet("Settings")
+    ws.append(["Clé", "Valeur"])
+    ws["A1"].font = Font(bold=True)
+    ws["B1"].font = Font(bold=True)
+
+    meta = results.get("meta") or {}
+    settings_rows = [
+        ("Backtest ID", bt.id),
+        ("Nom", bt.name),
+        ("Description", bt.description or ""),
+        ("Scénario", getattr(bt.scenario, "name", "") if bt.scenario_id else ""),
+        ("Période début", bt.start_date.isoformat() if bt.start_date else ""),
+        ("Période fin", bt.end_date.isoformat() if bt.end_date else ""),
+        ("CP (capital total)", bt.capital_total),
+        ("CT (capital par ticker)", bt.capital_per_ticker),
+        ("X (seuil ratio_p %)", bt.ratio_threshold),
+        ("Clôture fin backtest", "Oui" if bt.close_positions_at_end else "Non"),
+        ("Statut", bt.status),
+        ("global_cash_end", meta.get("global_cash_end", "")),
+        ("engine_version", meta.get("engine_version", "")),
+    ]
+    for k, v in settings_rows:
+        ws.append([k, v])
+    _auto_width(ws)
+
+    # --- Universe (snapshot) ---
+    ws_u = wb.create_sheet("Universe")
+    ws_u.append(["Ticker", "Exchange"])
+    ws_u["A1"].font = Font(bold=True)
+    ws_u["B1"].font = Font(bold=True)
+
+    uni = bt.universe_snapshot or []
+    if isinstance(uni, list):
+        for item in uni:
+            if isinstance(item, dict):
+                ws_u.append([item.get("ticker", ""), item.get("exchange", "")])
+            else:
+                ws_u.append([str(item), ""]) 
+    _auto_width(ws_u)
+
+    # --- Summary ---
+    ws_s = wb.create_sheet("Summary")
+    ws_s.append([
+        "Ticker",
+        "Line #",
+        "BUY",
+        "SELL",
+        "Allocated",
+        "N",
+        "S_G_N (%)",
+        "BT (%)",
+        "NB_JOUR_OUVRES",
+        "BMJ (%)",
+        "Cash end",
+    ])
+    ws_s.freeze_panes = "A2"
+    for cell in ws_s[1]:
+        cell.font = Font(bold=True)
+
+    for ticker, tentry in tickers_map.items():
+        for line in (tentry or {}).get("lines") or []:
+            fin = line.get("final") or {}
+            ws_s.append([
+                ticker,
+                line.get("line_index"),
+                line.get("buy"),
+                line.get("sell"),
+                "Oui" if line.get("allocated") else "Non",
+                fin.get("N"),
+                _pct_ratio_to_percent(fin.get("S_G_N")),
+                _pct_ratio_to_percent(fin.get("BT")),
+                fin.get("NB_JOUR_OUVRES"),
+                _pct_ratio_to_percent(fin.get("BMJ")),
+                _to_float(fin.get("cash_ticker_end")),
+            ])
+    _auto_width(ws_s)
+
+    # --- Daily sheets + charts ---
+    for ticker, tentry in tickers_map.items():
+        for line in (tentry or {}).get("lines") or []:
+            li = int(line.get("line_index") or 1)
+            ws_name = f"{ticker}_L{li}"[:31]
+            ws_d = wb.create_sheet(ws_name)
+
+            ws_d.append([
+                "Date",
+                "Close",
+                "Ratio_p (%)",
+                "Tradable",
+                "Alerts",
+                "Action",
+                "G (%)",
+                "N",
+                "S_G_N (%)",
+                "BT (%)",
+                "NB_JOUR_OUVRES",
+                "BMJ (%)",
+                "Cash",
+                "Shares",
+            ])
+            ws_d.freeze_panes = "A2"
+            for cell in ws_d[1]:
+                cell.font = Font(bold=True)
+
+            daily = line.get("daily") or []
+            for r in daily:
+                ws_d.append([
+                    r.get("date"),
+                    _to_float(r.get("price_close")),
+                    _to_float(r.get("ratio_P_pct")),  # already 0-100
+                    "Oui" if r.get("tradable") else "Non",
+                    ",".join(r.get("alerts") or []),
+                    r.get("action") or "",
+                    _pct_ratio_to_percent(r.get("action_G")),
+                    r.get("N"),
+                    _pct_ratio_to_percent(r.get("S_G_N")),
+                    _pct_ratio_to_percent(r.get("BT")),
+                    r.get("NB_JOUR_OUVRES"),
+                    _pct_ratio_to_percent(r.get("BMJ")),
+                    _to_float(r.get("cash_ticker")),
+                    r.get("shares"),
+                ])
+
+            _auto_width(ws_d, max_col=20)
+
+            if ws_d.max_row >= 3:
+                chart = LineChart()
+                chart.title = f"{ticker} L{li} - S_G_N / BT / BMJ (%)"
+                chart.y_axis.title = "%"
+                chart.x_axis.title = "Date"
+
+                # Data columns: S_G_N=9, BT=10, BMJ=12
+                for col in (9, 10, 12):
+                    data = Reference(ws_d, min_col=col, min_row=1, max_row=ws_d.max_row)
+                    chart.add_data(data, titles_from_data=True)
+
+                cats = Reference(ws_d, min_col=1, min_row=2, max_row=ws_d.max_row)
+                chart.set_categories(cats)
+                chart.height = 12
+                chart.width = 28
+                ws_d.add_chart(chart, f"A{ws_d.max_row + 3}")
+
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+
+    response = HttpResponse(
+        bio.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    response["Content-Disposition"] = f'attachment; filename="backtest_{bt.id}_export.xlsx"'
+    return response

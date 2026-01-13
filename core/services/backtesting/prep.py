@@ -19,7 +19,6 @@ from datetime import date
 from django.db.models import Min, Max
 
 from core.models import Backtest, DailyBar, DailyMetric, Symbol
-from core.tasks import fetch_daily_bars_task, compute_metrics_task
 
 
 @dataclass
@@ -53,6 +52,9 @@ def prepare_backtest_data(backtest: Backtest) -> BacktestPrepReport:
     notes: list[str] = []
     did_fetch = False
     did_compute = False
+
+    # Lazy import to avoid circular imports (tasks -> prep -> tasks)
+    from core.tasks import fetch_daily_bars_task, compute_metrics_task
 
     # Determine universe (snapshot if present, else scenario symbols)
     tickers = backtest.universe_snapshot or []

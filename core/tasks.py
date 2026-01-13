@@ -10,8 +10,6 @@ from django.db.models import Max
 
 from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings
 from .models import Backtest
-from .services.backtesting.prep import prepare_backtest_data
-from .services.backtesting.engine import run_backtest as engine_run_backtest
 from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
 
@@ -232,6 +230,9 @@ def check_and_send_scheduled_alerts_task():
 
 @shared_task
 def run_backtest_task(backtest_id: int):
+    # Lazy imports to avoid circular imports
+    from .services.backtesting.prep import prepare_backtest_data
+    from .services.backtesting.engine import run_backtest as engine_run_backtest
     """Run a backtest end-to-end (Feature 3).
 
     Steps:

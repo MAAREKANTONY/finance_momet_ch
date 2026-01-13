@@ -43,211 +43,422 @@ def _alerts_set(alerts_str: str) -> set[str]:
 
 
 def run_backtest(backtest: Backtest) -> BacktestEngineResult:
+    """
+    Feature 4:
+    - Adds global capital constraint (CP) and daily selection of new allocations by highest ratio_p.
+    - Keeps per-(ticker,line) independent cash re-investment once allocated.
+    """
     logs: list[str] = []
 
     # Universe
-    tickers = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
-    symbols = list(Symbol.objects.filter(ticker__in=tickers, active=True).all())
-    sym_by_ticker = {s.ticker: s for s in symbols}
+    raw_universe = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
+    tickers: list[str] = []
+    if isinstance(raw_universe, list):
+        for item in raw_universe:
+            if isinstance(item, dict):
+                t = item.get("ticker") or item.get("symbol") or item.get("code")
+                if t is not None:
+                    tickers.append(str(t).strip())
+            else:
+                tickers.append(str(item).strip())
+    else:
+        try:
+            tickers = [str(x).strip() for x in list(raw_universe)]
+        except Exception:
+            tickers = [str(raw_universe).strip()]
+    tickers = [t for t in tickers if t]
+
+    if not tickers:
+        return BacktestEngineResult(results={"error": "No tickers in scenario/universe."}, logs=["No tickers found."])
 
     # Params
-    X = Decimal(str(backtest.ratio_threshold or 0))  # percent
+    CP_raw = Decimal(str(backtest.capital_total or 0))
+    CP_infinite = (CP_raw == 0)
+    global_cash = None if CP_infinite else CP_raw
+
     CT = Decimal(str(backtest.capital_per_ticker or 0))
+    X = Decimal(str(backtest.ratio_threshold or 0))  # percent threshold
 
-    # Signal lines
-    lines = backtest.signal_lines or []
-    if not lines:
-        # default fallback: A1/B1
-        lines = [{"buy": "A1", "sell": "B1"}]
-        logs.append("No signal_lines configured; defaulted to A1/B1.")
+    signal_lines = backtest.signal_lines or []
+    if not isinstance(signal_lines, list) or not signal_lines:
+        # Default: A1/B1
+        signal_lines = [{"buy": "A1", "sell": "B1"}]
 
-    results: dict[str, Any] = {
-        "engine_version": "3.0",
-        "generated_at": datetime.utcnow().isoformat() + "Z",
-        "params": {
-            "scenario_id": backtest.scenario_id,
-            "start_date": str(backtest.start_date),
-            "end_date": str(backtest.end_date),
-            "capital_total": str(backtest.capital_total),
-            "capital_per_ticker": str(backtest.capital_per_ticker),
-            "ratio_threshold": str(backtest.ratio_threshold),
-            "close_positions_at_end": bool(backtest.close_positions_at_end),
-            "signal_lines": lines,
-        },
-        "tickers": {},
-        "logs": [],
-    }
+    # Resolve symbols in one query
+    symbols = list(Symbol.objects.filter(ticker__in=tickers))
+    sym_by_ticker = {s.ticker: s for s in symbols}
 
-    # Iterate each ticker independently (global CP allocation comes in a later feature)
+    # Preload all data per ticker for date range
+    start_d = backtest.start_date
+    end_d = backtest.end_date
+
+    data_by_ticker: dict[str, dict[str, Any]] = {}
+    all_dates: set = set()
+
     for ticker in tickers:
         sym = sym_by_ticker.get(ticker)
         if not sym:
             logs.append(f"Ticker {ticker} not found/active; skipped.")
             continue
 
-        # Preload daily bars for date range
-        bars = list(
-            DailyBar.objects.filter(symbol=sym, date__gte=backtest.start_date, date__lte=backtest.end_date)
+        bars_qs = (
+            DailyBar.objects.filter(symbol=sym, date__gte=start_d, date__lte=end_d)
             .order_by("date")
             .values("date", "close")
         )
+        bars = list(bars_qs)
         if not bars:
             logs.append(f"No DailyBar data for {ticker} in range; skipped.")
             continue
 
-        # Preload metrics and alerts keyed by date
+        price_by_date = {}
+        for b in bars:
+            d = b["date"]
+            all_dates.add(d)
+            try:
+                price_by_date[d] = Decimal(str(b["close"]))
+            except Exception:
+                # skip bad price rows
+                continue
+
         metrics = {
             m["date"]: m["ratio_P"]
-            for m in DailyMetric.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=backtest.start_date, date__lte=backtest.end_date)
+            for m in DailyMetric.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=start_d, date__lte=end_d)
             .values("date", "ratio_P")
         }
         alerts = {
             a["date"]: _alerts_set(a["alerts"])
-            for a in Alert.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=backtest.start_date, date__lte=backtest.end_date)
+            for a in Alert.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=start_d, date__lte=end_d)
             .values("date", "alerts")
         }
 
-        ticker_obj: dict[str, Any] = {"lines": []}
+        data_by_ticker[ticker] = {
+            "symbol_id": sym.id,
+            "price_by_date": price_by_date,
+            "metrics": metrics,
+            "alerts": alerts,
+        }
 
-        for line in lines:
-            buy_code = (line.get("buy") or "").strip()
-            sell_code = (line.get("sell") or "").strip()
-            if not buy_code or not sell_code:
-                logs.append(f"{ticker}: invalid signal line {line}; skipped.")
-                continue
+    if not data_by_ticker:
+        return BacktestEngineResult(results={"error": "No usable tickers with data in range."}, logs=logs)
 
-            position_open = False
-            entry_price: Decimal | None = None
-            shares = 0
-            cash_ticker = CT  # initial cash per ticker
-            trade_count = 0
-            sum_g = Decimal("0")
+    dates_sorted = sorted(all_dates)
+    if not dates_sorted:
+        return BacktestEngineResult(results={"error": "No market dates found in range."}, logs=logs)
 
-            nb_jours_ouvres = 0  # as defined in spec
-            daily_rows: list[dict[str, Any]] = []
+    # Per (ticker, line_index) state
+    state: dict[tuple[str, int], dict[str, Any]] = {}
 
-            last_day = bars[-1]["date"]
+    def _ratio_tradable(ratio_p_val) -> tuple[bool, Decimal | None, Decimal | None]:
+        """Return (tradable, ratio_percent, ratio_raw)"""
+        if ratio_p_val is None:
+            return (False, None, None)
+        try:
+            r_raw = Decimal(str(ratio_p_val))
+            # ratio_P is already stored as a percentage (0-100) in our metrics calculations
+            r_pct = r_raw
+            return (r_pct >= X, r_pct, r_raw)
+        except Exception:
+            return (False, None, None)
 
-            for row in bars:
-                d: date = row["date"]
-                close = row["close"]
-                if close is None:
-                    # no tradable price
-                    daily_rows.append({
-                        "date": str(d),
-                        "price_close": None,
-                        "tradable": False,
-                        "N": trade_count,
-                        "G": None,
-                        "S_G_N": None if trade_count == 0 else str(sum_g / Decimal(trade_count)),
-                        "BT": str(sum_g),
-                        "NB_JOUR_OUVRES": nb_jours_ouvres,
-                        "BMJ": None if nb_jours_ouvres == 0 else str(sum_g / Decimal(nb_jours_ouvres)),
-                        "position_open": position_open,
-                        "shares": shares,
-                        "cash_ticker": str(cash_ticker),
-                    })
-                    continue
-
-                close_d = Decimal(str(close))
-                ratio_p = metrics.get(d)  # Decimal in [0,1] typically
-                tradable = False
-                if ratio_p is not None:
-                    try:
-                        tradable = (Decimal(str(ratio_p)) * Decimal("100")) >= X
-                    except Exception:
-                        tradable = False
-
-                # Count NB_JOUR_OUVRES at start of day before actions
-                if tradable and not position_open:
-                    nb_jours_ouvres += 1
-
-                day_alerts = alerts.get(d, set())
-
-                # Sell first
-                G_today = None
-                forced_close = False
-
-                def _do_sell(reason: str):
-                    nonlocal position_open, entry_price, shares, cash_ticker, trade_count, sum_g, G_today
-                    if not position_open or entry_price is None or shares <= 0:
-                        return
-                    proceeds = Decimal(shares) * close_d
-                    cash_ticker = cash_ticker + proceeds
-                    g = (close_d - entry_price) / entry_price if entry_price != 0 else Decimal("0")
-                    sum_g += g
-                    trade_count += 1
-                    G_today = g
-                    position_open = False
-                    entry_price = None
-                    shares = 0
-                    logs.append(f"{ticker} {buy_code}/{sell_code}: SELL on {d} ({reason}) G={g}")
-
-                if position_open and (sell_code in day_alerts):
-                    _do_sell("signal")
-
-                # Forced close at end
-                if backtest.close_positions_at_end and d == last_day and position_open:
-                    forced_close = True
-                    _do_sell("forced_end")
-
-                # Buy after sell
-                if (not position_open) and tradable and (buy_code in day_alerts):
-                    # invest all cash_ticker
-                    max_shares = int((cash_ticker // close_d) if close_d != 0 else 0)
-                    if max_shares > 0:
-                        shares = max_shares
-                        cash_ticker = cash_ticker - (Decimal(shares) * close_d)
-                        position_open = True
-                        entry_price = close_d
-                        logs.append(f"{ticker} {buy_code}/{sell_code}: BUY on {d} shares={shares} price={close_d}")
-
-                S_G_N = None if trade_count == 0 else (sum_g / Decimal(trade_count))
-                BT = sum_g  # sum of % gains per trade (as per current definition)
-                BMJ = None if nb_jours_ouvres == 0 else (BT / Decimal(nb_jours_ouvres))
-
-                daily_rows.append({
-                    "date": str(d),
-                    "price_close": str(close_d),
-                    "ratio_P": None if ratio_p is None else str(ratio_p),
-                    "tradable": tradable,
-                    "alerts": sorted(list(day_alerts)),
-                    "buy_code": buy_code,
-                    "sell_code": sell_code,
-                    "action_G": None if G_today is None else str(G_today),
-                    "forced_close": forced_close,
-                    "N": trade_count,
-                    "G": None if G_today is None else str(G_today),
-                    "S_G_N": None if S_G_N is None else str(S_G_N),
-                    "BT": str(BT),
-                    "NB_JOUR_OUVRES": nb_jours_ouvres,
-                    "BMJ": None if BMJ is None else str(BMJ),
-                    "position_open": position_open,
-                    "shares": shares,
-                    "cash_ticker": str(cash_ticker),
-                })
-
-            # Summary
-            final = daily_rows[-1] if daily_rows else {}
-            summary = {
-                "ticker": ticker,
-                "buy": buy_code,
-                "sell": sell_code,
-                "trades_N": trade_count,
-                "S_G_N": final.get("S_G_N"),
-                "BT": final.get("BT"),
-                "NB_JOUR_OUVRES": final.get("NB_JOUR_OUVRES"),
-                "BMJ": final.get("BMJ"),
+    for ticker in data_by_ticker.keys():
+        for li, line in enumerate(signal_lines):
+            state[(ticker, li)] = {
+                "buy_code": str(line.get("buy") or "").strip().upper(),
+                "sell_code": str(line.get("sell") or "").strip().upper(),
+                "allocated": False,
+                "cash_ticker": Decimal("0"),
+                "position_open": False,
+                "entry_price": None,
+                "shares": 0,
+                "trade_count": 0,
+                "sum_g": Decimal("0"),
+                "nb_jours_ouvres": 0,
+                "daily_rows": [],
             }
 
-            ticker_obj["lines"].append({
-                "buy": buy_code,
-                "sell": sell_code,
-                "daily": daily_rows,
-                "summary": summary,
+    # Daily loop
+    for d in dates_sorted:
+        # 1) SELL phase (sell before buy)
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            price_by_date = tdata["price_by_date"]
+            if d not in price_by_date:
+                continue  # no market data for this ticker that day
+            close_d = price_by_date[d]
+            day_alerts = tdata["alerts"].get(d, set())
+
+            # tradable status computed for NB_JOUR_OUVRES before actions
+            tradable, ratio_pct, ratio_raw = _ratio_tradable(tdata["metrics"].get(d))
+            if tradable and not st["position_open"]:
+                st["nb_jours_ouvres"] += 1
+
+            G_today = None
+            forced_close = False
+
+            def _do_sell(reason: str):
+                nonlocal G_today
+                if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
+                    return
+                proceeds = Decimal(st["shares"]) * close_d
+                st["cash_ticker"] = st["cash_ticker"] + proceeds
+                entry = Decimal(st["entry_price"])
+                if entry != 0:
+                    G_today = (close_d - entry) / entry
+                st["trade_count"] += 1
+                st["sum_g"] += (G_today or Decimal("0"))
+                st["position_open"] = False
+                st["entry_price"] = None
+                st["shares"] = 0
+                logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
+
+            sell_code = st["sell_code"]
+            if sell_code and sell_code in day_alerts and st["position_open"]:
+                _do_sell(f"signal {sell_code}")
+
+            # record daily row (we may update with buy action later, but keep as dict to mutate)
+            N = st["trade_count"]
+            S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
+            BT = st["sum_g"]  # == S_G_N*N
+            nb = st["nb_jours_ouvres"]
+            BMJ = None if nb == 0 else (BT / Decimal(nb))
+
+            st["daily_rows"].append({
+                "date": str(d),
+                "price_close": str(close_d),
+                "ratio_P": None if ratio_raw is None else str(ratio_raw),
+                "ratio_P_pct": None if ratio_pct is None else str(ratio_pct),
+                "tradable": tradable,
+                "alerts": sorted(list(day_alerts)),
+                "buy_code": st["buy_code"],
+                "sell_code": st["sell_code"],
+                "action": "SELL" if G_today is not None else None,
+                "action_G": None if G_today is None else str(G_today),
+                "forced_close": forced_close,
+                "allocated": st["allocated"],
+                "cash_ticker": str(st["cash_ticker"]),
+                "shares": st["shares"],
+                "N": N,
+                "S_G_N": None if S_G_N is None else str(S_G_N),
+                "BT": str(BT),
+                "NB_JOUR_OUVRES": nb,
+                "BMJ": None if BMJ is None else str(BMJ),
             })
 
-        results["tickers"][ticker] = ticker_obj
+        # 2) BUY allocation selection phase (for not-yet-allocated strategies, limited CP)
+        candidates_need_alloc = []
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            price_by_date = tdata["price_by_date"]
+            if d not in price_by_date:
+                continue
+            if st["position_open"]:
+                continue
+            buy_code = st["buy_code"]
+            if not buy_code:
+                continue
+            day_alerts = tdata["alerts"].get(d, set())
+            if buy_code not in day_alerts:
+                continue
 
-    results["logs"] = logs[-500:]  # keep last 500 lines
+            tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
+            if not tradable:
+                continue
+
+            if not st["allocated"]:
+                # Needs CT allocation to be able to buy
+                if CP_infinite:
+                    # allocate immediately
+                    st["allocated"] = True
+                    st["cash_ticker"] = CT
+                else:
+                    # will be considered by selection
+                    # use ratio_pct for ranking; None already filtered out
+                    candidates_need_alloc.append((ratio_pct or Decimal("0"), ticker, li))
+
+        if (not CP_infinite) and candidates_need_alloc:
+            # Sort by highest ratio_p
+            candidates_need_alloc.sort(key=lambda x: x[0], reverse=True)
+            for ratio_pct, ticker, li in candidates_need_alloc:
+                if global_cash is None:
+                    break
+                if global_cash < CT or CT <= 0:
+                    break
+                st = state[(ticker, li)]
+                if st["allocated"]:
+                    continue
+                # allocate
+                st["allocated"] = True
+                st["cash_ticker"] = CT
+                global_cash -= CT
+                logs.append(f"ALLOC {ticker}[L{li+1}] on {d} ratio={ratio_pct}% global_cash={global_cash}")
+
+        # 3) BUY execution phase (for allocated or already allocated strategies)
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            price_by_date = tdata["price_by_date"]
+            if d not in price_by_date:
+                continue
+            if st["position_open"]:
+                continue
+
+            buy_code = st["buy_code"]
+            if not buy_code:
+                continue
+            day_alerts = tdata["alerts"].get(d, set())
+            if buy_code not in day_alerts:
+                continue
+
+            tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
+            if not tradable:
+                continue
+
+            if not st["allocated"]:
+                # no allocation available (limited CP)
+                continue
+
+            close_d = price_by_date[d]
+            if close_d <= 0:
+                continue
+
+            cash = st["cash_ticker"]
+            shares = int((cash / close_d).to_integral_value(rounding="ROUND_FLOOR"))
+            if shares <= 0:
+                continue
+
+            st["shares"] = shares
+            st["cash_ticker"] = cash - (Decimal(shares) * close_d)
+            st["position_open"] = True
+            st["entry_price"] = str(close_d)
+
+            logs.append(f"{ticker}[L{li+1}] BUY signal {buy_code} on {d} close={close_d} shares={shares} cash_left={st['cash_ticker']}")
+
+            # mutate last daily row to add action
+            if st["daily_rows"]:
+                last = st["daily_rows"][-1]
+                # If already had SELL action same day, keep SELL as priority but record buy too
+                if last.get("action") == "SELL":
+                    last["action"] = "SELL+BUY"
+                else:
+                    last["action"] = "BUY"
+                last["shares"] = st["shares"]
+                last["cash_ticker"] = str(st["cash_ticker"])
+                last["allocated"] = st["allocated"]
+
+    # Forced close at end (per ticker,line) on last available price date
+    if backtest.close_positions_at_end:
+        for (ticker, li), st in state.items():
+            if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
+                continue
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            # pick last date with price for this ticker within global dates
+            price_by_date = tdata["price_by_date"]
+            last_date = None
+            for d in reversed(dates_sorted):
+                if d in price_by_date:
+                    last_date = d
+                    break
+            if last_date is None:
+                continue
+            close_d = price_by_date[last_date]
+            proceeds = Decimal(st["shares"]) * close_d
+            st["cash_ticker"] = st["cash_ticker"] + proceeds
+            entry = Decimal(st["entry_price"])
+            G_today = None
+            if entry != 0:
+                G_today = (close_d - entry) / entry
+            st["trade_count"] += 1
+            st["sum_g"] += (G_today or Decimal("0"))
+            st["position_open"] = False
+            st["entry_price"] = None
+            st["shares"] = 0
+            logs.append(f"{ticker}[L{li+1}] FORCED SELL on {last_date} close={close_d} G={G_today}")
+
+            # Update last daily row for that ticker/line
+            # Find last row with that date (if any), else append
+            rows = st["daily_rows"]
+            if rows and rows[-1]["date"] == str(last_date):
+                rows[-1]["forced_close"] = True
+                rows[-1]["action"] = "FORCED_SELL" if rows[-1].get("action") is None else f"{rows[-1].get('action')}+FORCED_SELL"
+                rows[-1]["action_G"] = None if G_today is None else str(G_today)
+            else:
+                N = st["trade_count"]
+                S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
+                BT = st["sum_g"]
+                nb = st["nb_jours_ouvres"]
+                BMJ = None if nb == 0 else (BT / Decimal(nb))
+                rows.append({
+                    "date": str(last_date),
+                    "price_close": str(close_d),
+                    "ratio_P": None,
+                    "ratio_P_pct": None,
+                    "tradable": False,
+                    "alerts": [],
+                    "buy_code": st["buy_code"],
+                    "sell_code": st["sell_code"],
+                    "action": "FORCED_SELL",
+                    "action_G": None if G_today is None else str(G_today),
+                    "forced_close": True,
+                    "allocated": st["allocated"],
+                    "cash_ticker": str(st["cash_ticker"]),
+                    "shares": 0,
+                    "N": N,
+                    "S_G_N": None if S_G_N is None else str(S_G_N),
+                    "BT": str(BT),
+                    "NB_JOUR_OUVRES": nb,
+                    "BMJ": None if BMJ is None else str(BMJ),
+                })
+
+    # Build results structure compatible with previous output
+    results: dict[str, Any] = {
+        "meta": {
+            "backtest_id": backtest.id,
+            "scenario_id": backtest.scenario_id,
+            "start_date": str(start_d),
+            "end_date": str(end_d),
+            "CP": str(CP_raw),
+            "CP_infinite": CP_infinite,
+            "CT": str(CT),
+            "X": str(X),
+            "signal_lines": signal_lines,
+            "global_cash_end": None if global_cash is None else str(global_cash),
+        },
+        "tickers": {},
+    }
+
+    # Organize by ticker
+    for ticker in data_by_ticker.keys():
+        tentry = {"lines": []}
+        for li, line in enumerate(signal_lines):
+            st = state[(ticker, li)]
+            N = st["trade_count"]
+            S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
+            BT = st["sum_g"]
+            nb = st["nb_jours_ouvres"]
+            BMJ = None if nb == 0 else (BT / Decimal(nb))
+            tentry["lines"].append({
+                "line_index": li + 1,
+                "buy": st["buy_code"],
+                "sell": st["sell_code"],
+                "allocated": st["allocated"],
+                "final": {
+                    "N": N,
+                    "S_G_N": None if S_G_N is None else str(S_G_N),
+                    "BT": str(BT),
+                    "NB_JOUR_OUVRES": nb,
+                    "BMJ": None if BMJ is None else str(BMJ),
+                    "cash_ticker_end": str(st["cash_ticker"]),
+                },
+                "daily": st["daily_rows"],
+            })
+        results["tickers"][ticker] = tentry
+
     return BacktestEngineResult(results=results, logs=logs)

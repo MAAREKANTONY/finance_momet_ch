@@ -36,6 +36,23 @@
         <tr><th>Statut</th><td>{{ bt.status }}</td></tr>
       </tbody>
     </table>
+    <div style="margin-top:12px; display:flex; gap:8px; align-items:center;">
+      <form method="post" action="{% url 'backtest_run' bt.id %}">
+        {% csrf_token %}
+        <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Lancer / Relancer</button>
+      </form>
+      {% if bt.results %}
+        <a class="btn" style="margin-left:8px;" href="{% url 'backtest_results' bt.id %}">Voir résultats</a>
+        <a class="btn" style="margin-left:8px;" href="{% url 'backtest_export_excel' bt.id %}">Exporter Excel</a>
+      {% endif %}
+      {% if bt.status == 'RUNNING' %}<span class="muted">En cours… rafraîchis la page dans quelques secondes.</span>{% endif %}
+    </div>
+    {% if bt.error_message %}
+      <div class="card" style="border-color:#f2b1b1; margin-top:10px;">
+        <strong>Erreur :</strong>
+        <pre style="white-space:pre-wrap; margin:8px 0 0 0;">{{ bt.error_message }}</pre>
+      </div>
+    {% endif %}
   </div>
 
   <div style="flex:1;">
@@ -60,10 +77,38 @@
 <hr/>
 
 <h3>Résultats</h3>
-<p class="muted">
-  Non calculé pour l’instant (Feature suivante). Le moteur remplira <code>bt.results</code>.
-</p>
-<pre style="white-space:pre-wrap;">{{ bt.results|safe }}</pre>
+{% if bt.status == 'DONE' and bt.results %}
+  <div class="card">
+    <strong>Synthèse</strong>
+    <pre style="white-space:pre-wrap; margin-top:8px;">{{ bt.results|safe }}</pre>
+  </div>
+
+  {% if bt.results.prep %}
+    <h4>Préparation des données</h4>
+    <ul>
+      <li>fetch bars: {{ bt.results.prep.did_fetch_bars }}</li>
+      <li>compute metrics: {{ bt.results.prep.did_compute_metrics }}</li>
+      <li>notes: {{ bt.results.prep.notes|length }}</li>
+    </ul>
+    {% if bt.results.prep.notes %}
+      <ul>
+        {% for n in bt.results.prep.notes %}
+          <li>{{ n }}</li>
+        {% endfor %}
+      </ul>
+    {% endif %}
+  {% endif %}
+
+  {% if bt.results.logs %}
+    <h4>Logs (dernières lignes)</h4>
+    <pre style="white-space: pre-wrap;">{% for l in bt.results.logs %}{{ l }}
+{% endfor %}</pre>
+  {% endif %}
+{% elif bt.status == 'RUNNING' %}
+  <p class="muted">Backtest en cours…</p>
+{% else %}
+  <p class="muted">Aucun résultat pour l’instant. Clique sur <strong>Lancer / Relancer</strong>.</p>
+{% endif %}
 
 <p>
   <a class="btn" href="{% url 'backtests_page' %}">← Retour</a>
