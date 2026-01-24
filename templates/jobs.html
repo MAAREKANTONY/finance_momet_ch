@@ -1,0 +1,80 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Traitements (jobs)</h2>
+
+<div class="card">
+  <div class="row" style="align-items:center;">
+    <div><span class="pill">PENDING: {{ counts.PENDING }}</span></div>
+    <div><span class="pill">RUNNING: {{ counts.RUNNING }}</span></div>
+    <div><span class="pill">DONE: {{ counts.DONE }}</span></div>
+    <div><span class="pill">FAILED: {{ counts.FAILED }}</span></div>
+  </div>
+
+  <form method="get" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px;">
+    <label class="muted">Status</label>
+    <select name="status">
+      <option value="" {% if not status %}selected{% endif %}>Tous</option>
+      <option value="PENDING" {% if status == "PENDING" %}selected{% endif %}>PENDING</option>
+      <option value="RUNNING" {% if status == "RUNNING" %}selected{% endif %}>RUNNING</option>
+      <option value="DONE" {% if status == "DONE" %}selected{% endif %}>DONE</option>
+      <option value="FAILED" {% if status == "FAILED" %}selected{% endif %}>FAILED</option>
+    </select>
+
+    <label class="muted">Type</label>
+    <select name="type">
+      <option value="" {% if not job_type %}selected{% endif %}>Tous</option>
+      {% for v, label in job_types %}
+        <option value="{{ v }}" {% if job_type == v %}selected{% endif %}>{{ v }}</option>
+      {% endfor %}
+    </select>
+
+    <button class="btn" type="submit">Filtrer</button>
+    <a class="btn" href="{% url 'jobs_page' %}">Reset</a>
+  </form>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Date</th>
+      <th>Type</th>
+      <th>Status</th>
+      <th>Backtest</th>
+      <th>Scénario</th>
+      <th>Message</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for j in jobs %}
+      <tr>
+        <td>{{ j.created_at|date:"Y-m-d H:i" }}</td>
+        <td><span class="pill">{{ j.job_type }}</span></td>
+        <td>
+          <span class="pill">{{ j.status }}</span>
+          {% if j.finished_at %}<div class="muted" style="font-size:12px;">fin {{ j.finished_at|date:"Y-m-d H:i" }}</div>{% endif %}
+        </td>
+        <td>
+          {% if j.backtest %}
+            <a href="{% url 'backtest_detail' j.backtest_id %}">{{ j.backtest.name }}</a>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if j.scenario %}
+            {{ j.scenario.name }}
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if j.message %}{{ j.message }}{% endif %}
+          {% if j.error %}<div class="muted" style="color:#b00;">{{ j.error }}</div>{% endif %}
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="6" class="muted">Aucun job pour ces filtres.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

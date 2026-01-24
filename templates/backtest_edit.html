@@ -1,0 +1,205 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Modifier backtest</h2>
+
+<div class="card" style="margin-bottom:12px;">
+  <div><strong>Attention :</strong> modifier un backtest réinitialise ses résultats (ils deviennent obsolètes). Après sauvegarde, relance les étapes <em>Fetch</em> → <em>Compute</em> → <em>Run</em>.</div>
+</div>
+
+<form method="post" id="backtest-form">
+  {% csrf_token %}
+
+  <div class="card">
+    <div class="field">
+      <label for="{{ form.name.id_for_label }}">Nom</label><br>
+      {{ form.name }}
+      {% if form.name.errors %}<div class="error">{{ form.name.errors }}</div>{% endif %}
+    </div>
+
+    <div class="field" style="margin-top:12px;">
+      <label for="{{ form.description.id_for_label }}">Description</label><br>
+      {{ form.description }}
+      {% if form.description.errors %}<div class="error">{{ form.description.errors }}</div>{% endif %}
+    </div>
+
+    <div class="field" style="margin-top:12px;">
+      <label for="{{ form.scenario.id_for_label }}">Scénario</label><br>
+      {{ form.scenario }}
+      {% if form.scenario.errors %}<div class="error">{{ form.scenario.errors }}</div>{% endif %}
+      <div class="muted">Le snapshot d’univers sera mis à jour d’après la configuration actuelle du scénario.</div>
+    </div>
+
+    <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+      <div>
+        <label for="{{ form.start_date.id_for_label }}">Date début</label><br>
+        {{ form.start_date }}
+        {% if form.start_date.errors %}<div class="error">{{ form.start_date.errors }}</div>{% endif %}
+      </div>
+      <div>
+        <label for="{{ form.end_date.id_for_label }}">Date fin</label><br>
+        {{ form.end_date }}
+        {% if form.end_date.errors %}<div class="error">{{ form.end_date.errors }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+      <div>
+        <label for="{{ form.capital_total.id_for_label }}">Capital total (CP)</label><br>
+        {{ form.capital_total }}
+        <div class="muted">0 = infini</div>
+        {% if form.capital_total.errors %}<div class="error">{{ form.capital_total.errors }}</div>{% endif %}
+      </div>
+      <div>
+        <label for="{{ form.capital_per_ticker.id_for_label }}">Capital par action (CT)</label><br>
+        {{ form.capital_per_ticker }}
+        {% if form.capital_per_ticker.errors %}<div class="error">{{ form.capital_per_ticker.errors }}</div>{% endif %}
+      </div>
+      <div>
+        <label for="{{ form.ratio_threshold.id_for_label }}">Seuil ratio_p (X %)</label><br>
+        {{ form.ratio_threshold }}
+        {% if form.ratio_threshold.errors %}<div class="error">{{ form.ratio_threshold.errors }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="field" style="margin-top:10px;">
+      <label for="{{ form.include_all_tickers.id_for_label }}">
+        {{ form.include_all_tickers }} Backtest pour toutes les actions du scénario (ignore ratio_p &gt;= X)
+      </label>
+      {% if form.include_all_tickers.errors %}<div class="error">{{ form.include_all_tickers.errors }}</div>{% endif %}
+    </div>
+
+    <div class="field" style="margin-top:16px;">
+      <label>Signal lines (Buy / Sell)</label>
+      <div class="muted">Définis une ou plusieurs paires Buy/Sell. Ex: Buy=A1, Sell=B1.</div>
+
+      <!-- Hidden JSON field bound to Django form -->
+      <input type="hidden" name="signal_lines" id="id_signal_lines" value='{{ form.signal_lines.value|default:"[]"|escapejs }}' />
+
+      <table style="margin-top:8px;">
+        <thead>
+          <tr>
+            <th style="width:60px;">#</th>
+            <th>BUY</th>
+            <th>SELL</th>
+            <th style="width:120px;">Action</th>
+          </tr>
+        </thead>
+        <tbody id="signal-lines-body"></tbody>
+      </table>
+
+      <button type="button" class="btn" id="add-line" style="margin-top:8px;">+ Ajouter une ligne</button>
+
+      {% if form.signal_lines.errors %}<div class="error" style="margin-top:8px;">{{ form.signal_lines.errors }}</div>{% endif %}
+    </div>
+
+    <div class="field" style="margin-top:16px;">
+      <label for="{{ form.close_positions_at_end.id_for_label }}">
+        {{ form.close_positions_at_end }} Clôturer les positions à la fin (recommandé)
+      </label>
+      {% if form.close_positions_at_end.errors %}<div class="error">{{ form.close_positions_at_end.errors }}</div>{% endif %}
+    </div>
+  </div>
+
+  <button type="submit">Enregistrer les modifications</button>
+  <a class="btn" href="{% url 'backtest_detail' pk=bt.id %}">Annuler</a>
+</form>
+
+<script>
+(function() {
+  const SIGNAL_CHOICES = {{ signal_choices_json|safe }};
+  const body = document.getElementById("signal-lines-body");
+  const hidden = document.getElementById("id_signal_lines");
+  const addBtn = document.getElementById("add-line");
+  const form = document.getElementById("backtest-form");
+
+  function makeSelect(name, value) {
+    const sel = document.createElement("select");
+    sel.name = name;
+    sel.style.minWidth = "260px";
+    const empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = "-- choisir --";
+    sel.appendChild(empty);
+    for (const [code, label] of SIGNAL_CHOICES) {
+      const opt = document.createElement("option");
+      opt.value = code;
+      opt.textContent = label;
+      if (value && value === code) opt.selected = true;
+      sel.appendChild(opt);
+    }
+    return sel;
+  }
+
+  function addRow(idx, buyVal, sellVal) {
+    const tr = document.createElement("tr");
+    const tdIdx = document.createElement("td");
+    tdIdx.textContent = idx + 1;
+    tr.appendChild(tdIdx);
+
+    const tdBuy = document.createElement("td");
+    const buy = makeSelect("buy_"+idx, buyVal || "");
+    tdBuy.appendChild(buy);
+    tr.appendChild(tdBuy);
+
+    const tdSell = document.createElement("td");
+    const sell = makeSelect("sell_"+idx, sellVal || "");
+    tdSell.appendChild(sell);
+    tr.appendChild(tdSell);
+
+    const tdAction = document.createElement("td");
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "btn";
+    del.textContent = "Supprimer";
+    del.onclick = () => { tr.remove(); renumber(); };
+    tdAction.appendChild(del);
+    tr.appendChild(tdAction);
+
+    body.appendChild(tr);
+  }
+
+  function renumber() {
+    const rows = body.querySelectorAll("tr");
+    rows.forEach((tr, i) => {
+      tr.querySelector("td").textContent = i + 1;
+      const buySel = tr.querySelector('select[name^="buy_"]');
+      const sellSel = tr.querySelector('select[name^="sell_"]');
+      if (buySel) buySel.name = "buy_" + i;
+      if (sellSel) sellSel.name = "sell_" + i;
+    });
+  }
+
+  function loadInitial() {
+    let initial = [];
+    try { initial = JSON.parse(hidden.value || "[]"); } catch(e) { initial = []; }
+    if (!Array.isArray(initial) || initial.length === 0) {
+      addRow(0, "", "");
+      return;
+    }
+    initial.forEach((it, idx) => addRow(idx, it.buy || "", it.sell || ""));
+  }
+
+  function serializeToHidden() {
+    const rows = body.querySelectorAll("tr");
+    const out = [];
+    rows.forEach((tr) => {
+      const buy = tr.querySelector('select[name^="buy_"]').value;
+      const sell = tr.querySelector('select[name^="sell_"]').value;
+      if (buy && sell) out.push({buy: buy, sell: sell});
+    });
+    hidden.value = JSON.stringify(out);
+  }
+
+  addBtn.addEventListener("click", () => {
+    const idx = body.querySelectorAll("tr").length;
+    addRow(idx, "", "");
+  });
+
+  form.addEventListener("submit", () => {
+    serializeToHidden();
+  });
+
+  loadInitial();
+})();
+</script>
+{% endblock %}

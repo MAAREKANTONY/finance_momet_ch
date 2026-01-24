@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Importer des tickers (CSV ou Excel)</h2>
+
+<div class="card">
+  <p class="muted">
+    Format attendu : 3 colonnes<br>
+    <strong>Ticker code</strong> (ex: MSFT) — <strong>Ticker market</strong> (ex: NASDAQ) — <strong>Scenario list</strong> (ex: scenario1, scenario2)
+  </p>
+
+  <form method="post" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button class="btn" type="submit">Importer</button>
+    <a class="btn" href="{% url 'symbols_page' %}">Annuler</a>
+  </form>
+</div>
+
+{% endblock %}

@@ -1,0 +1,79 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Emails</h2>
+
+<div class="grid2">
+  <div class="card">
+    <h3>Planification (dynamique)</h3>
+    <div class="muted">Ces paramètres sont stockés en base et pris en compte automatiquement (Celery Beat vérifie chaque minute).</div>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="_action" value="save_settings">
+      {{ settings_form.as_p }}
+      <button class="btn" type="submit">Enregistrer l’heure</button>
+    </form>
+    <div class="muted" style="margin-top:10px;">
+      Dernier envoi: <strong>{{ settings_obj.last_sent_date|default:"—" }}</strong>
+    </div>
+
+    <hr style="margin: 14px 0;"/>
+
+    <h3>Actions manuelles</h3>
+    <div class="muted">Utile pour tester sans attendre l’horaire.</div>
+    <div class="row" style="margin-top:10px;">
+      <form method="post" action="{% url 'run_compute_now' %}">
+        {% csrf_token %}
+        <button class="btn" type="submit">Lancer les calculs</button>
+      </form>
+      <form method="post" action="{% url 'run_recompute_all_now' %}" onsubmit="return confirm('Recompute complet : cela recalculera toutes les dates pour tous les scénarios. Continuer ?');">
+        {% csrf_token %}
+        <button class="btn" type="submit">Recompute complet</button>
+      </form>
+      <form method="post" action="{% url 'fetch_bars_now' %}">
+        {% csrf_token %}
+        <button class="btn" type="submit">Collecter les données</button>
+      </form>
+      <form method="post" action="{% url 'send_mail_now' %}">
+        {% csrf_token %}
+        <button class="btn" type="submit">Envoyer l’email maintenant</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Destinataires</h3>
+    <form method="post">
+      {% csrf_token %}
+      <input type="hidden" name="_action" value="add_recipient">
+      {{ form.as_p }}
+      <button class="btn" type="submit">Ajouter</button>
+    </form>
+
+    <hr style="margin: 14px 0;"/>
+
+    <table>
+      <thead><tr><th>Email</th><th>Actif</th><th>Actions</th></tr></thead>
+      <tbody>
+        {% for r in recipients %}
+          <tr>
+            <td><strong>{{ r.email }}</strong></td>
+            <td>{% if r.active %}✅{% else %}—{% endif %}</td>
+            <td>
+              <form method="post" action="{% url 'email_recipient_toggle' r.id %}" style="display:inline;">
+                {% csrf_token %}
+                <button class="btn" type="submit">{% if r.active %}Désactiver{% else %}Activer{% endif %}</button>
+              </form>
+              <form method="post" action="{% url 'email_recipient_delete' r.id %}" style="display:inline;" onsubmit="return confirm('Supprimer cet email ?');">
+                {% csrf_token %}
+                <button class="btn danger" type="submit">Supprimer</button>
+              </form>
+            </td>
+          </tr>
+        {% empty %}
+          <tr><td colspan="3" class="muted">Aucun destinataire</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

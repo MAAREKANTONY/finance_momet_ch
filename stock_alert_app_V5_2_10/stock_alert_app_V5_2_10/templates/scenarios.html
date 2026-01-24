@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row" style="justify-content: space-between; align-items: center;">
+  <h2>Scénarios</h2>
+  <a class="btn" href="{% url 'scenario_create' %}">+ Nouveau scénario</a>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>Nom</th><th>Variables</th><th>Historique</th><th>Actif</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for s in scenarios %}
+        <tr>
+          <td><strong>{{ s.name }}</strong>{% if s.description %}<div class="muted">{{ s.description }}</div>{% endif %}</td>
+          <td class="muted">a={{ s.a }} b={{ s.b }} c={{ s.c }} d={{ s.d }} e={{ s.e }}<br/>N1={{ s.n1 }} N2={{ s.n2 }} N3={{ s.n3 }}</td>
+          <td>{{ s.history_years }} an(s)</td>
+          <td>{% if s.active %}✅{% else %}—{% endif %}</td>
+          <td>
+            <a class="btn" href="{% url 'scenario_edit' s.id %}">Modifier</a>
+            <form method="post" action="{% url 'scenario_delete' s.id %}" style="display:inline;" onsubmit="return confirm('Supprimer ce scénario ?');">
+              {% csrf_token %}
+              <button class="btn danger" type="submit">Supprimer</button>
+            </form>
+          </td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="5" class="muted">Aucun scénario</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
