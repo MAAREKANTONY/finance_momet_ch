@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 import dj_database_url
+from urllib.parse import urlparse, parse_qs
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -55,6 +56,14 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "stockalert.wsgi.application"
 
+
+
+
+
+
+
+
+
 #DATABASES = {
 #    "default": {
 #        "ENGINE": "django.db.backends.postgresql",
@@ -67,12 +76,50 @@ WSGI_APPLICATION = "stockalert.wsgi.application"
 #}
 
 
-DATABASES = {
-    "default": dj_database_url.config(
-        default=os.getenv("DATABASE_URL"),
-        conn_max_age=600,
-    )
-}
+#DATABASES = {
+#    "default": dj_database_url.config(
+#        default=os.getenv("DATABASE_URL"),
+#        conn_max_age=600,
+#    )
+#}
+
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip().strip('"').strip("'")
+
+if DATABASE_URL:
+    u = urlparse(DATABASE_URL)
+    qs = parse_qs(u.query)
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": (u.path or "").lstrip("/"),
+            "USER": u.username,
+            "PASSWORD": u.password,
+            "HOST": u.hostname,
+            "PORT": u.port or 5432,
+            "OPTIONS": {
+                # Fly met souvent sslmode=require dans l’URL, mais au cas où :
+                "sslmode": (qs.get("sslmode", ["require"])[0]),
+            },
+        }
+    }
+else:
+    # fallback local (compose)
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("POSTGRES_DB", "stockalert"),
+            "USER": os.getenv("POSTGRES_USER", "stockalert"),
+            "PASSWORD": os.getenv("POSTGRES_PASSWORD", "stockalert"),
+            "HOST": os.getenv("POSTGRES_HOST", "db"),
+            "PORT": int(os.getenv("POSTGRES_PORT", "5432")),
+        }
+    }
+
+
+
+
+
+
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
