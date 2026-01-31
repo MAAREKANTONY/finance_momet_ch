@@ -21,7 +21,11 @@
 
 {% if portfolio_kpi %}
 <div class="card">
-  <h3>Synthèse portefeuille (global)</h3>
+  
+  <details class="accordion" open>
+    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Synthèse portefeuille (global)</summary>
+    <div style="padding:6px 0 14px 0;">
+
   <table>
     <tr>
       <th>Capital total</th><td>{{ portfolio_kpi.capital_total }}</td>
@@ -46,7 +50,14 @@
 {% endif %}
 
 <div class="card">
-  <h3>Sélection</h3>
+  
+    </div>
+  </details>
+
+  <details class="accordion">
+    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Sélection</summary>
+    <div style="padding:6px 0 14px 0;">
+
   <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
     <label>Ticker / Ligne</label>
     <select id="tickerLineSelect">
@@ -71,7 +82,14 @@
 </div>
 
 <div class="card">
-  <h3>Légende & définitions</h3>
+  
+    </div>
+  </details>
+
+  <details class="accordion">
+    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Légende & définitions</summary>
+    <div style="padding:6px 0 14px 0;">
+
   <div class="muted" style="line-height:1.5;">
     <p>
       <b>Important :</b> les grandeurs <b>G</b>, <b>S_G_N</b>, <b>BT</b>, <b>BMJ</b> et <b>BMD</b> sont stockées comme des <b>ratios</b>
@@ -111,7 +129,14 @@
 </div>
 
 <div class="card">
-  <h3>Synthèse — {{ ticker }} / L{{ line_index }}</h3>
+  
+    </div>
+  </details>
+
+  <details class="accordion">
+    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Synthèse — {{ ticker }} / L{{ line_index }}</summary>
+    <div style="padding:6px 0 14px 0;">
+
   <table>
     <tr>
       <th>BUY</th><td>{{ line.buy }}</td>
@@ -135,7 +160,14 @@
 </div>
 
 <div class="card">
-  <h3>Courbe</h3>
+  
+    </div>
+  </details>
+
+  <details class="accordion">
+    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Courbe</summary>
+    <div style="padding:6px 0 14px 0;">
+
   <canvas id="chart" height="120"></canvas>
   <div class="muted" style="margin-top:8px;">
     Note: la courbe est calculée à partir du JSON stocké (pas de recalcul serveur).
@@ -143,7 +175,14 @@
 </div>
 
 <div class="card">
-  <h3>Données journalières {% if is_truncated %}(dernières 200 lignes){% endif %}</h3>
+  
+    </div>
+  </details>
+
+  <details class="accordion">
+    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Données journalières {% if is_truncated %}(dernières 200 lignes){% endif %}</summary>
+    <div style="padding:6px 0 14px 0;">
+
   <div style="overflow:auto; max-height:560px;">
     <table>
       <thead>
@@ -292,3 +331,6 @@
   }
 </script>
 {% endblock %}
+
+    </div>
+  </details>

@@ -1063,7 +1063,7 @@ def backtest_create(request):
             return redirect("backtest_detail", pk=bt.pk)
     else:
         form = BacktestForm()
-    return render(request, "backtest_create.html", {"form": form, "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES)})
+    return render(request, "backtest_create.html", {"form": form, "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES), "signal_lines_json": json.dumps(form["signal_lines"].value() or [])})
 
 
 @login_required
@@ -1117,6 +1117,7 @@ def backtest_update(request, pk: int):
             "form": form,
             "bt": bt,
             "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES),
+            "signal_lines_json": json.dumps(form["signal_lines"].value() or []),
         },
     )
 

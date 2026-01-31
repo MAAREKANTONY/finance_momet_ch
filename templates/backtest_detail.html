@@ -89,6 +89,10 @@
         {% csrf_token %}
         <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Calculer indicateurs</button>
       </form>
+      <form method="post" action="{% url 'run_recompute_all_now' %}" onsubmit="return confirm('Recompute complet : cela recalculera toutes les dates pour tous les scénarios. Continuer ?');">
+        {% csrf_token %}
+        <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Recompute complet</button>
+      </form>
       <form method="post" action="{% url 'backtest_run' bt.id %}">
         {% csrf_token %}
         <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Lancer / Relancer</button>

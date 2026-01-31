@@ -72,7 +72,7 @@
       <div class="muted">Définis une ou plusieurs paires Buy/Sell. Ex: Buy=A1, Sell=B1.</div>
 
       <!-- Hidden JSON field bound to Django form -->
-      <input type="hidden" name="signal_lines" id="id_signal_lines" value='{{ form.signal_lines.value|default:"[]"|escapejs }}' />
+      <input type="hidden" name="signal_lines" id="id_signal_lines" value='{{ signal_lines_json|default:"[]"|escapejs }}' />
 
       <table style="margin-top:8px;">
         <thead>
