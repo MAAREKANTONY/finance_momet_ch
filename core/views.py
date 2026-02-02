@@ -2136,8 +2136,32 @@ def backtest_export_details(request, pk: int):
                     messages.error(request, f"pyarrow requis pour l'export CSV: {e}")
                     return redirect("backtest_detail", pk=bt.id)
 
+                import pyarrow as pa  # type: ignore
+                import pyarrow.compute as pc  # type: ignore
+
+                def _table_safe_for_csv(table: "pa.Table") -> "pa.Table":
+                    """Make a PyArrow table CSV-safe.
+
+                    Some columns (e.g., list<string>) cannot be written to CSV directly.
+                    We convert unsupported nested types to a JSON string per cell.
+                    This is purely a technical transformation for export purposes only.
+                    """
+                    schema = table.schema
+                    for idx, field in enumerate(schema):
+                        t = field.type
+                        if pa.types.is_list(t) or pa.types.is_large_list(t) or pa.types.is_struct(t) or pa.types.is_map(t):
+                            # Convert to JSON strings (cell-wise) to preserve information.
+                            # This avoids ArrowInvalid: Unsupported Type:list<...>
+                            col = table.column(idx).combine_chunks()
+                            pylist = col.to_pylist()
+                            import json as _json
+                            json_strings = [_json.dumps(v, ensure_ascii=False) if v is not None else None for v in pylist]
+                            table = table.set_column(idx, field.name, pa.array(json_strings, type=pa.string()))
+                    return table
+
                 for fp in parquet_files:
                     table = pq.read_table(fp)
+                    table = _table_safe_for_csv(table)
                     buf = BytesIO()
                     pacsv.write_csv(table, buf)
                     buf.seek(0)
