@@ -402,6 +402,18 @@ def run_backtest_task(backtest_id: int):
         prep_report = prepare_backtest_data(bt)
         engine_result = engine_run_backtest(bt)
         results = engine_result.results
+
+        # --- Optional (NO-REGRESSION) Parquet storage ---
+        # Writes daily series to Parquet *in addition* to existing JSON results.
+        # Enabled only when ENABLE_PARQUET_STORAGE=1.
+        try:
+            from .services.backtesting.parquet_storage import write_backtest_parquet_files
+
+            write_backtest_parquet_files(bt, results)
+        except Exception:
+            # Never fail a backtest because of optional storage.
+            pass
+
         results["prep"] = {
             "did_fetch_bars": prep_report.did_fetch_bars,
             "did_compute_metrics": prep_report.did_compute_metrics,

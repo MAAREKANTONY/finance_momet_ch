@@ -50,6 +50,7 @@ urlpatterns = [
     path("backtests/<int:pk>/export_debug.csv", views.backtest_export_debug_csv, name="backtest_export_debug_csv"),
     path("backtests/<int:pk>/export.xlsx", views.backtest_export_excel, name="backtest_export_excel"),
     path("backtests/<int:pk>/export_compact.xlsx", views.backtest_export_excel_compact, name="backtest_export_excel_compact"),
+    path("backtests/<int:pk>/export_details.zip", views.backtest_export_details, name="backtest_export_details"),
 
     # Helper / documentation
     path("help/indicators/", views.indicators_help, name="indicators_help"),

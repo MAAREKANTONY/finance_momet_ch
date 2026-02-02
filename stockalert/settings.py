@@ -1,16 +1,37 @@
 import os
 from pathlib import Path
+
+from celery.schedules import crontab
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Application version (shown in UI footer)
-APP_VERSION = "V5.2.7"
+APP_VERSION = os.getenv("APP_VERSION", "V5.2.12")
+
+# Load .env if present (does not override real env vars by default)
 load_dotenv(BASE_DIR / ".env", override=False)
 
 SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret-key")
 DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
-ALLOWED_HOSTS = [h.strip() for h in os.getenv("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
+
+def _csv_env(name: str, default: str = "") -> list[str]:
+    raw = os.getenv(name, default)
+    return [v.strip() for v in raw.split(",") if v.strip()]
+
+# Hosts & CSRF (prod friendly)
+ALLOWED_HOSTS = _csv_env(
+    "DJANGO_ALLOWED_HOSTS",
+    "localhost,127.0.0.1",
+)
+
+CSRF_TRUSTED_ORIGINS = _csv_env(
+    "DJANGO_CSRF_TRUSTED_ORIGINS",
+    "https://momet.lifesev.info,https://www.momet.lifesev.info",
+)
+
+# If behind a proxy (Fly.io / nginx), Django must trust X-Forwarded-Proto
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 INSTALLED_APPS = [
     "django.contrib.admin",
@@ -102,17 +123,22 @@ CELERY_TIMEZONE = TIME_ZONE
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 DEFAULT_EXCHANGE = os.getenv("DEFAULT_EXCHANGE", "")
 
-from celery.schedules import crontab
 FETCH_BARS_HOUR = int(os.getenv("FETCH_BARS_HOUR", "23"))
 COMPUTE_HOUR = int(os.getenv("COMPUTE_HOUR", "23"))
 EMAIL_HOUR = int(os.getenv("EMAIL_HOUR", "23"))
 
 CELERY_BEAT_SCHEDULE = {
-    'check-scheduled-alerts': {
-        'task': 'core.tasks.check_and_send_scheduled_alerts_task',
-        'schedule': crontab(minute='*'),
+    "check-scheduled-alerts": {
+        "task": "core.tasks.check_and_send_scheduled_alerts_task",
+        "schedule": crontab(minute="*"),
     },
     "fetch-daily-bars": {"task": "core.tasks.fetch_daily_bars_task", "schedule": crontab(hour=FETCH_BARS_HOUR, minute=5)},
     "compute-metrics": {"task": "core.tasks.compute_metrics_task", "schedule": crontab(hour=COMPUTE_HOUR, minute=15)},
     "send-daily-alerts": {"task": "core.tasks.send_daily_alerts_task", "schedule": crontab(hour=EMAIL_HOUR, minute=25)},
 }
+
+# Cookie security (recommended in prod; keep enabled even if DEBUG=0)
+CSRF_COOKIE_SECURE = os.getenv("CSRF_COOKIE_SECURE", "1") == "1"
+SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "1") == "1"
+CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Lax")
+SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")

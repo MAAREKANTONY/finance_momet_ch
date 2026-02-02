@@ -4,7 +4,7 @@ from io import BytesIO
 from typing import Iterable
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.http import JsonResponse, HttpResponse
+from django.http import JsonResponse, HttpResponse, FileResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.db.models import Max, Q
 from django.db.models.deletion import ProtectedError
@@ -16,10 +16,14 @@ from openpyxl.styles import Font, Alignment
 from openpyxl.chart import LineChart, Reference
 import zipfile as pyzip
 import json
+import tempfile
+from pathlib import Path
 
 from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog, Backtest, ProcessingJob
 from .forms import ScenarioForm, EmailRecipientForm, SymbolManualForm, EmailSettingsForm, SymbolScenariosForm, SymbolImportForm, BacktestForm, BACKTEST_SIGNAL_CHOICES
 from .services.provider_twelvedata import TwelveDataClient
+from .services.backtesting.parquet_storage import parquet_storage_enabled
+from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 
 try:
     # Celery is optional in dev; we keep the import defensive so the web container can boot.
@@ -1062,8 +1066,9 @@ def backtest_create(request):
             messages.success(request, "Backtest enregistré (configuration).")
             return redirect("backtest_detail", pk=bt.pk)
     else:
-        form = BacktestForm()
-    return render(request, "backtest_create.html", {"form": form, "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES), "signal_lines_json": json.dumps(form["signal_lines"].value() or [])})
+        form = BacktestForm(initial={"include_all_tickers": True})
+    signal_lines_json = json.dumps(form["signal_lines"].value() or [])
+    return render(request, "backtest_create.html", {"form": form, "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES), "signal_lines_json": signal_lines_json})
 
 
 @login_required
@@ -1110,6 +1115,8 @@ def backtest_update(request, pk: int):
     else:
         form = BacktestForm(instance=bt)
 
+    signal_lines_json = json.dumps(form["signal_lines"].value() or [])
+
     return render(
         request,
         "backtest_edit.html",
@@ -1117,7 +1124,7 @@ def backtest_update(request, pk: int):
             "form": form,
             "bt": bt,
             "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES),
-            "signal_lines_json": json.dumps(form["signal_lines"].value() or []),
+            "signal_lines_json": signal_lines_json,
         },
     )
 
@@ -1331,6 +1338,14 @@ def backtest_export_excel(request, pk: int):
         messages.warning(request, "Aucun résultat à exporter (lance le backtest).")
         return redirect("backtest_detail", pk=pk)
 
+    # --- Volume guards (optional) ---
+    num_tickers_total = len(tickers_map)
+    limit_excel_details = should_limit_excel(num_tickers_total)
+    top_n = excel_top_n()
+    selected_tickers_for_details = list(tickers_map.keys())
+    if limit_excel_details:
+        selected_tickers_for_details = select_top_tickers_by_metric(tickers_map, top_n)
+
     def _to_float(x):
         if x is None or x == "":
             return None
@@ -1422,7 +1437,8 @@ def backtest_export_excel(request, pk: int):
     for cell in ws_s[1]:
         cell.font = Font(bold=True)
 
-    for ticker, tentry in tickers_map.items():
+    for ticker in selected_tickers_for_details:
+        tentry = tickers_map.get(ticker) or {}
         for line in (tentry or {}).get("lines") or []:
             fin = line.get("final") or {}
             ws_s.append([
@@ -1501,7 +1517,10 @@ def backtest_export_excel(request, pk: int):
     _auto_width(ws_pd)
 
     # --- Daily sheets + charts ---
-    for ticker, tentry in tickers_map.items():
+    # If volume guards are enabled and the universe is too large, we only include Top N tickers' daily sheets.
+    tickers_for_daily = selected_tickers_for_details
+    for ticker in tickers_for_daily:
+        tentry = tickers_map.get(ticker) or {}
         for line in (tentry or {}).get("lines") or []:
             li = int(line.get("line_index") or 1)
             ws_name = f"{ticker}_L{li}"[:31]
@@ -1652,6 +1671,14 @@ def backtest_export_excel_compact(request, pk: int):
     if not tickers_map:
         messages.warning(request, "Aucun résultat à exporter (lance le backtest).")
         return redirect("backtest_detail", pk=pk)
+
+    # --- Volume guards (optional) ---
+    num_tickers_total = len(tickers_map)
+    limit_compact_daily = should_limit_excel(num_tickers_total)
+    top_n = excel_top_n()
+    selected_tickers_for_details = list(tickers_map.keys())
+    if limit_compact_daily:
+        selected_tickers_for_details = select_top_tickers_by_metric(tickers_map, top_n)
 
     charts_enabled = request.GET.get("charts", "1") != "0"
     chart_mode = (request.GET.get("chart_mode") or "top").lower().strip()
@@ -2032,6 +2059,99 @@ def backtest_export_excel_compact(request, pk: int):
     )
     response["Content-Disposition"] = f'attachment; filename="backtest_{bt.id}_export_compact.xlsx"'
     return response
+
+
+def _safe_fs_segment(value: str) -> str:
+    """Filesystem-safe segment (must match parquet_storage._safe_segment semantics)."""
+    import re
+
+    value = (value or "").strip()
+    if not value:
+        return "unknown"
+    value = value.lower()
+    value = re.sub(r"[^a-z0-9_-]+", "-", value)
+    value = re.sub(r"-+", "-", value).strip("-")
+    return value or "unknown"
+
+
+def _resolve_backtest_parquet_dir(bt: Backtest) -> Path:
+    """Return the expected parquet directory for a backtest.
+
+    Layout:
+        <BACKTEST_DATA_DIR>/backtests/<id>/<scenario_segment>/
+    """
+    base_dir = os.environ.get("BACKTEST_DATA_DIR", "/data").strip() or "/data"
+    scenario_name = getattr(getattr(bt, "scenario", None), "name", "")
+    scenario_segment = _safe_fs_segment(scenario_name) if scenario_name else str(bt.scenario_id or "scenario")
+    return Path(base_dir) / "backtests" / str(bt.id) / scenario_segment
+
+
+@login_required
+def backtest_export_details(request, pk: int):
+    """Export backtest daily series as a ZIP of Parquet files (or CSV).
+
+    This is an additive export and does not modify the legacy Excel exports.
+    """
+    bt = get_object_or_404(Backtest, pk=pk)
+
+    fmt = (request.GET.get("format") or "parquet").strip().lower()
+    if fmt not in {"parquet", "csv"}:
+        fmt = "parquet"
+
+    # For safety: details export is only meaningful when Parquet storage exists.
+    parquet_dir = _resolve_backtest_parquet_dir(bt)
+    if not parquet_dir.exists() or not parquet_dir.is_dir():
+        messages.error(
+            request,
+            "Export détails indisponible : fichiers Parquet non trouvés. "
+            "Relance le backtest avec ENABLE_PARQUET_STORAGE=1 (et un volume /data persistant).",
+        )
+        return redirect("backtest_detail", pk=bt.id)
+
+    # Collect parquet files
+    parquet_files = sorted([p for p in parquet_dir.glob("*.parquet") if p.is_file()])
+    if not parquet_files:
+        messages.error(
+            request,
+            "Export détails indisponible : aucun fichier Parquet dans le dossier de ce backtest.",
+        )
+        return redirect("backtest_detail", pk=bt.id)
+
+    # Create ZIP on disk to avoid memory blowups
+    tmp = tempfile.NamedTemporaryFile(prefix=f"backtest_{bt.id}_details_", suffix=".zip", delete=False)
+    tmp_path = Path(tmp.name)
+    tmp.close()
+
+    try:
+        with pyzip.ZipFile(tmp_path, "w", compression=pyzip.ZIP_DEFLATED) as zf:
+            if fmt == "parquet":
+                for fp in parquet_files:
+                    zf.write(fp, arcname=fp.name)
+            else:
+                # CSV export requires pyarrow to read parquet (optional dependency)
+                try:
+                    import pyarrow.parquet as pq  # type: ignore
+                    import pyarrow.csv as pacsv  # type: ignore
+                except Exception as e:
+                    messages.error(request, f"pyarrow requis pour l'export CSV: {e}")
+                    return redirect("backtest_detail", pk=bt.id)
+
+                for fp in parquet_files:
+                    table = pq.read_table(fp)
+                    buf = BytesIO()
+                    pacsv.write_csv(table, buf)
+                    buf.seek(0)
+                    zf.writestr(fp.with_suffix(".csv").name, buf.getvalue())
+
+        tmp_f = open(tmp_path, "rb")
+        filename = f"backtest_{bt.id}_details_{fmt}.zip"
+        resp = FileResponse(tmp_f, as_attachment=True, filename=filename, content_type="application/zip")
+        return resp
+    finally:
+        # FileResponse will keep the file handle open for streaming.
+        # We keep the temp file on disk; OS cleanup can be handled by a cron, or you can
+        # switch to a managed temp dir in Vultr if needed.
+        pass
 
 
 @login_required

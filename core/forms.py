@@ -133,12 +133,6 @@ class BacktestForm(forms.ModelForm):
             "end_date": forms.DateInput(format="%Y-%m-%d", attrs={"type": "date"}),
         }
 
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        # Default: include all tickers (ignore ratio_p >= X)
-        if not self.is_bound and (not getattr(self, "instance", None) or not getattr(self.instance, "pk", None)):
-            self.fields["include_all_tickers"].initial = True
-
     def clean_signal_lines(self):
         """Accept JSON list; keep validation minimal for Feature 1."""
         value = self.cleaned_data.get("signal_lines")

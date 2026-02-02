@@ -89,6 +89,7 @@
         {% csrf_token %}
         <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Calculer indicateurs</button>
       </form>
+
       <form method="post" action="{% url 'run_recompute_all_now' %}" onsubmit="return confirm('Recompute complet : cela recalculera toutes les dates pour tous les scénarios. Continuer ?');">
         {% csrf_token %}
         <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Recompute complet</button>
@@ -109,6 +110,8 @@
         <a class="btn" style="margin-left:8px;" href="{% url 'backtest_results' bt.id %}">Voir résultats</a>
         <a class="btn" style="margin-left:8px;" href="{% url 'backtest_export_excel_compact' bt.id %}">Exporter Excel (compact Sheets)</a>
         <a class="btn" style="margin-left:8px;" href="{% url 'backtest_export_excel' bt.id %}">Exporter Excel</a>
+        <a class="btn" style="margin-left:8px;" href="{% url 'backtest_export_details' bt.id %}">Exporter Détails (Parquet ZIP)</a>
+        <a class="btn" style="margin-left:8px;" href="{% url 'backtest_export_details' bt.id %}?format=csv">Exporter Détails (CSV ZIP)</a>
       {% endif %}
       {% if bt.status == 'RUNNING' %}<span class="muted">En cours… rafraîchis la page dans quelques secondes.</span>{% endif %}
     </div>

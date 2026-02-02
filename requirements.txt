@@ -8,3 +8,7 @@ django-celery-beat>=2.6
 gunicorn>=21.2
 openpyxl>=3.1
 matplotlib==3.9.0
+
+# Optional storage for large backtests (enabled via ENABLE_PARQUET_STORAGE=1)
+pyarrow>=15.0
+

@@ -19,14 +19,27 @@
   </div>
 </div>
 
-{% if portfolio_kpi %}
-<div class="card">
-  
-  <details class="accordion" open>
-    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Synthèse portefeuille (global)</summary>
-    <div style="padding:6px 0 14px 0;">
+<style>
+  details.acc { padding: 0; }
+  details.acc > summary.acc-summary {
+    cursor: pointer;
+    list-style: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    user-select: none;
+  }
+  details.acc > summary.acc-summary::-webkit-details-marker { display: none; }
+  .acc-title { font-weight: 700; font-size: 18px; }
+  details.acc[open] > summary.acc-summary { margin-bottom: 12px; }
+  .acc-body { }
+</style>
 
-  <table>
+{% if portfolio_kpi %}
+<details class="card acc" open>
+<summary class="acc-summary"><span class="acc-title">Synthèse portefeuille (global)</span></summary>
+<div class="acc-body">
+<table>
     <tr>
       <th>Capital total</th><td>{{ portfolio_kpi.capital_total }}</td>
       <th>Investi (fin)</th><td>{{ portfolio_kpi.invested_end }}</td>
@@ -47,18 +60,13 @@
     <div class="muted" style="margin-top:8px;">Equity curve + drawdown (ratio) sur la période.</div>
   </div>
 </div>
+</details>
 {% endif %}
 
-<div class="card">
-  
-    </div>
-  </details>
-
-  <details class="accordion">
-    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Sélection</summary>
-    <div style="padding:6px 0 14px 0;">
-
-  <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+<details class="card acc">
+<summary class="acc-summary"><span class="acc-title">Sélection</span></summary>
+<div class="acc-body">
+<div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
     <label>Ticker / Ligne</label>
     <select id="tickerLineSelect">
       {% for opt in ticker_options %}
@@ -80,17 +88,12 @@
     </select>
   </div>
 </div>
+</details>
 
-<div class="card">
-  
-    </div>
-  </details>
-
-  <details class="accordion">
-    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Légende & définitions</summary>
-    <div style="padding:6px 0 14px 0;">
-
-  <div class="muted" style="line-height:1.5;">
+<details class="card acc">
+<summary class="acc-summary"><span class="acc-title">Légende & définitions</span></summary>
+<div class="acc-body">
+<div class="muted" style="line-height:1.5;">
     <p>
       <b>Important :</b> les grandeurs <b>G</b>, <b>S_G_N</b>, <b>BT</b>, <b>BMJ</b> et <b>BMD</b> sont stockées comme des <b>ratios</b>
       (ex : <code>0.01</code> = <b>+1%</b>). L'interface les affiche en pourcentage.
@@ -127,17 +130,12 @@
     </ul>
   </div>
 </div>
+</details>
 
-<div class="card">
-  
-    </div>
-  </details>
-
-  <details class="accordion">
-    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Synthèse — {{ ticker }} / L{{ line_index }}</summary>
-    <div style="padding:6px 0 14px 0;">
-
-  <table>
+<details class="card acc" open>
+<summary class="acc-summary"><span class="acc-title">Synthèse — {{ ticker }} / L{{ line_index }}</span></summary>
+<div class="acc-body">
+<table>
     <tr>
       <th>BUY</th><td>{{ line.buy }}</td>
       <th>SELL</th><td>{{ line.sell }}</td>
@@ -158,32 +156,22 @@
     </tr>
   </table>
 </div>
+</details>
 
-<div class="card">
-  
-    </div>
-  </details>
-
-  <details class="accordion">
-    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Courbe</summary>
-    <div style="padding:6px 0 14px 0;">
-
-  <canvas id="chart" height="120"></canvas>
+<details class="card acc">
+<summary class="acc-summary"><span class="acc-title">Courbe</span></summary>
+<div class="acc-body">
+<canvas id="chart" height="120"></canvas>
   <div class="muted" style="margin-top:8px;">
     Note: la courbe est calculée à partir du JSON stocké (pas de recalcul serveur).
   </div>
 </div>
+</details>
 
-<div class="card">
-  
-    </div>
-  </details>
-
-  <details class="accordion">
-    <summary style="cursor:pointer; font-weight:600; padding:8px 0;">Données journalières {% if is_truncated %}(dernières 200 lignes){% endif %}</summary>
-    <div style="padding:6px 0 14px 0;">
-
-  <div style="overflow:auto; max-height:560px;">
+<details class="card acc">
+<summary class="acc-summary"><span class="acc-title">Données journalières {% if is_truncated %}(dernières 200 lignes){% endif %}</span></summary>
+<div class="acc-body">
+<div style="overflow:auto; max-height:560px;">
     <table>
       <thead>
         <tr>
@@ -226,6 +214,7 @@
     </table>
   </div>
 </div>
+</details>
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
@@ -331,6 +320,3 @@
   }
 </script>
 {% endblock %}
-
-    </div>
-  </details>

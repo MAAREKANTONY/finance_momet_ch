@@ -32,6 +32,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    volumes:
+      - ./data:/data
     command: >
       sh -c "
       python manage.py migrate --noinput &&
@@ -47,6 +49,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    volumes:
+      - ./data:/data
     command: celery -A stockalert worker -l info
 
   celery-beat:
@@ -57,6 +61,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_started
+    volumes:
+      - ./data:/data
     command: celery -A stockalert beat -l info
 
 volumes:
