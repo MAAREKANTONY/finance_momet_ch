@@ -29,6 +29,10 @@ from django.db import transaction
 
 from core.models import Alert, Backtest, DailyBar, DailyMetric, Symbol
 
+# Pseudo signal used by UI to activate the special sell rule.
+# IMPORTANT: additive only; legacy backtests ignore it unless explicitly chosen.
+SPECIAL_SELL_K1F_UPPER_DOWN_B1F = "AUTO_K1F_UPPER_DOWN_B1F"
+
 
 @dataclass
 class BacktestEngineResult:
@@ -122,10 +126,21 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 # skip bad price rows
                 continue
 
-        metrics = {
-            m["date"]: m["ratio_P"]
-            for m in DailyMetric.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=start_d, date__lte=end_d)
-            .values("date", "ratio_P")
+        metrics_full = {
+            m["date"]: {
+                "ratio_P": m.get("ratio_P"),
+                "K1": m.get("K1"),
+                "K1f": m.get("K1f"),
+                "K2": m.get("K2"),
+                "K3": m.get("K3"),
+                "K4": m.get("K4"),
+            }
+            for m in DailyMetric.objects.filter(
+                symbol=sym,
+                scenario_id=backtest.scenario_id,
+                date__gte=start_d,
+                date__lte=end_d,
+            ).values("date", "ratio_P", "K1", "K1f", "K2", "K3", "K4")
         }
         alerts = {
             a["date"]: _alerts_set(a["alerts"])
@@ -136,7 +151,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
         data_by_ticker[ticker] = {
             "symbol_id": sym.id,
             "price_by_date": price_by_date,
-            "metrics": metrics,
+            "metrics": metrics_full,
             "alerts": alerts,
         }
 
@@ -183,6 +198,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "nb_jours_ouvres": 0,
                 "buy_days_closed": 0,
                 "entry_date": None,
+                "prev_k": None,  # previous day's K-values dict (K1,K1f,K2,K3,K4)
                 "daily_rows": [],
             }
 
@@ -253,6 +269,20 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             }
         )
 
+    def _to_dec(x) -> Decimal | None:
+        if x is None:
+            return None
+        try:
+            return Decimal(str(x))
+        except Exception:
+            return None
+
+    def _cross_down(prev_a: Decimal | None, a: Decimal | None, prev_b: Decimal | None, b: Decimal | None) -> bool:
+        """Return True when series A crosses series B from above between prev and current."""
+        if prev_a is None or a is None or prev_b is None or b is None:
+            return False
+        return (prev_a > prev_b) and (a <= b)
+
     # Daily loop
     for d in dates_sorted:
 
@@ -269,7 +299,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             day_alerts = {a.upper() for a in day_alerts_raw}
 
             # tradable status computed for NB_JOUR_OUVRES before actions
-            tradable, ratio_pct, ratio_raw = _ratio_tradable(tdata["metrics"].get(d))
+            tradable, ratio_pct, ratio_raw = _ratio_tradable((tdata["metrics"].get(d) or {}).get("ratio_P"))
             if tradable and not st["position_open"]:
                 st["nb_jours_ouvres"] += 1
 
@@ -301,7 +331,37 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
 
             sell_code = st["sell_code"]
-            if sell_code and sell_code in day_alerts and st["position_open"]:
+
+            # Special sell mode: K1f crosses down either (1) 0 (B1f) or (2) the closest
+            # "line above" among K1/K2/K3/K4 as of t-1.
+            if st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
+                k_today = (tdata["metrics"].get(d) or {})
+                k_prev = st.get("prev_k") or {}
+                k1f_prev = _to_dec(k_prev.get("K1f"))
+                k1f_today = _to_dec(k_today.get("K1f"))
+
+                # 1) B1f fallback: K1f cross 0 down
+                if _cross_down(k1f_prev, k1f_today, Decimal("0"), Decimal("0")):
+                    _do_sell("AUTO (B1f: K1f cross 0 down)")
+                else:
+                    # 2) Find the closest line above K1f at t-1 among K1/K2/K3/K4
+                    candidates_prev: list[tuple[str, Decimal]] = []
+                    for key in ("K1", "K2", "K3", "K4"):
+                        v = _to_dec(k_prev.get(key))
+                        if v is None or k1f_prev is None:
+                            continue
+                        if v > k1f_prev:
+                            candidates_prev.append((key, v))
+
+                    if candidates_prev and k1f_prev is not None and k1f_today is not None:
+                        # pick closest above => minimal value
+                        target_key, _target_prev = min(candidates_prev, key=lambda x: x[1])
+                        target_prev = _to_dec(k_prev.get(target_key))
+                        target_today = _to_dec(k_today.get(target_key))
+                        if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
+                            _do_sell(f"AUTO ({target_key}: K1f cross down)")
+
+            elif sell_code and sell_code in day_alerts and st["position_open"]:
                 _do_sell(f"signal {sell_code}")
 
             # record daily row (we may update with buy action later, but keep as dict to mutate)
@@ -337,6 +397,11 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "BUY_DAYS_CLOSED": bmd_days,
             })
 
+            # Keep previous day's indicator values (used by special sell modes).
+            # We update it only when metrics exist for this day.
+            if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
+                st["prev_k"] = tdata["metrics"].get(d)
+
         # 2) BUY allocation selection phase (for not-yet-allocated strategies, limited CP)
         candidates_need_alloc = []
         for (ticker, li), st in state.items():
@@ -356,7 +421,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if buy_code not in day_alerts:
                 continue
 
-            tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
+            tradable, ratio_pct, _ = _ratio_tradable((tdata["metrics"].get(d) or {}).get("ratio_P"))
             if not tradable:
                 continue
 
@@ -418,7 +483,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if buy_code not in day_alerts:
                 continue
 
-            tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
+            tradable, _, _ = _ratio_tradable((tdata["metrics"].get(d) or {}).get("ratio_P"))
             if not tradable:
                 continue
 
