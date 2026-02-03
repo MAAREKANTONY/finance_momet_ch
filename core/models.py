@@ -274,6 +274,7 @@ class DailyBar(models.Model):
         decimal_places=6,
         validators=[MinValueValidator(0.0001)],
     )
+    volume = models.BigIntegerField(null=True, blank=True)
     change_amount = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     change_pct = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     source = models.CharField(max_length=64, default="twelvedata")

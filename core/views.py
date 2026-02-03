@@ -172,7 +172,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
 
         header = [
             "date",
-            "open","high","low","close","change_amount","change_pct",
+            "open","high","low","close","volume","change_amount","change_pct",
             "V","slope_P","sum_pos_P","nb_pos_P","ratio_P","amp_h",
             "P","M","M1","X","X1","T","Q","S","K1","K1f","K2","K3","K4",
             "alerts",
@@ -187,7 +187,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
             m = metrics_by_date.get(b.date)
             ws.append([
                 b.date.isoformat(),
-                f(b.open), f(b.high), f(b.low), f(b.close), f(b.change_amount), f(b.change_pct),
+                f(b.open), f(b.high), f(b.low), f(b.close), (int(b.volume) if b.volume is not None else None), f(b.change_amount), f(b.change_pct),
                 f(m.V) if m else None,
                 f(m.slope_P) if m else None,
                 f(m.sum_pos_P) if m else None,
@@ -313,10 +313,11 @@ def data_export_xlsx(request):
     wb.remove(wb.active)
 
     ws1 = wb.create_sheet("DailyBars")
-    header1 = ["ticker", "exchange", "date", "open", "high", "low", "close", "change_amount", "change_pct", "source"]
+    header1 = ["ticker", "exchange", "date", "open", "high", "low", "close", "volume", "change_amount", "change_pct", "source"]
     ws1.append(header1); _header(ws1, 1)
     for b in bars:
         ws1.append([b.symbol.ticker, b.symbol.exchange, b.date.isoformat(), float(b.open), float(b.high), float(b.low), float(b.close),
+                    int(b.volume) if getattr(b, "volume", None) is not None else None,
                     float(b.change_amount) if b.change_amount is not None else None,
                     float(b.change_pct) if b.change_pct is not None else None, b.source])
     _autosize(ws1)
@@ -2087,6 +2088,31 @@ def _resolve_backtest_parquet_dir(bt: Backtest) -> Path:
 
 
 @login_required
+
+def _arrow_table_to_csv_safe(table):
+    """Convert Arrow table to CSV-writable by stringifying nested types (list/struct/map).
+    This is used only for the optional details CSV export to avoid pyarrow errors.
+    """
+    try:
+        import pyarrow as pa  # type: ignore
+    except Exception:
+        return table
+
+    cols = []
+    names = []
+    for name in table.column_names:
+        col = table[name]
+        t = col.type
+        # Nested / complex types are not supported by pyarrow.csv.write_csv
+        if pa.types.is_list(t) or pa.types.is_large_list(t) or pa.types.is_struct(t) or pa.types.is_map(t):
+            # Convert each cell to compact JSON string (preserves information).
+            pylist = col.to_pylist()
+            strlist = [json.dumps(v, ensure_ascii=False) if v is not None else None for v in pylist]
+            col = pa.array(strlist, type=pa.string())
+        cols.append(col)
+        names.append(name)
+    return pa.table(cols, names=names)
+
 def backtest_export_details(request, pk: int):
     """Export backtest daily series as a ZIP of Parquet files (or CSV).
 
@@ -2136,32 +2162,9 @@ def backtest_export_details(request, pk: int):
                     messages.error(request, f"pyarrow requis pour l'export CSV: {e}")
                     return redirect("backtest_detail", pk=bt.id)
 
-                import pyarrow as pa  # type: ignore
-                import pyarrow.compute as pc  # type: ignore
-
-                def _table_safe_for_csv(table: "pa.Table") -> "pa.Table":
-                    """Make a PyArrow table CSV-safe.
-
-                    Some columns (e.g., list<string>) cannot be written to CSV directly.
-                    We convert unsupported nested types to a JSON string per cell.
-                    This is purely a technical transformation for export purposes only.
-                    """
-                    schema = table.schema
-                    for idx, field in enumerate(schema):
-                        t = field.type
-                        if pa.types.is_list(t) or pa.types.is_large_list(t) or pa.types.is_struct(t) or pa.types.is_map(t):
-                            # Convert to JSON strings (cell-wise) to preserve information.
-                            # This avoids ArrowInvalid: Unsupported Type:list<...>
-                            col = table.column(idx).combine_chunks()
-                            pylist = col.to_pylist()
-                            import json as _json
-                            json_strings = [_json.dumps(v, ensure_ascii=False) if v is not None else None for v in pylist]
-                            table = table.set_column(idx, field.name, pa.array(json_strings, type=pa.string()))
-                    return table
-
                 for fp in parquet_files:
                     table = pq.read_table(fp)
-                    table = _table_safe_for_csv(table)
+                    table = _arrow_table_to_csv_safe(table)
                     buf = BytesIO()
                     pacsv.write_csv(table, buf)
                     buf.seek(0)

@@ -26,6 +26,21 @@ def desired_outputsize_years(years: int) -> int:
     return min(5000, years * 260)
 
 
+
+def _parse_int_or_none(x):
+    """Parse TwelveData numeric strings to int; return None if empty/invalid."""
+    if x is None:
+        return None
+    if isinstance(x, int):
+        return x
+    s = str(x).strip()
+    if s == "" or s.lower() == "null":
+        return None
+    try:
+        return int(Decimal(s))
+    except Exception:
+        return None
+
 def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int) -> dict:
     """Fetch/update daily bars for a queryset of Symbol.
 
@@ -51,13 +66,14 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int) -> dict:
             try:
                 d = parse_date(v["datetime"])
                 o = Decimal(v["open"]); h = Decimal(v["high"]); l = Decimal(v["low"]); c = Decimal(v["close"])
+                vol = _parse_int_or_none(v.get("volume"))
             except Exception:
                 continue
 
             DailyBar.objects.update_or_create(
                 symbol=sym,
                 date=d,
-                defaults={"open": o, "high": h, "low": l, "close": c, "source": "twelvedata"},
+                defaults={"open": o, "high": h, "low": l, "close": c, "volume": vol, "source": "twelvedata"},
             )
             bars_written += 1
 
