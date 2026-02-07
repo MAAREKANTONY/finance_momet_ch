@@ -851,6 +851,7 @@ def backtest_compute_metrics(request, pk: int):
 def email_settings_page(request):
     recipients = EmailRecipient.objects.all().order_by("-active", "email")
     settings_obj = EmailSettings.get_solo()
+    scenarios = Scenario.objects.filter(active=True).order_by("name")
 
     if request.method == "POST" and request.POST.get("_action") == "add_recipient":
         form = EmailRecipientForm(request.POST)
@@ -877,7 +878,13 @@ def email_settings_page(request):
     return render(
         request,
         "email_settings.html",
-        {"recipients": recipients, "form": form, "settings_form": settings_form, "settings_obj": settings_obj},
+        {
+            "recipients": recipients,
+            "form": form,
+            "settings_form": settings_form,
+            "settings_obj": settings_obj,
+            "scenarios": scenarios,
+        },
     )
 
 
@@ -886,10 +893,32 @@ def email_settings_page(request):
 @login_required
 @require_POST
 def run_compute_now(request):
+    """Run an incremental compute.
+
+    UI can pass scenario_id to scope compute to a single scenario.
+    If scenario_id == 'ALL', keep legacy behavior (all scenarios).
+    """
+    scenario_id = (request.POST.get("scenario_id") or "").strip()
     try:
-        from core.tasks import compute_metrics_all_job_task
-        compute_metrics_all_job_task.delay(False, user_id=request.user.id if request.user.is_authenticated else None)
-        messages.success(request, "Calculs demandés (traitement en arrière-plan).")
+        if not scenario_id:
+            messages.error(request, "Veuillez choisir un scénario (ou 'Tous les scénarios').")
+            return redirect("email_settings")
+
+        if scenario_id.upper() == "ALL":
+            from core.tasks import compute_metrics_all_job_task
+            compute_metrics_all_job_task.delay(False, user_id=request.user.id if request.user.is_authenticated else None)
+            messages.success(request, "Calculs demandés (tous scénarios, traitement en arrière-plan).")
+        else:
+            from core.tasks import compute_metrics_job_task
+            compute_metrics_job_task.delay(
+                scenario_id=int(scenario_id),
+                symbol_ids=None,
+                recompute_all=False,
+                backtest_id=None,
+                user_id=request.user.id if request.user.is_authenticated else None,
+                job_id=None,
+            )
+            messages.success(request, "Calculs demandés (scénario sélectionné, traitement en arrière-plan).")
     except Exception as e:
         messages.error(request, f"Erreur lancement calculs: {e}")
     return redirect("email_settings")
@@ -898,18 +927,86 @@ def run_compute_now(request):
 @login_required
 @require_POST
 def run_recompute_all_now(request):
-    """Force a full recompute for all scenarios.
+    """Force a full recompute.
 
-    Useful when you suspect old rows were computed with previous formulas,
-    or after a big backfill of historical daily bars.
+    UI can pass scenario_id to scope recompute to a single scenario.
+    If scenario_id == 'ALL' (or missing), keep legacy behavior (all scenarios).
     """
+    scenario_id = (request.POST.get("scenario_id") or "").strip()
     try:
-        from core.tasks import compute_metrics_all_job_task
-        compute_metrics_all_job_task.delay(True, user_id=request.user.id if request.user.is_authenticated else None)
-        messages.success(request, "Recompute complet demandé (tous scénarios).")
+        if not scenario_id:
+            messages.error(request, "Veuillez choisir un scénario (ou 'Tous les scénarios').")
+            return redirect("email_settings")
+
+        if scenario_id.upper() == "ALL":
+            from core.tasks import compute_metrics_all_job_task
+            compute_metrics_all_job_task.delay(True, user_id=request.user.id if request.user.is_authenticated else None)
+            messages.success(request, "Recompute complet demandé (tous scénarios).")
+        else:
+            from core.tasks import compute_metrics_job_task
+            compute_metrics_job_task.delay(
+                scenario_id=int(scenario_id),
+                symbol_ids=None,
+                recompute_all=True,
+                backtest_id=None,
+                user_id=request.user.id if request.user.is_authenticated else None,
+                job_id=None,
+            )
+            messages.success(request, "Recompute complet demandé (scénario sélectionné).")
     except Exception as e:
         messages.error(request, f"Erreur recompute complet: {e}")
     return redirect("email_settings")
+
+
+@login_required
+@require_POST
+def backtest_recompute_metrics(request, pk: int):
+    """Launch a full recompute scoped to the backtest scenario + universe."""
+    bt = get_object_or_404(Backtest, pk=pk)
+
+    # Keep reproducibility: align snapshot before running.
+    if bt.status != Backtest.Status.RUNNING:
+        _refresh_backtest_universe_snapshot(bt)
+
+    tickers = []
+    try:
+        for r in (bt.universe_snapshot or []):
+            if isinstance(r, dict):
+                t = r.get("ticker")
+                if t:
+                    tickers.append(t)
+    except Exception:
+        tickers = []
+
+    symbol_ids = (
+        list(Symbol.objects.filter(ticker__in=tickers).values_list("id", flat=True))
+        if tickers
+        else list(bt.scenario.symbols.values_list("id", flat=True))
+    )
+
+    from core.tasks import compute_metrics_job_task
+
+    pj = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+        status=ProcessingJob.Status.PENDING,
+        backtest=bt,
+        scenario=bt.scenario,
+        created_by=request.user if request.user.is_authenticated else None,
+        message="En attente d'exécution (recompute complet scénario)",
+    )
+    async_res = compute_metrics_job_task.delay(
+        scenario_id=bt.scenario_id,
+        symbol_ids=symbol_ids,
+        recompute_all=True,
+        backtest_id=bt.id,
+        user_id=request.user.id if request.user.is_authenticated else None,
+        job_id=pj.id,
+    )
+    pj.task_id = getattr(async_res, "id", "") or ""
+    pj.save(update_fields=["task_id"])
+
+    messages.success(request, "Recompute complet demandé pour ce backtest (scénario uniquement).")
+    return redirect("backtest_detail", pk=pk)
 
 
 @login_required

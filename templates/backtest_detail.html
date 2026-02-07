@@ -33,13 +33,7 @@
         <tr>
           <td>{{ forloop.counter }}</td>
           <td>{{ line.buy }}</td>
-          <td>
-            {% if line.sell == "AUTO_K1F_UPPER_DOWN_B1F" %}
-              <span class="pill" title="Vente auto : B1f prioritaire, sinon K1f recoupe en descente la 1ère ligne au-dessus (K1/K2/K3/K4) selon le jour.">AUTO (K1f)</span>
-            {% else %}
-              {{ line.sell }}
-            {% endif %}
-          </td>
+          <td>{{ line.sell }}</td>
         </tr>
       {% endfor %}
       </tbody>
@@ -96,9 +90,14 @@
         <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Calculer indicateurs</button>
       </form>
 
-      <form method="post" action="{% url 'run_recompute_all_now' %}" onsubmit="return confirm('Recompute complet : cela recalculera toutes les dates pour tous les scénarios. Continuer ?');">
+      <form method="post" action="{% url 'backtest_recompute_metrics' bt.id %}" onsubmit="return confirm('Recompute complet : cela recalculera toutes les dates pour le scénario de ce backtest. Continuer ?');">
         {% csrf_token %}
         <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Recompute complet</button>
+      </form>
+      <form method="post" action="{% url 'run_recompute_all_now' %}" onsubmit="return confirm('⚠️ Recompute complet : vous avez choisi tous les scénarios. Cela peut être très long. Continuer ?');">
+        {% csrf_token %}
+        <input type="hidden" name="scenario_id" value="ALL" />
+        <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Recompute tous scénarios</button>
       </form>
       <form method="post" action="{% url 'backtest_run' bt.id %}">
         {% csrf_token %}

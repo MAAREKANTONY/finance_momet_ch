@@ -70,17 +70,7 @@
 
     <div class="field" style="margin-top:16px;">
       <label>Signal lines (Buy / Sell)</label>
-      <div class="muted">Définis une ou plusieurs paires Buy/Sell. Ex: Buy=A1, Sell=B1. Tu peux aussi activer un mode spécial par ligne.</div>
-
-      <div class="card" style="margin-top:10px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
-        <div style="flex:1;">
-          <strong>Résumé de la stratégie</strong>
-          <div id="strategy-summary" class="muted" style="margin-top:6px;">—</div>
-        </div>
-        <div class="muted" style="white-space:nowrap;">
-          <span title="Mode spécial : la vente est calculée dynamiquement à partir de K1f (voir option).">ℹ️</span>
-        </div>
-      </div>
+      <div class="muted">Définis une ou plusieurs paires Buy/Sell. Ex: Buy=A1, Sell=B1.</div>
 
       <!-- Hidden JSON field bound to Django form -->
       <input type="hidden" name="signal_lines" id="id_signal_lines" value='{{ signal_lines_json|escapejs }}' />
@@ -89,7 +79,6 @@
         <thead>
           <tr>
             <th style="width:60px;">#</th>
-            <th style="width:200px;">MODE</th>
             <th>BUY</th>
             <th>SELL</th>
             <th style="width:120px;">Action</th>
@@ -118,24 +107,10 @@
 <script>
 (function() {
   const SIGNAL_CHOICES = {{ signal_choices_json|safe }};
-  const SPECIAL_SELL = "AUTO_K1F_UPPER_DOWN_B1F";
   const body = document.getElementById("signal-lines-body");
   const hidden = document.getElementById("id_signal_lines");
   const addBtn = document.getElementById("add-line");
   const form = document.getElementById("backtest-form");
-  const summary = document.getElementById("strategy-summary");
-
-  function badge(text) {
-    const b = document.createElement("span");
-    b.textContent = text;
-    b.style.display = "inline-block";
-    b.style.padding = "2px 8px";
-    b.style.borderRadius = "999px";
-    b.style.fontSize = "12px";
-    b.style.border = "1px solid #ddd";
-    b.style.marginLeft = "8px";
-    return b;
-  }
 
   function makeSelect(name, value) {
     const sel = document.createElement("select");
@@ -145,7 +120,6 @@
     empty.value = "";
     empty.textContent = "-- choisir --";
     sel.appendChild(empty);
-
     for (const [code, label] of SIGNAL_CHOICES) {
       const opt = document.createElement("option");
       opt.value = code;
@@ -156,109 +130,11 @@
     return sel;
   }
 
-  function makeModeSelect(name, value) {
-    const sel = document.createElement("select");
-    sel.name = name;
-    sel.style.minWidth = "180px";
-
-    const optStd = document.createElement("option");
-    optStd.value = "standard";
-    optStd.textContent = "Standard (BUY/SELL fixes)";
-    sel.appendChild(optStd);
-
-    const optSpec = document.createElement("option");
-    optSpec.value = "special_k1f";
-    optSpec.textContent = "Spécial: K1f auto-sell";
-    sel.appendChild(optSpec);
-
-    sel.value = value || "standard";
-    return sel;
-  }
-
-  function ensureSpecialOptionExists(selectEl) {
-    // Ensure the select has the SPECIAL option (kept hidden unless mode is special)
-    let found = false;
-    for (const o of selectEl.options) {
-      if (o.value === SPECIAL_SELL) { found = true; break; }
-    }
-    if (!found) {
-      const opt = document.createElement("option");
-      opt.value = SPECIAL_SELL;
-      opt.textContent = "AUTO (K1f → 1ère ligne au-dessus↓ ou B1f)";
-      selectEl.appendChild(opt);
-    }
-  }
-
-  function updateRowUI(tr) {
-    const modeSel = tr.querySelector('select[name^="mode_"]');
-    const buySel = tr.querySelector('select[name^="buy_"]');
-    const sellSel = tr.querySelector('select[name^="sell_"]');
-    const hint = tr.querySelector('.special-hint');
-    const autoBadge = tr.querySelector('.auto-badge');
-
-    if (!modeSel || !buySel || !sellSel) return;
-    ensureSpecialOptionExists(sellSel);
-
-    if (modeSel.value === "special_k1f") {
-      // Default buy to A1f if empty
-      if (!buySel.value) buySel.value = "A1f";
-      sellSel.value = SPECIAL_SELL;
-      sellSel.disabled = true;
-      if (hint) hint.style.display = "block";
-      if (autoBadge) autoBadge.style.display = "inline-block";
-    } else {
-      sellSel.disabled = false;
-      if (sellSel.value === SPECIAL_SELL) sellSel.value = "";
-      if (hint) hint.style.display = "none";
-      if (autoBadge) autoBadge.style.display = "none";
-    }
-    updateSummary();
-  }
-
-  function formatLine(mode, buy, sell) {
-    if (!buy && !sell) return "—";
-    if (mode === "special_k1f") {
-      return `Spécial: BUY=${buy || "A1f"} / SELL=AUTO(K1f→ligne au-dessus↓ ou B1f)`;
-    }
-    return `Standard: BUY=${buy || "?"} / SELL=${sell || "?"}`;
-  }
-
-  function updateSummary() {
-    const rows = body.querySelectorAll("tr");
-    if (!summary) return;
-    if (!rows.length) { summary.textContent = "—"; return; }
-    const parts = [];
-    rows.forEach((tr, i) => {
-      const mode = tr.querySelector('select[name^="mode_"]')?.value || "standard";
-      const buy = tr.querySelector('select[name^="buy_"]')?.value || "";
-      const sell = tr.querySelector('select[name^="sell_"]')?.value || "";
-      parts.push(`L${i+1}: ${formatLine(mode, buy, sell)}`);
-    });
-    summary.textContent = parts.join(" | ");
-  }
-
   function addRow(idx, buyVal, sellVal) {
     const tr = document.createElement("tr");
-
     const tdIdx = document.createElement("td");
     tdIdx.textContent = idx + 1;
     tr.appendChild(tdIdx);
-
-    const tdMode = document.createElement("td");
-    const mode = makeModeSelect("mode_"+idx, "standard");
-    tdMode.appendChild(mode);
-    const auto = document.createElement("span");
-    auto.className = "auto-badge";
-    auto.style.display = "none";
-    auto.appendChild(badge("AUTO"));
-    tdMode.appendChild(auto);
-    const hint = document.createElement("div");
-    hint.className = "muted special-hint";
-    hint.style.display = "none";
-    hint.style.marginTop = "4px";
-    hint.textContent = "Vente auto : B1f prioritaire, sinon 1ère ligne au-dessus recoupée en descente.";
-    tdMode.appendChild(hint);
-    tr.appendChild(tdMode);
 
     const tdBuy = document.createElement("td");
     const buy = makeSelect("buy_"+idx, buyVal || "");
@@ -275,50 +151,32 @@
     del.type = "button";
     del.className = "btn";
     del.textContent = "Supprimer";
-    del.onclick = () => {
-      tr.remove();
-      renumber();
-    };
+    del.onclick = () => { tr.remove(); renumber(); };
     tdAction.appendChild(del);
     tr.appendChild(tdAction);
 
     body.appendChild(tr);
-
-    mode.addEventListener("change", () => updateRowUI(tr));
-    buy.addEventListener("change", () => updateSummary());
-    sell.addEventListener("change", () => updateSummary());
-    // If existing sellVal is special token, infer mode
-    if ((sellVal || "").toUpperCase() === SPECIAL_SELL) {
-      mode.value = "special_k1f";
-    }
-    updateRowUI(tr);
   }
 
   function renumber() {
     const rows = body.querySelectorAll("tr");
     rows.forEach((tr, i) => {
       tr.querySelector("td").textContent = i + 1;
-      // also update input names so we can serialize in order
       const buySel = tr.querySelector('select[name^="buy_"]');
       const sellSel = tr.querySelector('select[name^="sell_"]');
-      const modeSel = tr.querySelector('select[name^="mode_"]');
       if (buySel) buySel.name = "buy_" + i;
       if (sellSel) sellSel.name = "sell_" + i;
-      if (modeSel) modeSel.name = "mode_" + i;
     });
-    updateSummary();
   }
 
   function loadInitial() {
     let initial = [];
     try { initial = JSON.parse(hidden.value || "[]"); } catch(e) { initial = []; }
     if (!Array.isArray(initial) || initial.length === 0) {
-      // default 1 line
       addRow(0, "", "");
       return;
     }
     initial.forEach((it, idx) => addRow(idx, it.buy || "", it.sell || ""));
-    updateSummary();
   }
 
   function serializeToHidden() {
@@ -327,10 +185,7 @@
     rows.forEach((tr) => {
       const buy = tr.querySelector('select[name^="buy_"]').value;
       const sell = tr.querySelector('select[name^="sell_"]').value;
-      const mode = tr.querySelector('select[name^="mode_"]').value;
-      // When mode is special, force sell to SPECIAL_SELL regardless of disabled state.
-      const sellFinal = (mode === "special_k1f") ? SPECIAL_SELL : sell;
-      if (buy && sellFinal) out.push({buy: buy, sell: sellFinal});
+      if (buy && sell) out.push({buy: buy, sell: sell});
     });
     hidden.value = JSON.stringify(out);
   }
@@ -338,7 +193,6 @@
   addBtn.addEventListener("click", () => {
     const idx = body.querySelectorAll("tr").length;
     addRow(idx, "", "");
-    updateSummary();
   });
 
   form.addEventListener("submit", () => {
@@ -346,7 +200,6 @@
   });
 
   loadInitial();
-  updateSummary();
 })();
 </script>
 {% endblock %}

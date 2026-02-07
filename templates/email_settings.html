@@ -20,13 +20,38 @@
 
     <h3>Actions manuelles</h3>
     <div class="muted">Utile pour tester sans attendre l’horaire.</div>
+
+    <div class="row" style="margin-top:10px; align-items:center; gap:10px; flex-wrap:wrap;">
+      <label class="muted" style="min-width:140px;">Scénario ciblé:</label>
+      <select name="scenario_id" form="form_compute_now" style="min-width:260px;">
+        <option value="">— Choisir un scénario —</option>
+        <option value="ALL">Tous les scénarios (⚠️ lourd)</option>
+        {% for s in scenarios %}
+          <option value="{{ s.id }}">{{ s.name }}</option>
+        {% endfor %}
+      </select>
+      <span class="muted">(Les actions ci-dessous utilisent ce scénario.)</span>
+    </div>
+
     <div class="row" style="margin-top:10px;">
-      <form method="post" action="{% url 'run_compute_now' %}">
+      <form id="form_compute_now" method="post" action="{% url 'run_compute_now' %}">
         {% csrf_token %}
         <button class="btn" type="submit">Lancer les calculs</button>
       </form>
-      <form method="post" action="{% url 'run_recompute_all_now' %}" onsubmit="return confirm('Recompute complet : cela recalculera toutes les dates pour tous les scénarios. Continuer ?');">
+      <form method="post" action="{% url 'run_recompute_all_now' %}" onsubmit="return confirm('Recompute complet : si vous avez choisi "Tous les scénarios", cela peut être très long et coûteux. Continuer ?');">
         {% csrf_token %}
+        <input type="hidden" name="scenario_id" value="" />
+        <script>
+          // Copy scenario selector value into this form (no dependency; keeps legacy server behavior).
+          (function(){
+            const sel = document.querySelector('select[name="scenario_id"][form="form_compute_now"]');
+            const form = document.currentScript.closest('form');
+            const hidden = form.querySelector('input[name="scenario_id"]');
+            if (sel && hidden) {
+              form.addEventListener('submit', function(){ hidden.value = sel.value; });
+            }
+          })();
+        </script>
         <button class="btn" type="submit">Recompute complet</button>
       </form>
       <form method="post" action="{% url 'fetch_bars_now' %}">

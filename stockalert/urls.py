@@ -45,6 +45,7 @@ urlpatterns = [
     path("backtests/<int:pk>/delete/", views.backtest_delete, name="backtest_delete"),
     path("backtests/<int:pk>/fetch_data/", views.backtest_fetch_data, name="backtest_fetch_data"),
     path("backtests/<int:pk>/compute_metrics/", views.backtest_compute_metrics, name="backtest_compute_metrics"),
+    path("backtests/<int:pk>/recompute_metrics/", views.backtest_recompute_metrics, name="backtest_recompute_metrics"),
     path("backtests/<int:pk>/run/", views.backtest_run, name="backtest_run"),
     path("backtests/<int:pk>/results/", views.backtest_results, name="backtest_results"),
     path("backtests/<int:pk>/export_debug.csv", views.backtest_export_debug_csv, name="backtest_export_debug_csv"),
