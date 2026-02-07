@@ -11,6 +11,7 @@ urlpatterns = [
     path("alerts/export.csv", views.alerts_export_csv, name="alerts_export_csv"),
     path("data/export.xlsx", views.data_export_xlsx, name="data_export_xlsx"),
     path("data/export/scenario/<int:scenario_id>.xlsx", views.data_export_scenario_xlsx, name="data_export_scenario_xlsx"),
+    path("data/export/scenario/<int:scenario_id>/details.zip", views.data_export_scenario_details_zip, name="data_export_scenario_details_zip"),
     path("data/export/scenarios.zip", views.data_export_all_scenarios_zip, name="data_export_all_scenarios_zip"),
 
     path("symbols/", views.symbols_page, name="symbols_page"),
