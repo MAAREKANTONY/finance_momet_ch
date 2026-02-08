@@ -910,9 +910,15 @@ def run_compute_now(request):
             messages.success(request, "Calculs demandés (tous scénarios, traitement en arrière-plan).")
         else:
             from core.tasks import compute_metrics_job_task
+            # Scope to the selected scenario universe to avoid recomputing symbols from other scenarios.
+            try:
+                scenario_obj = Scenario.objects.get(id=int(scenario_id))
+                symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
+            except Exception:
+                symbol_ids = None
             compute_metrics_job_task.delay(
                 scenario_id=int(scenario_id),
-                symbol_ids=None,
+                symbol_ids=symbol_ids,
                 recompute_all=False,
                 backtest_id=None,
                 user_id=request.user.id if request.user.is_authenticated else None,
@@ -944,9 +950,15 @@ def run_recompute_all_now(request):
             messages.success(request, "Recompute complet demandé (tous scénarios).")
         else:
             from core.tasks import compute_metrics_job_task
+            # Scope to the selected scenario universe to avoid recomputing symbols from other scenarios.
+            try:
+                scenario_obj = Scenario.objects.get(id=int(scenario_id))
+                symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
+            except Exception:
+                symbol_ids = None
             compute_metrics_job_task.delay(
                 scenario_id=int(scenario_id),
-                symbol_ids=None,
+                symbol_ids=symbol_ids,
                 recompute_all=True,
                 backtest_id=None,
                 user_id=request.user.id if request.user.is_authenticated else None,

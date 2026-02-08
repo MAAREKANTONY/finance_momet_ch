@@ -250,14 +250,32 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
         )
     try:
         scenario = Scenario.objects.get(id=scenario_id)
+        # Scoping rules (no regression for legacy flows):
+        # - If explicit symbol_ids are provided (e.g., from a Backtest universe snapshot), compute only those.
+        # - Otherwise, when computing a single scenario from UI, compute only the symbols attached to that scenario.
+        #   Fallback to all active symbols only if the scenario has no explicit universe.
         if symbol_ids:
             symbols_qs = Symbol.objects.filter(id__in=list(symbol_ids))
+            scope_note = f"explicit_ids={len(list(symbol_ids))}"
         else:
-            symbols_qs = Symbol.objects.filter(active=True)
+            # When no explicit symbol_ids are provided, we interpret this job as "compute this scenario".
+            # To avoid surprise recomputes across the whole universe, we scope strictly to the scenario symbols.
+            scenario_symbols_qs = scenario.symbols.filter(active=True)
+            if not scenario_symbols_qs.exists():
+                job.status = ProcessingJob.Status.DONE
+                job.message = "No symbols linked to this scenario (nothing to compute)."
+                job.finished_at = timezone.now()
+                job.save(update_fields=["status", "message", "finished_at"])
+                return job.message
+            symbols_qs = scenario_symbols_qs
+            scope_note = "scenario_symbols"
 
         stats = _compute_metrics_for_scenario(symbols_qs=symbols_qs, scenario=scenario, recompute_all=bool(recompute_all))
         job.status = ProcessingJob.Status.DONE
-        job.message = f"Computed metrics: symbols={stats.get('symbols')} rows={stats.get('rows')} full={stats.get('full')}"
+        job.message = (
+            f"Computed metrics: scope={scope_note} scenario={scenario.id} "
+            f"symbols={stats.get('symbols')} rows={stats.get('rows')} full={stats.get('full')}"
+        )
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "message", "finished_at"])
         return job.message
