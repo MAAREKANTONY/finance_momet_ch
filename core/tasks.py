@@ -13,6 +13,7 @@ from .models import Backtest
 from .models import ProcessingJob
 from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
+from .services.calculations_fast import compute_full_for_symbol_scenario
 
 from django.utils import timezone
 
@@ -118,14 +119,19 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
     computed_rows = 0
     for sym in symbols:
         try:
-            if not needs_full:
-                last_date = DailyMetric.objects.filter(symbol=sym, scenario=scenario).aggregate(m=Max("date"))["m"]
-                if last_date:
-                    start = last_date - timedelta(days=buffer_days)
-                    Alert.objects.filter(symbol=sym, scenario=scenario, date__gte=start).delete()
-                    DailyMetric.objects.filter(symbol=sym, scenario=scenario, date__gte=start).delete()
-                else:
-                    start = None
+            if needs_full:
+                # Fast full recompute: compute in-memory and bulk_create.
+                bars = DailyBar.objects.filter(symbol=sym).order_by("date").only("date", "open", "high", "low", "close")
+                m_written, a_written = compute_full_for_symbol_scenario(symbol=sym, scenario=scenario, bars=bars)
+                computed_rows += m_written
+                continue
+
+            # Incremental recompute (legacy behavior): delete a recent window and recompute per day.
+            last_date = DailyMetric.objects.filter(symbol=sym, scenario=scenario).aggregate(m=Max("date"))["m"]
+            if last_date:
+                start = last_date - timedelta(days=buffer_days)
+                Alert.objects.filter(symbol=sym, scenario=scenario, date__gte=start).delete()
+                DailyMetric.objects.filter(symbol=sym, scenario=scenario, date__gte=start).delete()
             else:
                 start = None
 
