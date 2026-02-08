@@ -87,12 +87,6 @@ def alerts_table(request):
     # Keep in sync with calculations.py (crossing rules)
     all_alert_codes = ["A1","B1","A1f","B1f","C1","D1","E1","F1","G1","H1"]
 
-    try:
-        from core.services.backtesting.volume_guards import volume_guards_enabled
-        guards_on = volume_guards_enabled()
-    except Exception:
-        guards_on = False
-
     return render(request, "alerts.html", {
         "alerts": qs[:2000],
         "scenarios": scenarios,
@@ -102,7 +96,6 @@ def alerts_table(request):
         "selected_ticker": ticker,
         "selected_alerts": alert_codes,
         "all_alert_codes": all_alert_codes,
-        "ENABLE_VOLUME_GUARDS": guards_on,
     })
 
 
@@ -222,64 +215,6 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
     return wb
 
 
-def _alerts_excel_select_symbols_with_guards(symbols_qs, scenario: Scenario, date_from: str = "", date_to: str = ""):
-    """Apply Excel volume guards for Alerts scenario exports.
-
-    When ENABLE_VOLUME_GUARDS=1 and the number of tickers exceeds EXCEL_FULL_TICKERS_THRESHOLD,
-    we only export Top N tickers (deterministic order by ticker) and include a Summary sheet.
-
-    This function is additive and does not affect legacy exports.
-    """
-    try:
-        from core.services.backtesting.volume_guards import should_limit_excel, excel_top_n
-    except Exception:
-        return symbols_qs, None
-
-    total = symbols_qs.count()
-    if not should_limit_excel(total):
-        return symbols_qs, None
-
-    top_n = max(1, int(excel_top_n()))
-    selected = symbols_qs.order_by("ticker", "exchange")[:top_n]
-    info = {
-        "limited": True,
-        "total": total,
-        "exported": selected.count(),
-        "top_n": top_n,
-        "scenario": scenario.name,
-        "date_from": date_from,
-        "date_to": date_to,
-    }
-    return selected, info
-
-
-def _alerts_add_summary_sheet(wb: Workbook, info: dict, all_symbols_qs):
-    """Add a lightweight Summary sheet when Excel guards are applied."""
-    if not info or not info.get("limited"):
-        return
-    ws = wb.create_sheet(title="Summary", index=0)
-    ws.append(["EXPORT LIMIT ACTIVATED"])
-    ws.append(["Reason", "Too many tickers for Excel export"])
-    ws.append(["Scenario", info.get("scenario")])
-    ws.append(["Total tickers", info.get("total")])
-    ws.append(["Exported tickers", info.get("exported")])
-    ws.append(["Top N", info.get("top_n")])
-    ws.append(["Date from", info.get("date_from") or "(none)"])
-    ws.append(["Date to", info.get("date_to") or "(none)"])
-    ws.append([])
-    ws.append(["Note"])
-    ws.append([
-        "Use 'Export Détails (Parquet/CSV ZIP)' to retrieve the complete dataset for all tickers."
-    ])
-    ws.append([])
-    ws.append(["All active tickers (deterministic order)"])
-    ws.append(["ticker", "exchange"])
-    _header(ws, ws.max_row)
-    for s in all_symbols_qs.order_by("ticker", "exchange"):
-        ws.append([s.ticker, s.exchange])
-    _autosize(ws)
-
-
 @login_required
 def data_export_scenario_xlsx(request, scenario_id: int):
     scenario = get_object_or_404(Scenario, pk=scenario_id)
@@ -294,15 +229,7 @@ def data_export_scenario_xlsx(request, scenario_id: int):
     if exchange:
         symbols_qs = symbols_qs.filter(exchange=exchange)
 
-    # Volume guards (optional): limit number of tickers in Excel exports to avoid memory blowups.
-    all_symbols_qs = symbols_qs
-    symbols_qs, guard_info = _alerts_excel_select_symbols_with_guards(
-        symbols_qs, scenario=scenario, date_from=date_from, date_to=date_to
-    )
-
     wb = _build_scenario_workbook(scenario, symbols_qs, date_from=date_from, date_to=date_to)
-    if guard_info:
-        _alerts_add_summary_sheet(wb, guard_info, all_symbols_qs)
 
     bio = BytesIO()
     wb.save(bio)
@@ -328,150 +255,20 @@ def data_export_all_scenarios_zip(request):
 
     scenarios = Scenario.objects.filter(active=True).order_by("name")
 
-    # Create ZIP on disk to avoid memory blowups for large exports
-    tmp = tempfile.NamedTemporaryFile(prefix="alerts_scenarios_", suffix=".zip", delete=False)
-    tmp_path = Path(tmp.name)
-    tmp.close()
-
-    with pyzip.ZipFile(tmp_path, "w", compression=pyzip.ZIP_DEFLATED) as zf:
+    zip_bytes = BytesIO()
+    with pyzip.ZipFile(zip_bytes, "w", compression=pyzip.ZIP_DEFLATED) as zf:
         for scenario in scenarios:
-            all_symbols_qs = symbols_qs
-            scoped_symbols_qs, guard_info = _alerts_excel_select_symbols_with_guards(
-                symbols_qs, scenario=scenario, date_from=date_from, date_to=date_to
-            )
-            wb = _build_scenario_workbook(scenario, scoped_symbols_qs, date_from=date_from, date_to=date_to)
-            if guard_info:
-                _alerts_add_summary_sheet(wb, guard_info, all_symbols_qs)
-            wb_io = BytesIO(); wb.save(wb_io); wb_io.seek(0)
+            wb = _build_scenario_workbook(scenario, symbols_qs, date_from=date_from, date_to=date_to)
+            wb_io = BytesIO()
+            wb.save(wb_io)
+            wb_io.seek(0)
             safe_name = "".join([c if c.isalnum() or c in ("-","_") else "_" for c in scenario.name])[:50] or "scenario"
             zf.writestr(f"{safe_name}.xlsx", wb_io.getvalue())
 
-    tmp_f = open(tmp_path, "rb")
-    resp = FileResponse(tmp_f, as_attachment=True, filename="scenarios_exports.zip", content_type="application/zip")
+    zip_bytes.seek(0)
+    resp = HttpResponse(zip_bytes.getvalue(), content_type="application/zip")
+    resp["Content-Disposition"] = 'attachment; filename="scenarios_exports.zip"'
     return resp
-def _build_alerts_details_table_for_symbol(sym: Symbol, scenario: Scenario, date_from: str = "", date_to: str = ""):
-    """Build a per-ticker pyarrow Table with Bars + Metrics + Alerts (scenario-scoped).
-
-    This mirrors the per-ticker sheet structure from the scenario Excel export but is optimized
-    for large volumes.
-    """
-    # Late imports (optional dependency)
-    import pyarrow as pa  # type: ignore
-
-    bars = DailyBar.objects.filter(symbol=sym).order_by("date")
-    if date_from:
-        bars = bars.filter(date__gte=date_from)
-    if date_to:
-        bars = bars.filter(date__lte=date_to)
-
-    metrics = DailyMetric.objects.filter(symbol=sym, scenario=scenario).order_by("date")
-    if date_from:
-        metrics = metrics.filter(date__gte=date_from)
-    if date_to:
-        metrics = metrics.filter(date__lte=date_to)
-    metrics_by_date = {m.date: m for m in metrics}
-
-    alerts = Alert.objects.filter(symbol=sym, scenario=scenario).order_by("date")
-    if date_from:
-        alerts = alerts.filter(date__gte=date_from)
-    if date_to:
-        alerts = alerts.filter(date__lte=date_to)
-    alerts_by_date = {a.date: a.alerts for a in alerts}
-
-    rows = []
-
-    def f(x):
-        try:
-            return float(x) if x is not None else None
-        except Exception:
-            return None
-
-    for b in bars:
-        m = metrics_by_date.get(b.date)
-        rows.append({
-            "date": b.date.isoformat(),
-            "open": f(b.open), "high": f(b.high), "low": f(b.low), "close": f(b.close),
-            "volume": int(b.volume) if getattr(b, "volume", None) is not None else None,
-            "change_amount": f(b.change_amount),
-            "change_pct": f(b.change_pct),
-            "V": f(m.V) if m else None,
-            "slope_P": f(m.slope_P) if m else None,
-            "sum_pos_P": f(m.sum_pos_P) if m else None,
-            "nb_pos_P": int(m.nb_pos_P) if (m and m.nb_pos_P is not None) else None,
-            "ratio_P": f(m.ratio_P) if m else None,
-            "amp_h": f(m.amp_h) if m else None,
-            "P": f(m.P) if m else None,
-            "M": f(m.M) if m else None,
-            "M1": f(m.M1) if m else None,
-            "X": f(m.X) if m else None,
-            "X1": f(m.X1) if m else None,
-            "T": f(m.T) if m else None,
-            "Q": f(m.Q) if m else None,
-            "S": f(m.S) if m else None,
-            "K1": f(m.K1) if m else None,
-            "K1f": f(m.K1f) if m else None,
-            "K2": f(m.K2) if m else None,
-            "K3": f(m.K3) if m else None,
-            "K4": f(m.K4) if m else None,
-            "alerts": alerts_by_date.get(b.date, ""),
-        })
-
-    return pa.Table.from_pylist(rows)
-
-
-@login_required
-def data_export_scenario_details_zip(request, scenario_id: int):
-    """Optimized per-scenario export: ZIP of Parquet (or CSV) files, 1 per ticker.
-
-    This is designed for high-volume use cases (hundreds of tickers) and avoids Excel memory limits.
-    """
-    scenario = get_object_or_404(Scenario, pk=scenario_id)
-    ticker = (request.GET.get("ticker") or "").strip()
-    exchange = (request.GET.get("exchange") or "").strip()
-    date_from = (request.GET.get("from") or "").strip()
-    date_to = (request.GET.get("to") or "").strip()
-    fmt = (request.GET.get("format") or "parquet").strip().lower()
-    if fmt not in {"parquet", "csv"}:
-        fmt = "parquet"
-
-    symbols_qs = Symbol.objects.filter(active=True)
-    if ticker:
-        symbols_qs = symbols_qs.filter(ticker=ticker)
-    if exchange:
-        symbols_qs = symbols_qs.filter(exchange=exchange)
-
-    # Late imports (optional dependency)
-    try:
-        import pyarrow.parquet as pq  # type: ignore
-        import pyarrow.csv as pacsv  # type: ignore
-    except Exception as e:
-        messages.error(request, f"pyarrow requis pour l'export détails: {e}")
-        return redirect("alerts_table")
-
-    tmp = tempfile.NamedTemporaryFile(prefix=f"alerts_scenario_{scenario.id}_details_", suffix=".zip", delete=False)
-    tmp_path = Path(tmp.name)
-    tmp.close()
-
-    safe_name = "".join([c if c.isalnum() or c in ("-","_") else "_" for c in scenario.name])[:50] or "scenario"
-    try:
-        with pyzip.ZipFile(tmp_path, "w", compression=pyzip.ZIP_DEFLATED) as zf:
-            for sym in symbols_qs.order_by("ticker", "exchange"):
-                table = _build_alerts_details_table_for_symbol(sym, scenario, date_from=date_from, date_to=date_to)
-                if fmt == "parquet":
-                    buf = BytesIO()
-                    pq.write_table(table, buf)
-                    buf.seek(0)
-                    zf.writestr(f"{sym.ticker}.parquet", buf.getvalue())
-                else:
-                    table = _arrow_table_to_csv_safe(table)
-                    buf = BytesIO(); pacsv.write_csv(table, buf); buf.seek(0)
-                    zf.writestr(f"{sym.ticker}.csv", buf.getvalue())
-
-        tmp_f = open(tmp_path, "rb")
-        filename = f"alerts_{safe_name}_details_{fmt}.zip"
-        return FileResponse(tmp_f, as_attachment=True, filename=filename, content_type="application/zip")
-    finally:
-        pass
 
 
 @login_required
@@ -1521,7 +1318,13 @@ def backtest_results(request, pk: int):
         line = lines[0]
         line_index = int(line.get("line_index", 1))
 
-    daily = (line or {}).get("daily") or []
+    # Daily series can be embedded in JSON (legacy) or offloaded to disk (large runs)
+    try:
+        from .services.backtesting.results_offload import load_daily_from_line
+
+        daily = load_daily_from_line(line or {})
+    except Exception:
+        daily = (line or {}).get("daily") or []
     final = (line or {}).get("final") or {}
 
     # Portfolio synthesis (Feature 8)
@@ -1603,7 +1406,12 @@ def backtest_export_debug_csv(request, pk: int):
         line = lines[0]
         line_index = int(line.get("line_index", 1))
 
-    daily = (line or {}).get("daily") or []
+    try:
+        from .services.backtesting.results_offload import load_daily_from_line
+
+        daily = load_daily_from_line(line or {})
+    except Exception:
+        daily = (line or {}).get("daily") or []
     if not daily:
         messages.warning(request, "Pas de données journalières pour cet export.")
         return redirect("backtest_results", pk=pk)
@@ -1851,7 +1659,12 @@ def backtest_export_excel(request, pk: int):
             for cell in ws_d[1]:
                 cell.font = Font(bold=True)
 
-            daily = line.get("daily") or []
+            try:
+                from .services.backtesting.results_offload import load_daily_from_line
+
+                daily = load_daily_from_line(line or {})
+            except Exception:
+                daily = line.get("daily") or []
             for r in daily:
                 close_px = _to_float(r.get("price_close"))
                 shares = _to_float(r.get("shares")) or 0

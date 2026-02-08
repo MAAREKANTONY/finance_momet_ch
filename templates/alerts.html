@@ -53,18 +53,10 @@
 
 <div class="card">
   <h3>Exports</h3>
-  <div class="muted">
-    Format “1 Excel par scénario / 1 feuille par ticker”.
-    <br/>
-    Pour gros volumes (ex: S&amp;P 500), utilise plutôt <strong>Export Détails</strong> (ZIP Parquet/CSV, 1 fichier par ticker).
-    {% if ENABLE_VOLUME_GUARDS %}<br/><span class="pill">Garde-fous Excel activés</span>{% endif %}
-  </div>
-
-  <div class="row" style="margin-top:10px; align-items:end; flex-wrap:wrap; gap:8px;">
+  <div class="muted">Format “1 Excel par scénario / 1 feuille par ticker”: utilise les boutons ci-dessous.</div>
+  <div class="row" style="margin-top:10px; align-items:end;">
     {% for s in scenarios %}
       <a class="btn" href="{% url 'data_export_scenario_xlsx' s.id %}">Excel: {{ s.name }}</a>
-      <a class="btn" href="{% url 'data_export_scenario_details_zip' s.id %}">Détails (Parquet ZIP): {{ s.name }}</a>
-      <a class="btn" href="{% url 'data_export_scenario_details_zip' s.id %}?format=csv">Détails (CSV ZIP): {{ s.name }}</a>
     {% endfor %}
     <a class="btn" href="{% url 'data_export_all_scenarios_zip' %}">ZIP (tous scénarios)</a>
   </div>

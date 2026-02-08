@@ -435,6 +435,20 @@ def run_backtest_task(backtest_id: int):
             "did_compute_metrics": prep_report.did_compute_metrics,
             "notes": prep_report.notes,
         }
+
+        # --- Automatic results offload (NO-REGRESSION) ---
+        # PostgreSQL JSONB has a hard limit (~256MB) for object elements.
+        # Large universes (e.g., S&P 500) can exceed this when storing the full
+        # per-ticker daily series inside Backtest.results. When the payload is
+        # too large, we offload only the heavy `daily` arrays to files on disk
+        # and keep lightweight pointers in JSON.
+        try:
+            from .services.backtesting.results_offload import offload_daily_series_if_needed
+
+            results = offload_daily_series_if_needed(bt, results)
+        except Exception:
+            # Never fail a backtest because of optional offload logic.
+            pass
         # Persist results JSON + portfolio tables (Feature 8)
         from django.db import transaction
         from .models import BacktestPortfolioDaily, BacktestPortfolioKPI
