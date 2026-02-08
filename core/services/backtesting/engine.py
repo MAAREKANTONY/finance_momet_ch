@@ -29,6 +29,27 @@ from django.db import transaction
 
 from core.models import Alert, Backtest, DailyBar, DailyMetric, Symbol
 
+# Pseudo signal used by UI to activate the special sell rule.
+# IMPORTANT: additive only; legacy backtests ignore it unless explicitly chosen.
+SPECIAL_SELL_K1F_UPPER_DOWN_B1F = "AUTO_K1F_UPPER_DOWN_B1F"
+
+
+def _to_dec(v) -> Decimal | None:
+    """Best-effort conversion to Decimal."""
+    if v is None:
+        return None
+    try:
+        return Decimal(str(v))
+    except Exception:
+        return None
+
+
+def _cross_down(prev_a: Decimal | None, a: Decimal | None, prev_b: Decimal | None, b: Decimal | None) -> bool:
+    """Return True if A crosses down B between t-1 and t."""
+    if prev_a is None or a is None or prev_b is None or b is None:
+        return False
+    return (prev_a >= prev_b) and (a < b)
+
 
 @dataclass
 class BacktestEngineResult:
@@ -122,10 +143,22 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 # skip bad price rows
                 continue
 
+        # Metrics: keep ratio_P for legacy logic, plus K-lines needed by special sell modes.
         metrics = {
-            m["date"]: m["ratio_P"]
-            for m in DailyMetric.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=start_d, date__lte=end_d)
-            .values("date", "ratio_P")
+            m["date"]: {
+                "ratio_P": m.get("ratio_P"),
+                "K1": m.get("K1"),
+                "K1f": m.get("K1f"),
+                "K2": m.get("K2"),
+                "K3": m.get("K3"),
+                "K4": m.get("K4"),
+            }
+            for m in DailyMetric.objects.filter(
+                symbol=sym,
+                scenario_id=backtest.scenario_id,
+                date__gte=start_d,
+                date__lte=end_d,
+            ).values("date", "ratio_P", "K1", "K1f", "K2", "K3", "K4")
         }
         alerts = {
             a["date"]: _alerts_set(a["alerts"])
@@ -156,6 +189,14 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
         If include_all is enabled, tradable is always True (eligibility bypass),
         while ratio values are kept for ranking/display when available.
         """
+        # Accept either the legacy scalar ratio_P or the dict produced above.
+        if isinstance(ratio_p_val, dict):
+            ratio_p_val = ratio_p_val.get("ratio_P")
+
+        # ratio_p_val can be either a raw number (legacy) or a metrics dict.
+        if isinstance(ratio_p_val, dict):
+            ratio_p_val = ratio_p_val.get("ratio_P")
+
         if ratio_p_val is None:
             return (True, None, None) if include_all else (False, None, None)
         try:
@@ -183,6 +224,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "nb_jours_ouvres": 0,
                 "buy_days_closed": 0,
                 "entry_date": None,
+                "prev_k": None,  # previous day's K-values dict (K1,K1f,K2,K3,K4)
                 "daily_rows": [],
             }
 
@@ -301,7 +343,36 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
 
             sell_code = st["sell_code"]
-            if sell_code and sell_code in day_alerts and st["position_open"]:
+
+            # Special sell mode: K1f crosses down either (1) 0 (B1f) or (2) the closest
+            # "line above" among K1/K2/K3/K4 as of t-1.
+            if st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
+                k_today = (tdata["metrics"].get(d) or {})
+                k_prev = st.get("prev_k") or {}
+                k1f_prev = _to_dec(k_prev.get("K1f"))
+                k1f_today = _to_dec(k_today.get("K1f"))
+
+                # 1) B1f fallback: K1f cross 0 down
+                if _cross_down(k1f_prev, k1f_today, Decimal("0"), Decimal("0")):
+                    _do_sell("AUTO (B1f: K1f cross 0 down)")
+                else:
+                    # 2) Find the closest line above K1f at t-1 among K1/K2/K3/K4
+                    candidates_prev: list[tuple[str, Decimal]] = []
+                    for key in ("K1", "K2", "K3", "K4"):
+                        v = _to_dec(k_prev.get(key))
+                        if v is None or k1f_prev is None:
+                            continue
+                        if v > k1f_prev:
+                            candidates_prev.append((key, v))
+
+                    if candidates_prev and k1f_prev is not None and k1f_today is not None:
+                        target_key, _ = min(candidates_prev, key=lambda x: x[1])
+                        target_prev = _to_dec(k_prev.get(target_key))
+                        target_today = _to_dec(k_today.get(target_key))
+                        if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
+                            _do_sell(f"AUTO ({target_key}: K1f cross down)")
+
+            elif sell_code and sell_code in day_alerts and st["position_open"]:
                 _do_sell(f"signal {sell_code}")
 
             # record daily row (we may update with buy action later, but keep as dict to mutate)
@@ -336,6 +407,11 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "BMD": None if BMD is None else str(BMD),
                 "BUY_DAYS_CLOSED": bmd_days,
             })
+
+            # Keep previous day's indicator values (used by special sell modes).
+            # We update it only when metrics exist for this day.
+            if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
+                st["prev_k"] = tdata["metrics"].get(d)
 
         # 2) BUY allocation selection phase (for not-yet-allocated strategies, limited CP)
         candidates_need_alloc = []

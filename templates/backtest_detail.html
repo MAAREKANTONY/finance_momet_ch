@@ -33,7 +33,13 @@
         <tr>
           <td>{{ forloop.counter }}</td>
           <td>{{ line.buy }}</td>
-          <td>{{ line.sell }}</td>
+          <td>
+            {% if line.sell == "AUTO_K1F_UPPER_DOWN_B1F" %}
+              <span class="pill" title="Vente auto : B1f prioritaire, sinon K1f recoupe en descente la 1ère ligne au-dessus (K1/K2/K3/K4) selon le jour.">AUTO (K1f)</span>
+            {% else %}
+              {{ line.sell }}
+            {% endif %}
+          </td>
         </tr>
       {% endfor %}
       </tbody>
