@@ -1024,15 +1024,66 @@ def backtest_recompute_metrics(request, pk: int):
 @login_required
 @require_POST
 def fetch_bars_now(request):
-    """Fetch daily bars immediately (useful for manual refresh)."""
+    """Fetch daily bars immediately.
+
+    Email page can target a specific scenario; in that case we fetch only its symbols
+    and use that scenario's history_years to determine outputsize.
+
+    If scenario_id is empty or 'ALL', behavior remains legacy: fetch for all active symbols.
+    """
+    scenario_id = (request.POST.get("scenario_id") or "").strip()
+    force_full = (request.POST.get("force_full") or "").strip() in ("1", "true", "True", "on")
+    scenario_id_int = None
+    symbol_ids = None
+
+    try:
+        from core.models import Scenario
+        if scenario_id and scenario_id != "ALL":
+            # Scope strictly to the selected scenario
+            scenario_id_int = int(scenario_id)
+            scenario = Scenario.objects.get(id=scenario_id_int)
+            symbol_ids = list(scenario.symbols.values_list("id", flat=True))
+    except Exception:
+        # If parsing fails, keep legacy behavior (all symbols)
+        scenario_id_int = None
+        symbol_ids = None
+
     try:
         from core.tasks import fetch_daily_bars_job_task
-        fetch_daily_bars_job_task.delay(user_id=request.user.id if request.user.is_authenticated else None)
-        JobLog.objects.create(level="INFO", job="fetch_bars", message="Fetch daily bars demandé (Celery + job tracking).")
-        messages.success(request, "Collecte demandée (traitement en arrière-plan).")
+
+        pj = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.PENDING,
+            scenario_id=scenario_id_int,
+            created_by=request.user if request.user.is_authenticated else None,
+            message=(
+                "En attente d'exécution (collecte données)"
+                if not scenario_id_int else
+                f"En attente d'exécution (collecte données scénario {scenario_id_int})"
+            ),
+        )
+
+        async_res = fetch_daily_bars_job_task.delay(
+            symbol_ids=symbol_ids,
+            scenario_id=scenario_id_int,
+            force_full=force_full,
+            user_id=request.user.id if request.user.is_authenticated else None,
+            job_id=pj.id,
+        )
+        pj.task_id = getattr(async_res, "id", "") or ""
+        pj.save(update_fields=["task_id"])
+
+        if scenario_id == "ALL":
+            messages.success(request, "Collecte demandée pour TOUS les tickers (traitement en arrière-plan).")
+        elif scenario_id_int:
+            messages.success(request, "Collecte demandée pour le scénario sélectionné (traitement en arrière-plan).")
+        else:
+            messages.success(request, "Collecte demandée (traitement en arrière-plan).")
+
     except Exception as e:
         JobLog.objects.create(level="ERROR", job="fetch_bars", message="Erreur lancement fetch", traceback=str(e))
         messages.error(request, f"Erreur lancement collecte: {e}")
+
     return redirect("email_settings")
 
 

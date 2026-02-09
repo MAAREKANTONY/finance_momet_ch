@@ -42,7 +42,7 @@ def _parse_int_or_none(x):
     except Exception:
         return None
 
-def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int) -> dict:
+def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: bool = False) -> dict:
     """Fetch/update daily bars for a queryset of Symbol.
 
     Returns basic stats: {"symbols":..., "bars":...}.
@@ -51,10 +51,30 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int) -> dict:
     symbols = list(symbol_qs)
     bars_written = 0
 
+    today = timezone.now().date()
+
     for sym in symbols:
         exchange = sym.exchange or getattr(settings, "DEFAULT_EXCHANGE", "")
         try:
-            values = client.time_series_daily(sym.ticker, exchange=exchange, outputsize=outputsize)
+            # Delta fetch by default: if we already have bars, only request dates after the last stored bar.
+            # This avoids re-downloading years of history each day.
+            start_date = None
+            if not force_full:
+                last_date = DailyBar.objects.filter(symbol=sym).aggregate(Max("date")).get("date__max")
+                if last_date:
+                    start = last_date + timedelta(days=1)
+                    if start <= today:
+                        start_date = start.isoformat()
+                    else:
+                        # Already up to date.
+                        continue
+
+            values = client.time_series_daily(
+                sym.ticker,
+                exchange=exchange,
+                outputsize=outputsize,
+                start_date=start_date,
+            )
         except Exception as e:
             print(f"[fetch] error {sym}: {e}")
             continue
@@ -63,6 +83,9 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int) -> dict:
             continue
 
         values_sorted = sorted(values, key=lambda v: v.get("datetime"))
+
+        # Build new bars in memory and insert in bulk.
+        new_bars = []
         for v in values_sorted:
             try:
                 d = parse_date(v["datetime"])
@@ -71,21 +94,42 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int) -> dict:
             except Exception:
                 continue
 
-            DailyBar.objects.update_or_create(
-                symbol=sym,
-                date=d,
-                defaults={"open": o, "high": h, "low": l, "close": c, "volume": vol, "source": "twelvedata"},
-            )
-            bars_written += 1
+            if force_full:
+                # Legacy behavior: upsert all rows (slower but keeps ability to refresh history).
+                DailyBar.objects.update_or_create(
+                    symbol=sym,
+                    date=d,
+                    defaults={"open": o, "high": h, "low": l, "close": c, "volume": vol, "source": "twelvedata"},
+                )
+                bars_written += 1
+            else:
+                # Delta mode: insert only new rows.
+                new_bars.append(
+                    DailyBar(
+                        symbol=sym,
+                        date=d,
+                        open=o,
+                        high=h,
+                        low=l,
+                        close=c,
+                        volume=vol,
+                        source="twelvedata",
+                    )
+                )
 
-        last_bar = DailyBar.objects.filter(symbol=sym).order_by("-date").first()
-        prev_bar = DailyBar.objects.filter(symbol=sym, date__lt=last_bar.date).order_by("-date").first() if last_bar else None
-        if last_bar and prev_bar and prev_bar.close:
+        if not force_full and new_bars:
+            DailyBar.objects.bulk_create(new_bars, ignore_conflicts=True, batch_size=2000)
+            bars_written += len(new_bars)
+
+        # Update change_* for the latest bar (cheap and keeps UI consistent).
+        last_two = list(DailyBar.objects.filter(symbol=sym).order_by("-date")[:2])
+        if len(last_two) >= 2 and last_two[1].close:
+            last_bar, prev_bar = last_two[0], last_two[1]
             change_amount = last_bar.close - prev_bar.close
             change_pct = (change_amount / prev_bar.close) * Decimal("100") if prev_bar.close != 0 else None
             DailyBar.objects.filter(id=last_bar.id).update(change_amount=change_amount, change_pct=change_pct)
 
-    return {"symbols": len(symbols), "bars": bars_written}
+    return {"symbols": len(symbols), "bars": bars_written, "force_full": bool(force_full)}
 
 
 def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_all: bool = False) -> dict:
@@ -182,11 +226,12 @@ def _noop():
 
 
 @shared_task(bind=True)
-def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, backtest_id=None, user_id=None, job_id=None):
+def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_full: bool = False, backtest_id=None, user_id=None, job_id=None):
     """Tracked job wrapper around DailyBar fetching.
 
     If symbol_ids is None -> fetch for all active symbols.
     If scenario_id provided -> outputsize based on scenario.history_years.
+    force_full=True keeps legacy upsert behavior to refresh historical rows.
     """
     job = None
     if job_id:
@@ -219,9 +264,12 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, backte
             years = Scenario.objects.filter(active=True).order_by("-history_years").values_list("history_years", flat=True).first() or 2
         outputsize = desired_outputsize_years(int(years))
 
-        stats = _fetch_daily_bars_for_symbols(symbol_qs=symbol_qs, outputsize=outputsize)
+        stats = _fetch_daily_bars_for_symbols(symbol_qs=symbol_qs, outputsize=outputsize, force_full=bool(force_full))
         job.status = ProcessingJob.Status.DONE
-        job.message = f"Fetched bars: symbols={stats.get('symbols')} bars={stats.get('bars')} outputsize={outputsize}"
+        job.message = (
+            f"Fetched bars: symbols={stats.get('symbols')} bars={stats.get('bars')} "
+            f"outputsize={outputsize} force_full={bool(force_full)}"
+        )
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "message", "finished_at"])
         return job.message

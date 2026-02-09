@@ -56,6 +56,38 @@
       </form>
       <form method="post" action="{% url 'fetch_bars_now' %}">
         {% csrf_token %}
+        <input type="hidden" name="scenario_id" value="" />
+        <input type="hidden" name="force_full" value="0" />
+        <label class="muted" style="display:inline-flex; align-items:center; gap:6px; margin-left:10px;">
+          <input type="checkbox" name="force_full" value="1" />
+          Forcer refresh complet (⚠️)
+        </label>
+        <script>
+          // Copy scenario selector value into fetch form (keeps legacy behavior if none selected).
+          (function(){
+            const sel = document.querySelector('select[name="scenario_id"][form="form_compute_now"]');
+            const form = document.currentScript.closest('form');
+            const hidden = form.querySelector('input[name="scenario_id"]');
+            const forceFullCb = form.querySelector('input[type="checkbox"][name="force_full"]');
+            if (sel && hidden) {
+              form.addEventListener('submit', function(e){
+                hidden.value = sel.value;
+                if (forceFullCb && forceFullCb.checked) {
+                  if (!confirm('Force refresh complet : cela peut re-télécharger des années d\'historique pour tous les tickers ciblés. Continuer ?')) {
+                    e.preventDefault();
+                    return false;
+                  }
+                }
+                if (hidden.value === 'ALL') {
+                  if (!confirm('Collecter les données pour TOUS les scénarios/tickers peut être très long et coûteux. Continuer ?')) {
+                    e.preventDefault();
+                    return false;
+                  }
+                }
+              });
+            }
+          })();
+        </script>
         <button class="btn" type="submit">Collecter les données</button>
       </form>
       <form method="post" action="{% url 'send_mail_now' %}">

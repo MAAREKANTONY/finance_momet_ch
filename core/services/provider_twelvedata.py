@@ -18,10 +18,26 @@ class TwelveDataClient:
             raise RuntimeError(data.get("message") or "Unknown TwelveData error")
         return data
 
-    def time_series_daily(self, symbol: str, exchange: str = "", outputsize: int = 10):
+    def time_series_daily(
+        self,
+        symbol: str,
+        exchange: str = "",
+        outputsize: int = 10,
+        start_date: str | None = None,
+        end_date: str | None = None,
+    ):
+        """Fetch daily time series.
+
+        Twelve Data supports optional start_date / end_date filters. When provided,
+        the API returns values within the requested range.
+        """
         params = {"symbol": symbol, "interval": "1day", "outputsize": outputsize, "format": "JSON"}
         if exchange:
             params["exchange"] = exchange
+        if start_date:
+            params["start_date"] = start_date
+        if end_date:
+            params["end_date"] = end_date
         data = self._get("/time_series", params)
         return data.get("values") or []
 
