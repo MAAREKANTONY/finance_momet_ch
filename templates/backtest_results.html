@@ -36,7 +36,7 @@
 </style>
 
 {% if portfolio_kpi %}
-<details class="card acc" open>
+<details class="card acc" open data-acc-key="portfolio">
 <summary class="acc-summary"><span class="acc-title">Synthèse portefeuille (global)</span></summary>
 <div class="acc-body">
 <table>
@@ -63,7 +63,7 @@
 </details>
 {% endif %}
 
-<details class="card acc">
+<details class="card acc" open data-acc-key="selection">
 <summary class="acc-summary"><span class="acc-title">Sélection</span></summary>
 <div class="acc-body">
 <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
@@ -90,7 +90,7 @@
 </div>
 </details>
 
-<details class="card acc">
+<details class="card acc" open data-acc-key="legend">
 <summary class="acc-summary"><span class="acc-title">Légende & définitions</span></summary>
 <div class="acc-body">
 <div class="muted" style="line-height:1.5;">
@@ -114,17 +114,19 @@
       <li><b>S_G_N</b> : moyenne cumulée des gains par coup : <code>S_G_N = (ΣG) / N</code>.</li>
       <li><b>BT</b> : bénéfice total cumulé (somme des gains) : <code>BT = ΣG</code> (équivalent à <code>S_G_N × N</code>).</li>
       <li>
-        <b>NB_JOUR_OUVRES</b> : nombre de jours où le ticker est tradable
+        <b>TRADABLE_DAYS</b> : nombre de jours <i>tradables</i> dans la période.
         {% if bt.include_all_tickers %}
-          <span class="muted">(avec bypass activé : tous les jours ouvrés de la période)</span>
+          <span class="muted">(bypass activé : tous les jours de cotation de la période)</span>
         {% else %}
           <span class="muted">(<code>ratio_p ≥ X</code>)</span>
         {% endif %}
-        <b>et</b> sans position ouverte (au début de la journée).
       </li>
-      <li><b>BMJ</b> : bénéfice moyen par jour ouvré : <code>BMJ = BT / NB_JOUR_OUVRES</code>.</li>
-      <li><b>BUY_DAYS_CLOSED</b> : nombre de jours en position (entre BUY et SELL, inclus) uniquement pour les trades clôturés.</li>
-      <li><b>BMD</b> : bénéfice moyen par jour en position clôturée : <code>BMD = BT / BUY_DAYS_CLOSED</code>.</li>
+      <li><b>TRADABLE_DAYS_NOT_IN_POSITION</b> : nombre de jours tradables où l'on termine la journée <b>hors position</b> (shares = 0).</li>
+      <li><b>TRADABLE_DAYS_IN_POSITION_CLOSED</b> : nombre de jours tradables où l'on termine la journée <b>en position</b> (shares &gt; 0).</li>
+      <li><b>RATIO_NOT_IN_POSITION</b> : <code>100 × TRADABLE_DAYS_NOT_IN_POSITION / TRADABLE_DAYS</code>.</li>
+      <li><b>RATIO_IN_POSITION</b> : <code>100 × TRADABLE_DAYS_IN_POSITION_CLOSED / TRADABLE_DAYS</code>.</li>
+      <li><b>BMJ</b> : bénéfice moyen par jour tradable hors position : <code>BMJ = BT / TRADABLE_DAYS_NOT_IN_POSITION</code>.</li>
+      <li><b>BMD</b> : bénéfice moyen par jour tradable en position : <code>BMD = BT / TRADABLE_DAYS_IN_POSITION_CLOSED</code>.</li>
       <li><b>Cash</b> : cash restant pour ce ticker/ligne après achats/ventes (arrondi au nombre entier d'actions).</li>
       <li><b>Shares</b> : nombre d'actions détenues en fin de journée.</li>
     </ul>
@@ -132,7 +134,7 @@
 </div>
 </details>
 
-<details class="card acc" open>
+<details class="card acc" open data-acc-key="summary">
 <summary class="acc-summary"><span class="acc-title">Synthèse — {{ ticker }} / L{{ line_index }}</span></summary>
 <div class="acc-body">
 <table>
@@ -147,8 +149,13 @@
       <th>BT</th><td>{{ final.BT|pct:3 }}</td>
     </tr>
     <tr>
-      <th>NB_JOUR_OUVRES</th><td>{{ final.NB_JOUR_OUVRES }}</td>
-      <th>BUY_DAYS_CLOSED</th><td>{{ final.BUY_DAYS_CLOSED }}</td>
+      <th>TRADABLE_DAYS</th><td>{{ final.TRADABLE_DAYS }}</td>
+      <th>TRADABLE_DAYS_NOT_IN_POSITION</th><td>{{ final.TRADABLE_DAYS_NOT_IN_POSITION }}</td>
+      <th>TRADABLE_DAYS_IN_POSITION_CLOSED</th><td>{{ final.TRADABLE_DAYS_IN_POSITION_CLOSED }}</td>
+    </tr>
+    <tr>
+      <th>RATIO_NOT_IN_POSITION</th><td>{{ final.RATIO_NOT_IN_POSITION|num:2 }}%</td>
+      <th>RATIO_IN_POSITION</th><td>{{ final.RATIO_IN_POSITION|num:2 }}%</td>
       <th>BMJ</th><td>{{ final.BMJ|pct:4 }}</td>
     </tr>
     <tr>
@@ -158,7 +165,7 @@
 </div>
 </details>
 
-<details class="card acc">
+<details class="card acc" open data-acc-key="chart">
 <summary class="acc-summary"><span class="acc-title">Courbe</span></summary>
 <div class="acc-body">
 <canvas id="chart" height="120"></canvas>
@@ -168,7 +175,7 @@
 </div>
 </details>
 
-<details class="card acc">
+<details class="card acc" open data-acc-key="daily">
 <summary class="acc-summary"><span class="acc-title">Données journalières {% if is_truncated %}(dernières 200 lignes){% endif %}</span></summary>
 <div class="acc-body">
 <div style="overflow:auto; max-height:560px;">
@@ -183,10 +190,11 @@
           <th>N</th>
           <th>S_G_N</th>
           <th>BT</th>
-          <th>NB_JOUR_OUVRES</th>
+          <th>TRADABLE_DAYS</th>
+          <th>TRADABLE_DAYS_NOT_IN_POSITION</th>
           <th>BMJ</th>
           <th>BMD</th>
-          <th>BUY_DAYS_CLOSED</th>
+          <th>TRADABLE_DAYS_IN_POSITION_CLOSED</th>
           <th>Cash</th>
           <th>Shares</th>
         </tr>
@@ -202,10 +210,11 @@
           <td>{{ r.N }}</td>
           <td>{{ r.S_G_N|pct:3 }}</td>
           <td>{{ r.BT|pct:3 }}</td>
-          <td>{{ r.NB_JOUR_OUVRES }}</td>
+          <td>{{ r.TRADABLE_DAYS }}</td>
+          <td>{{ r.TRADABLE_DAYS_NOT_IN_POSITION }}</td>
           <td>{{ r.BMJ|pct:4 }}</td>
           <td>{{ r.BMD|pct:4 }}</td>
-          <td>{{ r.BUY_DAYS_CLOSED }}</td>
+          <td>{{ r.TRADABLE_DAYS_IN_POSITION_CLOSED }}</td>
           <td>{{ r.cash_ticker }}</td>
           <td>{{ r.shares }}</td>
         </tr>
@@ -218,6 +227,36 @@
 
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
+  // --- Accordion UX: keep the open/close state stable across refreshes ---
+  // Default behaviour: everything is open (readable). When the user closes/opens sections,
+  // we persist the state in localStorage per backtest id.
+  (function () {
+    const storageKey = `bt_acc_state_${{ bt.id }}`;
+    const detailsList = Array.from(document.querySelectorAll('details.acc[data-acc-key]'));
+    if (!detailsList.length) return;
+
+    let saved = {};
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) saved = JSON.parse(raw) || {};
+    } catch (e) {
+      saved = {};
+    }
+
+    // Restore saved state (if exists). Otherwise keep default open.
+    detailsList.forEach((d) => {
+      const key = d.getAttribute('data-acc-key');
+      if (!key) return;
+      if (Object.prototype.hasOwnProperty.call(saved, key)) {
+        d.open = !!saved[key];
+      }
+      d.addEventListener('toggle', () => {
+        saved[key] = d.open;
+        try { localStorage.setItem(storageKey, JSON.stringify(saved)); } catch (e) {}
+      });
+    });
+  })();
+
   const rows = {{ daily_json|safe }};
   const portRows = {{ portfolio_daily_json|default:"[]"|safe }};
   function toNumber(v) {

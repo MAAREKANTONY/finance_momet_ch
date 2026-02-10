@@ -221,8 +221,16 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "shares": 0,
                 "trade_count": 0,
                 "sum_g": Decimal("0"),
+                # Legacy counters historically shown as NB_JOUR_OUVRES / BUY_DAYS_CLOSED.
+                # They were poorly named in the UI. In V5.2.30 we introduce clearer names
+                # and ratios for the UI while keeping the underlying behaviour unchanged
+                # unless explicitly recomputed from daily rows.
                 "nb_jours_ouvres": 0,
                 "buy_days_closed": 0,
+                # New counters (V5.2.30): cumulative counts over "tradable" days (ratio_p >= X
+                # unless include_all is enabled). These are used for UI display and ratios.
+                "tradable_days": 0,
+                "tradable_days_in_position": 0,
                 "entry_date": None,
                 "prev_k": None,  # previous day's K-values dict (K1,K1f,K2,K3,K4)
                 "daily_rows": [],
@@ -379,9 +387,19 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             N = st["trade_count"]
             S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
             BT = st["sum_g"]  # == S_G_N*N
-            nb = st["nb_jours_ouvres"]
+            # Clarified day counters (V5.2.30)
+            # - TRADABLE_DAYS: number of days where the ticker is tradable (ratio_p >= X, or include_all)
+            # - TRADABLE_DAYS_IN_POSITION_CLOSED: number of tradable days where we end the day in position (shares > 0)
+            # - TRADABLE_DAYS_NOT_IN_POSITION: remaining tradable days (flat)
+            tradable_days = int(st.get("tradable_days") or 0)
+            in_pos_days = int(st.get("tradable_days_in_position") or 0)
+            not_in_pos_days = max(0, tradable_days - in_pos_days)
+
+            # Keep legacy keys for backward compatibility.
+            nb = not_in_pos_days
+            bmd_days = in_pos_days
+
             BMJ = None if nb == 0 else (BT / Decimal(nb))
-            bmd_days = st.get("buy_days_closed") or 0
             BMD = None if bmd_days == 0 else (BT / Decimal(bmd_days))
 
             st["daily_rows"].append({
@@ -531,8 +549,96 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 last["cash_ticker"] = str(st["cash_ticker"])
                 last["allocated"] = st["allocated"]
 
+        # 3.b) End-of-day counters for UI (tradable days / in-position ratios)
+        # We update them AFTER the BUY phase so that a BUY on day D counts the day as
+        # "in position" for end-of-day state (using shares > 0).
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            price_by_date = tdata["price_by_date"]
+            if d not in price_by_date:
+                continue
+            if not st["daily_rows"]:
+                continue
+            last = st["daily_rows"][-1]
+            is_tradable = bool(last.get("tradable"))
+            try:
+                shares_eod = int(last.get("shares") or 0)
+            except Exception:
+                shares_eod = 0
+            in_position_eod = shares_eod > 0
+
+            if is_tradable:
+                st["tradable_days"] += 1
+                if in_position_eod:
+                    st["tradable_days_in_position"] += 1
+
+            tradable_days = st["tradable_days"]
+            in_pos_days = st["tradable_days_in_position"]
+            not_in_pos_days = max(0, tradable_days - in_pos_days)
+
+            # Keep legacy keys for compatibility, but values now match the clarified
+            # UI names (TRADABLE_DAYS_NOT_IN_POSITION / TRADABLE_DAYS_IN_POSITION_CLOSED).
+            last["TRADABLE_DAYS"] = tradable_days
+            last["TRADABLE_DAYS_NOT_IN_POSITION"] = not_in_pos_days
+            last["TRADABLE_DAYS_IN_POSITION_CLOSED"] = in_pos_days
+            last["NB_JOUR_OUVRES"] = not_in_pos_days
+            last["BUY_DAYS_CLOSED"] = in_pos_days
+            if tradable_days > 0:
+                last["RATIO_NOT_IN_POSITION"] = str((Decimal(not_in_pos_days) / Decimal(tradable_days)) * Decimal("100"))
+                last["RATIO_IN_POSITION"] = str((Decimal(in_pos_days) / Decimal(tradable_days)) * Decimal("100"))
+            else:
+                last["RATIO_NOT_IN_POSITION"] = None
+                last["RATIO_IN_POSITION"] = None
+
+            # Recompute BMJ/BMD display values using the clarified denominators.
+            BT = _to_dec(last.get("BT")) or Decimal("0")
+            last["BMJ"] = None if not_in_pos_days == 0 else str(BT / Decimal(not_in_pos_days))
+            last["BMD"] = None if in_pos_days == 0 else str(BT / Decimal(in_pos_days))
+
         # 4) Portfolio daily snapshot (end-of-day)
         _snapshot_portfolio(d)
+
+    def _recompute_tradable_counters_from_rows(st: dict[str, Any]) -> None:
+        """Recompute cumulative tradable day counters from existing daily rows.
+
+        This is used as a safety net for cases where rows are mutated after the main
+        per-day accounting (ex: forced close at end). It keeps UI metrics consistent.
+        """
+        st["tradable_days"] = 0
+        st["tradable_days_in_position"] = 0
+        for row in st.get("daily_rows") or []:
+            is_tradable = bool(row.get("tradable"))
+            try:
+                shares_eod = int(row.get("shares") or 0)
+            except Exception:
+                shares_eod = 0
+            in_pos = shares_eod > 0
+            if is_tradable:
+                st["tradable_days"] += 1
+                if in_pos:
+                    st["tradable_days_in_position"] += 1
+            td = int(st["tradable_days"])
+            ip = int(st["tradable_days_in_position"])
+            nip = max(0, td - ip)
+
+            row["TRADABLE_DAYS"] = td
+            row["TRADABLE_DAYS_NOT_IN_POSITION"] = nip
+            row["TRADABLE_DAYS_IN_POSITION_CLOSED"] = ip
+            row["NB_JOUR_OUVRES"] = nip
+            row["BUY_DAYS_CLOSED"] = ip
+
+            if td > 0:
+                row["RATIO_NOT_IN_POSITION"] = str((Decimal(nip) / Decimal(td)) * Decimal("100"))
+                row["RATIO_IN_POSITION"] = str((Decimal(ip) / Decimal(td)) * Decimal("100"))
+            else:
+                row["RATIO_NOT_IN_POSITION"] = None
+                row["RATIO_IN_POSITION"] = None
+
+            BT = _to_dec(row.get("BT")) or Decimal("0")
+            row["BMJ"] = None if nip == 0 else str(BT / Decimal(nip))
+            row["BMD"] = None if ip == 0 else str(BT / Decimal(ip))
 
     # Forced close at end (per ticker,line) on last available price date
     if backtest.close_positions_at_end:
@@ -596,6 +702,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 rows[-1]["BMJ"] = None if BMJ is None else str(BMJ)
                 rows[-1]["BMD"] = None if BMD is None else str(BMD)
                 rows[-1]["BUY_DAYS_CLOSED"] = bmd_days
+                # Ensure tradable day counters remain consistent after mutating EOD shares.
+                _recompute_tradable_counters_from_rows(st)
             else:
                 N = st["trade_count"]
                 S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
@@ -627,6 +735,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                     "BMD": None if BMD is None else str(BMD),
                     "BUY_DAYS_CLOSED": bmd_days,
                 })
+                _recompute_tradable_counters_from_rows(st)
+                _recompute_tradable_counters_from_rows(st)
 
     # Build results structure compatible with previous output
     results: dict[str, Any] = {
@@ -654,9 +764,18 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             N = st["trade_count"]
             S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
             BT = st["sum_g"]
-            nb = st["nb_jours_ouvres"]
+            # Day counters are derived from the end-of-day rows (see section 3.b above).
+            # They count "tradable" days (ratio_p >= X unless include_all) and whether a position
+            # is held at the end of the day (shares > 0).
+            tradable_days = int(st.get("tradable_days") or 0)
+            in_pos_days = int(st.get("tradable_days_in_position") or 0)
+            not_in_pos_days = max(0, tradable_days - in_pos_days)
+
+            # Keep legacy keys in the JSON for backward compatibility.
+            nb = not_in_pos_days
+            bmd_days = in_pos_days
+
             BMJ = None if nb == 0 else (BT / Decimal(nb))
-            bmd_days = st.get("buy_days_closed") or 0
             BMD = None if bmd_days == 0 else (BT / Decimal(bmd_days))
             tentry["lines"].append({
                 "line_index": li + 1,
@@ -667,10 +786,17 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                     "N": N,
                     "S_G_N": None if S_G_N is None else str(S_G_N),
                     "BT": str(BT),
+                    # UI-renamed in V5.2.30 (display): TRADABLE_DAYS_NOT_IN_POSITION
                     "NB_JOUR_OUVRES": nb,
+                    "TRADABLE_DAYS": tradable_days,
+                    "TRADABLE_DAYS_NOT_IN_POSITION": nb,
+                    # UI-renamed in V5.2.30 (display): TRADABLE_DAYS_IN_POSITION_CLOSED
+                    "TRADABLE_DAYS_IN_POSITION_CLOSED": bmd_days,
                     "BMJ": None if BMJ is None else str(BMJ),
                     "BMD": None if BMD is None else str(BMD),
                     "BUY_DAYS_CLOSED": bmd_days,
+                    "RATIO_NOT_IN_POSITION": None if tradable_days == 0 else str((Decimal(nb) / Decimal(tradable_days)) * Decimal("100")),
+                    "RATIO_IN_POSITION": None if tradable_days == 0 else str((Decimal(bmd_days) / Decimal(tradable_days)) * Decimal("100")),
                     "cash_ticker_end": str(st["cash_ticker"]),
                 },
                 "daily": st["daily_rows"],
