@@ -70,6 +70,10 @@ def compute_full_for_symbol_scenario(
     k2j = int(getattr(scenario, "k2j", 10) or 10)
     cr = D(getattr(scenario, "cr", D("10")))
 
+    # --- V line parameters (V5.2.37) ---
+    m_v = int(getattr(scenario, "m_v", 20) or 20)
+    m1_v = max(1, int(m_v / 2))
+
     vc = D(getattr(scenario, "vc", None))
     if vc is None:
         vc = D("0.5")
@@ -89,8 +93,14 @@ def compute_full_for_symbol_scenario(
     var_for_k2f = deque(maxlen=n5 if n5 and n5 > 0 else 1)  # daily_variation ratios (not %)
     pre_for_k2f = deque(maxlen=k2j if k2j and k2j > 0 else 1)  # K2f_pre values
 
+    # V line rolling windows
+    highs_for_v = deque(maxlen=m_v if m_v and m_v > 0 else 1)  # daily highs
+    vpre_for_v = deque(maxlen=m1_v if m1_v and m1_v > 0 else 1)  # V_pre values
+
     prev_close = None
     prev_P = None
+    prev_high = None
+    prev_vline = None
     prev_k = None  # (K1,K2f,K1f,K2,K3,K4) for alert crossing
 
     metrics: List[DailyMetric] = []
@@ -128,6 +138,21 @@ def compute_full_for_symbol_scenario(
         K1 = K1f = K2f_pre = K2f = K2 = K3 = K4 = None
         diff_slope = None
         V = slope_P = sum_pos_P = nb_pos_P = ratio_P = amp_h = None
+
+        # --- V line (V5.2.37) ---
+        V_pre_line = None
+        V_line_line = None
+        try:
+            if m_v and m_v > 1:
+                highs_for_v.appendleft(H)
+                if len(highs_for_v) >= m_v:
+                    V_pre_line = max(highs_for_v)
+                    vpre_for_v.appendleft(V_pre_line)
+                    if len(vpre_for_v) >= m1_v:
+                        V_line_line = sum(list(vpre_for_v)[:m1_v]) / D(m1_v)
+        except Exception:
+            V_pre_line = None
+            V_line_line = None
 
         # Need n1 prior P values to compute M/X
         if n1 > 0 and len(prior_P) >= n1:
@@ -236,6 +261,8 @@ def compute_full_for_symbol_scenario(
                 K1f=K1f,
                 K2f=K2f,
                 K2f_pre=K2f_pre,
+                V_pre=V_pre_line,
+                V_line=V_line_line,
                 K2=K2,
                 K3=K3,
                 K4=K4,
@@ -248,10 +275,12 @@ def compute_full_for_symbol_scenario(
             )
         )
 
-        # Alerts (crossing) only when previous had full K values
+        # Alerts (crossing)
+        current_alerts = []
+
+        # Legacy K* alerts require previous full K values
         if prev_k is not None and K1 is not None and K2 is not None and K3 is not None and K4 is not None:
             prev_K1, prev_K2f, prev_K1f, prev_K2, prev_K3, prev_K4 = prev_k
-            current_alerts = []
 
             def cross(prev, cur, pos_code, neg_code):
                 if prev is None or cur is None:
@@ -283,18 +312,35 @@ def compute_full_for_symbol_scenario(
             except Exception:
                 pass
 
-            if current_alerts:
-                alerts.append(
-                    Alert(
-                        symbol=symbol,
-                        scenario=scenario,
-                        date=trading_date,
-                        alerts=",".join(current_alerts),
-                    )
+        # V line alerts (I1/J1): High crosses V_line
+        try:
+            if prev_high is not None and prev_vline is not None and H is not None and V_line_line is not None:
+                if (prev_high < prev_vline) and (H > V_line_line):
+                    current_alerts.append("I1")
+                elif (prev_high > prev_vline) and (H < V_line_line):
+                    current_alerts.append("J1")
+        except Exception:
+            pass
+
+        # Persist alerts for the day (if any)
+        if current_alerts:
+            alerts.append(
+                Alert(
+                    symbol=symbol,
+                    scenario=scenario,
+                    date=trading_date,
+                    alerts=",".join(current_alerts),
                 )
+            )
 
         if K1 is not None and K2 is not None and K3 is not None and K4 is not None:
             prev_k = (K1, K2f, K1f, K2, K3, K4)
+
+        # Update V line previous values
+        if H is not None:
+            prev_high = H
+        if V_line_line is not None:
+            prev_vline = V_line_line
 
         # Update prior windows at end of day (matches legacy: prior metrics are strictly < trading_date)
         if n1 and n1 > 0:

@@ -21,6 +21,10 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     n5 = int(getattr(scenario, "n5", 100) or 100)
     k2j = int(getattr(scenario, "k2j", 10) or 10)
     cr = D(getattr(scenario, "cr", D("10")))
+
+    # V line parameters (V5.2.37)
+    m_v = int(getattr(scenario, "m_v", 20) or 20)
+    m1_v = max(1, int(m_v / 2))
     denom = (a + b + c + d)
     if denom == 0:
         return None, None
@@ -278,6 +282,45 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
 
     # --- end K2f ---
 
+    # --- V line (V5.2.37) ---
+    # 1) V_pre = max(High) over last M days (M = scenario.m_v)
+    # 2) V_line = moving average of V_pre over M1 days, with M1 = M/2
+    # Alerts:
+    # - I1: High crosses V_line from below to above (buy)
+    # - J1: High crosses V_line from above to below (sell)
+    V_pre = None
+    V_line = None
+    try:
+        if m_v and m_v > 1:
+            highs_desc = list(
+                DailyBar.objects.filter(symbol=symbol, date__lte=trading_date)
+                .order_by("-date")
+                .values_list("high", flat=True)[:m_v]
+            )
+            highs = [D(x) for x in highs_desc if D(x) is not None]
+            if len(highs) >= m_v:
+                V_pre = max(highs)
+
+                # rolling mean on V_pre values (including today)
+                prior_vpre_desc = list(
+                    DailyMetric.objects.filter(
+                        symbol=symbol,
+                        scenario=scenario,
+                        date__lt=trading_date,
+                        V_pre__isnull=False,
+                    )
+                    .order_by("-date")
+                    .values_list("V_pre", flat=True)[: max(0, m1_v - 1)]
+                )
+                prior_vpre = list(reversed([D(x) for x in prior_vpre_desc if D(x) is not None]))
+                vpre_series = prior_vpre + [D(V_pre)]
+                if len(vpre_series) >= m1_v:
+                    vpre_series = vpre_series[-m1_v:]
+                    V_line = sum(vpre_series) / D(len(vpre_series))
+    except Exception:
+        V_pre = None
+        V_line = None
+
     # Persist all indicators, including K1f (needed for A1f/B1f alerts + exports)
     metric, _ = DailyMetric.objects.update_or_create(
         symbol=symbol,
@@ -296,6 +339,8 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             "K1f": K1f,
             "K2f": K2f,
             "K2f_pre": K2f_pre,
+            "V_pre": V_pre,
+            "V_line": V_line,
             "K2": K2,
             "K3": K3,
             "K4": K4,
@@ -355,6 +400,21 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             alerts.append("A2f")
         if cross_down or ((diff_slope is not None) and (D(diff_slope) < 0)):
             alerts.append("B2f")
+    except Exception:
+        pass
+
+    # V line alerts (I1/J1) based on High crossing the V_line
+    try:
+        prev_high = D(getattr(prev_bar, "high", None)) if prev_bar else None
+        cur_high = D(bar.high)
+        prev_vline = D(getattr(prev_metric, "V_line", None))
+        cur_vline = D(getattr(metric, "V_line", None))
+
+        if prev_high is not None and cur_high is not None and prev_vline is not None and cur_vline is not None:
+            if (prev_high < prev_vline) and (cur_high > cur_vline):
+                alerts.append("I1")
+            elif (prev_high > prev_vline) and (cur_high < cur_vline):
+                alerts.append("J1")
     except Exception:
         pass
 

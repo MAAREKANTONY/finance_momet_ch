@@ -100,6 +100,7 @@ def alerts_table(request):
     all_alert_codes = [
         "A1", "B1", "A1f", "B1f",
         "A2f", "B2f",  # K2f alerts
+        "I1", "J1",    # V line alerts (High crossing V)
         "C1", "D1", "E1", "F1", "G1", "H1",
     ]
 

@@ -15,6 +15,10 @@ BACKTEST_SIGNAL_CHOICES = [
     # K2f (floating line derived from K1)
     ("A2f", "A2f (K1 croise K2f de bas en haut + filtre pente)"),
     ("B2f", "B2f (K1 croise K2f de haut en bas OU pente négative)"),
+
+    # V line (rolling max-high then rolling mean)
+    ("I1", "I1 (High croise V de bas en haut)"),
+    ("J1", "J1 (High croise V de haut en bas)"),
 ]
 
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition
@@ -107,6 +111,7 @@ class ScenarioForm(forms.ModelForm):
             "n5",
             "k2j",
             "cr",
+            "m_v",
             "history_years",
             "active",
             "symbols",
@@ -120,6 +125,7 @@ class ScenarioForm(forms.ModelForm):
             "n5": forms.NumberInput(attrs={"min": 1, "step": 1}),
             "k2j": forms.NumberInput(attrs={"min": 1, "step": 1}),
             "cr": forms.NumberInput(attrs={"min": 0, "step": 0.0001}),
+            "m_v": forms.NumberInput(attrs={"min": 2, "step": 1}),
         }
 
     def __init__(self, *args, **kwargs):

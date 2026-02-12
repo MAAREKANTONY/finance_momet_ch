@@ -102,8 +102,25 @@ K1f = K1 + C</pre>
     </div>
   </details>
 
+    <details>
+      <summary><strong>8) V (ligne sur les plus hauts) + alertes I1/J1</strong></summary>
+      <p>Cette ligne est basée sur les <strong>plus hauts (High)</strong> des chandelles journalières.</p>
+      <ul>
+        <li><strong>Paramètre scénario M</strong> (champ <code>m_v</code>) : fenêtre en jours pour le <em>max glissant</em> des High (défaut 20).</li>
+        <li><strong>M1</strong> est dérivé : <strong>M1 = M/2</strong> (arrondi inférieur, minimum 1).</li>
+        <li><strong>(1) V_pre</strong> = max(High) sur les <strong>M</strong> derniers jours (incluant aujourd'hui).</li>
+        <li><strong>(2) V_line</strong> = moyenne mobile sur <strong>M1</strong> jours de V_pre (incluant aujourd'hui).</li>
+      </ul>
+      <p><strong>Signaux</strong> :</p>
+      <ul>
+        <li><strong>I1 (achat)</strong> : le High croise la ligne V de bas en haut (High<sub>J-1</sub> &lt; V<sub>J-1</sub> et High<sub>J</sub> &gt; V<sub>J</sub>).</li>
+        <li><strong>J1 (vente)</strong> : le High croise la ligne V de haut en bas (High<sub>J-1</sub> &gt; V<sub>J-1</sub> et High<sub>J</sub> &lt; V<sub>J</sub>).</li>
+      </ul>
+      <p class="muted">NB: comme pour K2f, cette fonctionnalité est <strong>additive</strong> et n'impacte pas les formules legacy K1/K2/K3/K4.</p>
+    </details>
+
   <details open>
-    <summary><strong>8) Alertes A1..H1 + A1f/B1f</strong></summary>
+    <summary><strong>9) Alertes A1..H1 + A1f/B1f</strong></summary>
     <div style="margin-top:10px;">
       <p>Les alertes sont générées sur <strong>croisement de 0</strong> (changement de signe) entre le jour J-1 et J.</p>
       <ul>
@@ -120,7 +137,7 @@ K1f = K1 + C</pre>
   </details>
 
   <details>
-    <summary><strong>9) Où ces alertes sont utilisées ? (UI, email, backtests)</strong></summary>
+    <summary><strong>10) Où ces alertes sont utilisées ? (UI, email, backtests)</strong></summary>
     <div style="margin-top:10px;">
       <ul>
         <li><strong>Page Alertes</strong> : affiche toutes les alertes du jour (incl. A1f/B1f/A2f/B2f) et permet de filtrer/exporter.</li>

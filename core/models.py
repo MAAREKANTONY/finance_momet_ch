@@ -78,6 +78,15 @@ class Scenario(models.Model):
         help_text="K2f: indice de correction CR (défaut 10).",
     )
 
+    # --- V line parameters (V5.2.37) ---
+    # M_V: window (in days) used for the rolling max of daily highs.
+    # Default: 20 days.
+    # M1_V is derived and equals M_V/2.
+    m_v = models.PositiveIntegerField(
+        default=20,
+        help_text="V: fenêtre M (jours) pour le max glissant des plus hauts (défaut 20). M1 = M/2.",
+    )
+
     history_years = models.PositiveIntegerField(default=2)
 
     # Symbols associated to this scenario
@@ -332,6 +341,12 @@ class DailyMetric(models.Model):
     K2 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K3 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K4 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+
+    # --- V line (V5.2.37) ---
+    # V_pre: rolling max of daily highs over M days (step 1)
+    # V_line: rolling mean of V_pre over M1=M/2 days (step 2)
+    V_pre = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    V_line = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
 
     V = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # daily close variation ratio
     slope_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # avg of V over last N3 days
