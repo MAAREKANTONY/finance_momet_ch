@@ -6,9 +6,9 @@ from django.core.mail import EmailMultiAlternatives
 
 import hashlib
 from datetime import timedelta
-from django.db.models import Max
+from django.db.models import Max, Q
 
-from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings
+from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, AlertDefinition
 from .models import Backtest
 from .models import ProcessingJob
 from .services.provider_twelvedata import TwelveDataClient
@@ -140,6 +140,8 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
         payload = "|".join([
             str(s.a), str(s.b), str(s.c), str(s.d), str(s.e), str(getattr(s,'vc',None)), str(getattr(s,'fl',None)),
             str(s.n1), str(s.n2), str(s.n3), str(s.n4),
+            # K2f parameters (additive but must participate in the hash to keep metrics consistent)
+            str(getattr(s, 'n5', None)), str(getattr(s, 'k2j', None)), str(getattr(s, 'cr', None)),
         ])
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -157,7 +159,10 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
     n2 = int(scenario.n2 or 0)
     n3 = int(scenario.n3 or 0)
     n4 = int(scenario.n4 or 0)
-    lookback_trading = max((n1 + n2 + 5), (n3 + n4 + 5), (n1 + 5), 20)
+    n5 = int(getattr(scenario, 'n5', 0) or 0)
+    k2j = int(getattr(scenario, 'k2j', 0) or 0)
+    # K2f requires enough history to compute N5 variations + K2J smoothing.
+    lookback_trading = max((n1 + n2 + 5), (n3 + n4 + 5), (n1 + 5), (n5 + k2j + 5), 20)
     buffer_days = lookback_trading * 2 + 10
 
     computed_rows = 0
@@ -442,9 +447,111 @@ def send_daily_alerts_task():
     msg.attach_alternative(html, "text/html")
     msg.send()
     return "sent"
+
+
+def _send_alert_definition_email(defn: AlertDefinition, alert_date):
+    """Send one email for a specific AlertDefinition.
+
+    NO-REGRESSION: this reads from the existing `Alert` table; it does not
+    change how alerts are computed.
+    """
+    recipients = list(defn.recipients.filter(active=True).values_list("email", flat=True))
+    if not recipients:
+        return "no-recipients"
+
+    qs = Alert.objects.filter(date=alert_date).select_related("symbol", "scenario")
+    # Scenario filter (empty => all)
+    scenario_ids = list(defn.scenarios.values_list("id", flat=True))
+    if scenario_ids:
+        qs = qs.filter(scenario_id__in=scenario_ids)
+
+    codes = defn.get_codes_list()
+    if codes:
+        q = Q()
+        for c in codes:
+            q |= Q(alerts__icontains=c)
+        qs = qs.filter(q)
+
+    alerts = list(qs.order_by("scenario__name", "symbol__ticker"))
+    if not alerts:
+        return "no-alerts"
+
+    def fmt_pct(x):
+        if x is None:
+            return "—"
+        try:
+            return f"{Decimal(x):.2f}%"
+        except Exception:
+            return "—"
+
+    rows = []
+    for a in alerts:
+        m = DailyMetric.objects.filter(symbol=a.symbol, scenario=a.scenario, date=alert_date).first()
+        ratio_p = fmt_pct(getattr(m, "ratio_P", None) if m else None)
+        amp_h = fmt_pct(getattr(m, "amp_h", None) if m else None)
+        rows.append(
+            f"<tr>"
+            f"<td>{a.date}</td>"
+            f"<td>{a.symbol.ticker}</td>"
+            f"<td>{a.scenario.name}</td>"
+            f"<td>{a.alerts}</td>"
+            f"<td>{ratio_p}</td>"
+            f"<td>{amp_h}</td>"
+            f"</tr>"
+        )
+
+    html = f"""
+    <h3>Stock Alerts - {alert_date}</h3>
+    <p><strong>{defn.name}</strong></p>
+    <p class=\"muted\">{defn.description or ''}</p>
+    <table border=\"1\" cellpadding=\"6\" cellspacing=\"0\">
+      <thead>
+        <tr>
+          <th>Date</th><th>Action</th><th>Scénario</th><th>Alertes</th><th>RATIO_P</th><th>AMP_H</th>
+        </tr>
+      </thead>
+      <tbody>
+        {''.join(rows)}
+      </tbody>
+    </table>
+    """
+
+    msg = EmailMultiAlternatives(
+        subject=f"Stock Alerts - {defn.name} - {alert_date}",
+        body=f"Stock Alerts - {defn.name} - {alert_date}",
+        from_email=getattr(settings, "DEFAULT_FROM_EMAIL", None),
+        to=recipients,
+    )
+    msg.attach_alternative(html, "text/html")
+    msg.send()
+    return "sent"
+
+@shared_task
+def send_alert_definition_now_task(definition_id: int):
+    """Send one configured alert definition immediately.
+
+    This is used by the UI action 'Envoyer'.
+    NO-REGRESSION: reads from existing Alert rows and does not change computation.
+    """
+    last = Alert.objects.order_by("-date").first()
+    if not last:
+        return "no-alert-data"
+    defn = AlertDefinition.objects.filter(id=definition_id).prefetch_related("scenarios", "recipients").first()
+    if not defn:
+        return "not-found"
+    return _send_alert_definition_email(defn, last.date)
+
+
 @shared_task
 def check_and_send_scheduled_alerts_task():
-    """Runs every minute. If configured time matches and not sent today, send daily alerts."""
+    """Runs every minute.
+
+    Legacy behavior (NO-REGRESSION):
+    - Uses `EmailSettings` to send ONE recap email for all scenarios.
+
+    Additive behavior:
+    - Also evaluates user-defined `AlertDefinition` rules (scenarios + lines + recipients + schedule).
+    """
     from django.utils import timezone as dj_tz
     email_cfg = EmailSettings.get_solo()
 
@@ -457,16 +564,48 @@ def check_and_send_scheduled_alerts_task():
     now = dj_tz.now().astimezone(tz)
     today = now.date()
 
-    if email_cfg.last_sent_date == today:
-        return "already_sent"
+    results = []
 
-    if now.hour == int(email_cfg.send_hour) and now.minute == int(email_cfg.send_minute):
-        send_daily_alerts_task.delay()
-        email_cfg.last_sent_date = today
-        email_cfg.save(update_fields=["last_sent_date", "updated_at"])
-        return "scheduled_sent"
+    # --- Legacy global email (unchanged) ---
+    if email_cfg.last_sent_date != today:
+        if now.hour == int(email_cfg.send_hour) and now.minute == int(email_cfg.send_minute):
+            send_daily_alerts_task.delay()
+            email_cfg.last_sent_date = today
+            email_cfg.save(update_fields=["last_sent_date", "updated_at"])
+            results.append("global_sent")
+        else:
+            results.append("global_not_due")
+    else:
+        results.append("global_already_sent")
 
-    return "not_due"
+    # --- Additive: user-defined alert definitions ---
+    last = Alert.objects.order_by("-date").first()
+    if not last:
+        results.append("no_alert_data")
+        return ";".join(results)
+
+    alert_date = last.date
+    defs = AlertDefinition.objects.filter(is_active=True).prefetch_related("scenarios", "recipients")
+    for d in defs:
+        try:
+            import zoneinfo
+            dtz = zoneinfo.ZoneInfo(d.timezone or "Asia/Jerusalem")
+        except Exception:
+            dtz = tz
+
+        dnow = dj_tz.now().astimezone(dtz)
+        dtoday = dnow.date()
+
+        if d.last_sent_date == dtoday:
+            continue
+
+        if dnow.hour == int(d.send_hour) and dnow.minute == int(d.send_minute):
+            _send_alert_definition_email(d, alert_date)
+            d.last_sent_date = dtoday
+            d.save(update_fields=["last_sent_date", "updated_at"])
+            results.append(f"def_sent#{d.id}")
+
+    return ";".join(results)
 
 @shared_task
 def run_backtest_task(backtest_id: int):

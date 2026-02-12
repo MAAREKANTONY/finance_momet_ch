@@ -54,6 +54,30 @@ class Scenario(models.Model):
     n3 = models.PositiveIntegerField(default=0)
     n4 = models.PositiveIntegerField(default=0)
 
+    # --- K2f floating line parameters (V5.2.32) ---
+    # N5: window (in days) used for the cumulative daily variation sum.
+    # Default: 100 days.
+    n5 = models.PositiveIntegerField(
+        default=100,
+        help_text="K2f: fenêtre N5 (jours) pour la somme des variations journalières.",
+    )
+
+    # K2J: smoothing window (in days) used for the moving average of the pre-line.
+    # Default: 10 days.
+    k2j = models.PositiveIntegerField(
+        default=10,
+        help_text="K2f: fenêtre K2J (jours) de lissage (moyenne mobile) de la pré-ligne K2f.",
+    )
+
+    # CR: correction index (dimensionless).
+    # Default: 10.
+    cr = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=Decimal('10'),
+        help_text="K2f: indice de correction CR (défaut 10).",
+    )
+
     history_years = models.PositiveIntegerField(default=2)
 
     # Symbols associated to this scenario
@@ -300,6 +324,11 @@ class DailyMetric(models.Model):
     S = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K1 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K1f = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    # K2f: floating line derived from K1 (see README / Scenario parameters)
+    K2f = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    # K2f_pre: pre-line before moving average (step 7 in spec). Stored to enable exact
+    # rolling mean computation in incremental mode without recomputing history.
+    K2f_pre = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K2 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K3 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K4 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
@@ -333,6 +362,9 @@ class EmailRecipient(models.Model):
     email = models.EmailField(unique=True)
     active = models.BooleanField(default=True)
 
+    def __str__(self):
+        return self.email
+
 
 class EmailSettings(models.Model):
     """Single-row settings (we keep it simple: id=1)."""
@@ -347,6 +379,58 @@ class EmailSettings(models.Model):
     def get_solo(cls):
         obj, _ = cls.objects.get_or_create(id=1)
         return obj
+
+
+class AlertDefinition(models.Model):
+    """User-defined alert configuration (CRUD).
+
+    IMPORTANT (NO-REGRESSION):
+    - The alert engine still computes and stores detected alerts in `core.Alert`.
+    - `AlertDefinition` only defines *how to filter* those alerts and *when/where* to send emails.
+    """
+
+    name = models.CharField(max_length=120, unique=True)
+    description = models.TextField(blank=True, default="")
+
+    scenarios = models.ManyToManyField("Scenario", related_name="alert_definitions", blank=True)
+
+    # Comma-separated list of alert codes (e.g. "A1,B1,A2f")
+    alert_codes = models.CharField(max_length=300, blank=True, default="")
+
+    # Recipients (reuse existing EmailRecipient table)
+    recipients = models.ManyToManyField("EmailRecipient", related_name="alert_definitions", blank=True)
+
+    send_hour = models.PositiveIntegerField(default=18)  # 0-23
+    send_minute = models.PositiveIntegerField(default=0)  # 0-59
+    timezone = models.CharField(max_length=64, default="Asia/Jerusalem")
+
+    is_active = models.BooleanField(default=True)
+    last_sent_date = models.DateField(null=True, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+
+    def __str__(self) -> str:
+        return self.name
+
+    def get_codes_list(self) -> list[str]:
+        """Normalized list of alert codes."""
+        codes = []
+        for c in (self.alert_codes or "").split(","):
+            c = c.strip()
+            if c:
+                codes.append(c)
+        # de-dup while preserving order
+        seen = set()
+        out = []
+        for c in codes:
+            if c not in seen:
+                seen.add(c)
+                out.append(c)
+        return out
 
 
 # ---------------------------

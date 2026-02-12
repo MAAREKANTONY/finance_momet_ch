@@ -80,8 +80,30 @@ K1f = K1 + C</pre>
     </div>
   </details>
 
+  <details>
+    <summary><strong>7) K2f (ligne flottante) + alertes A2f/B2f</strong></summary>
+    <div style="margin-top:10px;">
+      <p><strong>Paramètres scénario</strong>: N5, K2J, CR (et la variable existante e).</p>
+      <ul>
+        <li><strong>var</strong> = (P - P(-1)) / P(-1) (ratio, pas en %)</li>
+        <li><strong>slope1</strong> = Σ(var sur N5 jours) × 100</li>
+        <li><strong>slope_deg</strong> = slope1 / 90</li>
+        <li><strong>FC</strong> = slope_deg × e × CR</li>
+        <li><strong>K2f_pre</strong> = K1 - FC</li>
+        <li><strong>K2f</strong> = moyenne mobile sur K2J jours de K2f_pre</li>
+        <li><strong>diff</strong> = slope2 - slope1, avec slope2 = Σ(var sur N5/2 jours) × 100</li>
+      </ul>
+      <p><strong>Alertes</strong> :</p>
+      <ul>
+        <li><strong>A2f (achat prudent)</strong>: K1 croise K2f de bas en haut <strong>ET</strong> diff &gt; 0</li>
+        <li><strong>B2f (vente rapide)</strong>: K1 croise K2f de haut en bas <strong>OU</strong> diff &lt; 0</li>
+      </ul>
+      <p class="muted">NB: A2f/B2f ne sont pas basées sur un croisement de 0, mais sur le croisement entre K1 et la ligne K2f.</p>
+    </div>
+  </details>
+
   <details open>
-    <summary><strong>7) Alertes A1..H1 + A1f/B1f</strong></summary>
+    <summary><strong>8) Alertes A1..H1 + A1f/B1f</strong></summary>
     <div style="margin-top:10px;">
       <p>Les alertes sont générées sur <strong>croisement de 0</strong> (changement de signe) entre le jour J-1 et J.</p>
       <ul>
@@ -98,12 +120,12 @@ K1f = K1 + C</pre>
   </details>
 
   <details>
-    <summary><strong>8) Où ces alertes sont utilisées ? (UI, email, backtests)</strong></summary>
+    <summary><strong>9) Où ces alertes sont utilisées ? (UI, email, backtests)</strong></summary>
     <div style="margin-top:10px;">
       <ul>
-        <li><strong>Page Alertes</strong> : affiche toutes les alertes du jour (incl. A1f/B1f) et permet de filtrer/exporter.</li>
-        <li><strong>Email quotidien</strong> : envoie un tableau récapitulatif (incl. A1f/B1f) + RATIO_P + AMP_H.</li>
-        <li><strong>Backtests</strong> : chaque “ligne de signal” BUY/SELL sélectionne un code d’alerte (ex: BUY=A1f / SELL=B1f).</li>
+        <li><strong>Page Alertes</strong> : affiche toutes les alertes du jour (incl. A1f/B1f/A2f/B2f) et permet de filtrer/exporter.</li>
+        <li><strong>Email quotidien</strong> : envoie un tableau récapitulatif (incl. A1f/B1f/A2f/B2f) + RATIO_P + AMP_H.</li>
+        <li><strong>Backtests</strong> : chaque “ligne de signal” BUY/SELL sélectionne un code d’alerte (ex: BUY=A2f / SELL=B2f).</li>
       </ul>
     </div>
   </details>

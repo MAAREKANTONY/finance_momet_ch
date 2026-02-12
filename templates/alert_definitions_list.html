@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Alertes — configuration</h2>
+
+<div class="card">
+  <div class="row" style="align-items:center; justify-content:space-between;">
+    <div>
+      <div class="muted">Crée des alertes personnalisées (scénarios + lignes + destinataires + horaire). Additif : n'altère pas le moteur.</div>
+    </div>
+    <div>
+      <a class="btn" href="{% url 'alert_definition_create' %}">+ Nouvelle alerte</a>
+    </div>
+  </div>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Nom</th>
+      <th>Actif</th>
+      <th>Horaire</th>
+      <th>Scénarios</th>
+      <th>Lignes</th>
+      <th>Emails</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for a in items %}
+      <tr>
+        <td>
+          <strong>{{ a.name }}</strong>
+          {% if a.description %}<div class="muted">{{ a.description }}</div>{% endif %}
+        </td>
+        <td>{% if a.is_active %}<span class="pill">ON</span>{% else %}<span class="pill">OFF</span>{% endif %}</td>
+        <td>{{ a.send_hour|stringformat:"02d" }}:{{ a.send_minute|stringformat:"02d" }} <span class="muted">({{ a.timezone }})</span></td>
+        <td>
+          {% if a.scenarios.all %}
+            {% for s in a.scenarios.all %}<span class="pill">{{ s.name }}</span> {% endfor %}
+          {% else %}
+            <span class="muted">(tous)</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if a.alert_codes %}
+            {% for c in a.get_codes_list %}<span class="pill">{{ c }}</span> {% endfor %}
+          {% else %}
+            <span class="muted">(toutes)</span>
+          {% endif %}
+        </td>
+        <td>
+          {% for r in a.recipients.all %}<span class="pill">{{ r.email }}</span> {% empty %}<span class="muted">(aucun)</span>{% endfor %}
+        </td>
+        <td style="white-space:nowrap;">
+          <form method="post" action="{% url 'alert_definition_send_now' a.id %}" style="display:inline;" onsubmit="return confirm('Déclencher l\'envoi maintenant ?');">{% csrf_token %}<button class="btn" type="submit">Envoyer</button></form>
+          <a class="btn" href="{% url 'alert_definition_edit' a.id %}">Éditer</a>
+          <a class="btn danger" href="{% url 'alert_definition_delete' a.id %}">Supprimer</a>
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="7" class="muted">Aucune alerte configurée.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<div class="card">
+  <h3>Envoi</h3>
+  <div class="muted">
+    L'envoi est déclenché par la tâche Celery Beat (chaque minute). Chaque alerte ne s'envoie qu'une fois par jour (champ <code>last_sent_date</code>).
+  </div>
+</div>
+{% endblock %}

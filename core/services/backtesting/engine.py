@@ -149,6 +149,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "ratio_P": m.get("ratio_P"),
                 "K1": m.get("K1"),
                 "K1f": m.get("K1f"),
+                "K2f": m.get("K2f"),
                 "K2": m.get("K2"),
                 "K3": m.get("K3"),
                 "K4": m.get("K4"),
@@ -158,7 +159,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 scenario_id=backtest.scenario_id,
                 date__gte=start_d,
                 date__lte=end_d,
-            ).values("date", "ratio_P", "K1", "K1f", "K2", "K3", "K4")
+            ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4")
         }
         alerts = {
             a["date"]: _alerts_set(a["alerts"])

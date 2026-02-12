@@ -65,6 +65,11 @@ def compute_full_for_symbol_scenario(
     n3 = int(getattr(scenario, "n3", 0) or 0)
     n4 = int(getattr(scenario, "n4", 0) or 0)
 
+    # --- K2f floating line parameters (additive) ---
+    n5 = int(getattr(scenario, "n5", 100) or 100)
+    k2j = int(getattr(scenario, "k2j", 10) or 10)
+    cr = D(getattr(scenario, "cr", D("10")))
+
     vc = D(getattr(scenario, "vc", None))
     if vc is None:
         vc = D("0.5")
@@ -80,8 +85,13 @@ def compute_full_for_symbol_scenario(
     closes_for_slope = deque(maxlen=(n3 + 1) if n3 and n3 > 0 else 1)
     slopes_for_ratio = deque(maxlen=n4 if n4 and n4 > 0 else 1)
 
+    # K2f rolling windows
+    var_for_k2f = deque(maxlen=n5 if n5 and n5 > 0 else 1)  # daily_variation ratios (not %)
+    pre_for_k2f = deque(maxlen=k2j if k2j and k2j > 0 else 1)  # K2f_pre values
+
     prev_close = None
-    prev_k = None  # (K1,K1f,K2,K3,K4) for alert crossing
+    prev_P = None
+    prev_k = None  # (K1,K2f,K1f,K2,K3,K4) for alert crossing
 
     metrics: List[DailyMetric] = []
     alerts: List[Alert] = []
@@ -105,9 +115,18 @@ def compute_full_for_symbol_scenario(
 
         P = (a * F + b * H + c * L + d * O) / denom
 
+        # --- K2f daily variation based on P (study price) ---
+        daily_var = None
+        if prev_P is not None and prev_P != 0:
+            daily_var = (P - prev_P) / prev_P
+        prev_P = P
+        if daily_var is not None and n5 and n5 > 0:
+            var_for_k2f.appendleft(daily_var)
+
         # Defaults
         M = X = M1 = X1 = T = Q = S = None
-        K1 = K1f = K2 = K3 = K4 = None
+        K1 = K1f = K2f_pre = K2f = K2 = K3 = K4 = None
+        diff_slope = None
         V = slope_P = sum_pos_P = nb_pos_P = ratio_P = amp_h = None
 
         # Need n1 prior P values to compute M/X
@@ -176,6 +195,29 @@ def compute_full_for_symbol_scenario(
                 Ccorr = (vc - ratio_p) * fl * E
             K1f = (K1 + Ccorr) if K1 is not None else None
 
+            # --- K2f floating line ---
+            # Requires: K1 available, e != 0, and N5 daily variations of P.
+            if cr is None:
+                cr = D("10")
+            if n5 and n5 > 0 and len(var_for_k2f) >= n5 and K1 is not None and e not in (None, 0) and cr is not None:
+                v_list = list(var_for_k2f)
+                v_list = v_list[:n5]
+                slope1 = sum(v_list) * D(100)
+                n5_half = max(1, n5 // 2)
+                slope2 = sum(v_list[:n5_half]) * D(100) if len(v_list) >= n5_half else None
+                if slope2 is not None:
+                    diff_slope = slope2 - slope1
+
+                slope_deg = slope1 / D(90) if D(90) != 0 else None
+                if slope_deg is not None:
+                    FC = slope_deg * e * cr
+                    K2f_pre = K1 - FC
+
+                    if k2j and k2j > 0:
+                        pre_for_k2f.appendleft(K2f_pre)
+                        if len(pre_for_k2f) >= k2j:
+                            K2f = sum(list(pre_for_k2f)[:k2j]) / D(k2j)
+
         # Persist metric
         metrics.append(
             DailyMetric(
@@ -192,6 +234,8 @@ def compute_full_for_symbol_scenario(
                 S=S,
                 K1=K1,
                 K1f=K1f,
+                K2f=K2f,
+                K2f_pre=K2f_pre,
                 K2=K2,
                 K3=K3,
                 K4=K4,
@@ -206,7 +250,7 @@ def compute_full_for_symbol_scenario(
 
         # Alerts (crossing) only when previous had full K values
         if prev_k is not None and K1 is not None and K2 is not None and K3 is not None and K4 is not None:
-            prev_K1, prev_K1f, prev_K2, prev_K3, prev_K4 = prev_k
+            prev_K1, prev_K2f, prev_K1f, prev_K2, prev_K3, prev_K4 = prev_k
             current_alerts = []
 
             def cross(prev, cur, pos_code, neg_code):
@@ -223,6 +267,22 @@ def compute_full_for_symbol_scenario(
             cross(prev_K3, K3, "E1", "F1")
             cross(prev_K4, K4, "G1", "H1")
 
+            # K2f alerts (A2f/B2f): K1 crosses K2f with slope filter / fast-sell rule
+            try:
+                if prev_K2f is not None and K2f is not None:
+                    cross_up = (prev_K1 < prev_K2f) and (K1 > K2f)
+                    cross_down = (prev_K1 > prev_K2f) and (K1 < K2f)
+                else:
+                    cross_up = False
+                    cross_down = False
+
+                if cross_up and (diff_slope is not None) and (D(diff_slope) > 0):
+                    current_alerts.append("A2f")
+                if cross_down or ((diff_slope is not None) and (D(diff_slope) < 0)):
+                    current_alerts.append("B2f")
+            except Exception:
+                pass
+
             if current_alerts:
                 alerts.append(
                     Alert(
@@ -234,7 +294,7 @@ def compute_full_for_symbol_scenario(
                 )
 
         if K1 is not None and K2 is not None and K3 is not None and K4 is not None:
-            prev_k = (K1, K1f, K2, K3, K4)
+            prev_k = (K1, K2f, K1f, K2, K3, K4)
 
         # Update prior windows at end of day (matches legacy: prior metrics are strictly < trading_date)
         if n1 and n1 > 0:

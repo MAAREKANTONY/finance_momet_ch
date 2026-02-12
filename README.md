@@ -1,8 +1,42 @@
 ## Version
 
+- V5.2.32: Ajout de la ligne flottante K2f (pré-ligne + moyenne mobile) + alertes A2f/B2f + paramètres scénario (N5, K2J, CR) + intégration Backtests/Alertes.
 - V5.2.6: Page "Aide indicateurs" (formules + alertes), ajout du lien UI, et correctif: persistance de K1f (indispensable pour A1f/B1f + exports) + filtres Alertes incluent A1f/B1f.
 - V5.2.10: Ajout FL (facteur de lissage) pour la correction K1f. Formule: C = (VC - ratio_p) * FL * (M1 - X1).
 - V5.2.4: Ajout VC + indicateur K1f + alertes A1f/B1f + intégration backtests.
+
+---
+
+## K2f (ligne flottante) + A2f / B2f (V5.2.32)
+
+### Paramètres scénario (UI)
+- **N5** (`scenario.n5`, défaut **100**) : fenêtre de calcul des pentes basée sur la variation journalière.
+- **K2J** (`scenario.k2j`, défaut **10**) : fenêtre de lissage (moyenne mobile) de la pré-ligne K2f.
+- **CR** (`scenario.cr`, défaut **10**) : indice de correction.
+- **e** (`scenario.e`) : variable existante réutilisée dans le facteur de correction.
+
+### Définition (ratio, pas en %)
+Soit **P** le prix d’étude du jour, **P(-1)** celui de la veille.
+
+1) **Variation journalière** : `dv = (P - P(-1)) / P(-1)`
+
+2) **Pente 1** : `slope1 = sum_{N5 jours}(dv) * 100`
+
+3) **Pente rapportée à 90°** : `slope_deg = slope1 / 90`
+
+4) **Facteur de correction** : `FC = slope_deg * e * CR`
+
+5) **Pré-ligne** : `K2f_pre = K1 - FC` (K1 est l’indicateur existant)
+
+6) **Ligne flottante** : `K2f = moyenne_{K2J jours}(K2f_pre)`
+
+7) **Pente 2** : `slope2 = sum_{N5/2 jours}(dv) * 100`
+
+8) **Différence de pentes** : `diff = slope2 - slope1`
+
+### Signaux
+- **A2f (Achat prudent)** : K1 croise K2f de bas en haut **et** `diff > 0`.
+- **B2f (Vente rapide)** : K1 croise K2f de haut en bas **ou** `diff < 0`.
 
 # Stock Alert App V2.1 (Django + Postgres + Celery)
 
@@ -48,6 +82,51 @@ docker compose exec web python manage.py send_daily_alerts
 ## V5.2.10
 - Fix: backtests now match alert codes case-insensitively (A1f/B1f work correctly).
 - Packaging: clean single-root zip.
+
+---
+
+## K2f floating line (A2f/B2f) — V5.2.32
+
+### Paramètres scénario
+Tous les paramètres ci-dessous sont **dans le modèle Scenario**, modifiables via l'UI.
+
+- `N5` (`scenario.n5`, défaut 100): fenêtre (jours) pour la somme des variations journalières.
+- `K2J` (`scenario.k2j`, défaut 10): fenêtre (jours) de lissage (moyenne mobile) de la pré-ligne.
+- `CR` (`scenario.cr`, défaut 10): indice de correction.
+- `e` (`scenario.e`): variable existante, utilisée dans le facteur de correction.
+
+### Formules
+Notations:
+- `P` = prix d'étude du jour (déjà calculé par le scénario)
+- `P(-1)` = prix d'étude de la veille
+
+1) Variation journalière (ratio, pas en %):
+`var = (P - P(-1)) / P(-1)`
+
+2) Pente 1 (sur N5 jours):
+`slope1 = (Σ var sur N5 jours) * 100`
+
+3) Pente corrigée rapportée à 90°:
+`slope_deg = slope1 / 90`
+
+4..6) Facteur de correction:
+`FC = slope_deg * e * CR`
+
+7) Pré-ligne:
+`K2f_pre = K1 - FC`  (K1 est déjà calculée)
+
+8) Ligne flottante:
+`K2f = moyenne mobile sur K2J jours de K2f_pre`
+
+9) Pente 2 (sur N5/2 jours):
+`slope2 = (Σ var sur (N5/2) jours) * 100`
+
+10) Différence:
+`diff = slope2 - slope1`
+
+### Alertes
+- **A2f (Achat prudent)**: `K1` croise `K2f` de bas en haut **ET** `diff > 0`.
+- **B2f (Vente rapide)**: `K1` croise `K2f` de haut en bas **OU** `diff < 0`.
 
 
 ---

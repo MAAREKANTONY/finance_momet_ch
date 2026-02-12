@@ -26,6 +26,14 @@ urlpatterns = [
     path("scenarios/<int:pk>/delete/", views.scenario_delete, name="scenario_delete"),
 
     path("settings/email/", views.email_settings_page, name="email_settings"),
+    path("settings/configuration/", views.email_settings_page, name="configuration_page"),
+
+    # User-defined alerts (CRUD)
+    path("settings/alerts/", views.alert_definitions_list, name="alert_definitions_list"),
+    path("settings/alerts/new/", views.alert_definition_create, name="alert_definition_create"),
+    path("settings/alerts/<int:pk>/edit/", views.alert_definition_edit, name="alert_definition_edit"),
+    path("settings/alerts/<int:pk>/delete/", views.alert_definition_delete, name="alert_definition_delete"),
+    path("settings/alerts/<int:pk>/send/", views.alert_definition_send_now, name="alert_definition_send_now"),
     path("settings/email/<int:pk>/toggle/", views.email_recipient_toggle, name="email_recipient_toggle"),
     path("settings/email/<int:pk>/delete/", views.email_recipient_delete, name="email_recipient_delete"),
 

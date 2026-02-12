@@ -11,9 +11,73 @@ BACKTEST_SIGNAL_CHOICES = [
     ("F1", "F1 (K3 croise 0 vers le bas)"),
     ("G1", "G1 (K4 croise 0 vers le haut)"),
     ("H1", "H1 (K4 croise 0 vers le bas)"),
+
+    # K2f (floating line derived from K1)
+    ("A2f", "A2f (K1 croise K2f de bas en haut + filtre pente)"),
+    ("B2f", "B2f (K1 croise K2f de haut en bas OU pente négative)"),
 ]
 
-from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest
+from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition
+
+
+class AlertDefinitionForm(forms.ModelForm):
+    """CRUD form for user-defined alert definitions.
+
+    Stored alert codes are comma-separated in the DB for portability.
+    The UI uses the same BACKTEST_SIGNAL_CHOICES list as backtests.
+    """
+
+    scenarios = forms.ModelMultipleChoiceField(
+        queryset=Scenario.objects.filter(active=True).order_by("name"),
+        required=False,
+        widget=forms.SelectMultiple(attrs={"size": 8}),
+        help_text="Scénarios ciblés par cette alerte (laisser vide = tous).",
+    )
+    alert_codes_multi = forms.MultipleChoiceField(
+        choices=BACKTEST_SIGNAL_CHOICES,
+        required=False,
+        widget=forms.SelectMultiple(attrs={"size": 10, "style": "min-width:260px;"}),
+        help_text="Codes d'alerte à inclure (laisser vide = tous).",
+        label="Lignes (codes)",
+    )
+    recipients = forms.ModelMultipleChoiceField(
+        queryset=EmailRecipient.objects.filter(active=True).order_by("email"),
+        required=False,
+        widget=forms.SelectMultiple(attrs={"size": 6}),
+        help_text="Destinataires (laisser vide = aucun envoi).",
+    )
+
+    class Meta:
+        model = AlertDefinition
+        fields = [
+            "name",
+            "description",
+            "scenarios",
+            "recipients",
+            "send_hour",
+            "send_minute",
+            "timezone",
+            "is_active",
+        ]
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3}),
+            "send_hour": forms.NumberInput(attrs={"min": 0, "max": 23}),
+            "send_minute": forms.NumberInput(attrs={"min": 0, "max": 59}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        if self.instance and self.instance.pk:
+            self.fields["alert_codes_multi"].initial = self.instance.get_codes_list()
+
+    def save(self, commit=True):
+        obj: AlertDefinition = super().save(commit=False)
+        codes = self.cleaned_data.get("alert_codes_multi") or []
+        obj.alert_codes = ",".join(codes)
+        if commit:
+            obj.save()
+            self.save_m2m()
+        return obj
 
 class ScenarioForm(forms.ModelForm):
     symbols = forms.ModelMultipleChoiceField(
@@ -40,6 +104,9 @@ class ScenarioForm(forms.ModelForm):
             "n2",
             "n3",
             "n4",
+            "n5",
+            "k2j",
+            "cr",
             "history_years",
             "active",
             "symbols",
@@ -50,6 +117,9 @@ class ScenarioForm(forms.ModelForm):
             "e": forms.NumberInput(attrs={"min": 0.0001, "step": 0.0001}),
             "vc": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),
             "fl": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),
+            "n5": forms.NumberInput(attrs={"min": 1, "step": 1}),
+            "k2j": forms.NumberInput(attrs={"min": 1, "step": 1}),
+            "cr": forms.NumberInput(attrs={"min": 0, "step": 0.0001}),
         }
 
     def __init__(self, *args, **kwargs):

@@ -1,10 +1,14 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Emails</h2>
+<h2>Configuration</h2>
+<div class="muted">Gestion des listes d'emails et déclenchement manuel des tâches (fetch/calcul/recompute). Les alertes planifiées se gèrent dans <strong>Alertes — configuration</strong>.</div>
 
 <div class="grid2">
   <div class="card">
-    <h3>Planification (dynamique)</h3>
+  <details>
+    <summary><strong>Planification globale (legacy)</strong> <span class="muted">(conservé pour compatibilité, recommandé : utiliser les alertes configurables)</span></summary>
+    <div style="margin-top:10px;">
+<h3>Planification (dynamique)</h3>
     <div class="muted">Ces paramètres sont stockés en base et pris en compte automatiquement (Celery Beat vérifie chaque minute).</div>
     <form method="post">
       {% csrf_token %}
@@ -90,12 +94,12 @@
         </script>
         <button class="btn" type="submit">Collecter les données</button>
       </form>
-      <form method="post" action="{% url 'send_mail_now' %}">
-        {% csrf_token %}
-        <button class="btn" type="submit">Envoyer l’email maintenant</button>
-      </form>
-    </div>
+      <!-- Legacy global email send disabled: use Alertes — configuration / Send now per alert. -->
+</div>
   </div>
+    </div>
+  </details>
+</div>
 
   <div class="card">
     <h3>Destinataires</h3>

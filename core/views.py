@@ -19,8 +19,18 @@ import json
 import tempfile
 from pathlib import Path
 
-from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog, Backtest, ProcessingJob
-from .forms import ScenarioForm, EmailRecipientForm, SymbolManualForm, EmailSettingsForm, SymbolScenariosForm, SymbolImportForm, BacktestForm, BACKTEST_SIGNAL_CHOICES
+from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog, Backtest, ProcessingJob, AlertDefinition
+from .forms import (
+    ScenarioForm,
+    EmailRecipientForm,
+    SymbolManualForm,
+    EmailSettingsForm,
+    SymbolScenariosForm,
+    SymbolImportForm,
+    BacktestForm,
+    BACKTEST_SIGNAL_CHOICES,
+    AlertDefinitionForm,
+)
 from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
@@ -85,7 +95,13 @@ def alerts_table(request):
     scenarios = Scenario.objects.all().order_by("name")
     symbols = Symbol.objects.all().order_by("ticker")
     # Keep in sync with calculations.py (crossing rules)
-    all_alert_codes = ["A1","B1","A1f","B1f","C1","D1","E1","F1","G1","H1"]
+    # UI list of alert codes available for filtering on /alerts.
+    # NOTE: This is *display-only* and must be kept in sync with the engine outputs.
+    all_alert_codes = [
+        "A1", "B1", "A1f", "B1f",
+        "A2f", "B2f",  # K2f alerts
+        "C1", "D1", "E1", "F1", "G1", "H1",
+    ]
 
     return render(request, "alerts.html", {
         "alerts": qs[:2000],
@@ -166,7 +182,13 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
 
         ws.append([f"Scenario: {scenario.name}"])
         ws.append([f"Description: {scenario.description}"])
-        ws.append([f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} vc={getattr(scenario,'vc',None)} fl={getattr(scenario,'fl',None)} | N1={scenario.n1} N2={scenario.n2} N3={scenario.n3} | history_years={scenario.history_years}"])
+        ws.append([
+            f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
+            f"vc={getattr(scenario,'vc',None)} fl={getattr(scenario,'fl',None)} "
+            f"| N1={scenario.n1} N2={scenario.n2} N3={scenario.n3} N4={scenario.n4} "
+            f"| K2f: N5={getattr(scenario,'n5',None)} K2J={getattr(scenario,'k2j',None)} CR={getattr(scenario,'cr',None)} "
+            f"| history_years={scenario.history_years}"
+        ])
         ws.append([f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
         ws.append([])
 
@@ -174,7 +196,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
             "date",
             "open","high","low","close","volume","change_amount","change_pct",
             "V","slope_P","sum_pos_P","nb_pos_P","ratio_P","amp_h",
-            "P","M","M1","X","X1","T","Q","S","K1","K1f","K2","K3","K4",
+            "P","M","M1","X","X1","T","Q","S","K1","K1f","K2f","K2f_pre","K2","K3","K4",
             "alerts",
         ]
         ws.append(header)
@@ -204,6 +226,8 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
                 f(m.S) if m else None,
                 f(m.K1) if m else None,
                 f(m.K1f) if m else None,
+                f(getattr(m,"K2f",None)) if m else None,
+                f(getattr(m,"K2f_pre",None)) if m else None,
                 f(m.K2) if m else None,
                 f(m.K3) if m else None,
                 f(m.K4) if m else None,
@@ -323,11 +347,15 @@ def data_export_xlsx(request):
     _autosize(ws1)
 
     ws2 = wb.create_sheet("DailyMetrics")
-    header2 = ["ticker","exchange","scenario","date","P","M","M1","X","X1","T","Q","S","K1","K2","K3","K4"]
+    header2 = ["ticker","exchange","scenario","date","P","M","M1","X","X1","T","Q","S","K1","K1f","K2f","K2f_pre","K2","K3","K4"]
     ws2.append(header2); _header(ws2, 1)
     def f(x): return float(x) if x is not None else None
     for m in metrics:
-        ws2.append([m.symbol.ticker, m.symbol.exchange, m.scenario.name, m.date.isoformat(), f(m.P), f(m.M), f(m.M1), f(m.X), f(m.X1), f(m.T), f(m.Q), f(m.S), f(m.K1), f(m.K2), f(m.K3), f(m.K4)])
+        ws2.append([
+            m.symbol.ticker, m.symbol.exchange, m.scenario.name, m.date.isoformat(),
+            f(m.P), f(m.M), f(m.M1), f(m.X), f(m.X1), f(m.T), f(m.Q), f(m.S),
+            f(m.K1), f(m.K1f), f(getattr(m,"K2f",None)), f(getattr(m,"K2f_pre",None)), f(m.K2), f(m.K3), f(m.K4)
+        ])
     _autosize(ws2)
 
     ws3 = wb.create_sheet("Alerts")
@@ -888,6 +916,70 @@ def email_settings_page(request):
     )
 
 
+# ---------------------------
+# User-defined Alerts (CRUD)
+# ---------------------------
+
+
+@login_required
+def alert_definitions_list(request):
+    items = AlertDefinition.objects.prefetch_related("scenarios", "recipients").all().order_by("name")
+    return render(request, "alert_definitions_list.html", {"items": items})
+
+
+@login_required
+def alert_definition_create(request):
+    if request.method == "POST":
+        form = AlertDefinitionForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Alerte créée.")
+            return redirect("alert_definitions_list")
+        messages.error(request, "Formulaire invalide.")
+    else:
+        form = AlertDefinitionForm()
+    return render(request, "alert_definition_form.html", {"form": form, "mode": "create"})
+
+
+@login_required
+def alert_definition_edit(request, pk: int):
+    obj = get_object_or_404(AlertDefinition, pk=pk)
+    if request.method == "POST":
+        form = AlertDefinitionForm(request.POST, instance=obj)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Alerte mise à jour.")
+            return redirect("alert_definitions_list")
+        messages.error(request, "Formulaire invalide.")
+    else:
+        form = AlertDefinitionForm(instance=obj)
+    return render(request, "alert_definition_form.html", {"form": form, "mode": "edit", "obj": obj})
+
+
+@login_required
+def alert_definition_delete(request, pk: int):
+    obj = get_object_or_404(AlertDefinition, pk=pk)
+    if request.method == "POST":
+        obj.delete()
+        messages.success(request, "Alerte supprimée.")
+        return redirect("alert_definitions_list")
+    return render(request, "alert_definition_confirm_delete.html", {"obj": obj})
+
+@login_required
+@require_POST
+def alert_definition_send_now(request, pk: int):
+    """Trigger an immediate send for one configured alert definition.
+
+    NO-REGRESSION: this only reads computed alerts from the `Alert` table.
+    Actual sending is done asynchronously via Celery.
+    """
+    from .tasks import send_alert_definition_now_task
+    send_alert_definition_now_task.delay(pk)
+    messages.success(request, "Envoi déclenché (via Celery).")
+    return redirect("alert_definitions_list")
+
+
+
 @login_required
 @require_POST
 @login_required
@@ -1090,12 +1182,16 @@ def fetch_bars_now(request):
 @login_required
 @require_POST
 def send_mail_now(request):
-    try:
-        from core.tasks import send_daily_alerts_task
-        send_daily_alerts_task.delay()
-        messages.success(request, "Envoi email demandé (en background via Celery).")
-    except Exception as e:
-        messages.error(request, f"Erreur envoi email: {e}")
+    """Legacy endpoint kept for backward compatibility.
+
+    Previously this triggered a single global email for all scenarios/lines.
+    With the new AlertDefinition system, sending is configured per alert.
+    We keep the route but disable execution to avoid confusion.
+    """
+    messages.warning(
+        request,
+        "Envoi global (legacy) désactivé. Utilisez Alertes — configuration (bouton Envoyer) ou la planification des alertes.",
+    )
     return redirect("email_settings")
 
 @login_required
@@ -1389,6 +1485,33 @@ def backtest_results(request, pk: int):
     except Exception:
         daily = (line or {}).get("daily") or []
     final = (line or {}).get("final") or {}
+
+    # --- UI-only metrics mapping (NO engine changes, additive only) ---
+    # Legacy engine counters:
+    # - NB_JOUR_OUVRES: tradable days where we end the day out of position
+    # - BUY_DAYS_CLOSED: tradable days where we end the day in position (for closed trades)
+    # The UI wants clearer names + extra ratios, computed at render time to avoid regressions.
+    def _int_or_zero(v):
+        try:
+            return int(v)
+        except Exception:
+            return 0
+
+    def _augment_row(d: dict) -> dict:
+        if not isinstance(d, dict):
+            return d
+        nip = _int_or_zero(d.get("NB_JOUR_OUVRES"))
+        ipc = _int_or_zero(d.get("BUY_DAYS_CLOSED"))
+        td = nip + ipc
+        d["TRADABLE_DAYS_NOT_IN_POSITION"] = nip
+        d["TRADABLE_DAYS_IN_POSITION_CLOSED"] = ipc
+        d["TRADABLE_DAYS"] = td
+        d["RATIO_NOT_IN_POSITION"] = (nip / td * 100.0) if td > 0 else 0.0
+        d["RATIO_IN_POSITION"] = (ipc / td * 100.0) if td > 0 else 0.0
+        return d
+
+    final = _augment_row(dict(final))
+    daily = [_augment_row(dict(r)) for r in (daily or [])]
 
     # Portfolio synthesis (Feature 8)
     portfolio = results.get("portfolio") or {}

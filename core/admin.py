@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, Backtest, ProcessingJob
+from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, Backtest, ProcessingJob, AlertDefinition
 
 @admin.register(Symbol)
 class SymbolAdmin(admin.ModelAdmin):
@@ -37,6 +37,7 @@ class EmailRecipientAdmin(admin.ModelAdmin):
     list_filter = ("active",)
 
 admin.site.register(EmailSettings)
+admin.site.register(AlertDefinition)
 
 
 @admin.register(Backtest)
