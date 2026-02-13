@@ -63,6 +63,26 @@ def _alerts_set(alerts_str: str) -> set[str]:
     return {a.strip() for a in alerts_str.split(",") if a.strip()}
 
 
+# Compact metrics tuple layout: (ratio_P, K1, K1f, K2f, K2, K3, K4)
+_M_RATIO_P = 0
+_M_K1 = 1
+_M_K1F = 2
+_M_K2F = 3
+_M_K2 = 4
+_M_K3 = 5
+_M_K4 = 6
+
+
+def _metric_val(mtuple: tuple | None, idx: int) -> Any:
+    """Return raw value from compact metrics tuple."""
+    if not mtuple:
+        return None
+    try:
+        return mtuple[idx]
+    except Exception:
+        return None
+
+
 def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     """
     Feature 4:
@@ -114,6 +134,14 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     start_d = backtest.start_date
     end_d = backtest.end_date
 
+    # NOTE (performance/memory):
+    # For large universes (e.g. 500+ tickers over ~10y daily), fully materializing
+    # per-day objects (Decimal + nested dicts) can blow up RAM and trigger OOM kills
+    # in Celery workers.
+    #
+    # To keep results identical while reducing memory:
+    # - store close/metric values in compact tuples (raw values) instead of nested dicts
+    # - convert to Decimal only when the value is actually used
     data_by_ticker: dict[str, dict[str, Any]] = {}
     all_dates: set = set()
 
@@ -128,32 +156,33 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             .order_by("date")
             .values("date", "close")
         )
+        # Materialize once (we still need to collect all dates for the engine),
+        # but keep values compact (avoid Decimal objects in memory).
         bars = list(bars_qs)
         if not bars:
             logs.append(f"No DailyBar data for {ticker} in range; skipped.")
             continue
 
-        price_by_date = {}
+        # Store close as raw (typically Decimal from ORM) to avoid huge Decimal object
+        # graphs in Python. We convert with Decimal(str(v)) only when used.
+        price_by_date: dict[date, Any] = {}
         for b in bars:
             d = b["date"]
             all_dates.add(d)
-            try:
-                price_by_date[d] = Decimal(str(b["close"]))
-            except Exception:
-                # skip bad price rows
-                continue
+            price_by_date[d] = b.get("close")
 
-        # Metrics: keep ratio_P for legacy logic, plus K-lines needed by special sell modes.
-        metrics = {
-            m["date"]: {
-                "ratio_P": m.get("ratio_P"),
-                "K1": m.get("K1"),
-                "K1f": m.get("K1f"),
-                "K2f": m.get("K2f"),
-                "K2": m.get("K2"),
-                "K3": m.get("K3"),
-                "K4": m.get("K4"),
-            }
+        # Metrics: store as compact tuples indexed by date to reduce memory.
+        # Tuple layout: (ratio_P, K1, K1f, K2f, K2, K3, K4)
+        metrics: dict[date, tuple[Any, Any, Any, Any, Any, Any, Any]] = {
+            m["date"]: (
+                m.get("ratio_P"),
+                m.get("K1"),
+                m.get("K1f"),
+                m.get("K2f"),
+                m.get("K2"),
+                m.get("K3"),
+                m.get("K4"),
+            )
             for m in DailyMetric.objects.filter(
                 symbol=sym,
                 scenario_id=backtest.scenario_id,
@@ -190,13 +219,14 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
         If include_all is enabled, tradable is always True (eligibility bypass),
         while ratio values are kept for ranking/display when available.
         """
-        # Accept either the legacy scalar ratio_P or the dict produced above.
+        # Accept either:
+        # - legacy scalar ratio_P
+        # - legacy dict like {"ratio_P": ...}
+        # - compact tuple (ratio_P, K1, K1f, K2f, K2, K3, K4)
         if isinstance(ratio_p_val, dict):
             ratio_p_val = ratio_p_val.get("ratio_P")
-
-        # ratio_p_val can be either a raw number (legacy) or a metrics dict.
-        if isinstance(ratio_p_val, dict):
-            ratio_p_val = ratio_p_val.get("ratio_P")
+        elif isinstance(ratio_p_val, tuple):
+            ratio_p_val = _metric_val(ratio_p_val, _M_RATIO_P)
 
         if ratio_p_val is None:
             return (True, None, None) if include_all else (False, None, None)
@@ -315,7 +345,9 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             price_by_date = tdata["price_by_date"]
             if d not in price_by_date:
                 continue  # no market data for this ticker that day
-            close_d = price_by_date[d]
+            close_d = _to_dec(price_by_date[d])
+            if close_d is None:
+                continue
             day_alerts_raw = tdata["alerts"].get(d, set())
             day_alerts = {a.upper() for a in day_alerts_raw}
 
@@ -356,10 +388,10 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             # Special sell mode: K1f crosses down either (1) 0 (B1f) or (2) the closest
             # "line above" among K1/K2/K3/K4 as of t-1.
             if st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
-                k_today = (tdata["metrics"].get(d) or {})
-                k_prev = st.get("prev_k") or {}
-                k1f_prev = _to_dec(k_prev.get("K1f"))
-                k1f_today = _to_dec(k_today.get("K1f"))
+                k_today = (tdata["metrics"].get(d) or None)
+                k_prev = st.get("prev_k") or None
+                k1f_prev = _to_dec(_metric_val(k_prev, _M_K1F))
+                k1f_today = _to_dec(_metric_val(k_today, _M_K1F))
 
                 # 1) B1f fallback: K1f cross 0 down
                 if _cross_down(k1f_prev, k1f_today, Decimal("0"), Decimal("0")):
@@ -367,8 +399,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 else:
                     # 2) Find the closest line above K1f at t-1 among K1/K2/K3/K4
                     candidates_prev: list[tuple[str, Decimal]] = []
-                    for key in ("K1", "K2", "K3", "K4"):
-                        v = _to_dec(k_prev.get(key))
+                    for key, idx in (("K1", _M_K1), ("K2", _M_K2), ("K3", _M_K3), ("K4", _M_K4)):
+                        v = _to_dec(_metric_val(k_prev, idx))
                         if v is None or k1f_prev is None:
                             continue
                         if v > k1f_prev:
@@ -376,8 +408,9 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
 
                     if candidates_prev and k1f_prev is not None and k1f_today is not None:
                         target_key, _ = min(candidates_prev, key=lambda x: x[1])
-                        target_prev = _to_dec(k_prev.get(target_key))
-                        target_today = _to_dec(k_today.get(target_key))
+                        idx_map = {"K1": _M_K1, "K2": _M_K2, "K3": _M_K3, "K4": _M_K4}
+                        target_prev = _to_dec(_metric_val(k_prev, idx_map.get(target_key, _M_K1)))
+                        target_today = _to_dec(_metric_val(k_today, idx_map.get(target_key, _M_K1)))
                         if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
                             _do_sell(f"AUTO ({target_key}: K1f cross down)")
 
@@ -521,8 +554,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 # no allocation available (limited CP)
                 continue
 
-            close_d = price_by_date[d]
-            if close_d <= 0:
+            close_d = _to_dec(price_by_date[d])
+            if close_d is None or close_d <= 0:
                 continue
 
             cash = st["cash_ticker"]
@@ -658,7 +691,9 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                     break
             if last_date is None:
                 continue
-            close_d = price_by_date[last_date]
+            close_d = _to_dec(price_by_date[last_date])
+            if close_d is None:
+                continue
             proceeds = Decimal(st["shares"]) * close_d
             st["cash_ticker"] = st["cash_ticker"] + proceeds
             entry = Decimal(st["entry_price"])
