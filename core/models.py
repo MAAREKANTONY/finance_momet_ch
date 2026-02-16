@@ -466,6 +466,8 @@ class ProcessingJob(models.Model):
         RUNNING = "RUNNING", "Running"
         DONE = "DONE", "Done"
         FAILED = "FAILED", "Failed"
+        CANCELLED = "CANCELLED", "Cancelled"
+        KILLED = "KILLED", "Killed"
 
     job_type = models.CharField(max_length=32, choices=JobType.choices)
     status = models.CharField(max_length=16, choices=Status.choices, default=Status.PENDING)
@@ -499,6 +501,13 @@ class ProcessingJob(models.Model):
     message = models.TextField(blank=True, default="")
     error = models.TextField(blank=True, default="")
 
+    # Manual stop controls (additive, backward compatible)
+    cancel_requested = models.BooleanField(default=False)
+    kill_requested = models.BooleanField(default=False)
+
+    # Heartbeat for detecting stuck/zombie jobs
+    heartbeat_at = models.DateTimeField(null=True, blank=True)
+
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
     finished_at = models.DateTimeField(null=True, blank=True)
@@ -510,6 +519,7 @@ class ProcessingJob(models.Model):
             models.Index(fields=["job_type", "created_at"]),
             models.Index(fields=["backtest", "created_at"]),
             models.Index(fields=["scenario", "created_at"]),
+            models.Index(fields=["status", "heartbeat_at"]),
         ]
 
     def __str__(self) -> str:

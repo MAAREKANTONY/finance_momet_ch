@@ -1,6 +1,6 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>{% if mode == "create" %}Nouveau scénario{% else %}Modifier scénario{% endif %}</h2>
+<h2>{% if mode == "create" %}Nouveau scénario{% elif mode == "duplicate" %}Dupliquer scénario{% else %}Modifier scénario{% endif %}</h2>
 <div class="card">
   <form method="post">
     {% csrf_token %}

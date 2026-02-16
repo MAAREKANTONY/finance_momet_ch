@@ -17,6 +17,7 @@
           <td>{% if s.active %}✅{% else %}—{% endif %}</td>
           <td>
             <a class="btn" href="{% url 'scenario_edit' s.id %}">Modifier</a>
+            <a class="btn" href="{% url 'scenario_duplicate' s.id %}">Dupliquer</a>
             <form method="post" action="{% url 'scenario_delete' s.id %}" style="display:inline;" onsubmit="return confirm('Supprimer ce scénario ?');">
               {% csrf_token %}
               <button class="btn danger" type="submit">Supprimer</button>

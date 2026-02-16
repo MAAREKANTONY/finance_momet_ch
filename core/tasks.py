@@ -17,6 +17,33 @@ from .services.calculations_fast import compute_full_for_symbol_scenario
 
 from django.utils import timezone
 
+
+class JobCancelled(Exception):
+    """Raised when a ProcessingJob has cancel_requested=True."""
+
+
+class JobKilled(Exception):
+    """Raised when a ProcessingJob has kill_requested=True."""
+
+
+def _job_checkpoint(job: ProcessingJob | None, *, heartbeat: bool = True) -> None:
+    """Cooperative cancellation + heartbeat.
+
+    - Refresh flags from DB
+    - Update heartbeat_at periodically (cheap single-row update)
+    - Raise JobCancelled/JobKilled when requested
+    """
+    if job is None:
+        return
+    # Refresh only the fields we need
+    job.refresh_from_db(fields=["cancel_requested", "kill_requested", "status"])
+    if job.kill_requested:
+        raise JobKilled("kill requested")
+    if job.cancel_requested:
+        raise JobCancelled("cancel requested")
+    if heartbeat:
+        ProcessingJob.objects.filter(id=job.id).update(heartbeat_at=timezone.now())
+
 def parse_date(s: str) -> date:
     return datetime.fromisoformat(s.replace("Z","")).date()
 
@@ -42,7 +69,7 @@ def _parse_int_or_none(x):
     except Exception:
         return None
 
-def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: bool = False) -> dict:
+def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: bool = False, job: ProcessingJob | None = None) -> dict:
     """Fetch/update daily bars for a queryset of Symbol.
 
     Returns basic stats: {"symbols":..., "bars":...}.
@@ -54,6 +81,8 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
     today = timezone.now().date()
 
     for sym in symbols:
+        # Cooperative cancel/kill + heartbeat
+        _job_checkpoint(job)
         exchange = sym.exchange or getattr(settings, "DEFAULT_EXCHANGE", "")
         try:
             # Delta fetch by default: if we already have bars, only request dates after the last stored bar.
@@ -132,7 +161,7 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
     return {"symbols": len(symbols), "bars": bars_written, "force_full": bool(force_full)}
 
 
-def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_all: bool = False) -> dict:
+def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_all: bool = False, job: ProcessingJob | None = None) -> dict:
     """Compute DailyMetric + Alert for a given scenario and subset of symbols."""
     symbols = list(symbols_qs)
 
@@ -167,6 +196,7 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
 
     computed_rows = 0
     for sym in symbols:
+        _job_checkpoint(job)
         try:
             if needs_full:
                 # Fast full recompute: compute in-memory and bulk_create.
@@ -188,7 +218,13 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
             if start:
                 bars_qs = bars_qs.filter(date__gte=start)
 
+            _i = 0
             for d in bars_qs.values_list("date", flat=True):
+                # Throttled checkpoints to avoid DB chatter on large histories.
+                # Still responsive enough for manual cancels.
+                _i += 1
+                if job is not None and (_i % 200 == 0):
+                    _job_checkpoint(job)
                 compute_for_symbol_scenario(sym, scenario, d)
                 computed_rows += 1
         except Exception as e:
@@ -257,6 +293,8 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
             started_at=timezone.now(),
         )
     try:
+        # Initial checkpoint + heartbeat
+        _job_checkpoint(job)
         if symbol_ids:
             symbol_qs = Symbol.objects.filter(id__in=list(symbol_ids))
         else:
@@ -269,7 +307,7 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
             years = Scenario.objects.filter(active=True).order_by("-history_years").values_list("history_years", flat=True).first() or 2
         outputsize = desired_outputsize_years(int(years))
 
-        stats = _fetch_daily_bars_for_symbols(symbol_qs=symbol_qs, outputsize=outputsize, force_full=bool(force_full))
+        stats = _fetch_daily_bars_for_symbols(symbol_qs=symbol_qs, outputsize=outputsize, force_full=bool(force_full), job=job)
         job.status = ProcessingJob.Status.DONE
         job.message = (
             f"Fetched bars: symbols={stats.get('symbols')} bars={stats.get('bars')} "
@@ -278,6 +316,18 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "message", "finished_at"])
         return job.message
+    except JobCancelled:
+        job.status = ProcessingJob.Status.CANCELLED
+        job.message = (job.message or "") + "\nCancelled by user."
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "message", "finished_at"])
+        return "cancelled"
+    except JobKilled:
+        job.status = ProcessingJob.Status.KILLED
+        job.message = (job.message or "") + "\nKilled by user."
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "message", "finished_at"])
+        return "killed"
     except Exception as e:
         job.status = ProcessingJob.Status.FAILED
         job.error = str(e)
@@ -308,6 +358,7 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
             started_at=timezone.now(),
         )
     try:
+        _job_checkpoint(job)
         scenario = Scenario.objects.get(id=scenario_id)
         # Scoping rules (no regression for legacy flows):
         # - If explicit symbol_ids are provided (e.g., from a Backtest universe snapshot), compute only those.
@@ -329,7 +380,12 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
             symbols_qs = scenario_symbols_qs
             scope_note = "scenario_symbols"
 
-        stats = _compute_metrics_for_scenario(symbols_qs=symbols_qs, scenario=scenario, recompute_all=bool(recompute_all))
+        stats = _compute_metrics_for_scenario(
+            symbols_qs=symbols_qs,
+            scenario=scenario,
+            recompute_all=bool(recompute_all),
+            job=job,
+        )
         job.status = ProcessingJob.Status.DONE
         job.message = (
             f"Computed metrics: scope={scope_note} scenario={scenario.id} "
@@ -338,6 +394,18 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "message", "finished_at"])
         return job.message
+    except JobCancelled:
+        job.status = ProcessingJob.Status.CANCELLED
+        job.message = (job.message or "") + "\nCancelled by user."
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "message", "finished_at"])
+        return "cancelled"
+    except JobKilled:
+        job.status = ProcessingJob.Status.KILLED
+        job.message = (job.message or "") + "\nKilled by user."
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "message", "finished_at"])
+        return "killed"
     except Exception as e:
         job.status = ProcessingJob.Status.FAILED
         job.error = str(e)
@@ -733,12 +801,25 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
             started_at=timezone.now(),
         )
     try:
+        _job_checkpoint(job)
         msg = run_backtest_task(backtest_id)
         job.status = ProcessingJob.Status.DONE
         job.message = str(msg)
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "message", "finished_at"])
         return msg
+    except JobCancelled:
+        job.status = ProcessingJob.Status.CANCELLED
+        job.message = (job.message or "") + "\nCancelled by user (before start)."
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "message", "finished_at"])
+        return "cancelled"
+    except JobKilled:
+        job.status = ProcessingJob.Status.KILLED
+        job.message = (job.message or "") + "\nKilled by user (before start)."
+        job.finished_at = timezone.now()
+        job.save(update_fields=["status", "message", "finished_at"])
+        return "killed"
     except Exception as e:
         job.status = ProcessingJob.Status.FAILED
         job.error = str(e)

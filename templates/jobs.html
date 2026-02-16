@@ -8,6 +8,8 @@
     <div><span class="pill">RUNNING: {{ counts.RUNNING }}</span></div>
     <div><span class="pill">DONE: {{ counts.DONE }}</span></div>
     <div><span class="pill">FAILED: {{ counts.FAILED }}</span></div>
+    <div><span class="pill">CANCELLED: {{ counts.CANCELLED }}</span></div>
+    <div><span class="pill">KILLED: {{ counts.KILLED }}</span></div>
   </div>
 
   <form method="get" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px;">
@@ -18,6 +20,8 @@
       <option value="RUNNING" {% if status == "RUNNING" %}selected{% endif %}>RUNNING</option>
       <option value="DONE" {% if status == "DONE" %}selected{% endif %}>DONE</option>
       <option value="FAILED" {% if status == "FAILED" %}selected{% endif %}>FAILED</option>
+      <option value="CANCELLED" {% if status == "CANCELLED" %}selected{% endif %}>CANCELLED</option>
+      <option value="KILLED" {% if status == "KILLED" %}selected{% endif %}>KILLED</option>
     </select>
 
     <label class="muted">Type</label>
@@ -39,9 +43,11 @@
       <th>Date</th>
       <th>Type</th>
       <th>Status</th>
+      <th>Task</th>
       <th>Backtest</th>
       <th>Scénario</th>
       <th>Message</th>
+      <th>Actions</th>
     </tr>
   </thead>
   <tbody>
@@ -52,6 +58,13 @@
         <td>
           <span class="pill">{{ j.status }}</span>
           {% if j.finished_at %}<div class="muted" style="font-size:12px;">fin {{ j.finished_at|date:"Y-m-d H:i" }}</div>{% endif %}
+          {% if j.started_at and not j.finished_at %}<div class="muted" style="font-size:12px;">start {{ j.started_at|date:"Y-m-d H:i" }}</div>{% endif %}
+          {% if j.heartbeat_at %}<div class="muted" style="font-size:12px;">hb {{ j.heartbeat_at|date:"Y-m-d H:i:s" }}</div>{% endif %}
+        </td>
+        <td>
+          {% if j.task_id %}<div style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace; font-size:12px;">{{ j.task_id }}</div>{% else %}<span class="muted">—</span>{% endif %}
+          {% if j.cancel_requested %}<div class="muted" style="font-size:12px; color:#a60;">cancel demandé</div>{% endif %}
+          {% if j.kill_requested %}<div class="muted" style="font-size:12px; color:#b00;">kill demandé</div>{% endif %}
         </td>
         <td>
           {% if j.backtest %}
@@ -71,9 +84,23 @@
           {% if j.message %}{{ j.message }}{% endif %}
           {% if j.error %}<div class="muted" style="color:#b00;">{{ j.error }}</div>{% endif %}
         </td>
+        <td style="white-space:nowrap;">
+          {% if j.status == "PENDING" or j.status == "RUNNING" %}
+            <form method="post" action="{% url 'job_cancel' j.id %}" style="display:inline;">
+              {% csrf_token %}
+              <button class="btn" type="submit">Cancel</button>
+            </form>
+            <form method="post" action="{% url 'job_kill' j.id %}" style="display:inline; margin-left:6px;" onsubmit="return confirm('Kill hard (SIGTERM) ? Dernier recours.');">
+              {% csrf_token %}
+              <button class="btn" type="submit" style="border-color:#b00; color:#b00;">Kill</button>
+            </form>
+          {% else %}
+            <span class="muted">—</span>
+          {% endif %}
+        </td>
       </tr>
     {% empty %}
-      <tr><td colspan="6" class="muted">Aucun job pour ces filtres.</td></tr>
+      <tr><td colspan="8" class="muted">Aucun job pour ces filtres.</td></tr>
     {% endfor %}
   </tbody>
 </table>

@@ -749,6 +749,67 @@ def scenario_edit(request, pk: int):
 
 @login_required
 @require_POST
+
+@login_required
+def scenario_duplicate(request, pk: int):
+    """Duplicate an existing scenario.
+
+    This is intentionally *additive* and does not modify the source scenario.
+    The user gets a pre-filled form (all fields editable) and can save it as a new Scenario.
+    """
+    source = get_object_or_404(Scenario, pk=pk)
+
+    # Used by the UI confirmation: if user keeps "is_default" checked, saving will disable the previous default
+    # (see core/signals.ensure_single_default).
+    has_other_default = Scenario.objects.filter(is_default=True).exists()
+
+    if request.method == "POST":
+        # Create a NEW scenario (no instance=source)
+        form = ScenarioForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, f"Scénario dupliqué depuis '{source.name}'.")
+            return redirect("scenarios_page")
+    else:
+        # Pre-fill all scenario parameters. Everything stays editable.
+        initial = {
+            "name": f"{source.name} (copie)",
+            "description": source.description,
+            "is_default": source.is_default,
+            "a": source.a,
+            "b": source.b,
+            "c": source.c,
+            "d": source.d,
+            "e": source.e,
+            "vc": source.vc,
+            "fl": source.fl,
+            "n1": source.n1,
+            "n2": source.n2,
+            "n3": source.n3,
+            "n4": source.n4,
+            "n5": source.n5,
+            "k2j": source.k2j,
+            "cr": source.cr,
+            "m_v": source.m_v,
+            "history_years": source.history_years,
+            "active": source.active,
+            # Many-to-many: pre-select the same tickers as the source scenario.
+            "symbols": source.symbols.all(),
+        }
+        form = ScenarioForm(initial=initial)
+
+    return render(
+        request,
+        "scenario_form.html",
+        {
+            "form": form,
+            "mode": "duplicate",
+            "source_scenario": source,
+            "has_other_default": has_other_default,
+        },
+    )
+
+
 def scenario_delete(request, pk: int):
     scenario = get_object_or_404(Scenario, pk=pk)
     try:
@@ -1263,7 +1324,7 @@ def jobs_page(request):
     job_type = (request.GET.get("type") or "").strip().upper()
 
     qs = ProcessingJob.objects.select_related("backtest", "scenario", "created_by")
-    if status in {"PENDING", "RUNNING", "DONE", "FAILED"}:
+    if status in {"PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED", "KILLED"}:
         qs = qs.filter(status=status)
     if job_type:
         qs = qs.filter(job_type=job_type)
@@ -1274,6 +1335,8 @@ def jobs_page(request):
         "RUNNING": ProcessingJob.objects.filter(status=ProcessingJob.Status.RUNNING).count(),
         "DONE": ProcessingJob.objects.filter(status=ProcessingJob.Status.DONE).count(),
         "FAILED": ProcessingJob.objects.filter(status=ProcessingJob.Status.FAILED).count(),
+        "CANCELLED": ProcessingJob.objects.filter(status=ProcessingJob.Status.CANCELLED).count(),
+        "KILLED": ProcessingJob.objects.filter(status=ProcessingJob.Status.KILLED).count(),
     }
 
     jobs = qs.order_by("-created_at")[:200]
@@ -1288,6 +1351,53 @@ def jobs_page(request):
             "job_types": ProcessingJob.JobType.choices,
         },
     )
+
+
+@login_required
+def job_cancel(request, pk: int):
+    """Request a cooperative cancellation for a running/pending job.
+
+    This is intentionally *safe*: tasks that support cancellation will stop at checkpoints.
+    """
+    if request.method != "POST":
+        return redirect("jobs_page")
+    job = ProcessingJob.objects.filter(id=pk).first()
+    if not job:
+        messages.error(request, "Job introuvable.")
+        return redirect("jobs_page")
+    ProcessingJob.objects.filter(id=job.id).update(cancel_requested=True)
+    messages.success(request, f"Annulation demandée pour le job #{job.id}.")
+    return redirect("jobs_page")
+
+
+@login_required
+def job_kill(request, pk: int):
+    """Hard kill a Celery task (best-effort) + mark as kill_requested.
+
+    WARNING: terminate can leave partial work; we keep this as a last resort.
+    """
+    if request.method != "POST":
+        return redirect("jobs_page")
+    job = ProcessingJob.objects.filter(id=pk).first()
+    if not job:
+        messages.error(request, "Job introuvable.")
+        return redirect("jobs_page")
+
+    ProcessingJob.objects.filter(id=job.id).update(kill_requested=True)
+
+    # Best-effort revoke/terminate
+    task_id = (job.task_id or "").strip()
+    if task_id:
+        try:
+            from celery import current_app
+
+            current_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+            messages.success(request, f"Kill demandé (SIGTERM) pour le job #{job.id}.")
+        except Exception as e:
+            messages.warning(request, f"Kill demandé mais revoke a échoué: {e}")
+    else:
+        messages.warning(request, "Kill demandé, mais aucun task_id n'est associé à ce job.")
+    return redirect("jobs_page")
 
 
 

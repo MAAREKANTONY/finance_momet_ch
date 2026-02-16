@@ -23,6 +23,7 @@ urlpatterns = [
     path("scenarios/", views.scenarios_page, name="scenarios_page"),
     path("scenarios/new/", views.scenario_create, name="scenario_create"),
     path("scenarios/<int:pk>/edit/", views.scenario_edit, name="scenario_edit"),
+    path("scenarios/<int:pk>/duplicate/", views.scenario_duplicate, name="scenario_duplicate"),
     path("scenarios/<int:pk>/delete/", views.scenario_delete, name="scenario_delete"),
 
     path("settings/email/", views.email_settings_page, name="email_settings"),
@@ -46,6 +47,8 @@ urlpatterns = [
 
     path("logs/", views.logs_page, name="logs_page"),
     path("jobs/", views.jobs_page, name="jobs_page"),
+    path("jobs/<int:pk>/cancel/", views.job_cancel, name="job_cancel"),
+    path("jobs/<int:pk>/kill/", views.job_kill, name="job_kill"),
     path("backtests/", views.backtests_page, name="backtests_page"),
     path("backtests/new/", views.backtest_create, name="backtest_create"),
     path("backtests/<int:pk>/edit/", views.backtest_update, name="backtest_update"),
