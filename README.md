@@ -1,13 +1,13 @@
 ## Version
 
-- V5.2.32: Ajout de la ligne flottante K2f (pré-ligne + moyenne mobile) + alertes A2f/B2f + paramètres scénario (N5, K2J, CR) + intégration Backtests/Alertes.
-- V5.2.6: Page "Aide indicateurs" (formules + alertes), ajout du lien UI, et correctif: persistance de K1f (indispensable pour A1f/B1f + exports) + filtres Alertes incluent A1f/B1f.
-- V5.2.10: Ajout FL (facteur de lissage) pour la correction K1f. Formule: C = (VC - ratio_p) * FL * (M1 - X1).
-- V5.2.4: Ajout VC + indicateur K1f + alertes A1f/B1f + intégration backtests.
+- V6.0.0: Ajout de la ligne flottante K2f (pré-ligne + moyenne mobile) + alertes A2f/B2f + paramètres scénario (N5, K2J, CR) + intégration Backtests/Alertes.
+- V6.0.0: Page "Aide indicateurs" (formules + alertes), ajout du lien UI, et correctif: persistance de K1f (indispensable pour A1f/B1f + exports) + filtres Alertes incluent A1f/B1f.
+- V6.0.0: Ajout FL (facteur de lissage) pour la correction K1f. Formule: C = (VC - ratio_p) * FL * (M1 - X1).
+- V6.0.0: Ajout VC + indicateur K1f + alertes A1f/B1f + intégration backtests.
 
 ---
 
-## K2f (ligne flottante) + A2f / B2f (V5.2.32)
+## K2f (ligne flottante) + A2f / B2f (V6.0.0)
 
 ### Paramètres scénario (UI)
 - **N5** (`scenario.n5`, défaut **100**) : fenêtre de calcul des pentes basée sur la variation journalière.
@@ -79,13 +79,13 @@ docker compose exec web python manage.py send_daily_alerts
 - Celery Beat exécute chaque minute `check_and_send_scheduled_alerts_task` et déclenche l'envoi au bon moment.
 - Boutons UI: "Lancer les calculs" et "Envoyer l’email maintenant".
 
-## V5.2.10
+## V6.0.0
 - Fix: backtests now match alert codes case-insensitively (A1f/B1f work correctly).
 - Packaging: clean single-root zip.
 
 ---
 
-## K2f floating line (A2f/B2f) — V5.2.32
+## K2f floating line (A2f/B2f) — V6.0.0
 
 ### Paramètres scénario
 Tous les paramètres ci-dessous sont **dans le modèle Scenario**, modifiables via l'UI.
@@ -177,7 +177,7 @@ Create a `.env` at project root (same level as `manage.py`):
 
 ```env
 # --- Django
-APP_VERSION=V5.2.29
+APP_VERSION=V6.0.0
 DJANGO_SECRET_KEY=change-me
 DJANGO_DEBUG=0
 DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,example.com

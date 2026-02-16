@@ -8,7 +8,7 @@ from django.http import JsonResponse, HttpResponse, FileResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.db.models import Max, Q
 from django.db.models.deletion import ProtectedError
-from django.views.decorators.http import require_POST
+from django.views.decorators.http import require_POST, require_http_methods
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
@@ -748,9 +748,7 @@ def scenario_edit(request, pk: int):
 
 
 @login_required
-@require_POST
-
-@login_required
+@require_http_methods(["GET", "POST"])
 def scenario_duplicate(request, pk: int):
     """Duplicate an existing scenario.
 
