@@ -296,7 +296,7 @@ def compute_full_for_symbol_scenario(
             cross(prev_K3, K3, "E1", "F1")
             cross(prev_K4, K4, "G1", "H1")
 
-            # K2f alerts (A2f/B2f): K1 crosses K2f with slope filter / fast-sell rule
+            # K2f alerts (A2f/B2f): K1 crosses K2f / fast-sell rule
             try:
                 if prev_K2f is not None and K2f is not None:
                     cross_up = (prev_K1 < prev_K2f) and (K1 > K2f)
@@ -305,7 +305,8 @@ def compute_full_for_symbol_scenario(
                     cross_up = False
                     cross_down = False
 
-                if cross_up and (diff_slope is not None) and (D(diff_slope) > 0):
+                # Business rule: A2f triggers on K1 crossing K2f bottom-up (no slope filter).
+                if cross_up:
                     current_alerts.append("A2f")
                 if cross_down or ((diff_slope is not None) and (D(diff_slope) < 0)):
                     current_alerts.append("B2f")

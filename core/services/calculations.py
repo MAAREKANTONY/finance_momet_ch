@@ -79,7 +79,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # (9) pente2 = sum_{N5/2 days} v * 100
     # (10) diff = pente2 - pente1
     # Alerts:
-    # - A2f: K1 crosses K2f from below to above AND diff > 0
+    # - A2f: K1 crosses K2f from below to above
     # - B2f: K1 crosses K2f from above to below OR diff < 0
 
     K2f_pre = None
@@ -215,7 +215,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # 8) K2f = moving average over last K2J days of K2f_pre
     # 9) slope2 = sum_{last N5/2 days}(daily_variation) * 100
     # 10) diff = slope2 - slope1
-    # 11) Buy (A2f): K1 crosses K2f bottom-up AND diff > 0
+    # 11) Buy (A2f): K1 crosses K2f bottom-up
     # 12) Sell (B2f): K1 crosses K2f top-down OR diff < 0
 
     K2f_pre = None
@@ -396,7 +396,8 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             (prev_k1 > prev_k2f) and (cur_k1 < cur_k2f)
         )
 
-        if cross_up and (diff_slope is not None) and (D(diff_slope) > 0):
+        # Business rule: A2f triggers on K1 crossing K2f bottom-up (no slope filter).
+        if cross_up:
             alerts.append("A2f")
         if cross_down or ((diff_slope is not None) and (D(diff_slope) < 0)):
             alerts.append("B2f")

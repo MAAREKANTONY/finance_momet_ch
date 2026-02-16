@@ -13,7 +13,7 @@ BACKTEST_SIGNAL_CHOICES = [
     ("H1", "H1 (K4 croise 0 vers le bas)"),
 
     # K2f (floating line derived from K1)
-    ("A2f", "A2f (K1 croise K2f de bas en haut + filtre pente)"),
+    ("A2f", "A2f (K1 croise K2f de bas en haut)"),
     ("B2f", "B2f (K1 croise K2f de haut en bas OU pente négative)"),
 
     # V line (rolling max-high then rolling mean)
