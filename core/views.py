@@ -1049,6 +1049,129 @@ def email_settings_page(request):
     )
 
 
+# ---------------------------------------------------------------------------
+# Legacy manual triggers (kept for backward compatibility)
+# ---------------------------------------------------------------------------
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def run_compute_now(request):
+    """Manually trigger indicator compute (legacy UI).
+
+    The global email engine is deprecated in UI, but users still rely on these
+    buttons to run fetch/compute/recompute.
+    """
+    scenario_id = (request.POST.get("scenario_id") or request.GET.get("scenario_id") or "").strip()
+
+    from core.tasks import compute_metrics_all_job_task, compute_metrics_job_task
+
+    if scenario_id and scenario_id != "ALL":
+        pj = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            scenario_id=int(scenario_id),
+            created_by_id=request.user.id,
+        )
+        async_res = compute_metrics_job_task.delay(
+            scenario_id=int(scenario_id),
+            recompute_all=False,
+            user_id=request.user.id,
+            job_id=pj.id,
+        )
+        ProcessingJob.objects.filter(id=pj.id).update(task_id=async_res.id)
+        messages.success(request, "Calculs lancés (scénario sélectionné).")
+    else:
+        pj = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            created_by_id=request.user.id,
+        )
+        async_res = compute_metrics_all_job_task.delay(False, user_id=request.user.id)
+        ProcessingJob.objects.filter(id=pj.id).update(task_id=async_res.id)
+        messages.success(request, "Calculs lancés (tous les scénarios actifs).")
+
+    return redirect("email_settings")
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def run_recompute_all_now(request):
+    """Force full recompute for scenario or all scenarios (legacy UI)."""
+    scenario_id = (request.POST.get("scenario_id") or request.GET.get("scenario_id") or "").strip()
+
+    from core.tasks import compute_metrics_all_job_task, compute_metrics_job_task
+
+    if scenario_id and scenario_id != "ALL":
+        pj = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            scenario_id=int(scenario_id),
+            created_by_id=request.user.id,
+        )
+        async_res = compute_metrics_job_task.delay(
+            scenario_id=int(scenario_id),
+            recompute_all=True,
+            user_id=request.user.id,
+            job_id=pj.id,
+        )
+        ProcessingJob.objects.filter(id=pj.id).update(task_id=async_res.id)
+        messages.success(request, "Recompute complet lancé (scénario sélectionné).")
+    else:
+        pj = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            created_by_id=request.user.id,
+        )
+        async_res = compute_metrics_all_job_task.delay(True, user_id=request.user.id)
+        ProcessingJob.objects.filter(id=pj.id).update(task_id=async_res.id)
+        messages.success(request, "Recompute complet lancé (tous les scénarios actifs).")
+
+    return redirect("email_settings")
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def fetch_bars_now(request):
+    """Manually trigger bars fetch (legacy UI)."""
+    scenario_id = (request.POST.get("scenario_id") or request.GET.get("scenario_id") or "").strip()
+    force_full = (request.POST.get("force_full") or request.GET.get("force_full") or "0").strip() in ("1", "true", "True")
+
+    from core.tasks import fetch_daily_bars_job_task
+
+    sid = None
+    if scenario_id and scenario_id != "ALL":
+        sid = int(scenario_id)
+
+    pj = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.FETCH_BARS,
+        status=ProcessingJob.Status.PENDING,
+        scenario_id=sid,
+        created_by_id=request.user.id,
+    )
+    async_res = fetch_daily_bars_job_task.delay(
+        scenario_id=sid,
+        force_full=bool(force_full),
+        user_id=request.user.id,
+        job_id=pj.id,
+    )
+    ProcessingJob.objects.filter(id=pj.id).update(task_id=async_res.id)
+    messages.success(request, "Collecte des données lancée.")
+    return redirect("email_settings")
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def send_mail_now(request):
+    """Legacy global email send.
+
+    The UI deprecates the global email engine in favor of configurable alerts.
+    Keep this endpoint for backward compatibility without doing anything risky.
+    """
+    messages.info(request, "Envoi global désactivé. Utilisez : Alertes (config) → Envoyer.")
+    return redirect("email_settings")
+
+
 # ---------------------------
 # User-defined Alerts (CRUD)
 # ---------------------------

@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Application version (shown in UI footer)
-APP_VERSION = os.getenv("APP_VERSION", "V6.0.4")
+APP_VERSION = os.getenv("APP_VERSION", "V6.0.5")
 
 # Load .env if present (does not override real env vars by default)
 load_dotenv(BASE_DIR / ".env", override=False)
