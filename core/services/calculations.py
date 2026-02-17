@@ -112,8 +112,10 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                     k2f_diff = pente2 - pente1
 
                     pente_deg = pente1 / D(90)
-                    FC = pente_deg * e * cr
-                    K2f_pre = K1 - FC
+                    # FC = pente_deg * T * CR  (T already computed above)
+                    FC = pente_deg * T * cr
+                    # K2f_pre is a PRICE line (homogeneous with P)
+                    K2f_pre = P - FC
 
                     if k2j and k2j > 0:
                         prior_pre_desc = list(
@@ -261,8 +263,10 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
 
             slope_deg = slope1 / D(90) if D(90) != 0 else None
             if slope_deg is not None and cr is not None:
-                FC = slope_deg * e * cr
-                K2f_pre = K1 - FC
+                # FC = slope_deg * T * CR  (T already computed above)
+                FC = slope_deg * T * cr
+                # K2f_pre is a PRICE line (homogeneous with P)
+                K2f_pre = P - FC
 
                 # Rolling mean over last K2J pre-line values (including today)
                 prior_pre = list(
@@ -406,10 +410,10 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # G1/H1 : P crosses S
     cross_price(prev_metric.P, prev_metric.S, metric.P, metric.S, "G1", "H1")
 
-    # K2f alerts (A2f/B2f) based on PRICE crossing the floating line (M1 + K2f)
+    # K2f alerts (A2f/B2f) based on PRICE crossing the K2f price line
     try:
-        prev_line = D(prev_metric.M1) + D(getattr(prev_metric, "K2f", None))
-        cur_line = D(metric.M1) + D(getattr(metric, "K2f", None))
+        prev_line = D(getattr(prev_metric, "K2f", None))
+        cur_line = D(getattr(metric, "K2f", None))
         prev_p = D(prev_metric.P)
         cur_p = D(metric.P)
 
