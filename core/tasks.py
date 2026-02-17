@@ -533,6 +533,12 @@ def _send_alert_definition_email(defn: AlertDefinition, alert_date):
     if scenario_ids:
         qs = qs.filter(scenario_id__in=scenario_ids)
 
+    # Universe filter (empty => no symbol filter)
+    universe_ids = list(getattr(defn, "universes", []).values_list("id", flat=True)) if hasattr(defn, "universes") else []
+    if universe_ids:
+        symbol_ids = Symbol.objects.filter(universes__id__in=universe_ids).values_list("id", flat=True).distinct()
+        qs = qs.filter(symbol_id__in=symbol_ids)
+
     codes = defn.get_codes_list()
     if codes:
         q = Q()
@@ -604,7 +610,7 @@ def send_alert_definition_now_task(definition_id: int):
     last = Alert.objects.order_by("-date").first()
     if not last:
         return "no-alert-data"
-    defn = AlertDefinition.objects.filter(id=definition_id).prefetch_related("scenarios", "recipients").first()
+    defn = AlertDefinition.objects.filter(id=definition_id).prefetch_related("scenarios", "universes", "recipients").first()
     if not defn:
         return "not-found"
     return _send_alert_definition_email(defn, last.date)
@@ -653,7 +659,7 @@ def check_and_send_scheduled_alerts_task():
         return ";".join(results)
 
     alert_date = last.date
-    defs = AlertDefinition.objects.filter(is_active=True).prefetch_related("scenarios", "recipients")
+    defs = AlertDefinition.objects.filter(is_active=True).prefetch_related("scenarios", "universes", "recipients")
     for d in defs:
         try:
             import zoneinfo

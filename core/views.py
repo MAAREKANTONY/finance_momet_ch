@@ -19,7 +19,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog, Backtest, ProcessingJob, AlertDefinition
+from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog, Backtest, ProcessingJob, AlertDefinition, Universe
 from .forms import (
     ScenarioForm,
     EmailRecipientForm,
@@ -29,7 +29,7 @@ from .forms import (
     SymbolImportForm,
     BacktestForm,
     BACKTEST_SIGNAL_CHOICES,
-    AlertDefinitionForm,
+    AlertDefinitionForm, UniverseForm,
 )
 from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
@@ -43,21 +43,25 @@ except Exception:  # pragma: no cover
 
 
 def _refresh_backtest_universe_snapshot(bt: Backtest) -> None:
-    """Refresh the backtest universe_snapshot from the current Scenario symbols.
+    """Refresh the backtest universe_snapshot from the selected scope (Universe or Scenario).
 
-    Why:
-    - Users expect changes to a Scenario universe (tickers added/removed) to be taken into
-      account when they re-run Fetch/Compute/Backtest.
-    - We keep the snapshot concept (it is still stored on the Backtest), but we update it
-      whenever the user explicitly triggers a new processing action.
+    Backward compatible behavior:
+    - If bt.universe is set: snapshot comes from bt.universe.symbols
+    - Else: snapshot comes from bt.scenario.symbols (legacy behavior)
+
+    Why we keep a snapshot:
+    - Backtests must remain reproducible even if the Universe/Scenario membership changes later.
+    - We refresh the snapshot whenever the user explicitly saves/updates the Backtest or triggers a new processing action.
     """
-    symbols = (
-        bt.scenario.symbols.all()
-        .order_by("ticker", "exchange")
-        .values_list("ticker", "exchange")
-    )
+    if getattr(bt, "universe_id", None):
+        symbol_qs = bt.universe.symbols.all()
+    else:
+        symbol_qs = bt.scenario.symbols.all()
+
+    symbols = symbol_qs.order_by("ticker", "exchange").values_list("ticker", "exchange")
     bt.universe_snapshot = [{"ticker": t, "exchange": e} for t, e in symbols]
     bt.save(update_fields=["universe_snapshot", "updated_at"])
+
 
 
 @login_required
@@ -936,6 +940,75 @@ def backtest_compute_metrics(request, pk: int):
 
 
 @login_required
+
+# ---------------------------
+# Universes (watchlists)
+# ---------------------------
+
+@login_required
+def universes_page(request):
+    universes = Universe.objects.all().order_by("-active", "name")
+    return render(request, "universes.html", {"universes": universes})
+
+
+@login_required
+def universe_create(request):
+    if request.method == "POST":
+        form = UniverseForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Univers créé.")
+            return redirect("universes_page")
+    else:
+        form = UniverseForm()
+    return render(request, "universe_form.html", {"form": form, "mode": "create"})
+
+
+@login_required
+def universe_edit(request, pk: int):
+    universe = get_object_or_404(Universe, pk=pk)
+    if request.method == "POST":
+        form = UniverseForm(request.POST, instance=universe)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Univers mis à jour.")
+            return redirect("universes_page")
+    else:
+        form = UniverseForm(instance=universe)
+    return render(request, "universe_form.html", {"form": form, "mode": "edit", "universe": universe})
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def universe_duplicate(request, pk: int):
+    source = get_object_or_404(Universe, pk=pk)
+    if request.method == "POST":
+        form = UniverseForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, f"Univers dupliqué depuis '{source.name}'.")
+            return redirect("universes_page")
+    else:
+        initial = {
+            "name": f"{source.name} (copie)",
+            "description": source.description,
+            "active": source.active,
+            "symbols": source.symbols.all(),
+        }
+        form = UniverseForm(initial=initial)
+    return render(request, "universe_form.html", {"form": form, "mode": "duplicate", "source_universe": source})
+
+
+@login_required
+@require_POST
+def universe_delete(request, pk: int):
+    universe = get_object_or_404(Universe, pk=pk)
+    universe.delete()
+    messages.success(request, "Univers supprimé.")
+    return redirect("universes_page")
+
+
+
 def email_settings_page(request):
     recipients = EmailRecipient.objects.all().order_by("-active", "email")
     settings_obj = EmailSettings.get_solo()
@@ -983,7 +1056,7 @@ def email_settings_page(request):
 
 @login_required
 def alert_definitions_list(request):
-    items = AlertDefinition.objects.prefetch_related("scenarios", "recipients").all().order_by("name")
+    items = AlertDefinition.objects.prefetch_related("scenarios", "universes", "recipients").all().order_by("name")
     return render(request, "alert_definitions_list.html", {"items": items})
 
 
@@ -1017,245 +1090,54 @@ def alert_definition_edit(request, pk: int):
 
 
 @login_required
+@require_http_methods(["GET", "POST"])
+def alert_definition_duplicate(request, pk: int):
+    """Duplicate an AlertDefinition (additive)."""
+    source = get_object_or_404(AlertDefinition, pk=pk)
+    if request.method == "POST":
+        form = AlertDefinitionForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, f"Alerte dupliquée depuis '{source.name}'.")
+            return redirect("alert_definitions_list")
+        messages.error(request, "Formulaire invalide.")
+    else:
+        initial = {
+            "name": f"{source.name} (copie)",
+            "description": source.description,
+            "scenarios": source.scenarios.all(),
+            "universes": source.universes.all(),
+            "recipients": source.recipients.all(),
+            "send_hour": source.send_hour,
+            "send_minute": source.send_minute,
+            "timezone": source.timezone,
+            "is_active": source.is_active,
+            "scope_mode": "universes" if source.universes.exists() else "all",
+            "alert_codes_multi": source.get_codes_list(),
+        }
+        form = AlertDefinitionForm(initial=initial)
+    return render(request, "alert_definition_form.html", {"form": form, "mode": "duplicate", "source": source})
+
+
+@login_required
+@require_POST
 def alert_definition_delete(request, pk: int):
     obj = get_object_or_404(AlertDefinition, pk=pk)
-    if request.method == "POST":
-        obj.delete()
-        messages.success(request, "Alerte supprimée.")
-        return redirect("alert_definitions_list")
-    return render(request, "alert_definition_confirm_delete.html", {"obj": obj})
+    obj.delete()
+    messages.success(request, "Alerte supprimée.")
+    return redirect("alert_definitions_list")
+
 
 @login_required
 @require_POST
 def alert_definition_send_now(request, pk: int):
-    """Trigger an immediate send for one configured alert definition.
-
-    NO-REGRESSION: this only reads computed alerts from the `Alert` table.
-    Actual sending is done asynchronously via Celery.
-    """
+    # Launch a one-off celery task (additive)
     from .tasks import send_alert_definition_now_task
     send_alert_definition_now_task.delay(pk)
-    messages.success(request, "Envoi déclenché (via Celery).")
+    messages.success(request, "Envoi lancé.")
     return redirect("alert_definitions_list")
 
 
-
-@login_required
-@require_POST
-@login_required
-@require_POST
-def run_compute_now(request):
-    """Run an incremental compute.
-
-    UI can pass scenario_id to scope compute to a single scenario.
-    If scenario_id == 'ALL', keep legacy behavior (all scenarios).
-    """
-    scenario_id = (request.POST.get("scenario_id") or "").strip()
-    try:
-        if not scenario_id:
-            messages.error(request, "Veuillez choisir un scénario (ou 'Tous les scénarios').")
-            return redirect("email_settings")
-
-        if scenario_id.upper() == "ALL":
-            from core.tasks import compute_metrics_all_job_task
-            compute_metrics_all_job_task.delay(False, user_id=request.user.id if request.user.is_authenticated else None)
-            messages.success(request, "Calculs demandés (tous scénarios, traitement en arrière-plan).")
-        else:
-            from core.tasks import compute_metrics_job_task
-            # Scope to the selected scenario universe to avoid recomputing symbols from other scenarios.
-            try:
-                scenario_obj = Scenario.objects.get(id=int(scenario_id))
-                symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
-            except Exception:
-                symbol_ids = None
-            compute_metrics_job_task.delay(
-                scenario_id=int(scenario_id),
-                symbol_ids=symbol_ids,
-                recompute_all=False,
-                backtest_id=None,
-                user_id=request.user.id if request.user.is_authenticated else None,
-                job_id=None,
-            )
-            messages.success(request, "Calculs demandés (scénario sélectionné, traitement en arrière-plan).")
-    except Exception as e:
-        messages.error(request, f"Erreur lancement calculs: {e}")
-    return redirect("email_settings")
-
-
-@login_required
-@require_POST
-def run_recompute_all_now(request):
-    """Force a full recompute.
-
-    UI can pass scenario_id to scope recompute to a single scenario.
-    If scenario_id == 'ALL' (or missing), keep legacy behavior (all scenarios).
-    """
-    scenario_id = (request.POST.get("scenario_id") or "").strip()
-    try:
-        if not scenario_id:
-            messages.error(request, "Veuillez choisir un scénario (ou 'Tous les scénarios').")
-            return redirect("email_settings")
-
-        if scenario_id.upper() == "ALL":
-            from core.tasks import compute_metrics_all_job_task
-            compute_metrics_all_job_task.delay(True, user_id=request.user.id if request.user.is_authenticated else None)
-            messages.success(request, "Recompute complet demandé (tous scénarios).")
-        else:
-            from core.tasks import compute_metrics_job_task
-            # Scope to the selected scenario universe to avoid recomputing symbols from other scenarios.
-            try:
-                scenario_obj = Scenario.objects.get(id=int(scenario_id))
-                symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
-            except Exception:
-                symbol_ids = None
-            compute_metrics_job_task.delay(
-                scenario_id=int(scenario_id),
-                symbol_ids=symbol_ids,
-                recompute_all=True,
-                backtest_id=None,
-                user_id=request.user.id if request.user.is_authenticated else None,
-                job_id=None,
-            )
-            messages.success(request, "Recompute complet demandé (scénario sélectionné).")
-    except Exception as e:
-        messages.error(request, f"Erreur recompute complet: {e}")
-    return redirect("email_settings")
-
-
-@login_required
-@require_POST
-def backtest_recompute_metrics(request, pk: int):
-    """Launch a full recompute scoped to the backtest scenario + universe."""
-    bt = get_object_or_404(Backtest, pk=pk)
-
-    # Keep reproducibility: align snapshot before running.
-    if bt.status != Backtest.Status.RUNNING:
-        _refresh_backtest_universe_snapshot(bt)
-
-    tickers = []
-    try:
-        for r in (bt.universe_snapshot or []):
-            if isinstance(r, dict):
-                t = r.get("ticker")
-                if t:
-                    tickers.append(t)
-    except Exception:
-        tickers = []
-
-    symbol_ids = (
-        list(Symbol.objects.filter(ticker__in=tickers).values_list("id", flat=True))
-        if tickers
-        else list(bt.scenario.symbols.values_list("id", flat=True))
-    )
-
-    from core.tasks import compute_metrics_job_task
-
-    pj = ProcessingJob.objects.create(
-        job_type=ProcessingJob.JobType.COMPUTE_METRICS,
-        status=ProcessingJob.Status.PENDING,
-        backtest=bt,
-        scenario=bt.scenario,
-        created_by=request.user if request.user.is_authenticated else None,
-        message="En attente d'exécution (recompute complet scénario)",
-    )
-    async_res = compute_metrics_job_task.delay(
-        scenario_id=bt.scenario_id,
-        symbol_ids=symbol_ids,
-        recompute_all=True,
-        backtest_id=bt.id,
-        user_id=request.user.id if request.user.is_authenticated else None,
-        job_id=pj.id,
-    )
-    pj.task_id = getattr(async_res, "id", "") or ""
-    pj.save(update_fields=["task_id"])
-
-    messages.success(request, "Recompute complet demandé pour ce backtest (scénario uniquement).")
-    return redirect("backtest_detail", pk=pk)
-
-
-@login_required
-@require_POST
-def fetch_bars_now(request):
-    """Fetch daily bars immediately.
-
-    Email page can target a specific scenario; in that case we fetch only its symbols
-    and use that scenario's history_years to determine outputsize.
-
-    If scenario_id is empty or 'ALL', behavior remains legacy: fetch for all active symbols.
-    """
-    scenario_id = (request.POST.get("scenario_id") or "").strip()
-    force_full = (request.POST.get("force_full") or "").strip() in ("1", "true", "True", "on")
-    scenario_id_int = None
-    symbol_ids = None
-
-    try:
-        from core.models import Scenario
-        if scenario_id and scenario_id != "ALL":
-            # Scope strictly to the selected scenario
-            scenario_id_int = int(scenario_id)
-            scenario = Scenario.objects.get(id=scenario_id_int)
-            symbol_ids = list(scenario.symbols.values_list("id", flat=True))
-    except Exception:
-        # If parsing fails, keep legacy behavior (all symbols)
-        scenario_id_int = None
-        symbol_ids = None
-
-    try:
-        from core.tasks import fetch_daily_bars_job_task
-
-        pj = ProcessingJob.objects.create(
-            job_type=ProcessingJob.JobType.FETCH_BARS,
-            status=ProcessingJob.Status.PENDING,
-            scenario_id=scenario_id_int,
-            created_by=request.user if request.user.is_authenticated else None,
-            message=(
-                "En attente d'exécution (collecte données)"
-                if not scenario_id_int else
-                f"En attente d'exécution (collecte données scénario {scenario_id_int})"
-            ),
-        )
-
-        async_res = fetch_daily_bars_job_task.delay(
-            symbol_ids=symbol_ids,
-            scenario_id=scenario_id_int,
-            force_full=force_full,
-            user_id=request.user.id if request.user.is_authenticated else None,
-            job_id=pj.id,
-        )
-        pj.task_id = getattr(async_res, "id", "") or ""
-        pj.save(update_fields=["task_id"])
-
-        if scenario_id == "ALL":
-            messages.success(request, "Collecte demandée pour TOUS les tickers (traitement en arrière-plan).")
-        elif scenario_id_int:
-            messages.success(request, "Collecte demandée pour le scénario sélectionné (traitement en arrière-plan).")
-        else:
-            messages.success(request, "Collecte demandée (traitement en arrière-plan).")
-
-    except Exception as e:
-        JobLog.objects.create(level="ERROR", job="fetch_bars", message="Erreur lancement fetch", traceback=str(e))
-        messages.error(request, f"Erreur lancement collecte: {e}")
-
-    return redirect("email_settings")
-
-
-@login_required
-@require_POST
-def send_mail_now(request):
-    """Legacy endpoint kept for backward compatibility.
-
-    Previously this triggered a single global email for all scenarios/lines.
-    With the new AlertDefinition system, sending is configured per alert.
-    We keep the route but disable execution to avoid confusion.
-    """
-    messages.warning(
-        request,
-        "Envoi global (legacy) désactivé. Utilisez Alertes — configuration (bouton Envoyer) ou la planification des alertes.",
-    )
-    return redirect("email_settings")
-
-@login_required
-@require_POST
 def email_recipient_toggle(request, pk: int):
     r = get_object_or_404(EmailRecipient, pk=pk)
     r.active = not r.active
@@ -1491,6 +1373,60 @@ def backtest_update(request, pk: int):
             "bt": bt,
             "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES),
             "signal_lines_json": signal_lines_json,
+        },
+    )
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def backtest_duplicate(request, pk: int):
+    """Duplicate a backtest configuration (strictly additive).
+
+    - Copies editable configuration fields.
+    - Does NOT copy computed results / status.
+    - Scope is preserved (scenario scope or universe).
+    """
+    source = get_object_or_404(Backtest.objects.select_related("scenario", "universe"), pk=pk)
+
+    if request.method == "POST":
+        form = BacktestForm(request.POST)
+        if form.is_valid():
+            bt = form.save(commit=False)
+            bt.created_by = request.user if request.user.is_authenticated else None
+            bt.results = {}
+            bt.status = Backtest.Status.PENDING
+            bt.error_message = ""
+            bt.save()
+            _refresh_backtest_universe_snapshot(bt)
+            messages.success(request, f"Backtest dupliqué depuis '{source.name}'.")
+            return redirect("backtest_detail", pk=bt.pk)
+    else:
+        initial = {
+            "name": f"{source.name} (copie)",
+            "description": source.description,
+            "scenario": source.scenario,
+            "universe": source.universe,
+            "start_date": source.start_date,
+            "end_date": source.end_date,
+            "capital_total": source.capital_total,
+            "capital_per_ticker": source.capital_per_ticker,
+            "ratio_threshold": source.ratio_threshold,
+            "include_all_tickers": source.include_all_tickers,
+            "signal_lines": source.signal_lines,
+            "close_positions_at_end": source.close_positions_at_end,
+            "scope_mode": "universe" if source.universe_id else "scenario",
+        }
+        form = BacktestForm(initial=initial)
+
+    signal_lines_json = json.dumps(form["signal_lines"].value() or [])
+    return render(
+        request,
+        "backtest_create.html",
+        {
+            "form": form,
+            "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES),
+            "signal_lines_json": signal_lines_json,
+            "duplicate_of": source,
         },
     )
 

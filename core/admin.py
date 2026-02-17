@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, Backtest, ProcessingJob, AlertDefinition
+from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, Backtest, ProcessingJob, AlertDefinition, Universe
 
 @admin.register(Symbol)
 class SymbolAdmin(admin.ModelAdmin):
@@ -37,7 +37,7 @@ class EmailRecipientAdmin(admin.ModelAdmin):
     list_filter = ("active",)
 
 admin.site.register(EmailSettings)
-admin.site.register(AlertDefinition)
+admin.site.register(AlertDefinition, Universe)
 
 
 @admin.register(Backtest)
@@ -54,3 +54,11 @@ class ProcessingJobAdmin(admin.ModelAdmin):
     list_filter = ("status", "job_type")
     search_fields = ("message", "error", "task_id")
     date_hierarchy = "created_at"
+
+
+@admin.register(Universe)
+class UniverseAdmin(admin.ModelAdmin):
+    list_display = ("name", "active", "created_at", "updated_at")
+    list_filter = ("active",)
+    search_fields = ("name",)
+    filter_horizontal = ("symbols",)

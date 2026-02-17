@@ -53,6 +53,7 @@
           <td>
             <a class="btn" href="{% url 'backtest_detail' bt.id %}">Ouvrir</a>
             <a class="btn" href="{% url 'backtest_update' bt.id %}" {% if bt.status == 'RUNNING' %}style="pointer-events:none; opacity:0.6;"{% endif %}>Modifier</a>
+            <a class="btn" href="{% url 'backtest_duplicate' bt.id %}">Dupliquer</a>
             <form method="post" action="{% url 'backtest_delete' bt.id %}" style="display:inline;" onsubmit="return confirm('Supprimer ce backtest ? Cette action est irréversible.');">
               {% csrf_token %}
               <button class="btn danger" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Supprimer</button>

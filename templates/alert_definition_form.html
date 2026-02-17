@@ -47,6 +47,37 @@
       <div class="muted" style="font-size:12px;">{{ form.scenarios.help_text }}</div>
     </div>
 
+    <div style="min-width: 360px;">
+      <label><strong>{{ form.scope_mode.label }}</strong></label><br/>
+      {{ form.scope_mode }}
+      {% if form.scope_mode.errors %}<div class="muted">{{ form.scope_mode.errors }}</div>{% endif %}
+
+      <div id="scope-universes" style="margin-top:10px;">
+        <label><strong>Univers (multi)</strong></label><br/>
+        {{ form.universes }}
+        <div class="muted" style="font-size:12px;">{{ form.universes.help_text }}</div>
+        {% if form.universes.errors %}<div class="muted">{{ form.universes.errors }}</div>{% endif %}
+      </div>
+
+      <div id="scope-custom" style="margin-top:10px;">
+        <label><strong>Liste personnalisée</strong></label><br/>
+        {{ form.custom_symbols_text }}
+        <div class="muted" style="font-size:12px;">{{ form.custom_symbols_text.help_text }}</div>
+        {% if form.custom_symbols_text.errors %}<div class="muted">{{ form.custom_symbols_text.errors }}</div>{% endif %}
+
+        <div style="margin-top:8px;">
+          <label>{{ form.save_custom_as_universe }} {{ form.save_custom_as_universe.label }}</label>
+          <div class="muted" style="font-size:12px;">{{ form.save_custom_as_universe.help_text }}</div>
+        </div>
+
+        <div style="margin-top:8px;">
+          <div class="muted" style="font-size:12px;">{{ form.custom_universe_name.label }}</div>
+          {{ form.custom_universe_name }}
+          <div class="muted" style="font-size:12px;">{{ form.custom_universe_name.help_text }}</div>
+        </div>
+      </div>
+    </div>
+
     <div>
       <label><strong>Lignes (multi)</strong></label><br/>
       {{ form.alert_codes_multi }}
@@ -70,6 +101,27 @@
     <a class="btn" href="{% url 'alert_definitions_list' %}">Annuler</a>
   </div>
 </form>
+
+<script>
+(function() {
+  function getCheckedValue(name) {
+    const els = document.querySelectorAll('input[name="' + name + '"]');
+    for (const el of els) { if (el.checked) return el.value; }
+    return null;
+  }
+  function refreshScope() {
+    const v = getCheckedValue('scope_mode') || 'all';
+    const u = document.getElementById('scope-universes');
+    const c = document.getElementById('scope-custom');
+    if (u) u.style.display = (v === 'universes') ? 'block' : 'none';
+    if (c) c.style.display = (v === 'custom') ? 'block' : 'none';
+  }
+  document.addEventListener('change', function(e) {
+    if (e.target && e.target.name === 'scope_mode') refreshScope();
+  });
+  refreshScope();
+})();
+</script>
 
 <div class="card">
   <h3>Notes</h3>

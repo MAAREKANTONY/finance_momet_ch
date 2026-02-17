@@ -1,4 +1,5 @@
 from django import forms
+from django.utils import timezone
 
 BACKTEST_SIGNAL_CHOICES = [
     ("A1", "A1 (K1 croise 0 vers le haut)"),
@@ -21,7 +22,67 @@ BACKTEST_SIGNAL_CHOICES = [
     ("J1", "J1 (High croise V de haut en bas)"),
 ]
 
-from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition
+
+def _parse_symbols_text(text: str) -> list[Symbol]:
+    """Parse a user-entered tickers list into Symbol instances.
+
+    Accepted formats (one per line or separated by comma/semicolon/space):
+      - AAPL
+      - AAPL:NASDAQ
+      - AIR:EPA
+
+    Behavior:
+      - Creates missing Symbol rows (ticker + optional exchange).
+      - Keeps exchange optional.
+      - Strips/uppercases tickers.
+
+    NOTE: Intentionally lightweight (no external validation against providers).
+    """
+    if not text:
+        return []
+
+    raw = text.replace(";", "\n").replace(",", "\n")
+    parts: list[str] = []
+    for line in raw.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        # Allow space-separated entries in a line
+        for tok in line.split():
+            tok = tok.strip()
+            if tok:
+                parts.append(tok)
+
+    symbols: list[Symbol] = []
+    seen = set()
+    for tok in parts:
+        tok = tok.strip()
+        if not tok:
+            continue
+        if ":" in tok:
+            ticker, exchange = tok.split(":", 1)
+        else:
+            ticker, exchange = tok, ""
+        ticker = ticker.strip().upper()
+        exchange = exchange.strip().upper()
+        if not ticker:
+            continue
+        key = (ticker, exchange)
+        if key in seen:
+            continue
+        seen.add(key)
+        sym, _ = Symbol.objects.get_or_create(
+            ticker=ticker,
+            exchange=exchange,
+            defaults={"active": True},
+        )
+        if not sym.active:
+            sym.active = True
+            sym.save(update_fields=["active"])
+        symbols.append(sym)
+    return symbols
+
+from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Universe, Backtest, AlertDefinition
 
 
 class AlertDefinitionForm(forms.ModelForm):
@@ -36,6 +97,50 @@ class AlertDefinitionForm(forms.ModelForm):
         required=False,
         widget=forms.SelectMultiple(attrs={"size": 8}),
         help_text="Scénarios ciblés par cette alerte (laisser vide = tous).",
+    )
+
+
+    SCOPE_ALL = "all"
+    SCOPE_UNIVERSES = "universes"
+    SCOPE_CUSTOM = "custom"
+
+    scope_mode = forms.ChoiceField(
+        choices=[
+            (SCOPE_ALL, "Toutes les actions (pas de filtre)"),
+            (SCOPE_UNIVERSES, "Choisir un univers existant"),
+            (SCOPE_CUSTOM, "Définir une liste personnalisée"),
+        ],
+        required=False,
+        initial=SCOPE_ALL,
+        widget=forms.RadioSelect,
+        label="Actions concernées",
+    )
+
+    universes = forms.ModelMultipleChoiceField(
+        queryset=Universe.objects.filter(active=True).order_by("name"),
+        required=False,
+        widget=forms.SelectMultiple(attrs={"size": 8}),
+        help_text="Univers (tickers) ciblés par cette alerte.",
+        label="Univers",
+    )
+
+    custom_symbols_text = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 6, "placeholder": "Ex: AAPL\nMSFT\nAIR:EPA"}),
+        label="Liste d'actions",
+        help_text="Une action par ligne. Format optionnel: TICKER:EXCHANGE.",
+    )
+    save_custom_as_universe = forms.BooleanField(
+        required=False,
+        initial=False,
+        label="Enregistrer comme univers réutilisable",
+        help_text="Si activé, la liste sera enregistrée comme un univers visible dans le menu 'Univers'.",
+    )
+    custom_universe_name = forms.CharField(
+        required=False,
+        max_length=120,
+        label="Nom de l'univers",
+        help_text="Optionnel. Si vide, un nom auto sera utilisé.",
     )
     alert_codes_multi = forms.MultipleChoiceField(
         choices=BACKTEST_SIGNAL_CHOICES,
@@ -57,6 +162,7 @@ class AlertDefinitionForm(forms.ModelForm):
             "name",
             "description",
             "scenarios",
+            "universes",
             "recipients",
             "send_hour",
             "send_minute",
@@ -73,6 +179,49 @@ class AlertDefinitionForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         if self.instance and self.instance.pk:
             self.fields["alert_codes_multi"].initial = self.instance.get_codes_list()
+            # Initialize scope
+            if self.instance.universes.exists():
+                self.fields["scope_mode"].initial = self.SCOPE_UNIVERSES
+            else:
+                self.fields["scope_mode"].initial = self.SCOPE_ALL
+
+        # Include selected universes even if inactive
+        qs = Universe.objects.filter(active=True)
+        if self.instance and self.instance.pk:
+            selected = self.instance.universes.all()
+            if selected.exists():
+                qs = (qs | selected).distinct()
+        self.fields["universes"].queryset = qs.order_by("name")
+
+    def clean(self):
+        cleaned = super().clean()
+        mode = cleaned.get("scope_mode") or self.SCOPE_ALL
+        if mode == self.SCOPE_UNIVERSES:
+            universes = cleaned.get("universes")
+            if not universes or universes.count() == 0:
+                self.add_error("universes", "Choisis au moins un univers, ou sélectionne un autre mode de scope.")
+        if mode == self.SCOPE_CUSTOM:
+            txt = (cleaned.get("custom_symbols_text") or "").strip()
+            if not txt:
+                self.add_error("custom_symbols_text", "Colle une liste d'actions (au moins 1 ticker).")
+        return cleaned
+
+    def _create_universe_from_custom(self, name_hint: str | None, active: bool) -> Universe:
+        symbols = _parse_symbols_text(self.cleaned_data.get("custom_symbols_text") or "")
+        if not symbols:
+            raise forms.ValidationError("Liste d'actions vide ou invalide.")
+
+        base_name = (name_hint or "").strip()
+        if not base_name:
+            base_name = f"[auto] Scope {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}"
+        name = base_name
+        i = 2
+        while Universe.objects.filter(name=name).exists():
+            name = f"{base_name} ({i})"
+            i += 1
+        uni = Universe.objects.create(name=name, description="Univers créé depuis une alerte.", active=active)
+        uni.symbols.set(symbols)
+        return uni
 
     def save(self, commit=True):
         obj: AlertDefinition = super().save(commit=False)
@@ -81,6 +230,19 @@ class AlertDefinitionForm(forms.ModelForm):
         if commit:
             obj.save()
             self.save_m2m()
+
+            # Apply scope_mode post-save (needs obj.pk)
+            mode = self.cleaned_data.get("scope_mode") or self.SCOPE_ALL
+            if mode == self.SCOPE_ALL:
+                obj.universes.clear()
+            elif mode == self.SCOPE_UNIVERSES:
+                # Already set by form m2m
+                pass
+            elif mode == self.SCOPE_CUSTOM:
+                active = bool(self.cleaned_data.get("save_custom_as_universe"))
+                name_hint = self.cleaned_data.get("custom_universe_name")
+                uni = self._create_universe_from_custom(name_hint=name_hint, active=active)
+                obj.universes.set([uni])
         return obj
 
 class ScenarioForm(forms.ModelForm):
@@ -185,8 +347,62 @@ class SymbolImportForm(forms.Form):
     file = forms.FileField(label="Fichier (CSV ou Excel .xlsx)")
 
 
+
+class UniverseForm(forms.ModelForm):
+    """Create/Edit a Universe (watchlist)."""
+
+    symbols = forms.ModelMultipleChoiceField(
+        queryset=Symbol.objects.filter(active=True).order_by("ticker", "exchange"),
+        required=False,
+        widget=forms.SelectMultiple(attrs={"size": 14, "style": "min-width:320px;"}),
+        help_text="Tickers inclus dans cet univers.",
+        label="Tickers",
+    )
+
+    class Meta:
+        model = Universe
+        fields = ["name", "description", "symbols", "active"]
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3}),
+        }
+
+
 class BacktestForm(forms.ModelForm):
     """Create/Edit a Backtest configuration (engine results will be computed later)."""
+
+    SCOPE_SCENARIO = "scenario"
+    SCOPE_UNIVERSE = "universe"
+    SCOPE_CUSTOM = "custom"
+
+    scope_mode = forms.ChoiceField(
+        choices=[
+            (SCOPE_SCENARIO, "Utiliser les actions du scénario"),
+            (SCOPE_UNIVERSE, "Choisir un univers existant"),
+            (SCOPE_CUSTOM, "Définir une liste personnalisée"),
+        ],
+        required=False,
+        initial=SCOPE_SCENARIO,
+        widget=forms.RadioSelect,
+        label="Actions concernées",
+    )
+    custom_symbols_text = forms.CharField(
+        required=False,
+        widget=forms.Textarea(attrs={"rows": 6, "placeholder": "Ex: AAPL\nMSFT\nAIR:EPA"}),
+        label="Liste d'actions",
+        help_text="Une action par ligne. Format optionnel: TICKER:EXCHANGE.",
+    )
+    save_custom_as_universe = forms.BooleanField(
+        required=False,
+        initial=False,
+        label="Enregistrer comme univers réutilisable",
+        help_text="Si activé, la liste sera enregistrée comme un univers visible dans le menu 'Univers'.",
+    )
+    custom_universe_name = forms.CharField(
+        required=False,
+        max_length=120,
+        label="Nom de l'univers",
+        help_text="Optionnel. Si vide, un nom auto sera utilisé.",
+    )
 
     class Meta:
         model = Backtest
@@ -194,6 +410,7 @@ class BacktestForm(forms.ModelForm):
             "name",
             "description",
             "scenario",
+            "universe",
             "start_date",
             "end_date",
             "capital_total",
@@ -209,6 +426,25 @@ class BacktestForm(forms.ModelForm):
             "end_date": forms.DateInput(format="%Y-%m-%d", attrs={"type": "date"}),
         }
 
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Only propose active universes by default; include current selection even if inactive.
+        if "universe" in self.fields:
+            qs = Universe.objects.filter(active=True)
+            if self.instance and getattr(self.instance, "universe_id", None):
+                qs = (qs | Universe.objects.filter(pk=self.instance.universe_id)).distinct()
+            self.fields["universe"].queryset = qs.order_by("name")
+            self.fields["universe"].required = False
+            self.fields["universe"].help_text = "Univers à utiliser pour ce backtest (optionnel)."
+
+        # Initialize scope_mode for edit
+        if self.instance and getattr(self.instance, "pk", None):
+            if self.instance.universe_id:
+                self.fields["scope_mode"].initial = self.SCOPE_UNIVERSE
+            else:
+                self.fields["scope_mode"].initial = self.SCOPE_SCENARIO
+
     def clean_signal_lines(self):
         """Accept JSON list; keep validation minimal for Feature 1."""
         value = self.cleaned_data.get("signal_lines")
@@ -221,3 +457,55 @@ class BacktestForm(forms.ModelForm):
             if not isinstance(item, dict):
                 raise forms.ValidationError("Each signal line must be an object")
         return value
+
+    def clean(self):
+        cleaned = super().clean()
+        mode = cleaned.get("scope_mode") or self.SCOPE_SCENARIO
+
+        if mode == self.SCOPE_UNIVERSE:
+            if not cleaned.get("universe"):
+                self.add_error("universe", "Choisis un univers, ou sélectionne un autre mode de scope.")
+
+        if mode == self.SCOPE_CUSTOM:
+            txt = (cleaned.get("custom_symbols_text") or "").strip()
+            if not txt:
+                self.add_error("custom_symbols_text", "Colle une liste d'actions (au moins 1 ticker).")
+        return cleaned
+
+    def _create_universe_from_custom(self, name_hint: str | None, active: bool) -> Universe:
+        symbols = _parse_symbols_text(self.cleaned_data.get("custom_symbols_text") or "")
+        if not symbols:
+            raise forms.ValidationError("Liste d'actions vide ou invalide.")
+
+        base_name = (name_hint or "").strip()
+        if not base_name:
+            base_name = f"[auto] Scope {timezone.now().strftime('%Y-%m-%d %H:%M:%S')}"
+
+        # Ensure unique name
+        name = base_name
+        i = 2
+        while Universe.objects.filter(name=name).exists():
+            name = f"{base_name} ({i})"
+            i += 1
+
+        uni = Universe.objects.create(name=name, description="Univers créé depuis un backtest.", active=active)
+        uni.symbols.set(symbols)
+        return uni
+
+    def save(self, commit=True):
+        obj: Backtest = super().save(commit=False)
+        mode = self.cleaned_data.get("scope_mode") or self.SCOPE_SCENARIO
+
+        if mode == self.SCOPE_SCENARIO:
+            obj.universe = None
+        elif mode == self.SCOPE_UNIVERSE:
+            obj.universe = self.cleaned_data.get("universe")
+        elif mode == self.SCOPE_CUSTOM:
+            active = bool(self.cleaned_data.get("save_custom_as_universe"))
+            name_hint = self.cleaned_data.get("custom_universe_name")
+            obj.universe = self._create_universe_from_custom(name_hint=name_hint, active=active)
+
+        if commit:
+            obj.save()
+            self.save_m2m()
+        return obj

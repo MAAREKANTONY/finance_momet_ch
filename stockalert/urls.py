@@ -20,6 +20,13 @@ urlpatterns = [
     path("symbols/<int:pk>/toggle/", views.symbol_toggle_active, name="symbol_toggle"),
     path("symbols/<int:pk>/delete/", views.symbol_delete, name="symbol_delete"),
 
+
+    path("universes/", views.universes_page, name="universes_page"),
+    path("universes/new/", views.universe_create, name="universe_create"),
+    path("universes/<int:pk>/edit/", views.universe_edit, name="universe_edit"),
+    path("universes/<int:pk>/duplicate/", views.universe_duplicate, name="universe_duplicate"),
+    path("universes/<int:pk>/delete/", views.universe_delete, name="universe_delete"),
+
     path("scenarios/", views.scenarios_page, name="scenarios_page"),
     path("scenarios/new/", views.scenario_create, name="scenario_create"),
     path("scenarios/<int:pk>/edit/", views.scenario_edit, name="scenario_edit"),
@@ -33,6 +40,7 @@ urlpatterns = [
     path("settings/alerts/", views.alert_definitions_list, name="alert_definitions_list"),
     path("settings/alerts/new/", views.alert_definition_create, name="alert_definition_create"),
     path("settings/alerts/<int:pk>/edit/", views.alert_definition_edit, name="alert_definition_edit"),
+    path("settings/alerts/<int:pk>/duplicate/", views.alert_definition_duplicate, name="alert_definition_duplicate"),
     path("settings/alerts/<int:pk>/delete/", views.alert_definition_delete, name="alert_definition_delete"),
     path("settings/alerts/<int:pk>/send/", views.alert_definition_send_now, name="alert_definition_send_now"),
     path("settings/email/<int:pk>/toggle/", views.email_recipient_toggle, name="email_recipient_toggle"),
@@ -52,6 +60,7 @@ urlpatterns = [
     path("backtests/", views.backtests_page, name="backtests_page"),
     path("backtests/new/", views.backtest_create, name="backtest_create"),
     path("backtests/<int:pk>/edit/", views.backtest_update, name="backtest_update"),
+    path("backtests/<int:pk>/duplicate/", views.backtest_duplicate, name="backtest_duplicate"),
     path("backtests/<int:pk>/", views.backtest_detail, name="backtest_detail"),
     path("backtests/<int:pk>/delete/", views.backtest_delete, name="backtest_delete"),
     path("backtests/<int:pk>/fetch_data/", views.backtest_fetch_data, name="backtest_fetch_data"),

@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row" style="justify-content: space-between; align-items: center;">
+  <h2>Univers</h2>
+  <a class="btn" href="{% url 'universe_create' %}">+ Nouvel univers</a>
+</div>
+
+<div class="card">
+  <table>
+    <thead><tr><th>Nom</th><th>Tickers</th><th>Actif</th><th>Actions</th></tr></thead>
+    <tbody>
+      {% for u in universes %}
+        <tr>
+          <td><strong>{{ u.name }}</strong>{% if u.description %}<div class="muted">{{ u.description }}</div>{% endif %}</td>
+          <td>{{ u.symbols.count }}</td>
+          <td>{% if u.active %}✅{% else %}—{% endif %}</td>
+          <td>
+            <a class="btn" href="{% url 'universe_edit' u.id %}">Modifier</a>
+            <a class="btn" href="{% url 'universe_duplicate' u.id %}">Dupliquer</a>
+            <form method="post" action="{% url 'universe_delete' u.id %}" style="display:inline;" onsubmit="return confirm('Supprimer cet univers ?');">
+              {% csrf_token %}
+              <button class="btn danger" type="submit">Supprimer</button>
+            </form>
+          </td>
+        </tr>
+      {% empty %}
+        <tr><td colspan="4" class="muted">Aucun univers</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
