@@ -37,7 +37,7 @@ class EmailRecipientAdmin(admin.ModelAdmin):
     list_filter = ("active",)
 
 admin.site.register(EmailSettings)
-admin.site.register(AlertDefinition, Universe)
+admin.site.register(AlertDefinition)
 
 
 @admin.register(Backtest)
