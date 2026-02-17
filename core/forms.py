@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 from django import forms
 from django.utils import timezone
+
+from .models import Symbol
 
 BACKTEST_SIGNAL_CHOICES = [
     ("A1", "A1 (K1 croise 0 vers le haut)"),
