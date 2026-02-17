@@ -365,38 +365,61 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     if not prev_metric:
         return metric, None
 
+    # Signals are defined as PRICE (P) crossing a LINE, strictly.
+    # Buy-like:  P_{t-1} < L_{t-1}  and  P_t > L_t
+    # Sell-like: P_{t-1} > L_{t-1}  and  P_t < L_t
     alerts = []
-    def cross(prev, cur, pos_code, neg_code):
-        if prev is None or cur is None:
+
+    def cross_price(prev_p, prev_line, cur_p, cur_line, pos_code, neg_code):
+        prev_p = D(prev_p)
+        prev_line = D(prev_line)
+        cur_p = D(cur_p)
+        cur_line = D(cur_line)
+        if prev_p is None or prev_line is None or cur_p is None or cur_line is None:
             return
-        if prev < 0 and cur > 0:
+        if (prev_p < prev_line) and (cur_p > cur_line):
             alerts.append(pos_code)
-        elif prev > 0 and cur < 0:
+        elif (prev_p > prev_line) and (cur_p < cur_line):
             alerts.append(neg_code)
 
-    cross(prev_metric.K1, metric.K1, "A1", "B1")
-    cross(prev_metric.K1f, metric.K1f, "A1f", "B1f")
-    cross(prev_metric.K2, metric.K2, "C1", "D1")
-    cross(prev_metric.K3, metric.K3, "E1", "F1")
-    cross(prev_metric.K4, metric.K4, "G1", "H1")
+    # A1/B1 : P crosses M1
+    cross_price(prev_metric.P, prev_metric.M1, metric.P, metric.M1, "A1", "B1")
 
-    # K2f alerts (A2f/B2f) based on K1 crossing the K2f floating line
+    # A1f/B1f : P crosses the corrected M1 line.
+    # K1f = K1 + C and K1 = P - M1  =>  K1f = P - (M1 - C)
+    # We reconstruct C as (K1f - K1) and therefore the line is: M1 - (K1f - K1)
+    prev_line_k1f = None
+    cur_line_k1f = None
     try:
-        prev_k1 = D(prev_metric.K1)
-        prev_k2f = D(getattr(prev_metric, "K2f", None))
-        cur_k1 = D(metric.K1)
-        cur_k2f = D(getattr(metric, "K2f", None))
+        prev_line_k1f = D(prev_metric.M1) - (D(prev_metric.K1f) - D(prev_metric.K1))
+        cur_line_k1f = D(metric.M1) - (D(metric.K1f) - D(metric.K1))
+    except Exception:
+        pass
+    cross_price(prev_metric.P, prev_line_k1f, metric.P, cur_line_k1f, "A1f", "B1f")
 
-        cross_up = (
-            prev_k1 is not None and prev_k2f is not None and cur_k1 is not None and cur_k2f is not None and
-            (prev_k1 < prev_k2f) and (cur_k1 > cur_k2f)
+    # C1/D1 : P crosses X1
+    cross_price(prev_metric.P, prev_metric.X1, metric.P, metric.X1, "C1", "D1")
+
+    # E1/F1 : P crosses Q
+    cross_price(prev_metric.P, prev_metric.Q, metric.P, metric.Q, "E1", "F1")
+
+    # G1/H1 : P crosses S
+    cross_price(prev_metric.P, prev_metric.S, metric.P, metric.S, "G1", "H1")
+
+    # K2f alerts (A2f/B2f) based on PRICE crossing the floating line (M1 + K2f)
+    try:
+        prev_line = D(prev_metric.M1) + D(getattr(prev_metric, "K2f", None))
+        cur_line = D(metric.M1) + D(getattr(metric, "K2f", None))
+        prev_p = D(prev_metric.P)
+        cur_p = D(metric.P)
+
+        cross_up = prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (
+            (prev_p < prev_line) and (cur_p > cur_line)
         )
-        cross_down = (
-            prev_k1 is not None and prev_k2f is not None and cur_k1 is not None and cur_k2f is not None and
-            (prev_k1 > prev_k2f) and (cur_k1 < cur_k2f)
+        cross_down = prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (
+            (prev_p > prev_line) and (cur_p < cur_line)
         )
 
-        # Business rule: A2f triggers on K1 crossing K2f bottom-up (no slope filter).
         if cross_up:
             alerts.append("A2f")
         if cross_down or ((diff_slope is not None) and (D(diff_slope) < 0)):

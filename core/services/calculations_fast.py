@@ -278,34 +278,59 @@ def compute_full_for_symbol_scenario(
         # Alerts (crossing)
         current_alerts = []
 
-        # Legacy K* alerts require previous full K values
-        if prev_k is not None and K1 is not None and K2 is not None and K3 is not None and K4 is not None:
-            prev_K1, prev_K2f, prev_K1f, prev_K2, prev_K3, prev_K4 = prev_k
+        # Price-vs-line alerts require previous values.
+        # Buy-like:  P_{t-1} < L_{t-1}  and  P_t > L_t
+        # Sell-like: P_{t-1} > L_{t-1}  and  P_t < L_t
+        if prev_k is not None and P is not None and M1 is not None and X1 is not None and Q is not None and S is not None:
+            prev_P, prev_M1, prev_X1, prev_Q, prev_S, prev_K1, prev_K1f, prev_K2f = prev_k
 
-            def cross(prev, cur, pos_code, neg_code):
-                if prev is None or cur is None:
+            def cross_price(prev_p, prev_line, cur_p, cur_line, pos_code, neg_code):
+                prev_p = D(prev_p)
+                prev_line = D(prev_line)
+                cur_p = D(cur_p)
+                cur_line = D(cur_line)
+                if prev_p is None or prev_line is None or cur_p is None or cur_line is None:
                     return
-                if prev < 0 and cur > 0:
+                if (prev_p < prev_line) and (cur_p > cur_line):
                     current_alerts.append(pos_code)
-                elif prev > 0 and cur < 0:
+                elif (prev_p > prev_line) and (cur_p < cur_line):
                     current_alerts.append(neg_code)
 
-            cross(prev_K1, K1, "A1", "B1")
-            cross(prev_K1f, K1f, "A1f", "B1f")
-            cross(prev_K2, K2, "C1", "D1")
-            cross(prev_K3, K3, "E1", "F1")
-            cross(prev_K4, K4, "G1", "H1")
+            # A1/B1 : P crosses M1
+            cross_price(prev_P, prev_M1, P, M1, "A1", "B1")
 
-            # K2f alerts (A2f/B2f): K1 crosses K2f / fast-sell rule
+            # A1f/B1f : P crosses the corrected M1 line (M1 - (K1f - K1))
+            prev_line_k1f = None
+            cur_line_k1f = None
+            try:
+                prev_line_k1f = D(prev_M1) - (D(prev_K1f) - D(prev_K1))
+                cur_line_k1f = D(M1) - (D(K1f) - D(K1))
+            except Exception:
+                pass
+            cross_price(prev_P, prev_line_k1f, P, cur_line_k1f, "A1f", "B1f")
+
+            # C1/D1 : P crosses X1
+            cross_price(prev_P, prev_X1, P, X1, "C1", "D1")
+
+            # E1/F1 : P crosses Q
+            cross_price(prev_P, prev_Q, P, Q, "E1", "F1")
+
+            # G1/H1 : P crosses S
+            cross_price(prev_P, prev_S, P, S, "G1", "H1")
+
+            # K2f alerts (A2f/B2f): PRICE crosses the floating line (M1 + K2f) / fast-sell rule
             try:
                 if prev_K2f is not None and K2f is not None:
-                    cross_up = (prev_K1 < prev_K2f) and (K1 > K2f)
-                    cross_down = (prev_K1 > prev_K2f) and (K1 < K2f)
+                    prev_line = D(prev_M1) + D(prev_K2f)
+                    cur_line = D(M1) + D(K2f)
+                    prev_p = D(prev_P)
+                    cur_p = D(P)
+                    cross_up = (prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (prev_p < prev_line) and (cur_p > cur_line))
+                    cross_down = (prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (prev_p > prev_line) and (cur_p < cur_line))
                 else:
                     cross_up = False
                     cross_down = False
 
-                # Business rule: A2f triggers on K1 crossing K2f bottom-up (no slope filter).
                 if cross_up:
                     current_alerts.append("A2f")
                 if cross_down or ((diff_slope is not None) and (D(diff_slope) < 0)):
@@ -334,8 +359,9 @@ def compute_full_for_symbol_scenario(
                 )
             )
 
-        if K1 is not None and K2 is not None and K3 is not None and K4 is not None:
-            prev_k = (K1, K2f, K1f, K2, K3, K4)
+        # Keep what we need for next-day crossings.
+        if P is not None and M1 is not None and X1 is not None and Q is not None and S is not None:
+            prev_k = (P, M1, X1, Q, S, K1, K1f, K2f)
 
         # Update V line previous values
         if H is not None:

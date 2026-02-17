@@ -20,7 +20,6 @@
       <th>Actif</th>
       <th>Horaire</th>
       <th>Scénarios</th>
-      <th>Univers</th>
       <th>Lignes</th>
       <th>Emails</th>
       <th></th>
@@ -41,14 +40,6 @@
           {% else %}
             <span class="muted">(tous)</span>
           {% endif %}
-
-        <td>
-          {% if a.universes.all %}
-            {% for u in a.universes.all %}<span class="pill">{{ u.name }}</span> {% endfor %}
-          {% else %}
-            <span class="muted">(pas de filtre)</span>
-          {% endif %}
-        </td>
         </td>
         <td>
           {% if a.alert_codes %}
@@ -63,7 +54,6 @@
         <td style="white-space:nowrap;">
           <form method="post" action="{% url 'alert_definition_send_now' a.id %}" style="display:inline;" onsubmit="return confirm('Déclencher l\'envoi maintenant ?');">{% csrf_token %}<button class="btn" type="submit">Envoyer</button></form>
           <a class="btn" href="{% url 'alert_definition_edit' a.id %}">Éditer</a>
-          <a class="btn" href="{% url 'alert_definition_duplicate' a.id %}">Dupliquer</a>
           <a class="btn danger" href="{% url 'alert_definition_delete' a.id %}">Supprimer</a>
         </td>
       </tr>

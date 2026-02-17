@@ -26,39 +26,7 @@
       <label for="{{ form.scenario.id_for_label }}">Scénario</label><br>
       {{ form.scenario }}
       {% if form.scenario.errors %}<div class="error">{{ form.scenario.errors }}</div>{% endif %}
-      <div class="muted">Le snapshot d’univers sera mis à jour d’après la configuration actuelle (scénario ou scope choisi).</div>
-    </div>
-
-    <div class="field" style="margin-top:14px;">
-      <label>{{ form.scope_mode.label }}</label><br>
-      {{ form.scope_mode }}
-      {% if form.scope_mode.errors %}<div class="error">{{ form.scope_mode.errors }}</div>{% endif %}
-    </div>
-
-    <div class="field" id="scope-universe" style="margin-top:12px;">
-      <label for="{{ form.universe.id_for_label }}">Univers existant</label><br>
-      {{ form.universe }}
-      <div class="muted">{{ form.universe.help_text }}</div>
-      {% if form.universe.errors %}<div class="error">{{ form.universe.errors }}</div>{% endif %}
-    </div>
-
-    <div class="field" id="scope-custom" style="margin-top:12px;">
-      <label for="{{ form.custom_symbols_text.id_for_label }}">Liste personnalisée</label><br>
-      {{ form.custom_symbols_text }}
-      <div class="muted">{{ form.custom_symbols_text.help_text }}</div>
-      {% if form.custom_symbols_text.errors %}<div class="error">{{ form.custom_symbols_text.errors }}</div>{% endif %}
-
-      <div style="margin-top:10px;">
-        <label>{{ form.save_custom_as_universe }} {{ form.save_custom_as_universe.label }}</label>
-        <div class="muted">{{ form.save_custom_as_universe.help_text }}</div>
-      </div>
-
-      <div style="margin-top:10px;">
-        <label for="{{ form.custom_universe_name.id_for_label }}">{{ form.custom_universe_name.label }}</label><br>
-        {{ form.custom_universe_name }}
-        <div class="muted">{{ form.custom_universe_name.help_text }}</div>
-        {% if form.custom_universe_name.errors %}<div class="error">{{ form.custom_universe_name.errors }}</div>{% endif %}
-      </div>
+      <div class="muted">Le snapshot d’univers sera mis à jour d’après la configuration actuelle du scénario.</div>
     </div>
 
     <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
@@ -146,27 +114,6 @@
   <button type="submit">Enregistrer les modifications</button>
   <a class="btn" href="{% url 'backtest_detail' pk=bt.id %}">Annuler</a>
 </form>
-
-<script>
-(function() {
-  function getCheckedValue(name) {
-    const els = document.querySelectorAll('input[name="' + name + '"]');
-    for (const el of els) { if (el.checked) return el.value; }
-    return null;
-  }
-  function refreshScope() {
-    const v = getCheckedValue('scope_mode') || 'scenario';
-    const u = document.getElementById('scope-universe');
-    const c = document.getElementById('scope-custom');
-    if (u) u.style.display = (v === 'universe') ? 'block' : 'none';
-    if (c) c.style.display = (v === 'custom') ? 'block' : 'none';
-  }
-  document.addEventListener('change', function(e) {
-    if (e.target && e.target.name === 'scope_mode') refreshScope();
-  });
-  refreshScope();
-})();
-</script>
 
 <script>
 (function() {

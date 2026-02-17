@@ -92,12 +92,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     logs: list[str] = []
 
     # Universe
-    if backtest.universe_snapshot:
-        raw_universe = backtest.universe_snapshot
-    elif getattr(backtest, "universe_id", None):
-        raw_universe = list(backtest.universe.symbols.values_list("ticker", flat=True))
-    else:
-        raw_universe = list(backtest.scenario.symbols.values_list("ticker", flat=True))
+    raw_universe = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
     tickers: list[str] = []
     if isinstance(raw_universe, list):
         for item in raw_universe:

@@ -127,40 +127,6 @@ class Scenario(models.Model):
         return self.name
 
 
-
-class Universe(models.Model):
-    """A reusable set of symbols (aka watchlist / universe).
-
-    Rationale:
-    - Decouple *indicator recipe* (Scenario) from *scope* (tickers list).
-    - Allows running multiple backtests / alert definitions on different universes
-      without duplicating or editing Scenario parameters.
-    - Backward compatible: existing flows can still rely on Scenario.symbols when
-      no Universe is selected.
-    """
-
-    name = models.CharField(max_length=120, unique=True)
-    description = models.TextField(blank=True, default="")
-
-    symbols = models.ManyToManyField(
-        Symbol,
-        related_name="universes",
-        blank=True,
-    )
-
-    active = models.BooleanField(default=True)
-    created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
-
-    class Meta:
-        ordering = ["name"]
-        indexes = [models.Index(fields=["active", "name"])]
-
-    def __str__(self) -> str:
-        return self.name
-
-
-
 class SymbolScenario(models.Model):
     symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
     scenario = models.ForeignKey(Scenario, on_delete=models.CASCADE)
@@ -197,17 +163,6 @@ class Backtest(models.Model):
     scenario = models.ForeignKey(
         "Scenario",
         on_delete=models.PROTECT,
-        related_name="backtests",
-    )
-
-    # Optional universe override: when set, this defines the list of symbols
-    # used for Fetch/Compute/Run and for the universe_snapshot.
-    # Backward compatible: if null, we fall back to Scenario.symbols.
-    universe = models.ForeignKey(
-        "Universe",
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
         related_name="backtests",
     )
 
@@ -453,11 +408,6 @@ class AlertDefinition(models.Model):
     description = models.TextField(blank=True, default="")
 
     scenarios = models.ManyToManyField("Scenario", related_name="alert_definitions", blank=True)
-
-    # Optional universe filter: when set, alerts are limited to symbols that belong
-    # to at least one selected Universe.
-    # Backward compatible: if empty, no symbol-based filter is applied.
-    universes = models.ManyToManyField("Universe", related_name="alert_definitions", blank=True)
 
     # Comma-separated list of alert codes (e.g. "A1,B1,A2f")
     alert_codes = models.CharField(max_length=300, blank=True, default="")

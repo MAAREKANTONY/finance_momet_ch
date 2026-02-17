@@ -57,19 +57,8 @@ def prepare_backtest_data(backtest: Backtest) -> BacktestPrepReport:
     from core.tasks import fetch_daily_bars_task, compute_metrics_task
 
     # Determine universe (snapshot if present, else scenario symbols)
-    snap = backtest.universe_snapshot or []
-    # universe_snapshot is stored as a list of {ticker, exchange} dicts.
-    # Be defensive for older snapshots that might be plain strings.
-    snap_tickers = []
-    for item in snap:
-        if isinstance(item, dict):
-            t = item.get("ticker")
-            if t:
-                snap_tickers.append(t)
-        else:
-            snap_tickers.append(str(item))
-
-    symbols = Symbol.objects.filter(ticker__in=snap_tickers).all() if snap_tickers else backtest.scenario.symbols.all()
+    tickers = backtest.universe_snapshot or []
+    symbols = Symbol.objects.filter(ticker__in=tickers).all() if tickers else backtest.scenario.symbols.all()
 
     # Check bars coverage
     missing_bars = []
