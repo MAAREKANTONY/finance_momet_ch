@@ -114,8 +114,8 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                     pente_deg = pente1 / D(90)
                     # FC = pente_deg * T * CR  (T already computed above)
                     FC = pente_deg * T * cr
-                    # K2f_pre is a PRICE line (homogeneous with P)
-                    K2f_pre = P - FC
+                    # K2f_pre is in K1-space (homogeneous with K1)
+                    K2f_pre = K1 - FC
 
                     if k2j and k2j > 0:
                         prior_pre_desc = list(
@@ -212,7 +212,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # 3) slope_deg = slope1 / 90
     # 4) use scenario.e (existing parameter)
     # 5) CR correction index (default 10)
-    # 6) FC = slope_deg * e * CR
+    # 6) FC = slope_deg * T * CR
     # 7) K2f_pre = K1 - FC
     # 8) K2f = moving average over last K2J days of K2f_pre
     # 9) slope2 = sum_{last N5/2 days}(daily_variation) * 100
@@ -265,8 +265,8 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             if slope_deg is not None and cr is not None:
                 # FC = slope_deg * T * CR  (T already computed above)
                 FC = slope_deg * T * cr
-                # K2f_pre is a PRICE line (homogeneous with P)
-                K2f_pre = P - FC
+                # K2f_pre is in K1-space (homogeneous with K1)
+                K2f_pre = K1 - FC
 
                 # Rolling mean over last K2J pre-line values (including today)
                 prior_pre = list(
@@ -410,12 +410,17 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # G1/H1 : P crosses S
     cross_price(prev_metric.P, prev_metric.S, metric.P, metric.S, "G1", "H1")
 
-    # K2f alerts (A2f/B2f) based on PRICE crossing the K2f price line
+    # K2f alerts (A2f/B2f) based on PRICE crossing the K2f PRICE line (M1 + K2f)
     try:
-        prev_line = D(getattr(prev_metric, "K2f", None))
-        cur_line = D(getattr(metric, "K2f", None))
+        prev_k2f = D(getattr(prev_metric, "K2f", None))
+        cur_k2f = D(getattr(metric, "K2f", None))
+        prev_m1 = D(getattr(prev_metric, "M1", None))
+        cur_m1 = D(getattr(metric, "M1", None))
         prev_p = D(prev_metric.P)
         cur_p = D(metric.P)
+
+        prev_line = (prev_m1 + prev_k2f) if (prev_m1 is not None and prev_k2f is not None) else None
+        cur_line = (cur_m1 + cur_k2f) if (cur_m1 is not None and cur_k2f is not None) else None
 
         cross_up = prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (
             (prev_p < prev_line) and (cur_p > cur_line)

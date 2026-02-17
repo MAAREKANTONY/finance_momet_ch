@@ -237,8 +237,8 @@ def compute_full_for_symbol_scenario(
                 if slope_deg is not None:
                     # FC = slope_deg * T * CR  (T already computed above)
                     FC = slope_deg * T * cr
-                    # K2f_pre is a PRICE line (homogeneous with P)
-                    K2f_pre = P - FC
+                    # K2f_pre is in K1-space (homogeneous with K1)
+                    K2f_pre = K1 - FC
 
                     if k2j and k2j > 0:
                         pre_for_k2f.appendleft(K2f_pre)
@@ -320,11 +320,11 @@ def compute_full_for_symbol_scenario(
             # G1/H1 : P crosses S
             cross_price(prev_P, prev_S, P, S, "G1", "H1")
 
-            # K2f alerts (A2f/B2f): PRICE crosses the K2f price line / fast-sell rule
+            # K2f alerts (A2f/B2f): PRICE crosses the K2f PRICE line (M1 + K2f) / fast-sell rule
             try:
-                if prev_K2f is not None and K2f is not None:
-                    prev_line = D(prev_K2f)
-                    cur_line = D(K2f)
+                if prev_K2f is not None and K2f is not None and prev_M1 is not None and M1 is not None:
+                    prev_line = D(prev_M1) + D(prev_K2f)
+                    cur_line = D(M1) + D(K2f)
                     prev_p = D(prev_P)
                     cur_p = D(P)
                     cross_up = (prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (prev_p < prev_line) and (cur_p > cur_line))

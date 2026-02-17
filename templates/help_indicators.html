@@ -88,17 +88,17 @@ K1f = K1 + C</pre>
         <li><strong>var</strong> = (P - P(-1)) / P(-1) (ratio, pas en %)</li>
         <li><strong>slope1</strong> = Σ(var sur N5 jours) × 100</li>
         <li><strong>slope_deg</strong> = slope1 / 90</li>
-        <li><strong>FC</strong> = slope_deg × e × CR</li>
+        <li><strong>FC</strong> = slope_deg × T × CR</li>
         <li><strong>K2f_pre</strong> = K1 - FC</li>
         <li><strong>K2f</strong> = moyenne mobile sur K2J jours de K2f_pre</li>
         <li><strong>diff</strong> = slope2 - slope1, avec slope2 = Σ(var sur N5/2 jours) × 100</li>
       </ul>
       <p><strong>Alertes</strong> :</p>
       <ul>
-        <li><strong>A2f (achat prudent)</strong>: K1 croise K2f de bas en haut</li>
-        <li><strong>B2f (vente rapide)</strong>: K1 croise K2f de haut en bas <strong>OU</strong> diff &lt; 0</li>
+        <li><strong>A2f (achat prudent)</strong>: P croise (M1 + K2f) de bas en haut</li>
+        <li><strong>B2f (vente rapide)</strong>: P croise (M1 + K2f) de haut en bas <strong>OU</strong> diff_slope &lt; 0</li>
       </ul>
-      <p class="muted">NB: A2f/B2f ne sont pas basées sur un croisement de 0, mais sur le croisement entre K1 et la ligne K2f.</p>
+      <p class="muted">NB: A2f/B2f ne sont pas basées sur un croisement de 0, mais sur le croisement du prix P avec la ligne de prix (M1 + K2f).</p>
     </div>
   </details>
 

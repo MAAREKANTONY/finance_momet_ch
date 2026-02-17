@@ -24,7 +24,7 @@ Soit **P** le prix d’étude du jour, **P(-1)** celui de la veille.
 
 3) **Pente rapportée à 90°** : `slope_deg = slope1 / 90`
 
-4) **Facteur de correction** : `FC = slope_deg * e * CR`
+4) **Facteur de correction** : `FC = slope_deg * T * CR`
 
 5) **Pré-ligne** : `K2f_pre = K1 - FC` (K1 est l’indicateur existant)
 
@@ -110,7 +110,7 @@ Notations:
 `slope_deg = slope1 / 90`
 
 4..6) Facteur de correction:
-`FC = slope_deg * e * CR`
+`FC = slope_deg * T * CR`
 
 7) Pré-ligne:
 `K2f_pre = K1 - FC`  (K1 est déjà calculée)
