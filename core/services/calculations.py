@@ -266,7 +266,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                 # FC = slope_deg * T * CR  (T already computed above)
                 FC = slope_deg * T * cr
                 # K2f_pre is a PRICE line (homogeneous with P and M1)
-                    K2f_pre = M1 - FC
+                K2f_pre = M1 - FC
 
                 # Rolling mean over last K2J pre-line values (including today)
                 prior_pre = list(
