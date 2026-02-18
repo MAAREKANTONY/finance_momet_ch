@@ -237,8 +237,8 @@ def compute_full_for_symbol_scenario(
                 if slope_deg is not None:
                     # FC = slope_deg * T * CR  (T already computed above)
                     FC = slope_deg * T * cr
-                    # K2f_pre is in K1-space (homogeneous with K1)
-                    K2f_pre = K1 - FC
+                    # K2f_pre is a PRICE line (homogeneous with P and M1)
+                    K2f_pre = M1 - FC
 
                     if k2j and k2j > 0:
                         pre_for_k2f.appendleft(K2f_pre)
@@ -280,59 +280,51 @@ def compute_full_for_symbol_scenario(
         # Alerts (crossing)
         current_alerts = []
 
-        # Price-vs-line alerts require previous values.
-        # Buy-like:  P_{t-1} < L_{t-1}  and  P_t > L_t
-        # Sell-like: P_{t-1} > L_{t-1}  and  P_t < L_t
-        if prev_k is not None and P is not None and M1 is not None and X1 is not None and Q is not None and S is not None:
+        # Signals are defined as strict crossings around 0 for the indicator series.
+        # For indicators defined as K = P - Line, this is equivalent to P crossing that Line.
+        if prev_k is not None and P is not None:
             prev_P, prev_M1, prev_X1, prev_Q, prev_S, prev_K1, prev_K1f, prev_K2f = prev_k
 
-            def cross_price(prev_p, prev_line, cur_p, cur_line, pos_code, neg_code):
-                prev_p = D(prev_p)
-                prev_line = D(prev_line)
-                cur_p = D(cur_p)
-                cur_line = D(cur_line)
-                if prev_p is None or prev_line is None or cur_p is None or cur_line is None:
+            def cross0(prev_x, cur_x, pos_code, neg_code):
+                prev_x = D(prev_x)
+                cur_x = D(cur_x)
+                if prev_x is None or cur_x is None:
                     return
-                if (prev_p < prev_line) and (cur_p > cur_line):
+                if (prev_x < 0) and (cur_x > 0):
                     current_alerts.append(pos_code)
-                elif (prev_p > prev_line) and (cur_p < cur_line):
+                elif (prev_x > 0) and (cur_x < 0):
                     current_alerts.append(neg_code)
 
-            # A1/B1 : P crosses M1
-            cross_price(prev_P, prev_M1, P, M1, "A1", "B1")
+            # A1/B1 : K1 crosses 0
+            cross0(prev_K1, K1, "A1", "B1")
 
-            # A1f/B1f : P crosses the corrected M1 line (M1 - (K1f - K1))
-            prev_line_k1f = None
-            cur_line_k1f = None
+            # A1f/B1f : K1f crosses 0
+            cross0(prev_K1f, K1f, "A1f", "B1f")
+
+            # C1/D1 : K2 crosses 0
+            cross0(prev_P - prev_X1 if (prev_P is not None and prev_X1 is not None) else None, K2, "C1", "D1")
+
+            # E1/F1 : K3 crosses 0
+            cross0(prev_P - prev_Q if (prev_P is not None and prev_Q is not None) else None, K3, "E1", "F1")
+
+            # G1/H1 : K4 crosses 0
+            cross0(prev_P - prev_S if (prev_P is not None and prev_S is not None) else None, K4, "G1", "H1")
+
+            # A2f/B2f : P crosses the K2f price line, with fast-sell rule on diff_slope
             try:
-                prev_line_k1f = D(prev_M1) - (D(prev_K1f) - D(prev_K1))
-                cur_line_k1f = D(M1) - (D(K1f) - D(K1))
-            except Exception:
-                pass
-            cross_price(prev_P, prev_line_k1f, P, cur_line_k1f, "A1f", "B1f")
+                prev_p = D(prev_P)
+                cur_p = D(P)
+                prev_k2f = D(prev_K2f)
+                cur_k2f = D(K2f)
 
-            # C1/D1 : P crosses X1
-            cross_price(prev_P, prev_X1, P, X1, "C1", "D1")
-
-            # E1/F1 : P crosses Q
-            cross_price(prev_P, prev_Q, P, Q, "E1", "F1")
-
-            # G1/H1 : P crosses S
-            cross_price(prev_P, prev_S, P, S, "G1", "H1")
-
-            # K2f alerts (A2f/B2f): PRICE crosses the K2f PRICE line (M1 + K2f) / fast-sell rule
-            try:
-                if prev_K2f is not None and K2f is not None and prev_M1 is not None and M1 is not None:
-                    prev_line = D(prev_M1) + D(prev_K2f)
-                    cur_line = D(M1) + D(K2f)
-                    prev_p = D(prev_P)
-                    cur_p = D(P)
-                    cross_up = (prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (prev_p < prev_line) and (cur_p > cur_line))
-                    cross_down = (prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (prev_p > prev_line) and (cur_p < cur_line))
-                else:
-                    cross_up = False
-                    cross_down = False
-
+                cross_up = (
+                    prev_p is not None and cur_p is not None and prev_k2f is not None and cur_k2f is not None
+                    and (prev_p < prev_k2f) and (cur_p > cur_k2f)
+                )
+                cross_down = (
+                    prev_p is not None and cur_p is not None and prev_k2f is not None and cur_k2f is not None
+                    and (prev_p > prev_k2f) and (cur_p < cur_k2f)
+                )
                 if cross_up:
                     current_alerts.append("A2f")
                 if cross_down or ((diff_slope is not None) and (D(diff_slope) < 0)):

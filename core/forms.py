@@ -12,9 +12,9 @@ BACKTEST_SIGNAL_CHOICES = [
     ("G1", "G1 (K4 croise 0 vers le haut)"),
     ("H1", "H1 (K4 croise 0 vers le bas)"),
 
-    # K2f (floating line derived from K1)
-    ("A2f", "A2f (K1 croise K2f de bas en haut)"),
-    ("B2f", "B2f (K1 croise K2f de haut en bas OU pente négative)"),
+    # K2f (floating price line)
+    ("A2f", "A2f (P croise K2f de bas en haut)"),
+    ("B2f", "B2f (P croise K2f de haut en bas OU pente négative)"),
 
     # V line (rolling max-high then rolling mean)
     ("I1", "I1 (High croise V de bas en haut)"),

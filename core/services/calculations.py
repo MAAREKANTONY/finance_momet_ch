@@ -73,14 +73,14 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # (3) pente_deg = pente1 / 90
     # (4) uses existing scenario.e
     # (5) CR (scenario.cr, default 10)
-    # (6) FC = pente_deg * e * CR
-    # (7) K2f_pre = K1 - FC
+    # (6) FC = pente_deg * T * CR
+    # (7) K2f_pre = M1 - FC
     # (8) K2f = moving average of K2f_pre over K2J days
     # (9) pente2 = sum_{N5/2 days} v * 100
     # (10) diff = pente2 - pente1
     # Alerts:
-    # - A2f: K1 crosses K2f from below to above
-    # - B2f: K1 crosses K2f from above to below OR diff < 0
+    # - A2f: P crosses K2f from below to above
+    # - B2f: P crosses K2f from above to below OR diff < 0
 
     K2f_pre = None
     K2f = None
@@ -114,8 +114,8 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                     pente_deg = pente1 / D(90)
                     # FC = pente_deg * T * CR  (T already computed above)
                     FC = pente_deg * T * cr
-                    # K2f_pre is in K1-space (homogeneous with K1)
-                    K2f_pre = K1 - FC
+                    # K2f_pre is a PRICE line (homogeneous with P and M1)
+                    K2f_pre = M1 - FC
 
                     if k2j and k2j > 0:
                         prior_pre_desc = list(
@@ -213,12 +213,12 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # 4) use scenario.e (existing parameter)
     # 5) CR correction index (default 10)
     # 6) FC = slope_deg * T * CR
-    # 7) K2f_pre = K1 - FC
+    # 7) K2f_pre = M1 - FC
     # 8) K2f = moving average over last K2J days of K2f_pre
     # 9) slope2 = sum_{last N5/2 days}(daily_variation) * 100
     # 10) diff = slope2 - slope1
-    # 11) Buy (A2f): K1 crosses K2f bottom-up
-    # 12) Sell (B2f): K1 crosses K2f top-down OR diff < 0
+    # 11) Buy (A2f): P crosses K2f bottom-up
+    # 12) Sell (B2f): P crosses K2f top-down OR diff < 0
 
     K2f_pre = None
     K2f = None
@@ -265,8 +265,8 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             if slope_deg is not None and cr is not None:
                 # FC = slope_deg * T * CR  (T already computed above)
                 FC = slope_deg * T * cr
-                # K2f_pre is in K1-space (homogeneous with K1)
-                K2f_pre = K1 - FC
+                # K2f_pre is a PRICE line (homogeneous with P and M1)
+                    K2f_pre = M1 - FC
 
                 # Rolling mean over last K2J pre-line values (including today)
                 prior_pre = list(
@@ -369,64 +369,49 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     if not prev_metric:
         return metric, None
 
-    # Signals are defined as PRICE (P) crossing a LINE, strictly.
-    # Buy-like:  P_{t-1} < L_{t-1}  and  P_t > L_t
-    # Sell-like: P_{t-1} > L_{t-1}  and  P_t < L_t
+    # Signals are defined as strict crossings around 0 for the indicator series.
+    # For indicators defined as K = P - Line, this is equivalent to P crossing that Line.
     alerts = []
 
-    def cross_price(prev_p, prev_line, cur_p, cur_line, pos_code, neg_code):
-        prev_p = D(prev_p)
-        prev_line = D(prev_line)
-        cur_p = D(cur_p)
-        cur_line = D(cur_line)
-        if prev_p is None or prev_line is None or cur_p is None or cur_line is None:
+    def cross0(prev_x, cur_x, pos_code, neg_code):
+        prev_x = D(prev_x)
+        cur_x = D(cur_x)
+        if prev_x is None or cur_x is None:
             return
-        if (prev_p < prev_line) and (cur_p > cur_line):
+        if (prev_x < 0) and (cur_x > 0):
             alerts.append(pos_code)
-        elif (prev_p > prev_line) and (cur_p < cur_line):
+        elif (prev_x > 0) and (cur_x < 0):
             alerts.append(neg_code)
 
-    # A1/B1 : P crosses M1
-    cross_price(prev_metric.P, prev_metric.M1, metric.P, metric.M1, "A1", "B1")
+    # A1/B1 : K1 crosses 0  (K1 = P - M1)
+    cross0(prev_metric.K1, metric.K1, "A1", "B1")
 
-    # A1f/B1f : P crosses the corrected M1 line.
-    # K1f = K1 + C and K1 = P - M1  =>  K1f = P - (M1 - C)
-    # We reconstruct C as (K1f - K1) and therefore the line is: M1 - (K1f - K1)
-    prev_line_k1f = None
-    cur_line_k1f = None
+    # A1f/B1f : K1f crosses 0
+    cross0(prev_metric.K1f, metric.K1f, "A1f", "B1f")
+
+    # C1/D1 : K2 crosses 0  (K2 = P - X1)
+    cross0(prev_metric.K2, metric.K2, "C1", "D1")
+
+    # E1/F1 : K3 crosses 0  (K3 = P - Q)
+    cross0(prev_metric.K3, metric.K3, "E1", "F1")
+
+    # G1/H1 : K4 crosses 0  (K4 = P - S)
+    cross0(prev_metric.K4, metric.K4, "G1", "H1")
+
+    # K2f alerts (A2f/B2f) based on P crossing the K2f PRICE line
     try:
-        prev_line_k1f = D(prev_metric.M1) - (D(prev_metric.K1f) - D(prev_metric.K1))
-        cur_line_k1f = D(metric.M1) - (D(metric.K1f) - D(metric.K1))
-    except Exception:
-        pass
-    cross_price(prev_metric.P, prev_line_k1f, metric.P, cur_line_k1f, "A1f", "B1f")
-
-    # C1/D1 : P crosses X1
-    cross_price(prev_metric.P, prev_metric.X1, metric.P, metric.X1, "C1", "D1")
-
-    # E1/F1 : P crosses Q
-    cross_price(prev_metric.P, prev_metric.Q, metric.P, metric.Q, "E1", "F1")
-
-    # G1/H1 : P crosses S
-    cross_price(prev_metric.P, prev_metric.S, metric.P, metric.S, "G1", "H1")
-
-    # K2f alerts (A2f/B2f) based on PRICE crossing the K2f PRICE line (M1 + K2f)
-    try:
+        prev_p = D(getattr(prev_metric, "P", None))
+        cur_p = D(getattr(metric, "P", None))
         prev_k2f = D(getattr(prev_metric, "K2f", None))
         cur_k2f = D(getattr(metric, "K2f", None))
-        prev_m1 = D(getattr(prev_metric, "M1", None))
-        cur_m1 = D(getattr(metric, "M1", None))
-        prev_p = D(prev_metric.P)
-        cur_p = D(metric.P)
 
-        prev_line = (prev_m1 + prev_k2f) if (prev_m1 is not None and prev_k2f is not None) else None
-        cur_line = (cur_m1 + cur_k2f) if (cur_m1 is not None and cur_k2f is not None) else None
-
-        cross_up = prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (
-            (prev_p < prev_line) and (cur_p > cur_line)
+        cross_up = (
+            prev_p is not None and cur_p is not None and prev_k2f is not None and cur_k2f is not None
+            and (prev_p < prev_k2f) and (cur_p > cur_k2f)
         )
-        cross_down = prev_p is not None and cur_p is not None and prev_line is not None and cur_line is not None and (
-            (prev_p > prev_line) and (cur_p < cur_line)
+        cross_down = (
+            prev_p is not None and cur_p is not None and prev_k2f is not None and cur_k2f is not None
+            and (prev_p > prev_k2f) and (cur_p < cur_k2f)
         )
 
         if cross_up:

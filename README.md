@@ -26,7 +26,7 @@ Soit **P** le prix d’étude du jour, **P(-1)** celui de la veille.
 
 4) **Facteur de correction** : `FC = slope_deg * T * CR`
 
-5) **Pré-ligne** : `K2f_pre = K1 - FC` (K1 est l’indicateur existant)
+5) **Pré-ligne** : `K2f_pre = M1 - FC` (K1 est l’indicateur existant)
 
 6) **Ligne flottante** : `K2f = moyenne_{K2J jours}(K2f_pre)`
 
@@ -35,8 +35,8 @@ Soit **P** le prix d’étude du jour, **P(-1)** celui de la veille.
 8) **Différence de pentes** : `diff = slope2 - slope1`
 
 ### Signaux
-- **A2f (Achat prudent)** : K1 croise K2f de bas en haut **et** `diff > 0`.
-- **B2f (Vente rapide)** : K1 croise K2f de haut en bas **ou** `diff < 0`.
+- **A2f (Achat prudent)** : P croise K2f de bas en haut.
+- **B2f (Vente rapide)** : P croise K2f de haut en bas **ou** `diff < 0`.
 
 # Stock Alert App V2.1 (Django + Postgres + Celery)
 
@@ -113,7 +113,7 @@ Notations:
 `FC = slope_deg * T * CR`
 
 7) Pré-ligne:
-`K2f_pre = K1 - FC`  (K1 est déjà calculée)
+`K2f_pre = M1 - FC`  (K1 est déjà calculée)
 
 8) Ligne flottante:
 `K2f = moyenne mobile sur K2J jours de K2f_pre`
