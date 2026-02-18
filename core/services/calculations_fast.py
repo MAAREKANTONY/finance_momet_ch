@@ -327,7 +327,7 @@ def compute_full_for_symbol_scenario(
             # G1/H1 : K4 crosses 0
             cross0(prev_P - prev_S if (prev_P is not None and prev_S is not None) else None, K4, "G1", "H1")
 
-            # A2f/B2f : P crosses the K2f price line, with fast-sell rule on diff_slope
+            # A2f/B2f : P crosses the K2f price line, without diff_slope condition
             try:
                 prev_p = D(prev_P)
                 cur_p = D(P)
@@ -344,7 +344,7 @@ def compute_full_for_symbol_scenario(
                 )
                 if cross_up:
                     current_alerts.append("A2f")
-                if cross_down or ((diff_slope is not None) and (D(diff_slope) < 0)):
+                if cross_down:
                     current_alerts.append("B2f")
             except Exception:
                 pass

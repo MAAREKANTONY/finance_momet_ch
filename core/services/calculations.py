@@ -80,7 +80,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # (10) diff = pente2 - pente1
     # Alerts:
     # - A2f: P crosses K2f from below to above
-    # - B2f: P crosses K2f from above to below OR diff < 0
+    # - B2f: P crosses K2f from above to below
 
     K2f_pre = None
     K2f = None
@@ -223,7 +223,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # 11) slope2 = Σ(delta on last h days) × 100
     # 12) diff_slope = slope2 - slope1
     # 13) Buy (A2f): P crosses K2f bottom-up
-    # 14) Sell (B2f): P crosses K2f top-down OR diff_slope < 0
+    # 14) Sell (B2f): P crosses K2f top-down
 
     K2f_pre = None
     K2f = None
@@ -442,7 +442,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
 
         if cross_up:
             alerts.append("A2f")
-        if cross_down or ((diff_slope is not None) and (D(diff_slope) < 0)):
+        if cross_down:
             alerts.append("B2f")
     except Exception:
         pass
