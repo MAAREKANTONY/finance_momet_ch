@@ -24,9 +24,17 @@ Soit **P** le prix d’étude du jour, **P(-1)** celui de la veille.
 
 3) **Pente rapportée à 90°** : `slope_deg = slope1 / 90`
 
-4) **Facteur de correction** : `FC = slope_deg * T * CR`
+4) **Bandes flottantes Mf1/Xf1** :
+   - `h = max(1, floor(N5/2))`
+   - `Mmax(u) = max(P sur N5 jours finissant à u)`
+   - `Xmin(u) = min(P sur N5 jours finissant à u)`
+   - `Mf1(t) = moyenne sur h jours de Mmax(u)`
+   - `Xf1(t) = moyenne sur h jours de Xmin(u)`
+   - `Ef(t)  = Mf1(t) - Xf1(t)`
 
-5) **Pré-ligne** : `K2f_pre = M1 - FC` (K1 est l’indicateur existant)
+5) **Facteur de correction** : `FC = slope_deg * CR * Ef / e`
+
+6) **Pré-ligne** : `K2f_pre = Mf1 - FC`
 
 6) **Ligne flottante** : `K2f = moyenne_{K2J jours}(K2f_pre)`
 
@@ -110,10 +118,10 @@ Notations:
 `slope_deg = slope1 / 90`
 
 4..6) Facteur de correction:
-`FC = slope_deg * T * CR`
+`FC = slope_deg * CR * (Mf1 - Xf1) / e`
 
 7) Pré-ligne:
-`K2f_pre = M1 - FC`  (K1 est déjà calculée)
+`K2f_pre = Mf1 - FC`
 
 8) Ligne flottante:
 `K2f = moyenne mobile sur K2J jours de K2f_pre`

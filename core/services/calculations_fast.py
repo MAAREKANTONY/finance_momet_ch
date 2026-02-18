@@ -92,6 +92,8 @@ def compute_full_for_symbol_scenario(
     # K2f rolling windows
     var_for_k2f = deque(maxlen=n5 if n5 and n5 > 0 else 1)  # daily_variation ratios (not %)
     pre_for_k2f = deque(maxlen=k2j if k2j and k2j > 0 else 1)  # K2f_pre values
+    n5_half = max(1, (n5 // 2)) if n5 and n5 > 0 else 1
+    p_for_k2f = deque(maxlen=(n5 + n5_half - 1) if n5 and n5 > 0 else 1)  # store P for Mf1/Xf1 windows
 
     # V line rolling windows
     highs_for_v = deque(maxlen=m_v if m_v and m_v > 0 else 1)  # daily highs
@@ -124,6 +126,9 @@ def compute_full_for_symbol_scenario(
             continue
 
         P = (a * F + b * H + c * L + d * O) / denom
+
+        # Keep P history for K2f Mf1/Xf1 computation (newest first)
+        p_for_k2f.appendleft(P)
 
         # --- K2f daily variation based on P (study price) ---
         daily_var = None
@@ -221,24 +226,36 @@ def compute_full_for_symbol_scenario(
             K1f = (K1 + Ccorr) if K1 is not None else None
 
             # --- K2f floating line ---
-            # Requires: K1 available, e != 0, and N5 daily variations of P.
+            # Requires: e != 0, N5 daily variations of P, and enough P history to compute Mf1/Xf1.
             if cr is None:
                 cr = D("10")
-            if n5 and n5 > 0 and len(var_for_k2f) >= n5 and K1 is not None and e not in (None, 0) and cr is not None:
+            if n5 and n5 > 0 and len(var_for_k2f) >= n5 and e not in (None, 0) and cr is not None and len(p_for_k2f) >= (n5 + n5_half - 1):
                 v_list = list(var_for_k2f)
                 v_list = v_list[:n5]
                 slope1 = sum(v_list) * D(100)
-                n5_half = max(1, n5 // 2)
                 slope2 = sum(v_list[:n5_half]) * D(100) if len(v_list) >= n5_half else None
                 if slope2 is not None:
                     diff_slope = slope2 - slope1
 
                 slope_deg = slope1 / D(90) if D(90) != 0 else None
                 if slope_deg is not None:
-                    # FC = slope_deg * T * CR  (T already computed above)
-                    FC = slope_deg * T * cr
-                    # K2f_pre is a PRICE line (homogeneous with P and M1)
-                    K2f_pre = M1 - FC
+                    # Mf1/Xf1: average over last n5_half days of rolling max/min of P over N5 days
+                    p_list = list(p_for_k2f)  # newest -> oldest
+                    max_list = []
+                    min_list = []
+                    for i in range(n5_half):
+                        window = p_list[i : i + n5]
+                        max_list.append(max(window))
+                        min_list.append(min(window))
+                    Mf1 = sum(max_list) / D(len(max_list))
+                    Xf1 = sum(min_list) / D(len(min_list))
+                    Ef = Mf1 - Xf1
+
+                    # FC(t) = slope_deg(t) × CR × Ef(t) / e
+                    FC = slope_deg * cr * (Ef / e)
+
+                    # K2f_pre(t) = Mf1(t) - FC(t)
+                    K2f_pre = Mf1 - FC
 
                     if k2j and k2j > 0:
                         pre_for_k2f.appendleft(K2f_pre)

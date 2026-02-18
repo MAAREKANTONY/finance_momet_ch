@@ -207,18 +207,23 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # All computations are additive (new fields) and do not alter existing K1/K2/K3/K4 logic.
     #
     # Definitions (from user spec):
-    # 1) daily_variation = (P - P(-1)) / P(-1)  (ratio, not percent)
-    # 2) slope1 = sum_{last N5 days}(daily_variation) * 100
+    # 1) delta(t) = (P(t) - P(t-1)) / P(t-1)  (ratio, not percent)
+    # 2) slope1 = Σ(delta on last N5 days) × 100
     # 3) slope_deg = slope1 / 90
-    # 4) use scenario.e (existing parameter)
-    # 5) CR correction index (default 10)
-    # 6) FC = slope_deg * T * CR
-    # 7) K2f_pre = M1 - FC
-    # 8) K2f = moving average over last K2J days of K2f_pre
-    # 9) slope2 = sum_{last N5/2 days}(daily_variation) * 100
-    # 10) diff = slope2 - slope1
-    # 11) Buy (A2f): P crosses K2f bottom-up
-    # 12) Sell (B2f): P crosses K2f top-down OR diff < 0
+    # 4) Let h = floor(N5/2) (min 1)
+    # 5) For each u, Mmax(u) = max(P over last N5 days ending at u)
+    #    and Xmin(u) = min(P over last N5 days ending at u)
+    # 6) Mf1(t) = average over last h days of Mmax(u)
+    #    Xf1(t) = average over last h days of Xmin(u)
+    #    Ef(t)  = Mf1(t) - Xf1(t)
+    # 7) CR correction index (default 10)
+    # 8) FC(t) = slope_deg(t) × CR × Ef(t) / e
+    # 9) K2f_pre(t) = Mf1(t) - FC(t)
+    # 10) K2f(t) = moving average over last K2J days of K2f_pre
+    # 11) slope2 = Σ(delta on last h days) × 100
+    # 12) diff_slope = slope2 - slope1
+    # 13) Buy (A2f): P crosses K2f bottom-up
+    # 14) Sell (B2f): P crosses K2f top-down OR diff_slope < 0
 
     K2f_pre = None
     K2f = None
@@ -236,13 +241,17 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     if cr is None:
         cr = D("10")
 
-    # Need N5 prior P values to compute N5 daily variations when adding today's P.
-    prior_P_for_var = list(prior_metrics.values_list("P", flat=True)[:n5_eff])
-    if len(prior_P_for_var) >= n5_eff and K1 is not None and e not in (None, 0):
-        # Build chronological series: oldest -> newest, then append today's P
-        P_series = list(reversed([D(x) for x in prior_P_for_var])) + [P]
+    # We need enough P history to compute:
+    # - N5 daily variations (needs N5 prior P when adding today's P)
+    # - Mf1/Xf1 which require windows of length N5 over the last h days (needs N5 + h - 1 P values incl. today)
+    needed_prior = max(n5_eff, n5_eff + n5_half - 1) - 1  # minus 1 because today's P is appended
+    prior_P = list(prior_metrics.values_list("P", flat=True)[: max(0, needed_prior)])
 
-        # daily variations for the last N5 days
+    if len(prior_P) >= max(0, needed_prior) and e not in (None, 0) and M1 is not None:
+        # Chronological series: oldest -> newest, then append today's P
+        P_series = list(reversed([D(x) for x in prior_P])) + [P]
+
+        # --- delta variations over last N5 days ---
         variations = []
         ok = True
         for i in range(1, len(P_series)):
@@ -256,17 +265,34 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
         if ok and len(variations) >= n5_eff:
             variations = variations[-n5_eff:]
             slope1 = sum(variations) * D(100)
-            # slope2 uses the last N5/2 variations
             slope2 = sum(variations[-n5_half:]) * D(100) if len(variations) >= n5_half else None
             if slope2 is not None:
                 diff_slope = slope2 - slope1
 
             slope_deg = slope1 / D(90) if D(90) != 0 else None
-            if slope_deg is not None and cr is not None:
-                # FC = slope_deg * T * CR  (T already computed above)
-                FC = slope_deg * T * cr
-                # K2f_pre is a PRICE line (homogeneous with P and M1)
-                K2f_pre = M1 - FC
+
+            # --- Mf1 / Xf1 from rolling max/min of P over N5, averaged over last h days ---
+            # Requires that P_series has at least (N5 + h - 1) values.
+            if slope_deg is not None and cr is not None and len(P_series) >= (n5_eff + n5_half - 1):
+                max_list = []
+                min_list = []
+                last_idx = len(P_series) - 1
+                for i in range(n5_half):
+                    end_idx = last_idx - i
+                    start_idx = end_idx - (n5_eff - 1)
+                    window = P_series[start_idx : end_idx + 1]
+                    max_list.append(max(window))
+                    min_list.append(min(window))
+
+                Mf1 = sum(max_list) / D(len(max_list))
+                Xf1 = sum(min_list) / D(len(min_list))
+                Ef = Mf1 - Xf1
+
+                # FC(t) = slope_deg(t) × CR × Ef(t) / e
+                FC = slope_deg * cr * (Ef / e)
+
+                # K2f_pre(t) = Mf1(t) - FC(t)
+                K2f_pre = Mf1 - FC
 
                 # Rolling mean over last K2J pre-line values (including today)
                 prior_pre = list(
