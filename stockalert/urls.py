@@ -39,6 +39,8 @@ urlpatterns = [
     path("studies/<int:pk>/apply_universe/", views.study_apply_universe, name="study_apply_universe"),
     path("studies/<int:pk>/create_alert/", views.study_create_alert, name="study_create_alert"),
     path("studies/<int:pk>/create_backtest/", views.study_create_backtest, name="study_create_backtest"),
+    path("studies/<int:pk>/compute/", views.study_compute_now, name="study_compute_now"),
+    path("studies/<int:pk>/recompute/", views.study_recompute_now, name="study_recompute_now"),
 
     path("settings/email/", views.email_settings_page, name="email_settings"),
     path("settings/configuration/", views.email_settings_page, name="configuration_page"),

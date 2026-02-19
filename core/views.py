@@ -1117,6 +1117,55 @@ def study_apply_universe(request, pk: int):
 
 
 @login_required
+@require_POST
+def study_compute_now(request, pk: int):
+    """Run an incremental compute scoped to the Study internal scenario.
+
+    Additive UI helper: keeps legacy compute endpoints unchanged.
+    """
+    study = get_object_or_404(Study, pk=pk)
+    try:
+        from core.tasks import compute_metrics_job_task
+        scenario_obj = study.scenario
+        symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
+        compute_metrics_job_task.delay(
+            scenario_id=scenario_obj.id,
+            symbol_ids=symbol_ids,
+            recompute_all=False,
+            backtest_id=None,
+            user_id=request.user.id if request.user.is_authenticated else None,
+            job_id=None,
+        )
+        messages.success(request, "Calculs demandés (Study / scénario, traitement en arrière-plan).")
+    except Exception as e:
+        messages.error(request, f"Erreur lancement calculs Study: {e}")
+    return redirect("study_edit", pk=pk)
+
+
+@login_required
+@require_POST
+def study_recompute_now(request, pk: int):
+    """Force a full recompute scoped to the Study internal scenario."""
+    study = get_object_or_404(Study, pk=pk)
+    try:
+        from core.tasks import compute_metrics_job_task
+        scenario_obj = study.scenario
+        symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
+        compute_metrics_job_task.delay(
+            scenario_id=scenario_obj.id,
+            symbol_ids=symbol_ids,
+            recompute_all=True,
+            backtest_id=None,
+            user_id=request.user.id if request.user.is_authenticated else None,
+            job_id=None,
+        )
+        messages.success(request, "Recompute complet demandé (Study / scénario).")
+    except Exception as e:
+        messages.error(request, f"Erreur recompute complet Study: {e}")
+    return redirect("study_edit", pk=pk)
+
+
+@login_required
 def scenario_create(request):
     has_other_default = Scenario.objects.filter(is_default=True).exists()
     if request.method == "POST":

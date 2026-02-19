@@ -5,6 +5,51 @@
   <div class="muted">Scenario interne #{{ study.scenario.id }}</div>
 </div>
 
+{% comment %}
+  Actions rapides
+  - Calculs (scénario de la study)
+  - Backtest (fetch / compute / run / results)
+  - Alertes (send now)
+  NOTE: actions side-effects are POST.
+{% endcomment %}
+<div class="card" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+  <strong style="margin-right:8px;">Actions</strong>
+
+  <form method="post" action="{% url 'study_compute_now' study.id %}">
+    {% csrf_token %}
+    <button class="btn" type="submit">Compute (incr.)</button>
+  </form>
+  <form method="post" action="{% url 'study_recompute_now' study.id %}">
+    {% csrf_token %}
+    <button class="btn" type="submit">Recompute complet</button>
+  </form>
+
+  {% if backtest_form %}
+    <span style="margin:0 6px;" class="muted">|</span>
+    <form method="post" action="{% url 'backtest_fetch_data' study.backtest.id %}">
+      {% csrf_token %}
+      <button class="btn" type="submit">Backtest: Fetch data</button>
+    </form>
+    <form method="post" action="{% url 'backtest_compute_metrics' study.backtest.id %}">
+      {% csrf_token %}
+      <button class="btn" type="submit">Backtest: Compute</button>
+    </form>
+    <form method="post" action="{% url 'backtest_run' study.backtest.id %}">
+      {% csrf_token %}
+      <button class="btn" type="submit">Backtest: Run</button>
+    </form>
+    <a class="btn" href="{% url 'backtest_results' study.backtest.id %}">Voir résultats</a>
+  {% endif %}
+
+  {% if alert_form %}
+    <span style="margin:0 6px;" class="muted">|</span>
+    <form method="post" action="{% url 'alert_definition_send_now' study.alert.id %}">
+      {% csrf_token %}
+      <button class="btn" type="submit">Envoyer alertes maintenant</button>
+    </form>
+  {% endif %}
+</div>
+
 <div class="card">
   <h3>Tickers (appliquer un univers)</h3>
   <p class="muted">Appliquer un univers copie ses tickers dans la Study (sans modifier l'univers).</p>
@@ -196,9 +241,36 @@
         </div>
       </div>
       <div style="margin-top:12px;">
-        <label><strong>Signal lines (JSON)</strong></label><br/>
-        {{ backtest_form.signal_lines }}
-        <div class="muted">Format: liste JSON de paires buy/sell. Exemple: [{"buy":"A2f","sell":"B2f"}]</div>
+        <label><strong>Lignes de déclenchement</strong></label><br/>
+        <div class="muted">Définis les paires <code>BUY</code>/<code>SELL</code>. Le JSON est généré automatiquement.</div>
+
+        {# Hidden JSON field submitted to Django #}
+        <textarea id="id_signal_lines" name="signal_lines" style="display:none;"></textarea>
+        {{ backtest_form.instance.signal_lines|json_script:"signalLinesData" }}
+
+        <table class="table" id="signalLinesTable" style="margin-top:10px;">
+          <thead>
+            <tr>
+              <th style="width:45%;">BUY</th>
+              <th style="width:45%;">SELL</th>
+              <th style="width:10%;"></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn" type="button" id="addSignalLineBtn">+ Ajouter une ligne</button>
+          <button class="btn" type="button" id="resetSignalLinesBtn">Reset</button>
+          <span class="muted">Ex: BUY=A2f / SELL=B2f</span>
+        </div>
+
+        <datalist id="signalCodes">
+          <option value="A1"></option><option value="B1"></option>
+          <option value="C1"></option><option value="D1"></option>
+          <option value="E1"></option><option value="F1"></option>
+          <option value="G1"></option><option value="H1"></option>
+          <option value="A2f"></option><option value="B2f"></option>
+        </datalist>
       </div>
     {% else %}
       <p class="muted">Aucune configuration de backtest pour cette Study.</p>
@@ -212,6 +284,89 @@
     <a class="btn" href="{% url 'studies_page' %}">Retour</a>
   </form>
 </div>
+
+<script>
+(function() {
+  function safeParse(jsonText) {
+    try {
+      if (!jsonText) return [];
+      const v = JSON.parse(jsonText);
+      return Array.isArray(v) ? v : [];
+    } catch (e) {
+      return [];
+    }
+  }
+
+  const hidden = document.getElementById('id_signal_lines');
+  const tbody = document.querySelector('#signalLinesTable tbody');
+  const addBtn = document.getElementById('addSignalLineBtn');
+  const resetBtn = document.getElementById('resetSignalLinesBtn');
+
+  if (!hidden || !tbody || !addBtn || !resetBtn) return;
+
+  function rowTemplate(buy, sell) {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td><input type="text" class="input" placeholder="ex: A2f" value="${buy || ''}" list="signalCodes" data-role="buy"/></td>
+      <td><input type="text" class="input" placeholder="ex: B2f" value="${sell || ''}" list="signalCodes" data-role="sell"/></td>
+      <td style="text-align:right;"><button class="btn" type="button" data-action="remove">✕</button></td>
+    `;
+    tr.querySelector('[data-action="remove"]').addEventListener('click', function() {
+      tr.remove();
+      syncToHidden();
+    });
+    tr.querySelectorAll('input').forEach(inp => inp.addEventListener('input', syncToHidden));
+    return tr;
+  }
+
+  function syncToHidden() {
+    const rows = Array.from(tbody.querySelectorAll('tr'));
+    const payload = rows.map(r => {
+      const buy = (r.querySelector('[data-role="buy"]').value || '').trim();
+      const sell = (r.querySelector('[data-role="sell"]').value || '').trim();
+      return { buy, sell };
+    }).filter(x => x.buy || x.sell);
+    hidden.value = JSON.stringify(payload);
+  }
+
+  function renderFromHidden() {
+    tbody.innerHTML = '';
+    const data = safeParse(hidden.value);
+    if (data.length === 0) {
+      tbody.appendChild(rowTemplate('A2f', 'B2f'));
+    } else {
+      data.forEach(item => tbody.appendChild(rowTemplate(item.buy, item.sell)));
+    }
+    syncToHidden();
+  }
+
+  addBtn.addEventListener('click', function() {
+    tbody.appendChild(rowTemplate('', ''));
+    syncToHidden();
+  });
+  resetBtn.addEventListener('click', function() {
+    hidden.value = '[]';
+    renderFromHidden();
+  });
+
+  // Ensure hidden JSON is in sync before form submit
+  const form = hidden.closest('form');
+  if (form) {
+    form.addEventListener('submit', function() {
+      syncToHidden();
+    });
+  }
+
+  // Initialize from server-side JSON
+  try {
+    const initial = JSON.parse(document.getElementById('signalLinesData').textContent || '[]');
+    hidden.value = JSON.stringify(Array.isArray(initial) ? initial : []);
+  } catch (e) {
+    hidden.value = '[]';
+  }
+  renderFromHidden();
+})();
+</script>
 
 <div class="card">
   <h3>Traçabilité</h3>
