@@ -26,6 +26,18 @@ urlpatterns = [
     path("scenarios/<int:pk>/duplicate/", views.scenario_duplicate, name="scenario_duplicate"),
     path("scenarios/<int:pk>/delete/", views.scenario_delete, name="scenario_delete"),
 
+    # Universes (groups of tickers)
+    path("universes/", views.universes_page, name="universes_page"),
+    path("universes/new/", views.universe_create, name="universe_create"),
+    path("universes/<int:pk>/edit/", views.universe_edit, name="universe_edit"),
+    path("universes/<int:pk>/delete/", views.universe_delete, name="universe_delete"),
+
+    # Studies (Sprint 1)
+    path("studies/", views.studies_page, name="studies_page"),
+    path("studies/new/", views.study_create, name="study_create"),
+    path("studies/<int:pk>/edit/", views.study_edit, name="study_edit"),
+    path("studies/<int:pk>/apply_universe/", views.study_apply_universe, name="study_apply_universe"),
+
     path("settings/email/", views.email_settings_page, name="email_settings"),
     path("settings/configuration/", views.email_settings_page, name="configuration_page"),
 

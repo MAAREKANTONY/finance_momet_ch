@@ -1,5 +1,18 @@
 from django.contrib import admin
-from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, Backtest, ProcessingJob, AlertDefinition
+from .models import (
+    Symbol,
+    Scenario,
+    DailyBar,
+    DailyMetric,
+    Alert,
+    EmailRecipient,
+    EmailSettings,
+    Backtest,
+    ProcessingJob,
+    AlertDefinition,
+    Universe,
+    Study,
+)
 
 @admin.register(Symbol)
 class SymbolAdmin(admin.ModelAdmin):
@@ -9,9 +22,23 @@ class SymbolAdmin(admin.ModelAdmin):
 
 @admin.register(Scenario)
 class ScenarioAdmin(admin.ModelAdmin):
-    list_display = ("name", "active", "history_years", "n1", "n2", "n3", "updated_at")
-    list_filter = ("active",)
+    list_display = ("name", "active", "is_study_clone", "history_years", "n1", "n2", "n3", "updated_at")
+    list_filter = ("active", "is_study_clone")
     search_fields = ("name",)
+
+
+@admin.register(Universe)
+class UniverseAdmin(admin.ModelAdmin):
+    list_display = ("name", "is_public", "created_by", "updated_at")
+    list_filter = ("is_public",)
+    search_fields = ("name",)
+
+
+@admin.register(Study)
+class StudyAdmin(admin.ModelAdmin):
+    list_display = ("name", "created_by", "scenario", "created_at")
+    search_fields = ("name",)
+    list_filter = ("created_at",)
 
 @admin.register(DailyBar)
 class DailyBarAdmin(admin.ModelAdmin):

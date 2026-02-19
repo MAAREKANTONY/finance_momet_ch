@@ -31,6 +31,10 @@ class Scenario(models.Model):
     # A single default scenario can exist (enforced by DB constraint + save() logic)
     is_default = models.BooleanField(default=False)
 
+    # If True, this scenario was created as an internal clone for a Study.
+    # It should generally be hidden from the main Scenarios list in the UI.
+    is_study_clone = models.BooleanField(default=False)
+
     a = models.DecimalField(max_digits=18, decimal_places=6, default=1)
     b = models.DecimalField(max_digits=18, decimal_places=6, default=1)
     c = models.DecimalField(max_digits=18, decimal_places=6, default=1)
@@ -122,6 +126,116 @@ class Scenario(models.Model):
             super().save(*args, **kwargs)
             if self.is_default:
                 Scenario.objects.exclude(pk=self.pk).filter(is_default=True).update(is_default=False)
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class Universe(models.Model):
+    """Reusable group of tickers.
+
+    A Universe is a convenience container to quickly populate a Scenario (or Study).
+    Universes are *not* meant to be modified indirectly when a Study/Scenario changes:
+    applying a Universe copies symbols into the target.
+    """
+
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+
+    created_by = models.ForeignKey(
+        django_settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="universes",
+    )
+
+    symbols = models.ManyToManyField(
+        Symbol,
+        through="UniverseSymbol",
+        related_name="universes",
+        blank=True,
+    )
+
+    is_public = models.BooleanField(
+        default=False,
+        help_text="Si activé, visible par tous les utilisateurs (sinon uniquement le créateur).",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["name"]
+        indexes = [models.Index(fields=["name", "is_public"]) ]
+
+    def __str__(self) -> str:
+        return self.name
+
+
+class UniverseSymbol(models.Model):
+    universe = models.ForeignKey(Universe, on_delete=models.CASCADE)
+    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("universe", "symbol")
+        indexes = [models.Index(fields=["universe", "symbol"]) ]
+
+    def __str__(self) -> str:
+        return f"{self.universe} ↔ {self.symbol}"
+
+
+class Study(models.Model):
+    """User-friendly, unified configuration container.
+
+    Sprint 1 scope:
+    - A Study owns a cloned Scenario (is_study_clone=True)
+    - The user edits everything from a single page (Study + Scenario parameters + tickers)
+
+    Future sprints may attach AlertDefinition/Backtest clones.
+    """
+
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+
+    scenario = models.ForeignKey(
+        "Scenario",
+        on_delete=models.PROTECT,
+        related_name="studies",
+    )
+
+    origin_scenario = models.ForeignKey(
+        "Scenario",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="studies_origin",
+        help_text="Scénario source utilisé lors de la création (trace uniquement).",
+    )
+    origin_universe = models.ForeignKey(
+        "Universe",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="studies_origin",
+        help_text="Universe source utilisé lors de la création (trace uniquement).",
+    )
+
+    created_by = models.ForeignKey(
+        django_settings.AUTH_USER_MODEL,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="studies",
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["created_by", "created_at"]) ]
 
     def __str__(self) -> str:
         return self.name

@@ -1,43 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
-{% if mode == "create" %}
-  <h2>Créer un univers</h2>
-{% elif mode == "edit" %}
-  <h2>Modifier univers</h2>
-{% else %}
-  <h2>Dupliquer univers</h2>
-  <p class="muted">Source : <strong>{{ source_universe.name }}</strong></p>
-{% endif %}
+<h2>{% if mode == 'create' %}Nouvel univers{% else %}Éditer univers{% endif %}</h2>
 
-<div class="card">
-  <form method="post">
-    {% csrf_token %}
-    <div class="row">
-      <div style="flex:1; min-width:260px;">
+<form method="post">
+  {% csrf_token %}
+  <div class="card">
+    <div class="grid2">
+      <div>
         <label><strong>Nom</strong></label><br/>
-        {{ form.name }}{% if form.name.errors %}<div class="flash error">{{ form.name.errors }}</div>{% endif %}
+        {{ form.name }}
       </div>
-      <div style="flex:2; min-width:300px;">
-        <label><strong>Description</strong></label><br/>
-        {{ form.description }}
+      <div>
+        <label><strong>Visibilité</strong></label><br/>
+        {{ form.is_public }} <span class="muted">Public</span>
       </div>
     </div>
-
     <div style="margin-top:12px;">
-      <label><strong>Tickers</strong></label><br/>
-      <div class="muted">{{ form.symbols.help_text }}</div>
-      {{ form.symbols }}
-      {% if form.symbols.errors %}<div class="flash error">{{ form.symbols.errors }}</div>{% endif %}
+      <label><strong>Description</strong></label><br/>
+      {{ form.description }}
     </div>
+  </div>
 
-    <div style="margin-top:12px;">
-      <label>{{ form.active }} <strong>Actif</strong></label>
-    </div>
+  <div class="card">
+    <h3>Tickers</h3>
+    <p class="muted">Sélectionne les tickers de cet univers.</p>
+    {{ form.symbols }}
+  </div>
 
-    <div style="margin-top:16px;">
-      <button class="btn" type="submit">Enregistrer</button>
-      <a class="btn" href="{% url 'universes_page' %}">Annuler</a>
-    </div>
-  </form>
-</div>
+  <button class="btn" type="submit">Enregistrer</button>
+  <a class="btn" href="{% url 'universes_page' %}">Annuler</a>
+</form>
 {% endblock %}

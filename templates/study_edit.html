@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row" style="justify-content:space-between; align-items:center;">
+  <h2>Study — {{ study.name }}</h2>
+  <div class="muted">Scenario interne #{{ study.scenario.id }}</div>
+</div>
+
+<div class="card">
+  <h3>Tickers (appliquer un univers)</h3>
+  <p class="muted">Appliquer un univers copie ses tickers dans la Study (sans modifier l'univers).</p>
+  <form method="post" action="{% url 'study_apply_universe' study.id %}">
+    {% csrf_token %}
+    <select name="universe_id">
+      <option value="">— choisir un univers —</option>
+      {% for u in universes %}
+        <option value="{{ u.id }}">{{ u.name }} ({{ u.symbols.count }})</option>
+      {% endfor %}
+    </select>
+    <select name="mode">
+      <option value="add">Ajouter</option>
+      <option value="replace">Remplacer</option>
+    </select>
+    <button class="btn" type="submit">Appliquer</button>
+  </form>
+</div>
+
+<div class="card">
+  <form method="post">
+    {% csrf_token %}
+
+    <h3>Informations study</h3>
+    {{ meta_form.non_field_errors }}
+    <div class="grid2">
+      <div>
+        <label><strong>Nom</strong></label><br/>
+        {{ meta_form.name }}
+      </div>
+      <div>
+        <label><strong>Description</strong></label><br/>
+        {{ meta_form.description }}
+      </div>
+    </div>
+
+    <hr/>
+    <h3>Paramètres indicateurs</h3>
+    {{ scenario_form.non_field_errors }}
+    <div class="grid2">
+      <div>
+        <label>a</label><br/>{{ scenario_form.a }}
+      </div>
+      <div>
+        <label>b</label><br/>{{ scenario_form.b }}
+      </div>
+      <div>
+        <label>c</label><br/>{{ scenario_form.c }}
+      </div>
+      <div>
+        <label>d</label><br/>{{ scenario_form.d }}
+      </div>
+      <div>
+        <label>e</label><br/>{{ scenario_form.e }}
+      </div>
+      <div>
+        <label>vc</label><br/>{{ scenario_form.vc }}
+      </div>
+      <div>
+        <label>fl</label><br/>{{ scenario_form.fl }}
+      </div>
+      <div>
+        <label>n1</label><br/>{{ scenario_form.n1 }}
+      </div>
+      <div>
+        <label>n2</label><br/>{{ scenario_form.n2 }}
+      </div>
+      <div>
+        <label>n3</label><br/>{{ scenario_form.n3 }}
+      </div>
+      <div>
+        <label>n4</label><br/>{{ scenario_form.n4 }}
+      </div>
+      <div>
+        <label>n5</label><br/>{{ scenario_form.n5 }}
+      </div>
+      <div>
+        <label>k2j</label><br/>{{ scenario_form.k2j }}
+      </div>
+      <div>
+        <label>cr</label><br/>{{ scenario_form.cr }}
+      </div>
+      <div>
+        <label>m_v</label><br/>{{ scenario_form.m_v }}
+      </div>
+      <div>
+        <label>history_years</label><br/>{{ scenario_form.history_years }}
+      </div>
+    </div>
+
+    <hr/>
+    <h3>Tickers</h3>
+    <div style="margin-top:12px;">
+      {{ scenario_form.symbols }}
+    </div>
+
+    <hr/>
+    <button class="btn" type="submit">Enregistrer</button>
+    <a class="btn" href="{% url 'studies_page' %}">Retour</a>
+  </form>
+</div>
+
+<div class="card">
+  <h3>Traçabilité</h3>
+  <div class="muted">
+    {% if study.origin_scenario %}Import scénario : #{{ study.origin_scenario.id }} — {{ study.origin_scenario.name }}<br/>{% endif %}
+    {% if study.origin_universe %}Import univers : #{{ study.origin_universe.id }} — {{ study.origin_universe.name }}<br/>{% endif %}
+  </div>
+</div>
+{% endblock %}

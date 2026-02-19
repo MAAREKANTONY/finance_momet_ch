@@ -21,7 +21,7 @@ BACKTEST_SIGNAL_CHOICES = [
     ("J1", "J1 (High croise V de haut en bas)"),
 ]
 
-from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition
+from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
 
 
 class AlertDefinitionForm(forms.ModelForm):
@@ -119,6 +119,121 @@ class ScenarioForm(forms.ModelForm):
         widgets = {
             "description": forms.Textarea(attrs={"rows": 3}),
             # Prevent entering 0 (division by zero risk)
+            "e": forms.NumberInput(attrs={"min": 0.0001, "step": 0.0001}),
+            "vc": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),
+            "fl": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),
+            "n5": forms.NumberInput(attrs={"min": 1, "step": 1}),
+            "k2j": forms.NumberInput(attrs={"min": 1, "step": 1}),
+            "cr": forms.NumberInput(attrs={"min": 0, "step": 0.0001}),
+            "m_v": forms.NumberInput(attrs={"min": 2, "step": 1}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
+        if self.instance.pk:
+            self.fields["symbols"].initial = self.instance.symbols.all()
+
+
+class UniverseForm(forms.ModelForm):
+    """CRUD for Universes (groups of tickers)."""
+
+    symbols = forms.ModelMultipleChoiceField(
+        queryset=Symbol.objects.none(),
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        label="Tickers",
+        help_text="Tickers inclus dans cet univers.",
+    )
+
+    class Meta:
+        model = Universe
+        fields = ["name", "description", "is_public", "symbols"]
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3}),
+        }
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
+        if self.instance.pk:
+            self.fields["symbols"].initial = self.instance.symbols.all()
+
+
+class StudyCreateForm(forms.Form):
+    """Create a Study by cloning an existing Scenario or starting from scratch.
+
+    Sprint 1: only Scenario clone is created and attached.
+    """
+
+    name = forms.CharField(max_length=120)
+    description = forms.CharField(required=False, widget=forms.Textarea(attrs={"rows": 3}))
+
+    source_scenario = forms.ModelChoiceField(
+        queryset=Scenario.objects.filter(active=True, is_study_clone=False).order_by("name"),
+        required=False,
+        help_text="Optionnel : importer les paramètres + tickers depuis un scénario existant.",
+    )
+    universe = forms.ModelChoiceField(
+        queryset=Universe.objects.all().order_by("name"),
+        required=False,
+        help_text="Optionnel : ajouter un groupe d'actions (univers).",
+    )
+
+    universe_mode = forms.ChoiceField(
+        choices=[("add", "Ajouter"), ("replace", "Remplacer")],
+        required=False,
+        initial="add",
+        help_text="Si un univers est choisi : ajouter à la liste (Add) ou remplacer complètement (Replace).",
+    )
+
+
+class StudyMetaForm(forms.ModelForm):
+    class Meta:
+        model = Study
+        fields = ["name", "description"]
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3}),
+        }
+
+
+class StudyScenarioForm(forms.ModelForm):
+    """Edit the Scenario attached to a Study.
+
+    We intentionally hide Scenario naming/default flags; Study owns the user-facing name.
+    """
+
+    symbols = forms.ModelMultipleChoiceField(
+        queryset=Symbol.objects.none(),
+        required=False,
+        widget=forms.CheckboxSelectMultiple,
+        label="Tickers",
+        help_text="Tickers associés à cette Study.",
+    )
+
+    class Meta:
+        model = Scenario
+        fields = [
+            # indicator params
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "vc",
+            "fl",
+            "n1",
+            "n2",
+            "n3",
+            "n4",
+            "n5",
+            "k2j",
+            "cr",
+            "m_v",
+            "history_years",
+            "symbols",
+        ]
+        widgets = {
             "e": forms.NumberInput(attrs={"min": 0.0001, "step": 0.0001}),
             "vc": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),
             "fl": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),

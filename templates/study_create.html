@@ -1,0 +1,40 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Nouvelle study</h2>
+
+<form method="post">
+  {% csrf_token %}
+  <div class="card">
+    <div>
+      <label><strong>Nom</strong></label><br/>
+      {{ form.name }}
+    </div>
+    <div style="margin-top:12px;">
+      <label><strong>Description</strong></label><br/>
+      {{ form.description }}
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Initialisation</h3>
+    <div class="grid2">
+      <div>
+        <label><strong>Importer depuis un scénario (optionnel)</strong></label><br/>
+        {{ form.source_scenario }}
+        <div class="muted">{{ form.source_scenario.help_text }}</div>
+      </div>
+      <div>
+        <label><strong>Ajouter un univers (optionnel)</strong></label><br/>
+        {{ form.universe }}
+        <div class="muted">{{ form.universe.help_text }}</div>
+        <div style="margin-top:8px;">
+          {{ form.universe_mode }} <span class="muted">Mode</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <button class="btn" type="submit">Créer</button>
+  <a class="btn" href="{% url 'studies_page' %}">Annuler</a>
+</form>
+{% endblock %}

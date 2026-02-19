@@ -19,9 +19,27 @@ import json
 import tempfile
 from pathlib import Path
 
-from .models import Alert, Scenario, Symbol, EmailRecipient, DailyBar, DailyMetric, EmailSettings, JobLog, Backtest, ProcessingJob, AlertDefinition
+from .models import (
+    Alert,
+    Scenario,
+    Symbol,
+    EmailRecipient,
+    DailyBar,
+    DailyMetric,
+    EmailSettings,
+    JobLog,
+    Backtest,
+    ProcessingJob,
+    AlertDefinition,
+    Universe,
+    Study,
+)
 from .forms import (
     ScenarioForm,
+    UniverseForm,
+    StudyCreateForm,
+    StudyMetaForm,
+    StudyScenarioForm,
     EmailRecipientForm,
     SymbolManualForm,
     EmailSettingsForm,
@@ -714,8 +732,217 @@ def symbols_import(request):
 
 @login_required
 def scenarios_page(request):
-    scenarios = Scenario.objects.all().order_by("-active", "name")
+    include_clones = request.GET.get("include_clones") in ("1", "true", "yes")
+    qs = Scenario.objects.all()
+    if not include_clones:
+        qs = qs.filter(is_study_clone=False)
+    scenarios = qs.order_by("-active", "name")
     return render(request, "scenarios.html", {"scenarios": scenarios})
+
+
+# ---------------------------
+# Universes (groups of tickers)
+# ---------------------------
+
+
+@login_required
+def universes_page(request):
+    """List universes visible to the user."""
+    qs = Universe.objects.all().order_by("name")
+    # Simple visibility: public OR owned by user (if created_by exists)
+    qs = qs.filter(Q(is_public=True) | Q(created_by=request.user) | Q(created_by__isnull=True)).distinct()
+    universes = list(qs)
+    return render(request, "universes_list.html", {"universes": universes})
+
+
+@login_required
+def universe_create(request):
+    if request.method == "POST":
+        form = UniverseForm(request.POST)
+        if form.is_valid():
+            obj: Universe = form.save(commit=False)
+            obj.created_by = request.user
+            obj.save()
+            form.save_m2m()
+            messages.success(request, "Univers créé.")
+            return redirect("universes_page")
+    else:
+        form = UniverseForm()
+    return render(request, "universe_form.html", {"form": form, "mode": "create"})
+
+
+@login_required
+def universe_edit(request, pk: int):
+    universe = get_object_or_404(Universe, pk=pk)
+    if request.method == "POST":
+        form = UniverseForm(request.POST, instance=universe)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Univers mis à jour.")
+            return redirect("universes_page")
+    else:
+        form = UniverseForm(instance=universe)
+    return render(request, "universe_form.html", {"form": form, "mode": "edit", "universe": universe})
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def universe_delete(request, pk: int):
+    universe = get_object_or_404(Universe, pk=pk)
+    if request.method == "POST":
+        universe.delete()
+        messages.success(request, "Univers supprimé.")
+        return redirect("universes_page")
+    return render(request, "universe_confirm_delete.html", {"universe": universe})
+
+
+# ---------------------------
+# Studies (Sprint 1)
+# ---------------------------
+
+
+def _apply_universe_to_scenario(scenario: Scenario, universe: Universe, mode: str = "add") -> None:
+    """Copy universe symbols into scenario symbols."""
+    universe_symbols = list(universe.symbols.all())
+    if mode == "replace":
+        scenario.symbols.set(universe_symbols)
+    else:
+        scenario.symbols.add(*universe_symbols)
+
+
+def _clone_scenario_for_study(*, study_name: str, created_by, source: Scenario | None) -> Scenario:
+    """Create a Scenario clone dedicated to a Study."""
+    if source:
+        clone = Scenario.objects.create(
+            name=f"{study_name} — scenario",
+            description=source.description,
+            is_default=False,
+            is_study_clone=True,
+            a=source.a,
+            b=source.b,
+            c=source.c,
+            d=source.d,
+            e=source.e,
+            vc=source.vc,
+            fl=source.fl,
+            n1=source.n1,
+            n2=source.n2,
+            n3=source.n3,
+            n4=source.n4,
+            n5=source.n5,
+            k2j=source.k2j,
+            cr=source.cr,
+            m_v=source.m_v,
+            history_years=source.history_years,
+            active=True,
+        )
+        clone.symbols.set(source.symbols.all())
+        return clone
+
+    # from scratch: defaults are provided by the model fields
+    clone = Scenario.objects.create(
+        name=f"{study_name} — scenario",
+        description="",
+        is_default=False,
+        is_study_clone=True,
+        active=True,
+    )
+    return clone
+
+
+@login_required
+def studies_page(request):
+    qs = Study.objects.all().order_by("-created_at")
+    # Owner visibility (simple): show own studies; admin can see all
+    if not request.user.is_superuser:
+        qs = qs.filter(Q(created_by=request.user) | Q(created_by__isnull=True))
+    studies = list(qs)
+    return render(request, "studies_list.html", {"studies": studies})
+
+
+@login_required
+def study_create(request):
+    if request.method == "POST":
+        form = StudyCreateForm(request.POST)
+        if form.is_valid():
+            name = form.cleaned_data["name"]
+            description = form.cleaned_data.get("description") or ""
+            source_scenario = form.cleaned_data.get("source_scenario")
+            universe = form.cleaned_data.get("universe")
+            universe_mode = form.cleaned_data.get("universe_mode") or "add"
+
+            scenario_clone = _clone_scenario_for_study(
+                study_name=name,
+                created_by=request.user,
+                source=source_scenario,
+            )
+            if universe:
+                _apply_universe_to_scenario(scenario_clone, universe, mode=universe_mode)
+
+            study = Study.objects.create(
+                name=name,
+                description=description,
+                scenario=scenario_clone,
+                origin_scenario=source_scenario,
+                origin_universe=universe,
+                created_by=request.user,
+            )
+
+            messages.success(request, "Study créée.")
+            return redirect("study_edit", pk=study.pk)
+    else:
+        form = StudyCreateForm()
+    return render(request, "study_create.html", {"form": form})
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def study_edit(request, pk: int):
+    study = get_object_or_404(Study, pk=pk)
+    scenario = study.scenario
+
+    if request.method == "POST":
+        meta_form = StudyMetaForm(request.POST, instance=study, prefix="study")
+        scenario_form = StudyScenarioForm(request.POST, instance=scenario, prefix="sc")
+        if meta_form.is_valid() and scenario_form.is_valid():
+            meta_form.save()
+            scenario_form.save()
+            messages.success(request, "Study mise à jour.")
+            return redirect("study_edit", pk=study.pk)
+    else:
+        meta_form = StudyMetaForm(instance=study, prefix="study")
+        scenario_form = StudyScenarioForm(instance=scenario, prefix="sc")
+
+    # Visible universes for quick add (copy)
+    universes = Universe.objects.filter(Q(is_public=True) | Q(created_by=request.user) | Q(created_by__isnull=True)).order_by("name").distinct()
+
+    return render(
+        request,
+        "study_edit.html",
+        {
+            "study": study,
+            "meta_form": meta_form,
+            "scenario_form": scenario_form,
+            "universes": universes,
+        },
+    )
+
+
+@login_required
+@require_POST
+def study_apply_universe(request, pk: int):
+    """Apply a universe to the Study scenario (copy)."""
+    study = get_object_or_404(Study, pk=pk)
+    scenario = study.scenario
+    universe_id = request.POST.get("universe_id")
+    mode = request.POST.get("mode") or "add"
+    if not universe_id:
+        messages.error(request, "Universe manquant.")
+        return redirect("study_edit", pk=pk)
+    universe = get_object_or_404(Universe, pk=int(universe_id))
+    _apply_universe_to_scenario(scenario, universe, mode=mode)
+    messages.success(request, f"Univers '{universe.name}' appliqué ({mode}).")
+    return redirect("study_edit", pk=pk)
 
 
 @login_required
