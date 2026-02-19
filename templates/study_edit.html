@@ -41,7 +41,7 @@
     <a class="btn" href="{% url 'backtest_results' study.backtest.id %}">Voir résultats</a>
   {% endif %}
 
-  {% if alert_form %}
+  {% if study.alert %}
     <span style="margin:0 6px;" class="muted">|</span>
     <form method="post" action="{% url 'alert_definition_send_now' study.alert.id %}">
       {% csrf_token %}
