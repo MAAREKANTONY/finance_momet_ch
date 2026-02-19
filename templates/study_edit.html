@@ -102,6 +102,112 @@
     </div>
 
     <hr/>
+    <h3>Alertes</h3>
+    {% if alert_form %}
+      {{ alert_form.non_field_errors }}
+      <div class="grid2">
+        <div>
+          <label><strong>Nom</strong></label><br/>
+          {{ alert_form.name }}
+        </div>
+        <div>
+          <label><strong>Actif</strong></label><br/>
+          {{ alert_form.is_active }}
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label><strong>Description</strong></label><br/>
+        {{ alert_form.description }}
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Lignes (codes)</strong></label><br/>
+          {{ alert_form.alert_codes_multi }}
+          <div class="muted">Laisser vide = tous les signaux.</div>
+        </div>
+        <div>
+          <label><strong>Destinataires</strong></label><br/>
+          {{ alert_form.recipients }}
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Heure d'envoi</strong></label><br/>
+          {{ alert_form.send_hour }} : {{ alert_form.send_minute }}
+        </div>
+        <div>
+          <label><strong>Timezone</strong></label><br/>
+          {{ alert_form.timezone }}
+        </div>
+      </div>
+    {% else %}
+      <p class="muted">Aucune configuration d'alertes pour cette Study.</p>
+      <button class="btn" type="submit" formaction="{% url 'study_create_alert' study.id %}" formmethod="post">
+        + Créer une configuration d'alertes
+      </button>
+    {% endif %}
+
+    <hr/>
+    <h3>Backtest</h3>
+    {% if backtest_form %}
+      {{ backtest_form.non_field_errors }}
+      <div class="grid2">
+        <div>
+          <label><strong>Nom</strong></label><br/>
+          {{ backtest_form.name }}
+        </div>
+        <div>
+          <label><strong>Inclure toutes les actions</strong></label><br/>
+          {{ backtest_form.include_all_tickers }}
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label><strong>Description</strong></label><br/>
+        {{ backtest_form.description }}
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Date début</strong></label><br/>
+          {{ backtest_form.start_date }}
+        </div>
+        <div>
+          <label><strong>Date fin</strong></label><br/>
+          {{ backtest_form.end_date }}
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Capital total (CP)</strong></label><br/>
+          {{ backtest_form.capital_total }}
+        </div>
+        <div>
+          <label><strong>Capital par action (CT)</strong></label><br/>
+          {{ backtest_form.capital_per_ticker }}
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Seuil ratio_p (X)</strong></label><br/>
+          {{ backtest_form.ratio_threshold }}
+        </div>
+        <div>
+          <label><strong>Clôturer en fin de période</strong></label><br/>
+          {{ backtest_form.close_positions_at_end }}
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label><strong>Signal lines (JSON)</strong></label><br/>
+        {{ backtest_form.signal_lines }}
+        <div class="muted">Format: liste JSON de paires buy/sell. Exemple: [{"buy":"A2f","sell":"B2f"}]</div>
+      </div>
+    {% else %}
+      <p class="muted">Aucune configuration de backtest pour cette Study.</p>
+      <button class="btn" type="submit" formaction="{% url 'study_create_backtest' study.id %}" formmethod="post">
+        + Créer une configuration de backtest
+      </button>
+    {% endif %}
+
+    <hr/>
     <button class="btn" type="submit">Enregistrer</button>
     <a class="btn" href="{% url 'studies_page' %}">Retour</a>
   </form>

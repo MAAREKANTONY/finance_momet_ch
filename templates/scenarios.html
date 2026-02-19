@@ -2,7 +2,14 @@
 {% block content %}
 <div class="row" style="justify-content: space-between; align-items: center;">
   <h2>Scénarios</h2>
-  <a class="btn" href="{% url 'scenario_create' %}">+ Nouveau scénario</a>
+  <div style="display:flex; gap:8px; align-items:center;">
+    {% if include_clones %}
+      <a class="btn" href="{% url 'scenarios_page' %}">Masquer les clones Study</a>
+    {% else %}
+      <a class="btn" href="{% url 'scenarios_page' %}?include_clones=1">Afficher les clones Study</a>
+    {% endif %}
+    <a class="btn" href="{% url 'scenario_create' %}">+ Nouveau scénario</a>
+  </div>
 </div>
 
 <div class="card">

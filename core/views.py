@@ -40,6 +40,8 @@ from .forms import (
     StudyCreateForm,
     StudyMetaForm,
     StudyScenarioForm,
+    StudyAlertDefinitionForm,
+    StudyBacktestForm,
     EmailRecipientForm,
     SymbolManualForm,
     EmailSettingsForm,
@@ -737,7 +739,11 @@ def scenarios_page(request):
     if not include_clones:
         qs = qs.filter(is_study_clone=False)
     scenarios = qs.order_by("-active", "name")
-    return render(request, "scenarios.html", {"scenarios": scenarios})
+    return render(
+        request,
+        "scenarios.html",
+        {"scenarios": scenarios, "include_clones": include_clones},
+    )
 
 
 # ---------------------------
@@ -749,8 +755,16 @@ def scenarios_page(request):
 def universes_page(request):
     """List universes visible to the user."""
     qs = Universe.objects.all().order_by("name")
-    # Simple visibility: public OR owned by user (if created_by exists)
-    qs = qs.filter(Q(is_public=True) | Q(created_by=request.user) | Q(created_by__isnull=True)).distinct()
+
+    field_names = {f.name for f in Universe._meta.fields}
+    has_created_by = "created_by" in field_names
+    has_is_public = "is_public" in field_names
+
+    if has_created_by and has_is_public:
+        qs = qs.filter(Q(is_public=True) | Q(created_by=request.user) | Q(created_by__isnull=True)).distinct()
+    elif has_created_by:
+        qs = qs.filter(Q(created_by=request.user) | Q(created_by__isnull=True)).distinct()
+
     universes = list(qs)
     return render(request, "universes_list.html", {"universes": universes})
 
@@ -761,7 +775,8 @@ def universe_create(request):
         form = UniverseForm(request.POST)
         if form.is_valid():
             obj: Universe = form.save(commit=False)
-            obj.created_by = request.user
+            if hasattr(obj, 'created_by'):
+                obj.created_by = request.user
             obj.save()
             form.save_m2m()
             messages.success(request, "Univers créé.")
@@ -850,6 +865,69 @@ def _clone_scenario_for_study(*, study_name: str, created_by, source: Scenario |
     return clone
 
 
+def _make_unique_name(base: str, *, max_len: int = 120) -> str:
+    """Return a name that fits max_len. Uniqueness is handled by appending a short suffix."""
+    base = (base or "").strip() or "Untitled"
+    if len(base) <= max_len:
+        return base
+    return base[: max_len - 1]
+
+
+def _clone_alert_definition_for_study(*, study_name: str, scenario: Scenario) -> AlertDefinition:
+    """Create an AlertDefinition dedicated to the Study.
+
+    - Name must be unique (AlertDefinition.name has unique=True).
+    - The Study owns exactly one Scenario clone, so we force the scenarios M2M.
+    """
+    base_name = _make_unique_name(f"{study_name} — alerts")
+    name = base_name
+    i = 1
+    while AlertDefinition.objects.filter(name=name).exists():
+        suffix = f" ({i})"
+        name = _make_unique_name(base_name[: max(0, 120 - len(suffix))] + suffix)
+        i += 1
+
+    # Defaults from global EmailSettings if available
+    try:
+        es = EmailSettings.get_solo()
+        send_hour, send_minute, timezone = es.send_hour, es.send_minute, es.timezone
+    except Exception:
+        send_hour, send_minute, timezone = 18, 0, "Asia/Jerusalem"
+
+    ad = AlertDefinition.objects.create(
+        name=name,
+        description="",
+        alert_codes="",
+        send_hour=send_hour,
+        send_minute=send_minute,
+        timezone=timezone,
+        is_active=True,
+    )
+    ad.scenarios.set([scenario])
+    return ad
+
+
+def _clone_backtest_for_study(*, study_name: str, scenario: Scenario, created_by) -> Backtest:
+    """Create a Backtest configuration dedicated to the Study."""
+    bt = Backtest.objects.create(
+        name=_make_unique_name(f"{study_name} — backtest"),
+        description="",
+        scenario=scenario,
+        start_date=None,
+        end_date=None,
+        capital_total=0,
+        capital_per_ticker=0,
+        ratio_threshold=0,
+        include_all_tickers=False,
+        # sensible default: one line A2f/B2f (can be edited)
+        signal_lines=[{"buy": "A2f", "sell": "B2f"}],
+        close_positions_at_end=True,
+        created_by=created_by,
+    )
+    _refresh_backtest_universe_snapshot(bt)
+    return bt
+
+
 @login_required
 def studies_page(request):
     qs = Study.objects.all().order_by("-created_at")
@@ -870,6 +948,8 @@ def study_create(request):
             source_scenario = form.cleaned_data.get("source_scenario")
             universe = form.cleaned_data.get("universe")
             universe_mode = form.cleaned_data.get("universe_mode") or "add"
+            create_alert = bool(form.cleaned_data.get("create_alert"))
+            create_backtest = bool(form.cleaned_data.get("create_backtest"))
 
             scenario_clone = _clone_scenario_for_study(
                 study_name=name,
@@ -888,6 +968,16 @@ def study_create(request):
                 created_by=request.user,
             )
 
+            # Sprint 2: optional dedicated AlertDefinition / Backtest
+            if create_alert:
+                ad = _clone_alert_definition_for_study(study_name=name, scenario=scenario_clone)
+                study.alert_definition = ad
+            if create_backtest:
+                bt = _clone_backtest_for_study(study_name=name, scenario=scenario_clone, created_by=request.user)
+                study.backtest = bt
+            if create_alert or create_backtest:
+                study.save(update_fields=["alert_definition", "backtest"])
+
             messages.success(request, "Study créée.")
             return redirect("study_edit", pk=study.pk)
     else:
@@ -901,20 +991,71 @@ def study_edit(request, pk: int):
     study = get_object_or_404(Study, pk=pk)
     scenario = study.scenario
 
+    alert_def = study.alert_definition
+    backtest = study.backtest
+
     if request.method == "POST":
         meta_form = StudyMetaForm(request.POST, instance=study, prefix="study")
         scenario_form = StudyScenarioForm(request.POST, instance=scenario, prefix="sc")
-        if meta_form.is_valid() and scenario_form.is_valid():
+        alert_form = None
+        backtest_form = None
+        ok = meta_form.is_valid() and scenario_form.is_valid()
+
+        if alert_def:
+            alert_form = StudyAlertDefinitionForm(
+                request.POST,
+                instance=alert_def,
+                prefix="ad",
+                study_scenario=scenario,
+            )
+            ok = ok and alert_form.is_valid()
+
+        if backtest:
+            backtest_form = StudyBacktestForm(
+                request.POST,
+                instance=backtest,
+                prefix="bt",
+            )
+            ok = ok and backtest_form.is_valid()
+
+        if ok:
             meta_form.save()
             scenario_form.save()
+            if alert_form:
+                alert_form.save()
+            if backtest_form:
+                bt_obj: Backtest = backtest_form.save(commit=False)
+                bt_obj.scenario = scenario
+                bt_obj.save()
+                backtest_form.save_m2m() if hasattr(backtest_form, "save_m2m") else None
+                _refresh_backtest_universe_snapshot(bt_obj)
+
             messages.success(request, "Study mise à jour.")
             return redirect("study_edit", pk=study.pk)
     else:
         meta_form = StudyMetaForm(instance=study, prefix="study")
         scenario_form = StudyScenarioForm(instance=scenario, prefix="sc")
 
-    # Visible universes for quick add (copy)
-    universes = Universe.objects.filter(Q(is_public=True) | Q(created_by=request.user) | Q(created_by__isnull=True)).order_by("name").distinct()
+        alert_form = (
+            StudyAlertDefinitionForm(instance=alert_def, prefix="ad", study_scenario=scenario)
+            if alert_def
+            else None
+        )
+        backtest_form = (
+            StudyBacktestForm(instance=backtest, prefix="bt") if backtest else None
+        )
+
+    # Visible universes for quick add (copy). Universe schema differs across versions -> check fields.
+    uq = Universe.objects.all().order_by("name")
+    field_names = {f.name for f in Universe._meta.fields}
+    has_created_by = "created_by" in field_names
+    has_is_public = "is_public" in field_names
+
+    if has_created_by and has_is_public:
+        uq = uq.filter(Q(is_public=True) | Q(created_by=request.user) | Q(created_by__isnull=True)).distinct()
+    elif has_created_by:
+        uq = uq.filter(Q(created_by=request.user) | Q(created_by__isnull=True)).distinct()
+    universes = list(uq)
 
     return render(
         request,
@@ -923,9 +1064,39 @@ def study_edit(request, pk: int):
             "study": study,
             "meta_form": meta_form,
             "scenario_form": scenario_form,
+            "alert_form": alert_form,
+            "backtest_form": backtest_form,
             "universes": universes,
         },
     )
+
+
+@login_required
+@require_POST
+def study_create_alert(request, pk: int):
+    study = get_object_or_404(Study, pk=pk)
+    if study.alert_definition:
+        messages.info(request, "Cette Study a déjà une configuration d'alertes.")
+        return redirect("study_edit", pk=pk)
+    ad = _clone_alert_definition_for_study(study_name=study.name, scenario=study.scenario)
+    study.alert_definition = ad
+    study.save(update_fields=["alert_definition"])
+    messages.success(request, "Configuration d'alertes créée.")
+    return redirect("study_edit", pk=pk)
+
+
+@login_required
+@require_POST
+def study_create_backtest(request, pk: int):
+    study = get_object_or_404(Study, pk=pk)
+    if study.backtest:
+        messages.info(request, "Cette Study a déjà une configuration de backtest.")
+        return redirect("study_edit", pk=pk)
+    bt = _clone_backtest_for_study(study_name=study.name, scenario=study.scenario, created_by=request.user)
+    study.backtest = bt
+    study.save(update_fields=["backtest"])
+    messages.success(request, "Configuration de backtest créée.")
+    return redirect("study_edit", pk=pk)
 
 
 @login_required

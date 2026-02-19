@@ -29,9 +29,10 @@ class ScenarioAdmin(admin.ModelAdmin):
 
 @admin.register(Universe)
 class UniverseAdmin(admin.ModelAdmin):
-    list_display = ("name", "is_public", "created_by", "updated_at")
-    list_filter = ("is_public",)
+    list_display = ("name", "active", "created_at")
+    list_filter = ("active",)
     search_fields = ("name",)
+    filter_horizontal = ("symbols",)
 
 
 @admin.register(Study)

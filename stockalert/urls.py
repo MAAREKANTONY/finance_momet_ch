@@ -37,6 +37,8 @@ urlpatterns = [
     path("studies/new/", views.study_create, name="study_create"),
     path("studies/<int:pk>/edit/", views.study_edit, name="study_edit"),
     path("studies/<int:pk>/apply_universe/", views.study_apply_universe, name="study_apply_universe"),
+    path("studies/<int:pk>/create_alert/", views.study_create_alert, name="study_create_alert"),
+    path("studies/<int:pk>/create_backtest/", views.study_create_backtest, name="study_create_backtest"),
 
     path("settings/email/", views.email_settings_page, name="email_settings"),
     path("settings/configuration/", views.email_settings_page, name="configuration_page"),

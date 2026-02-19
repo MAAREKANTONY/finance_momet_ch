@@ -34,6 +34,18 @@
     </div>
   </div>
 
+  <div class="card">
+    <h3>Modules</h3>
+    <div>
+      <label>{{ form.create_alert }} <strong>{{ form.create_alert.label }}</strong></label>
+      <div class="muted">{{ form.create_alert.help_text }}</div>
+    </div>
+    <div style="margin-top:8px;">
+      <label>{{ form.create_backtest }} <strong>{{ form.create_backtest.label }}</strong></label>
+      <div class="muted">{{ form.create_backtest.help_text }}</div>
+    </div>
+  </div>
+
   <button class="btn" type="submit">Créer</button>
   <a class="btn" href="{% url 'studies_page' %}">Annuler</a>
 </form>

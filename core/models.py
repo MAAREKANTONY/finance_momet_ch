@@ -131,59 +131,32 @@ class Scenario(models.Model):
         return self.name
 
 
-class Universe(models.Model):
-    """Reusable group of tickers.
 
-    A Universe is a convenience container to quickly populate a Scenario (or Study).
-    Universes are *not* meant to be modified indirectly when a Study/Scenario changes:
-    applying a Universe copies symbols into the target.
+class Universe(models.Model):
+    """Reusable group of symbols (tickers) to quickly populate Scenarios and Studies.
+
+    Applying a Universe to a Scenario/Study *copies* its symbols into the target. The Universe itself
+    is not modified when a user later adds/removes symbols from the Scenario/Study.
     """
 
     name = models.CharField(max_length=120)
-    description = models.TextField(blank=True, default="")
+    active = models.BooleanField(default=True)
 
-    created_by = models.ForeignKey(
-        django_settings.AUTH_USER_MODEL,
-        null=True,
-        blank=True,
-        on_delete=models.SET_NULL,
-        related_name="universes",
-    )
-
+    # Reuse the existing Symbol model used by Scenario.symbols
     symbols = models.ManyToManyField(
         Symbol,
-        through="UniverseSymbol",
         related_name="universes",
         blank=True,
-    )
-
-    is_public = models.BooleanField(
-        default=False,
-        help_text="Si activé, visible par tous les utilisateurs (sinon uniquement le créateur).",
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
-    updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:
         ordering = ["name"]
-        indexes = [models.Index(fields=["name", "is_public"]) ]
+        indexes = [models.Index(fields=["active"], name="core_univer_active_idx")]
 
     def __str__(self) -> str:
         return self.name
-
-
-class UniverseSymbol(models.Model):
-    universe = models.ForeignKey(Universe, on_delete=models.CASCADE)
-    symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
-    created_at = models.DateTimeField(auto_now_add=True)
-
-    class Meta:
-        unique_together = ("universe", "symbol")
-        indexes = [models.Index(fields=["universe", "symbol"]) ]
-
-    def __str__(self) -> str:
-        return f"{self.universe} ↔ {self.symbol}"
 
 
 class Study(models.Model):
@@ -202,6 +175,24 @@ class Study(models.Model):
     scenario = models.ForeignKey(
         "Scenario",
         on_delete=models.PROTECT,
+        related_name="studies",
+    )
+
+    # Sprint 2: a Study can also own a dedicated AlertDefinition and Backtest configuration.
+    # These objects are *cloned* and live independently of their origin.
+    alert_definition = models.ForeignKey(
+        "AlertDefinition",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="studies",
+    )
+
+    backtest = models.ForeignKey(
+        "Backtest",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
         related_name="studies",
     )
 

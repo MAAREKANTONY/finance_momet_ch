@@ -14,7 +14,7 @@ BACKTEST_SIGNAL_CHOICES = [
 
     # K2f (floating price line)
     ("A2f", "A2f (P croise K2f de bas en haut)"),
-    ("B2f", "B2f (P croise K2f de haut en bas OU pente négative)"),
+    ("B2f", "B2f (P croise K2f de haut en bas)"),
 
     # V line (rolling max-high then rolling mean)
     ("I1", "I1 (High croise V de bas en haut)"),
@@ -136,29 +136,21 @@ class ScenarioForm(forms.ModelForm):
 
 
 class UniverseForm(forms.ModelForm):
-    """CRUD for Universes (groups of tickers)."""
+    """ModelForm compatible with slightly different Universe schemas across versions.
 
-    symbols = forms.ModelMultipleChoiceField(
-        queryset=Symbol.objects.none(),
-        required=False,
-        widget=forms.CheckboxSelectMultiple,
-        label="Tickers",
-        help_text="Tickers inclus dans cet univers.",
-    )
+    We render all available fields and drop technical timestamps/user fields if present.
+    """
 
     class Meta:
         model = Universe
-        fields = ["name", "description", "is_public", "symbols"]
-        widgets = {
-            "description": forms.Textarea(attrs={"rows": 3}),
-        }
+        fields = "__all__"
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
-        if self.instance.pk:
-            self.fields["symbols"].initial = self.instance.symbols.all()
-
+        # Remove technical fields if they exist on the model
+        for fname in ["created_by", "created_at", "updated_at"]:
+            if fname in self.fields:
+                self.fields.pop(fname)
 
 class StudyCreateForm(forms.Form):
     """Create a Study by cloning an existing Scenario or starting from scratch.
@@ -186,6 +178,85 @@ class StudyCreateForm(forms.Form):
         initial="add",
         help_text="Si un univers est choisi : ajouter à la liste (Add) ou remplacer complètement (Replace).",
     )
+
+    create_alert = forms.BooleanField(
+        required=False,
+        initial=True,
+        label="Créer une configuration d'alertes",
+        help_text="Crée une AlertDefinition dédiée à cette Study (indépendante).",
+    )
+    create_backtest = forms.BooleanField(
+        required=False,
+        initial=True,
+        label="Créer une configuration de backtest",
+        help_text="Crée un Backtest dédié à cette Study (indépendant).",
+    )
+
+
+class StudyAlertDefinitionForm(AlertDefinitionForm):
+    """Edit the AlertDefinition attached to a Study.
+
+    The Study owns a single Scenario clone, so we hide the 'scenarios' selector and force it.
+    """
+
+    class Meta(AlertDefinitionForm.Meta):
+        fields = [
+            "name",
+            "description",
+            "recipients",
+            "send_hour",
+            "send_minute",
+            "timezone",
+            "is_active",
+        ]
+
+    def __init__(self, *args, study_scenario: Scenario, **kwargs):
+        self._study_scenario = study_scenario
+        super().__init__(*args, **kwargs)
+        # Remove scenarios field from parent form if present
+        if "scenarios" in self.fields:
+            self.fields.pop("scenarios")
+
+    def save(self, commit=True):
+        obj: AlertDefinition = super().save(commit=commit)
+        # Force scenario membership
+        obj.scenarios.set([self._study_scenario])
+        return obj
+
+
+class StudyBacktestForm(forms.ModelForm):
+    """Edit the Backtest attached to a Study (scenario is fixed)."""
+
+    class Meta:
+        model = Backtest
+        fields = [
+            "name",
+            "description",
+            "start_date",
+            "end_date",
+            "capital_total",
+            "capital_per_ticker",
+            "ratio_threshold",
+            "include_all_tickers",
+            "signal_lines",
+            "close_positions_at_end",
+        ]
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3}),
+            "start_date": forms.DateInput(format="%Y-%m-%d", attrs={"type": "date"}),
+            "end_date": forms.DateInput(format="%Y-%m-%d", attrs={"type": "date"}),
+        }
+
+    def clean_signal_lines(self):
+        value = self.cleaned_data.get("signal_lines")
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list):
+            raise forms.ValidationError("signal_lines must be a JSON list")
+        for item in value:
+            if not isinstance(item, dict):
+                raise forms.ValidationError("Each signal line must be an object")
+        return value
 
 
 class StudyMetaForm(forms.ModelForm):

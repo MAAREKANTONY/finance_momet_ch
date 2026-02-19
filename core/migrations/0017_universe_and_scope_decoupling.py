@@ -1,5 +1,4 @@
 from django.db import migrations, models
-import django.db.models.deletion
 
 
 class Migration(migrations.Migration):
@@ -13,11 +12,9 @@ class Migration(migrations.Migration):
             name="Universe",
             fields=[
                 ("id", models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name="ID")),
-                ("name", models.CharField(max_length=120, unique=True)),
-                ("description", models.TextField(blank=True, default="")),
+                ("name", models.CharField(max_length=120)),
                 ("active", models.BooleanField(default=True)),
                 ("created_at", models.DateTimeField(auto_now_add=True)),
-                ("updated_at", models.DateTimeField(auto_now=True)),
             ],
             options={
                 "ordering": ["name"],
@@ -25,7 +22,7 @@ class Migration(migrations.Migration):
         ),
         migrations.AddIndex(
             model_name="universe",
-            index=models.Index(fields=["active", "name"], name="core_univer_active_1c6b75_idx"),
+            index=models.Index(fields=["active"], name="core_univer_active_idx"),
         ),
         migrations.AddField(
             model_name="universe",
@@ -35,13 +32,7 @@ class Migration(migrations.Migration):
         migrations.AddField(
             model_name="backtest",
             name="universe",
-            field=models.ForeignKey(
-                blank=True,
-                null=True,
-                on_delete=django.db.models.deletion.SET_NULL,
-                related_name="backtests",
-                to="core.universe",
-            ),
+            field=models.ForeignKey(blank=True, null=True, on_delete=models.deletion.SET_NULL, related_name="backtests", to="core.universe"),
         ),
         migrations.AddField(
             model_name="alertdefinition",
