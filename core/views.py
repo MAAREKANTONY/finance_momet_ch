@@ -1764,7 +1764,13 @@ def logs_page(request):
 
 @login_required
 def jobs_page(request):
-    """List background processing jobs (pending/running/done/failed)."""
+    """List background processing jobs (pending/running/done/failed).
+
+    In production this table can get large. We paginate the listing and keep DB work bounded.
+    """
+    from django.core.paginator import Paginator
+    from django.db.models import Count
+
     status = (request.GET.get("status") or "").strip().upper()
     job_type = (request.GET.get("type") or "").strip().upper()
 
@@ -1774,28 +1780,42 @@ def jobs_page(request):
     if job_type:
         qs = qs.filter(job_type=job_type)
 
-    # Counters for quick navigation
-    counts = {
-        "PENDING": ProcessingJob.objects.filter(status=ProcessingJob.Status.PENDING).count(),
-        "RUNNING": ProcessingJob.objects.filter(status=ProcessingJob.Status.RUNNING).count(),
-        "DONE": ProcessingJob.objects.filter(status=ProcessingJob.Status.DONE).count(),
-        "FAILED": ProcessingJob.objects.filter(status=ProcessingJob.Status.FAILED).count(),
-        "CANCELLED": ProcessingJob.objects.filter(status=ProcessingJob.Status.CANCELLED).count(),
-        "KILLED": ProcessingJob.objects.filter(status=ProcessingJob.Status.KILLED).count(),
-    }
+    # Counters for quick navigation (single aggregation query)
+    counts_qs = ProcessingJob.objects.values("status").annotate(c=Count("id"))
+    counts = {row["status"]: row["c"] for row in counts_qs}
+    for k in ["PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED", "KILLED"]:
+        counts.setdefault(k, 0)
 
-    jobs = qs.order_by("-created_at")[:200]
+    # Pagination
+    try:
+        page_size = int(request.GET.get("page_size") or 100)
+    except ValueError:
+        page_size = 100
+    page_size = max(25, min(page_size, 500))
+
+    paginator = Paginator(qs.order_by("-created_at"), page_size)
+    page_obj = paginator.get_page(request.GET.get("page") or 1)
+
+    # Preserve filters across pagination links
+    q = request.GET.copy()
+    q.pop("page", None)
+    query_string = q.urlencode()
+
     return render(
         request,
         "jobs.html",
         {
-            "jobs": jobs,
+            "page_obj": page_obj,
+            "jobs": page_obj.object_list,
             "status": status,
             "job_type": job_type,
             "counts": counts,
             "job_types": ProcessingJob.JobType.choices,
+            "page_size": page_size,
+            "query_string": query_string,
         },
     )
+
 
 
 @login_required
