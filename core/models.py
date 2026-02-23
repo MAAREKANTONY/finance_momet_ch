@@ -26,6 +26,7 @@ class Symbol(models.Model):
 
 class Scenario(models.Model):
     name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default=\"\")
     description = models.TextField(blank=True, default="")
 
     # A single default scenario can exist (enforced by DB constraint + save() logic)
@@ -103,6 +104,7 @@ class Scenario(models.Model):
 
     active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     # Used to decide between incremental compute and full recompute when config changes.
