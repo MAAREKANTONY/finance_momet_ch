@@ -1,4 +1,5 @@
 from django import forms
+import json
 
 BACKTEST_SIGNAL_CHOICES = [
     ("A1", "A1 (K1 croise 0 vers le haut)"),
@@ -135,6 +136,13 @@ class ScenarioForm(forms.ModelForm):
         self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
         if self.instance.pk:
             self.fields["symbols"].initial = self.instance.symbols.all()
+        # Provide selected symbols to the picker widget (so we can render labels without iterating all choices)
+        selected_payload = []
+        if self.instance.pk:
+            for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
+                selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
+        self.fields["symbols"].widget.attrs["data-selected-json"] = json.dumps(selected_payload)
+        self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
 
         # Provide selected symbols to the picker widget (so we can render labels without iterating all choices)
         selected_payload = []
@@ -333,13 +341,6 @@ class StudyScenarioForm(forms.ModelForm):
             self.fields["symbols"].initial = self.instance.symbols.all()
 
 
-# Provide selected symbols to the picker widget (so we can render labels without iterating all choices)
-selected_payload = []
-if self.instance.pk:
-    for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
-        selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
-self.fields["symbols"].widget.attrs["data-selected-json"] = json.dumps(selected_payload)
-self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
 class EmailRecipientForm(forms.ModelForm):
     class Meta:
         model = EmailRecipient
