@@ -21,6 +21,8 @@ BACKTEST_SIGNAL_CHOICES = [
     ("J1", "J1 (High croise V de haut en bas)"),
 ]
 
+from .widgets import SymbolPickerWidget
+
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
 
 
@@ -87,7 +89,7 @@ class ScenarioForm(forms.ModelForm):
     symbols = forms.ModelMultipleChoiceField(
         queryset=Symbol.objects.none(),
         required=False,
-        widget=forms.CheckboxSelectMultiple,
+        widget=SymbolPickerWidget,
         help_text="Tickers associés à ce scénario (en plus du scénario par défaut si activé).",
     )
 
@@ -134,6 +136,14 @@ class ScenarioForm(forms.ModelForm):
         if self.instance.pk:
             self.fields["symbols"].initial = self.instance.symbols.all()
 
+
+# Provide selected symbols to the picker widget (so we can render labels without iterating all choices)
+selected_payload = []
+if self.instance.pk:
+    for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
+        selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
+self.fields["symbols"].widget.attrs["data-selected-json"] = json.dumps(selected_payload)
+self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
 
 class UniverseForm(forms.ModelForm):
     """ModelForm compatible with slightly different Universe schemas across versions.
@@ -278,7 +288,7 @@ class StudyScenarioForm(forms.ModelForm):
     symbols = forms.ModelMultipleChoiceField(
         queryset=Symbol.objects.none(),
         required=False,
-        widget=forms.CheckboxSelectMultiple,
+        widget=SymbolPickerWidget,
         label="Tickers",
         help_text="Tickers associés à cette Study.",
     )
@@ -321,6 +331,14 @@ class StudyScenarioForm(forms.ModelForm):
         if self.instance.pk:
             self.fields["symbols"].initial = self.instance.symbols.all()
 
+
+# Provide selected symbols to the picker widget (so we can render labels without iterating all choices)
+selected_payload = []
+if self.instance.pk:
+    for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
+        selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
+self.fields["symbols"].widget.attrs["data-selected-json"] = json.dumps(selected_payload)
+self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
 class EmailRecipientForm(forms.ModelForm):
     class Meta:
         model = EmailRecipient
@@ -330,7 +348,7 @@ class SymbolManualForm(forms.ModelForm):
     scenarios = forms.ModelMultipleChoiceField(
         queryset=Scenario.objects.none(),
         required=False,
-        widget=forms.CheckboxSelectMultiple,
+        widget=SymbolPickerWidget,
         help_text="Scénarios associés à ce ticker (le scénario par défaut sera ajouté automatiquement).",
     )
 
@@ -361,7 +379,7 @@ class SymbolScenariosForm(forms.Form):
     scenarios = forms.ModelMultipleChoiceField(
         queryset=Scenario.objects.filter(active=True),
         required=False,
-        widget=forms.CheckboxSelectMultiple,
+        widget=SymbolPickerWidget,
         label="Scénarios",
     )
 

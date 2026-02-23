@@ -7,6 +7,8 @@ urlpatterns = [
     path("accounts/", include("django.contrib.auth.urls")),
     path("", views.dashboard, name="dashboard"),
 
+    path("symbols/search/", views.symbol_search, name="symbol_search"),
+
     path("alerts/", views.alerts_table, name="alerts_table"),
     path("alerts/export.csv", views.alerts_export_csv, name="alerts_export_csv"),
     path("data/export.xlsx", views.data_export_xlsx, name="data_export_xlsx"),

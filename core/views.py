@@ -8,7 +8,7 @@ from django.http import JsonResponse, HttpResponse, FileResponse
 from django.shortcuts import render, redirect, get_object_or_404
 from django.db.models import Max, Q
 from django.db.models.deletion import ProtectedError
-from django.views.decorators.http import require_POST, require_http_methods
+from django.views.decorators.http import require_POST, require_GET, require_http_methods
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
@@ -1748,6 +1748,7 @@ from django.core.paginator import Paginator
 @login_required
 def logs_page(request):
     """Log viewer to help debug async/background jobs."""
+    from django.core.paginator import Paginator
     level = (request.GET.get("level") or "").upper().strip()
     job = (request.GET.get("job") or "").strip()
 
@@ -1780,11 +1781,14 @@ def jobs_page(request):
     if job_type:
         qs = qs.filter(job_type=job_type)
 
-    # Counters for quick navigation (single aggregation query)
-    counts_qs = ProcessingJob.objects.values("status").annotate(c=Count("id"))
-    counts = {row["status"]: row["c"] for row in counts_qs}
-    for k in ["PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED", "KILLED"]:
-        counts.setdefault(k, 0)
+        # Counters for quick navigation can be expensive on very large tables.
+    # Default: do not compute counts unless explicitly requested.
+    show_counts = request.GET.get("show_counts") == "1"
+    counts = {k: 0 for k in ["PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED", "KILLED"]}
+    if show_counts:
+        counts_qs = ProcessingJob.objects.values("status").annotate(c=Count("id"))
+        for row in counts_qs:
+            counts[row["status"]] = row["c"]
 
     # Pagination
     try:
@@ -1813,6 +1817,7 @@ def jobs_page(request):
             "job_types": ProcessingJob.JobType.choices,
             "page_size": page_size,
             "query_string": query_string,
+            "show_counts": show_counts,
         },
     )
 
@@ -3063,3 +3068,33 @@ def indicators_help(request):
     This page is intentionally static (documentation only) to avoid any risk of breaking business rules.
     """
     return render(request, "help_indicators.html")
+
+@require_GET
+@login_required
+def symbol_search(request: HttpRequest) -> JsonResponse:
+    """Lightweight search endpoint used by the two-column symbol picker."""
+    q = (request.GET.get('q') or '').strip()
+    limit = int(request.GET.get('limit') or 50)
+    limit = max(1, min(limit, 200))
+    exclude_raw = (request.GET.get('exclude') or '').strip()
+    exclude_ids = []
+    if exclude_raw:
+        for part in exclude_raw.split(','):
+            part = part.strip()
+            if part.isdigit():
+                exclude_ids.append(int(part))
+
+    qs = Symbol.objects.all()
+    if exclude_ids:
+        qs = qs.exclude(id__in=exclude_ids)
+
+    if q:
+        # If user pastes multiple tickers, take first token for search endpoint.
+        token = q.split(',')[0].strip()
+        qs = qs.filter(Q(ticker__icontains=token) | Q(name__icontains=token))
+    else:
+        qs = qs.order_by('ticker')
+
+    qs = qs.only('id', 'ticker', 'name').order_by('ticker')[:limit]
+    data = [{'id': s.id, 'ticker': s.ticker, 'name': s.name} for s in qs]
+    return JsonResponse(data, safe=False)
