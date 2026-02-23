@@ -207,7 +207,7 @@ class StudyAlertDefinitionForm(AlertDefinitionForm):
     """
 
     class Meta(AlertDefinitionForm.Meta):
-        fields = ["name", "description", "active", "symbols"]
+        fields = ["name", "description", "recipients", "send_hour", "send_minute", "timezone", "is_active"]
 
     def __init__(self, *args, study_scenario: Scenario, **kwargs):
         self._study_scenario = study_scenario
@@ -217,9 +217,11 @@ class StudyAlertDefinitionForm(AlertDefinitionForm):
             self.fields.pop("scenarios")
 
     def save(self, commit=True):
+        # AlertDefinitionForm.save already handles alert_codes + recipients M2M.
         obj: AlertDefinition = super().save(commit=commit)
-        # Force scenario membership
-        obj.scenarios.set([self._study_scenario])
+        # Force scenario membership (requires PK). If commit=False, caller must save & call this again.
+        if obj.pk:
+            obj.scenarios.set([self._study_scenario])
         return obj
 
 
