@@ -152,6 +152,13 @@ class UniverseForm(forms.ModelForm):
             if fname in self.fields:
                 self.fields.pop(fname)
 
+        # Nice widgets
+        if "description" in self.fields:
+            self.fields["description"].required = False
+            self.fields["description"].widget.attrs.setdefault("rows", 3)
+            self.fields["description"].widget.attrs.setdefault("style", "width:100%;")
+
+
 class StudyCreateForm(forms.Form):
     """Create a Study by cloning an existing Scenario or starting from scratch.
 
@@ -200,15 +207,7 @@ class StudyAlertDefinitionForm(AlertDefinitionForm):
     """
 
     class Meta(AlertDefinitionForm.Meta):
-        fields = [
-            "name",
-            "description",
-            "recipients",
-            "send_hour",
-            "send_minute",
-            "timezone",
-            "is_active",
-        ]
+        fields = ["name", "description", "active", "symbols"]
 
     def __init__(self, *args, study_scenario: Scenario, **kwargs):
         self._study_scenario = study_scenario

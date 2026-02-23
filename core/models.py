@@ -26,7 +26,7 @@ class Symbol(models.Model):
 
 class Scenario(models.Model):
     name = models.CharField(max_length=120)
-    description = models.TextField(blank=True, default=\"\")
+    description = models.TextField(blank=True, default="")
     description = models.TextField(blank=True, default="")
 
     # A single default scenario can exist (enforced by DB constraint + save() logic)
@@ -143,6 +143,9 @@ class Universe(models.Model):
 
     name = models.CharField(max_length=120)
     active = models.BooleanField(default=True)
+
+    description = models.TextField(blank=True, default="")
+    updated_at = models.DateTimeField(auto_now=True)
 
     # Reuse the existing Symbol model used by Scenario.symbols
     symbols = models.ManyToManyField(
