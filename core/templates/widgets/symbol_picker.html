@@ -14,7 +14,7 @@ Context:
 #}
 <div class="symbol-picker-root"
      data-search-url="{{ widget.attrs.data_search_url|default:'' }}"
-     data-selected-json="{{ widget.attrs.data_selected_json|default:'[]'|escapejs }}">
+     data-selected-json="{{ widget.attrs.data_selected_json|default:'[]'|escape }}">
   <div style="display:none">
     <select name="{{ widget.name }}" id="id_{{ widget.name }}" multiple>
       {% for v in widget.value %}
