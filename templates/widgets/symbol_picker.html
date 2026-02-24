@@ -5,7 +5,16 @@ Context:
 - widget.attrs.data_search_url : URL to fetch symbols (returns JSON list)
 {% endcomment %}
 
-<div class="symbol-picker-root" data-search-url="{{ widget.attrs.data_search_url|default:'' }}">
+{#
+  IMPORTANT:
+  - We must preload the currently selected symbols, otherwise the JS will rebuild the hidden <select>
+    from an empty list and the form will "forget" existing selections on page load.
+  - Forms set widget.attrs["data-selected-json"] and widget.attrs["data-search-url"].
+  - We expose them as HTML data-* attributes for the JS bootstrap.
+#}
+<div class="symbol-picker-root"
+     data-search-url="{{ widget.attrs.data_search_url|default:'' }}"
+     data-selected-json="{{ widget.attrs.data_selected_json|default:'[]'|escapejs }}">
   <div style="display:none">
     <select name="{{ widget.name }}" id="id_{{ widget.name }}" multiple>
       {% for v in widget.value %}
@@ -58,10 +67,17 @@ Context:
   const selectEl = root.querySelector('select[multiple]');
 
   // Initial selected list provided by form
+  // If not available, fallback to the existing hidden <select> so we never wipe existing selections.
   let selected = [];
   try {
-    selected = JSON.parse(root.closest('.symbol-picker-root')?.dataset?.selectedJson || root.getAttribute('data-selected-json') || '[]');
+    selected = JSON.parse(root.dataset.selectedJson || root.getAttribute('data-selected-json') || '[]');
   } catch (e) { selected = []; }
+  if (!Array.isArray(selected) || selected.length === 0){
+    // Fallback to current select options to preserve submitted values.
+    selected = Array.from(selectEl.options)
+      .filter(o => o.selected)
+      .map(o => ({id: o.value, ticker: o.textContent || '', name: ''}));
+  }
 
   // We store the latest search results for "add all"
   let lastResults = [];
@@ -231,13 +247,6 @@ Context:
     }
   });
 
-  // Load initial selected passed via widget value -> but we need labels; use data-selected-json if provided
-  // Fallback: if no JSON, keep select options (labels are blank) but submission works.
-  // We'll try to read from a script tag attribute (set by forms).
-  const ds = root.getAttribute('data-selected-json');
-  if (ds){
-    try{ selected = JSON.parse(ds); }catch(e){}
-  }
   syncHiddenSelect();
   renderSelected();
 })();

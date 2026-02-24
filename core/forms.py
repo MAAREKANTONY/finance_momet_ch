@@ -141,15 +141,12 @@ class ScenarioForm(forms.ModelForm):
         if self.instance.pk:
             for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
                 selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
-        self.fields["symbols"].widget.attrs["data-selected-json"] = json.dumps(selected_payload)
-        self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
-
-        # Provide selected symbols to the picker widget (so we can render labels without iterating all choices)
-        selected_payload = []
-        if self.instance.pk:
-            for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
-                selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
-        self.fields["symbols"].widget.attrs["data-selected-json"] = json.dumps(selected_payload)
+        # Use underscore keys so they are accessible as widget.attrs.data_selected_json in templates.
+        payload_json = json.dumps(selected_payload)
+        self.fields["symbols"].widget.attrs["data_selected_json"] = payload_json
+        self.fields["symbols"].widget.attrs["data_search_url"] = "/symbols/search/"
+        # Backward/defensive: keep the previous hyphenated keys too.
+        self.fields["symbols"].widget.attrs["data-selected-json"] = payload_json
         self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
 
 
@@ -176,6 +173,22 @@ class UniverseForm(forms.ModelForm):
             self.fields["description"].required = False
             self.fields["description"].widget.attrs.setdefault("rows", 3)
             self.fields["description"].widget.attrs.setdefault("style", "width:100%;")
+
+        # Use the symbol picker for Universe.symbols (avoid huge multi-selects)
+        if "symbols" in self.fields:
+            self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
+            self.fields["symbols"].required = False
+            self.fields["symbols"].widget = SymbolPickerWidget()
+            selected_payload = []
+            if getattr(self.instance, "pk", None):
+                for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
+                    selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
+            payload_json = json.dumps(selected_payload)
+            self.fields["symbols"].widget.attrs["data_selected_json"] = payload_json
+            self.fields["symbols"].widget.attrs["data_search_url"] = "/symbols/search/"
+            # Defensive: keep old keys too.
+            self.fields["symbols"].widget.attrs["data-selected-json"] = payload_json
+            self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
 
 
 class StudyCreateForm(forms.Form):
@@ -339,6 +352,18 @@ class StudyScenarioForm(forms.ModelForm):
         self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
         if self.instance.pk:
             self.fields["symbols"].initial = self.instance.symbols.all()
+
+        # Provide selected symbols to the picker widget so it can render current selection reliably.
+        selected_payload = []
+        if self.instance.pk:
+            for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
+                selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
+        payload_json = json.dumps(selected_payload)
+        self.fields["symbols"].widget.attrs["data_selected_json"] = payload_json
+        self.fields["symbols"].widget.attrs["data_search_url"] = "/symbols/search/"
+        # Defensive: keep old keys too.
+        self.fields["symbols"].widget.attrs["data-selected-json"] = payload_json
+        self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
 
 
 class EmailRecipientForm(forms.ModelForm):
