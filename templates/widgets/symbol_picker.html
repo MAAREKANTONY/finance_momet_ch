@@ -5,26 +5,13 @@ Context:
 - widget.attrs.data_search_url : URL to fetch symbols (returns JSON list)
 {% endcomment %}
 
-{#
-  IMPORTANT:
-  - We must preload the currently selected symbols, otherwise the JS will rebuild the hidden <select>
-    from an empty list and the form will "forget" existing selections on page load.
-  - Forms set widget.attrs["data-selected-json"] and widget.attrs["data-search-url"].
-  - We expose them as HTML data-* attributes for the JS bootstrap.
-#}
-<div class="symbol-picker-root"
-     data-search-url="{{ widget.attrs.data_search_url|default:'' }}"
-     data-selected-json="{{ widget.attrs.data_selected_json|default:'[]'|escape }}">
+<div class="symbol-picker-root" data-search-url="{{ widget.attrs.data_search_url|default:'' }}">
   <div style="display:none">
-    {#
-      IMPORTANT:
-      We intentionally use a hidden <input> (comma-separated ids) instead of a hidden <select multiple>.
-      Some pages already contain <select> elements; malformed markup elsewhere can cause browsers
-      to treat nested <select> tags unpredictably (and scripts may not execute).
-      Our widget's value_from_datadict() supports comma-separated strings.
-    #}
-    <input type="hidden" class="sp-hidden" name="{{ widget.name }}" id="id_{{ widget.name }}"
-           value="{% if widget.value %}{{ widget.value|join:',' }}{% endif %}">
+    <select name="{{ widget.name }}" id="id_{{ widget.name }}" multiple>
+      {% for v in widget.value %}
+        <option value="{{ v }}" selected></option>
+      {% endfor %}
+    </select>
   </div>
 
   <div class="grid-2" style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start;">
@@ -68,19 +55,13 @@ Context:
   const addAllBtn = root.querySelector('.sp-add-all');
   const clearAllBtn = root.querySelector('.sp-clear-all');
   const clearSearchBtn = root.querySelector('.sp-clear-search');
-  const hiddenEl = root.querySelector('input.sp-hidden');
+  const selectEl = root.querySelector('select[multiple]');
 
   // Initial selected list provided by form
-  // If not available, fallback to the existing hidden <select> so we never wipe existing selections.
   let selected = [];
   try {
-    selected = JSON.parse(root.dataset.selectedJson || root.getAttribute('data-selected-json') || '[]');
+    selected = JSON.parse(root.closest('.symbol-picker-root')?.dataset?.selectedJson || root.getAttribute('data-selected-json') || '[]');
   } catch (e) { selected = []; }
-  if (!Array.isArray(selected) || selected.length === 0){
-    // Fallback to current hidden input value (comma-separated ids) to preserve submitted values.
-    const raw = (hiddenEl && hiddenEl.value) ? hiddenEl.value : '';
-    selected = raw.split(',').map(x => x.trim()).filter(Boolean).map(id => ({id, ticker: '', name: ''}));
-  }
 
   // We store the latest search results for "add all"
   let lastResults = [];
@@ -96,8 +77,15 @@ Context:
   }
 
   function syncHiddenSelect(){
-    // Store comma-separated selected ids. (Widget parses it back via value_from_datadict)
-    if (hiddenEl) hiddenEl.value = selected.map(x => String(x.id)).join(',');
+    // Rebuild <select> options with selected ids (labels not needed for submission)
+    selectEl.innerHTML = '';
+    selected.forEach(x => {
+      const opt = document.createElement('option');
+      opt.value = String(x.id);
+      opt.selected = true;
+      opt.textContent = x.ticker || x.name || String(x.id);
+      selectEl.appendChild(opt);
+    });
     countEl.textContent = `(${selected.length})`;
   }
 
@@ -243,6 +231,13 @@ Context:
     }
   });
 
+  // Load initial selected passed via widget value -> but we need labels; use data-selected-json if provided
+  // Fallback: if no JSON, keep select options (labels are blank) but submission works.
+  // We'll try to read from a script tag attribute (set by forms).
+  const ds = root.getAttribute('data-selected-json');
+  if (ds){
+    try{ selected = JSON.parse(ds); }catch(e){}
+  }
   syncHiddenSelect();
   renderSelected();
 })();

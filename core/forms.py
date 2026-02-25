@@ -22,8 +22,6 @@ BACKTEST_SIGNAL_CHOICES = [
     ("J1", "J1 (High croise V de haut en bas)"),
 ]
 
-from .widgets import SymbolPickerWidget
-
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
 
 
@@ -90,7 +88,7 @@ class ScenarioForm(forms.ModelForm):
     symbols = forms.ModelMultipleChoiceField(
         queryset=Symbol.objects.none(),
         required=False,
-        widget=SymbolPickerWidget,
+        widget=forms.SelectMultiple(attrs={"size": 20, "style": "width:100%;"}),
         help_text="Tickers associés à ce scénario (en plus du scénario par défaut si activé).",
     )
 
@@ -134,21 +132,14 @@ class ScenarioForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
+        # Make the option label searchable (ticker + exchange + name)
+        def _label(sym: Symbol) -> str:
+            base = f"{sym.ticker}{(':'+sym.exchange) if sym.exchange else ''}"
+            return f"{base} — {sym.name}" if sym.name else base
+
+        self.fields["symbols"].label_from_instance = _label
         if self.instance.pk:
             self.fields["symbols"].initial = self.instance.symbols.all()
-        # Provide selected symbols to the picker widget (so we can render labels without iterating all choices)
-        selected_payload = []
-        if self.instance.pk:
-            for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
-                selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
-        # Use underscore keys so they are accessible as widget.attrs.data_selected_json in templates.
-        payload_json = json.dumps(selected_payload)
-        self.fields["symbols"].widget.attrs["data_selected_json"] = payload_json
-        self.fields["symbols"].widget.attrs["data_search_url"] = "/symbols/search/"
-        # Backward/defensive: keep the previous hyphenated keys too.
-        self.fields["symbols"].widget.attrs["data-selected-json"] = payload_json
-        self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
-
 
 
 class UniverseForm(forms.ModelForm):
@@ -174,21 +165,18 @@ class UniverseForm(forms.ModelForm):
             self.fields["description"].widget.attrs.setdefault("rows", 3)
             self.fields["description"].widget.attrs.setdefault("style", "width:100%;")
 
-        # Use the symbol picker for Universe.symbols (avoid huge multi-selects)
+        # Ensure symbols selection stays usable with hundreds/thousands of tickers.
         if "symbols" in self.fields:
-            self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
             self.fields["symbols"].required = False
-            self.fields["symbols"].widget = SymbolPickerWidget()
-            selected_payload = []
-            if getattr(self.instance, "pk", None):
-                for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
-                    selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
-            payload_json = json.dumps(selected_payload)
-            self.fields["symbols"].widget.attrs["data_selected_json"] = payload_json
-            self.fields["symbols"].widget.attrs["data_search_url"] = "/symbols/search/"
-            # Defensive: keep old keys too.
-            self.fields["symbols"].widget.attrs["data-selected-json"] = payload_json
-            self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
+            self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
+            self.fields["symbols"].widget.attrs.setdefault("size", 20)
+            self.fields["symbols"].widget.attrs.setdefault("style", "width:100%;")
+
+            def _label(sym: Symbol) -> str:
+                base = f"{sym.ticker}{(':'+sym.exchange) if sym.exchange else ''}"
+                return f"{base} — {sym.name}" if sym.name else base
+
+            self.fields["symbols"].label_from_instance = _label
 
 
 class StudyCreateForm(forms.Form):
@@ -310,7 +298,7 @@ class StudyScenarioForm(forms.ModelForm):
     symbols = forms.ModelMultipleChoiceField(
         queryset=Symbol.objects.none(),
         required=False,
-        widget=SymbolPickerWidget,
+        widget=forms.SelectMultiple(attrs={"size": 12, "style": "width:100%;"}),
         label="Tickers",
         help_text="Tickers associés à cette Study.",
     )
@@ -353,18 +341,6 @@ class StudyScenarioForm(forms.ModelForm):
         if self.instance.pk:
             self.fields["symbols"].initial = self.instance.symbols.all()
 
-        # Provide selected symbols to the picker widget so it can render current selection reliably.
-        selected_payload = []
-        if self.instance.pk:
-            for s in self.instance.symbols.all().only("id", "ticker", "name")[:5000]:
-                selected_payload.append({"id": s.id, "ticker": s.ticker, "name": s.name})
-        payload_json = json.dumps(selected_payload)
-        self.fields["symbols"].widget.attrs["data_selected_json"] = payload_json
-        self.fields["symbols"].widget.attrs["data_search_url"] = "/symbols/search/"
-        # Defensive: keep old keys too.
-        self.fields["symbols"].widget.attrs["data-selected-json"] = payload_json
-        self.fields["symbols"].widget.attrs["data-search-url"] = "/symbols/search/"
-
 
 class EmailRecipientForm(forms.ModelForm):
     class Meta:
@@ -375,7 +351,7 @@ class SymbolManualForm(forms.ModelForm):
     scenarios = forms.ModelMultipleChoiceField(
         queryset=Scenario.objects.none(),
         required=False,
-        widget=SymbolPickerWidget,
+        widget=forms.SelectMultiple(attrs={"size": 12, "style": "width:100%;"}),
         help_text="Scénarios associés à ce ticker (le scénario par défaut sera ajouté automatiquement).",
     )
 
@@ -406,7 +382,7 @@ class SymbolScenariosForm(forms.Form):
     scenarios = forms.ModelMultipleChoiceField(
         queryset=Scenario.objects.filter(active=True),
         required=False,
-        widget=SymbolPickerWidget,
+        widget=forms.SelectMultiple(attrs={"size": 12, "style": "width:100%;"}),
         label="Scénarios",
     )
 

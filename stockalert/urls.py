@@ -33,6 +33,7 @@ urlpatterns = [
     path("universes/new/", views.universe_create, name="universe_create"),
     path("universes/<int:pk>/edit/", views.universe_edit, name="universe_edit"),
     path("universes/<int:pk>/delete/", views.universe_delete, name="universe_delete"),
+    path("universes/<int:pk>/symbols.json", views.universe_symbols_json, name="universe_symbols_json"),
 
     # Studies (Sprint 1)
     path("studies/", views.studies_page, name="studies_page"),

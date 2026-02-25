@@ -185,7 +185,7 @@ Create a `.env` at project root (same level as `manage.py`):
 
 ```env
 # --- Django
-APP_VERSION=V6.0.0
+APP_VERSION=V7.0.3
 DJANGO_SECRET_KEY=change-me
 DJANGO_DEBUG=0
 DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,example.com
