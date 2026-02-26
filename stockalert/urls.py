@@ -7,6 +7,9 @@ urlpatterns = [
     path("accounts/", include("django.contrib.auth.urls")),
     path("", views.dashboard, name="dashboard"),
 
+    path("trigger/", views.trigger_page, name="trigger_page"),
+
+
     path("symbols/search/", views.symbol_search, name="symbol_search"),
 
     path("alerts/", views.alerts_table, name="alerts_table"),
@@ -21,6 +24,15 @@ urlpatterns = [
     path("symbols/<int:pk>/scenarios/", views.symbol_scenarios_edit, name="symbol_scenarios_edit"),
     path("symbols/<int:pk>/toggle/", views.symbol_toggle_active, name="symbol_toggle"),
     path("symbols/<int:pk>/delete/", views.symbol_delete, name="symbol_delete"),
+    # Game Scenarios (Scénario de Jeu)
+    path("games/", views.game_scenarios_page, name="game_scenarios_page"),
+    path("games/new/", views.game_scenario_create, name="game_scenario_create"),
+    path("games/<int:pk>/", views.game_scenario_detail, name="game_scenario_detail"),
+    path("games/<int:pk>/edit/", views.game_scenario_edit, name="game_scenario_edit"),
+    path("games/<int:pk>/delete/", views.game_scenario_delete, name="game_scenario_delete"),
+    path("games/<int:pk>/launch/", views.game_scenario_launch, name="game_scenario_launch"),
+    path("games/<int:pk>/export.xlsx", views.game_scenario_export_xlsx, name="game_scenario_export_xlsx"),
+
 
     path("scenarios/", views.scenarios_page, name="scenarios_page"),
     path("scenarios/new/", views.scenario_create, name="scenario_create"),
@@ -46,6 +58,7 @@ urlpatterns = [
     path("studies/<int:pk>/recompute/", views.study_recompute_now, name="study_recompute_now"),
 
     path("settings/email/", views.email_settings_page, name="email_settings"),
+    path("settings/emails/", views.email_settings_page, name="email_settings_alias"),
     path("settings/configuration/", views.email_settings_page, name="configuration_page"),
 
     # User-defined alerts (CRUD)

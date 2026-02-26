@@ -8,4 +8,5 @@ app.autodiscover_tasks()
 
 app.conf.beat_schedule = {
     'check-scheduled-alerts': {'task':'core.tasks.check_and_send_scheduled_alerts_task','schedule': crontab(minute='*')},
+    'cleanup-stale-processing-jobs': {'task':'core.tasks.cleanup_stale_processing_jobs_task','schedule': crontab(minute='*/10')},
 }

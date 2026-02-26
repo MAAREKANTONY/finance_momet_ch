@@ -9,7 +9,7 @@ from django.shortcuts import render, redirect, get_object_or_404
 from django.db.models import Max, Q
 from django.db.models.deletion import ProtectedError
 from django.views.decorators.http import require_POST, require_GET, require_http_methods
-
+from django.utils import timezone
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
@@ -33,6 +33,7 @@ from .models import (
     AlertDefinition,
     Universe,
     Study,
+    GameScenario,
 )
 from .forms import (
     ScenarioForm,
@@ -50,6 +51,7 @@ from .forms import (
     BacktestForm,
     BACKTEST_SIGNAL_CHOICES,
     AlertDefinitionForm,
+    GameScenarioForm,
 )
 from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
@@ -1854,6 +1856,7 @@ def jobs_page(request):
             "page_size": page_size,
             "query_string": query_string,
             "show_counts": show_counts,
+            "page_sizes": [25, 50, 100, 200, 500],
         },
     )
 
@@ -1889,7 +1892,7 @@ def job_kill(request, pk: int):
         messages.error(request, "Job introuvable.")
         return redirect("jobs_page")
 
-    ProcessingJob.objects.filter(id=job.id).update(kill_requested=True)
+    ProcessingJob.objects.filter(id=job.id).update(kill_requested=True, status=ProcessingJob.Status.KILLED, finished_at=timezone.now())
 
     # Best-effort revoke/terminate
     task_id = (job.task_id or "").strip()
@@ -1897,7 +1900,7 @@ def job_kill(request, pk: int):
         try:
             from celery import current_app
 
-            current_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+            current_app.control.revoke(task_id, terminate=True, signal="SIGKILL")
             messages.success(request, f"Kill demandé (SIGTERM) pour le job #{job.id}.")
         except Exception as e:
             messages.warning(request, f"Kill demandé mais revoke a échoué: {e}")
@@ -3134,3 +3137,443 @@ def symbol_search(request: HttpRequest) -> JsonResponse:
     qs = qs.only('id', 'ticker', 'name').order_by('ticker')[:limit]
     data = [{'id': s.id, 'ticker': s.ticker, 'name': s.name} for s in qs]
     return JsonResponse(data, safe=False)
+
+# --- Game Scenarios (Scénario de Jeu) ---
+def game_scenarios_page(request: HttpRequest):
+    qs = GameScenario.objects.all().order_by("-created_at")
+    return render(request, "game_scenarios_list.html", {"items": qs})
+
+
+@login_required
+def game_scenario_create(request: HttpRequest):
+    if request.method == "POST":
+        form = GameScenarioForm(request.POST)
+        if form.is_valid():
+            obj = form.save()
+            messages.success(request, "Scénario de Jeu créé.")
+            return redirect("game_scenario_detail", pk=obj.pk)
+    else:
+        form = GameScenarioForm()
+    signal_lines_json = json.dumps(form["signal_lines"].value() or [])
+    return render(
+        request,
+        "game_scenario_form.html",
+        {
+            "form": form,
+            "mode": "create",
+            "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES),
+            "signal_lines_json": signal_lines_json,
+        },
+    )
+
+
+@login_required
+def game_scenario_edit(request: HttpRequest, pk: int):
+    obj = get_object_or_404(GameScenario, pk=pk)
+    if request.method == "POST":
+        form = GameScenarioForm(request.POST, instance=obj)
+        if form.is_valid():
+            form.save()
+            messages.success(request, "Scénario de Jeu mis à jour.")
+            return redirect("game_scenario_detail", pk=obj.pk)
+    else:
+        form = GameScenarioForm(instance=obj)
+    signal_lines_json = json.dumps(form["signal_lines"].value() or [])
+    return render(
+        request,
+        "game_scenario_form.html",
+        {
+            "form": form,
+            "mode": "edit",
+            "obj": obj,
+            "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES),
+            "signal_lines_json": signal_lines_json,
+        },
+    )
+
+
+@login_required
+def game_scenario_delete(request: HttpRequest, pk: int):
+    obj = get_object_or_404(GameScenario, pk=pk)
+    if request.method == "POST":
+        obj.delete()
+        messages.success(request, "Scénario de Jeu supprimé.")
+        return redirect("game_scenarios_page")
+    return render(request, "game_scenario_confirm_delete.html", {"obj": obj})
+
+
+@login_required
+def game_scenario_detail(request: HttpRequest, pk: int):
+    obj = get_object_or_404(GameScenario, pk=pk)
+    snapshot = obj.today_results if isinstance(obj.today_results, dict) else {}
+    # Backward compatible threshold key (older snapshots used 'threshold').
+    if "threshold_pct" not in snapshot:
+        snapshot["threshold_pct"] = str(snapshot.get("threshold") or obj.tradability_threshold)
+    rows = snapshot.get("rows") or []
+
+    def _bmd_key(r):
+        try:
+            return float(r.get("bmd"))
+        except Exception:
+            return float("-inf")
+
+    rows_sorted = sorted(rows, key=_bmd_key, reverse=True)
+    return render(request, "game_scenario_detail.html", {"obj": obj, "snapshot": snapshot, "rows": rows_sorted})
+
+
+@login_required
+@require_POST
+def game_scenario_launch(request: HttpRequest, pk: int):
+    obj = get_object_or_404(GameScenario, pk=pk)
+    try:
+        from core.tasks import run_game_scenario_job_task
+
+        force_fetch = bool(request.POST.get("force_fetch"))
+        force_recompute = bool(request.POST.get("force_recompute"))
+
+        # Create a PENDING job immediately (same pattern as Backtests)
+        pj = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.PENDING,
+            created_by=request.user if request.user.is_authenticated else None,
+            message="En attente d'exécution (GameScenario)",
+        )
+
+        async_res = run_game_scenario_job_task.delay(
+            game_id=obj.id,
+            force_fetch=force_fetch,
+            force_recompute=force_recompute,
+            user_id=request.user.id if request.user.is_authenticated else None,
+            job_id=pj.id,
+        )
+        pj.task_id = getattr(async_res, "id", "") or ""
+        pj.save(update_fields=["task_id"])
+
+        if force_recompute:
+            messages.success(request, "Lancement demandé (Celery) — Force Full Recompute.")
+        else:
+            messages.success(request, "Lancement demandé (Celery).")
+    except Exception as e:
+        messages.error(request, f"Impossible de lancer: {e}")
+    return redirect("game_scenario_detail", pk=obj.pk)
+
+
+
+@login_required
+def game_scenario_export_xlsx(request: HttpRequest, pk: int):
+    obj = get_object_or_404(GameScenario, pk=pk)
+    snapshot = obj.today_results if isinstance(obj.today_results, dict) else {}
+    # Backward compatible threshold key (older snapshots used 'threshold').
+    if "threshold_pct" not in snapshot:
+        snapshot["threshold_pct"] = str(snapshot.get("threshold") or obj.tradability_threshold)
+    rows = snapshot.get("rows") or []
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "BMD"
+    ws.append(["ticker", "BMD", "OK", "threshold", "date"])
+    threshold = snapshot.get("threshold") or str(obj.tradability_threshold)
+    dt = snapshot.get("date") or ""
+    for r in rows:
+        ws.append([r.get("ticker"), r.get("bmd"), "OK" if r.get("ok") else "NO", threshold, dt])
+
+    for col in range(1, 6):
+        ws.cell(row=1, column=col).font = Font(bold=True)
+        ws.column_dimensions[get_column_letter(col)].width = 18
+    ws.freeze_panes = "A2"
+
+    bio = BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+    filename = f"game_{obj.pk}_{dt}.xlsx".replace(":", "_")
+    resp = HttpResponse(
+        bio.getvalue(),
+        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
+    return resp
+
+
+
+@login_required
+@require_http_methods(["GET", "POST"])
+def trigger_page(request: HttpRequest):
+        """Central page to trigger background tasks (fetch/compute/recompute/etc.).
+
+        This page is intentionally operational: it exposes explicit buttons for
+        common Celery jobs, with optional scoping to a scenario/backtest/game.
+        """
+        scenarios = Scenario.objects.order_by("name", "id").all()
+        backtests = Backtest.objects.order_by("-id").all()
+        games = GameScenario.objects.order_by("-id").all()
+        alert_defs = AlertDefinition.objects.order_by("name", "id").all()
+
+        if request.method == "POST":
+            action = (request.POST.get("action") or "").strip()
+            scenario_id = (request.POST.get("scenario_id") or "").strip()
+            backtest_id = (request.POST.get("backtest_id") or "").strip()
+            game_id = (request.POST.get("game_id") or "").strip()
+            alert_def_id = (request.POST.get("alert_def_id") or "").strip()
+
+            user_id = request.user.id if request.user.is_authenticated else None
+
+            try:
+                # --- GLOBAL / SCENARIO actions ---
+                if action in ("fetch", "fetch_force_full"):
+                    from core.tasks import fetch_daily_bars_job_task
+
+                    force_full = (action == "fetch_force_full")
+                    scenario_id_int = None
+                    symbol_ids = None
+
+                    if scenario_id and scenario_id.upper() != "ALL":
+                        scenario_id_int = int(scenario_id)
+                        sc = Scenario.objects.get(id=scenario_id_int)
+                        symbol_ids = list(sc.symbols.values_list("id", flat=True))
+
+                    pj = ProcessingJob.objects.create(
+                        job_type=ProcessingJob.JobType.FETCH_BARS,
+                        status=ProcessingJob.Status.PENDING,
+                        scenario_id=scenario_id_int,
+                        created_by=request.user if request.user.is_authenticated else None,
+                        message=(
+                            "En attente d'exécution (collecte données)"
+                            if not scenario_id_int else
+                            f"En attente d'exécution (collecte données scénario {scenario_id_int})"
+                        ),
+                    )
+                    async_res = fetch_daily_bars_job_task.delay(
+                        symbol_ids=symbol_ids,
+                        scenario_id=scenario_id_int,
+                        force_full=force_full,
+                        user_id=user_id,
+                        job_id=pj.id,
+                    )
+                    pj.task_id = getattr(async_res, "id", "") or ""
+                    pj.save(update_fields=["task_id"])
+                    messages.success(request, "Collecte demandée." + (" (force full)" if force_full else ""))
+
+                elif action in ("compute", "recompute"):
+                    from core.tasks import compute_metrics_job_task, compute_metrics_all_job_task
+
+                    recompute_all = (action == "recompute")
+
+                    if scenario_id and scenario_id.upper() == "ALL":
+                        compute_metrics_all_job_task.delay(recompute_all, user_id=user_id)
+                        messages.success(request, "Calcul demandé (tous scénarios)." + (" (recompute all)" if recompute_all else ""))
+                    elif scenario_id:
+                        sc_id = int(scenario_id)
+                        try:
+                            sc = Scenario.objects.get(id=sc_id)
+                            symbol_ids = list(sc.symbols.values_list("id", flat=True))
+                        except Exception:
+                            symbol_ids = None
+
+                        compute_metrics_job_task.delay(
+                            scenario_id=sc_id,
+                            symbol_ids=symbol_ids,
+                            recompute_all=recompute_all,
+                            backtest_id=None,
+                            user_id=user_id,
+                            job_id=None,
+                        )
+                        messages.success(request, "Calcul demandé (scénario)." + (" (recompute all)" if recompute_all else ""))
+                    else:
+                        messages.error(request, "Choisis un scénario ou 'ALL'.")
+
+                elif action == "cleanup_jobs":
+                    from core.tasks import cleanup_stale_processing_jobs_task
+                    cleanup_stale_processing_jobs_task.delay()
+                    messages.success(request, "Nettoyage des jobs demandé.")
+
+                elif action == "run_scheduled_alerts":
+                    from core.tasks import check_and_send_scheduled_alerts_task
+                    check_and_send_scheduled_alerts_task.delay()
+                    messages.success(request, "Vérification/envoi des alertes planifiées demandée.")
+
+                elif action == "send_alert_definition":
+                    # Uses existing view logic endpoint, but we can trigger task directly via that view's helper.
+                    if not alert_def_id:
+                        messages.error(request, "Choisis une alerte (definition) à envoyer.")
+                    else:
+                        from core.tasks import send_alert_definition_job_task
+                        pj = ProcessingJob.objects.create(
+                            job_type=ProcessingJob.JobType.SEND_EMAILS,
+                            status=ProcessingJob.Status.PENDING,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message=f"En attente d'exécution (envoi alerte {alert_def_id})",
+                        )
+                        async_res = send_alert_definition_job_task.delay(
+                            alert_definition_id=int(alert_def_id),
+                            user_id=user_id,
+                            job_id=pj.id,
+                        )
+                        pj.task_id = getattr(async_res, "id", "") or ""
+                        pj.save(update_fields=["task_id"])
+                        messages.success(request, "Envoi demandé pour l'alerte sélectionnée.")
+
+                # --- BACKTEST actions ---
+                elif action in ("bt_fetch", "bt_fetch_force_full"):
+                    if not backtest_id:
+                        messages.error(request, "Choisis un backtest.")
+                    else:
+                        bt = Backtest.objects.get(id=int(backtest_id))
+
+                        # Refresh snapshot unless running
+                        if bt.status != Backtest.Status.RUNNING:
+                            _refresh_backtest_universe_snapshot(bt)
+
+                        # Determine universe tickers from snapshot
+                        tickers = []
+                        try:
+                            for r in (bt.universe_snapshot or []):
+                                if isinstance(r, dict):
+                                    t = r.get("ticker")
+                                    if t:
+                                        tickers.append(t)
+                        except Exception:
+                            tickers = []
+
+                        symbol_ids = (
+                            list(Symbol.objects.filter(ticker__in=tickers).values_list("id", flat=True))
+                            if tickers else
+                            list(bt.scenario.symbols.values_list("id", flat=True))
+                        )
+
+                        from core.tasks import fetch_daily_bars_job_task
+                        force_full = (action == "bt_fetch_force_full")
+
+                        pj = ProcessingJob.objects.create(
+                            job_type=ProcessingJob.JobType.FETCH_BARS,
+                            status=ProcessingJob.Status.PENDING,
+                            backtest=bt,
+                            scenario=bt.scenario,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message="En attente d'exécution (collecte backtest)" + (" force full" if force_full else ""),
+                        )
+                        async_res = fetch_daily_bars_job_task.delay(
+                            symbol_ids=symbol_ids,
+                            scenario_id=bt.scenario_id,
+                            backtest_id=bt.id,
+                            force_full=force_full,
+                            user_id=user_id,
+                            job_id=pj.id,
+                        )
+                        pj.task_id = getattr(async_res, "id", "") or ""
+                        pj.save(update_fields=["task_id"])
+                        messages.success(request, "Collecte demandée pour ce backtest." + (" (force full)" if force_full else ""))
+
+                elif action in ("bt_compute", "bt_recompute"):
+                    if not backtest_id:
+                        messages.error(request, "Choisis un backtest.")
+                    else:
+                        bt = Backtest.objects.get(id=int(backtest_id))
+
+                        # Keep snapshot aligned unless running
+                        if bt.status != Backtest.Status.RUNNING:
+                            _refresh_backtest_universe_snapshot(bt)
+
+                        tickers = []
+                        try:
+                            for r in (bt.universe_snapshot or []):
+                                if isinstance(r, dict):
+                                    t = r.get("ticker")
+                                    if t:
+                                        tickers.append(t)
+                        except Exception:
+                            tickers = []
+
+                        symbol_ids = (
+                            list(Symbol.objects.filter(ticker__in=tickers).values_list("id", flat=True))
+                            if tickers else
+                            list(bt.scenario.symbols.values_list("id", flat=True))
+                        )
+
+                        from core.tasks import compute_metrics_job_task
+                        recompute_all = (action == "bt_recompute")
+
+                        pj = ProcessingJob.objects.create(
+                            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+                            status=ProcessingJob.Status.PENDING,
+                            backtest=bt,
+                            scenario=bt.scenario,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message="En attente d'exécution (calcul métriques backtest)",
+                        )
+                        async_res = compute_metrics_job_task.delay(
+                            scenario_id=bt.scenario_id,
+                            symbol_ids=symbol_ids,
+                            recompute_all=recompute_all,
+                            backtest_id=bt.id,
+                            user_id=user_id,
+                            job_id=pj.id,
+                        )
+                        pj.task_id = getattr(async_res, "id", "") or ""
+                        pj.save(update_fields=["task_id"])
+                        messages.success(request, "Calcul métriques demandé pour ce backtest." + (" (recompute all)" if recompute_all else ""))
+
+                elif action == "bt_run":
+                    if not backtest_id:
+                        messages.error(request, "Choisis un backtest.")
+                    else:
+                        from core.tasks import run_backtest_job_task
+                        bt = Backtest.objects.get(id=int(backtest_id))
+                        pj = ProcessingJob.objects.create(
+                            job_type=ProcessingJob.JobType.RUN_BACKTEST,
+                            status=ProcessingJob.Status.PENDING,
+                            backtest=bt,
+                            scenario=bt.scenario,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message="En attente d'exécution (run backtest)",
+                        )
+                        async_res = run_backtest_job_task.delay(
+                            backtest_id=bt.id,
+                            user_id=user_id,
+                            job_id=pj.id,
+                        )
+                        pj.task_id = getattr(async_res, "id", "") or ""
+                        pj.save(update_fields=["task_id"])
+                        messages.success(request, "Run backtest demandé.")
+
+                # --- GAME actions ---
+                elif action in ("game_launch", "game_force_recompute"):
+                    if not game_id:
+                        messages.error(request, "Choisis un scénario de jeu.")
+                    else:
+                        from core.tasks import run_game_scenario_job_task
+                        force_recompute = (action == "game_force_recompute")
+                        pj = ProcessingJob.objects.create(
+                            job_type=ProcessingJob.JobType.RUN_GAME,
+                            status=ProcessingJob.Status.PENDING,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message="En attente d'exécution (run game)" + (" force recompute" if force_recompute else ""),
+                        )
+                        async_res = run_game_scenario_job_task.delay(
+                            game_id=int(game_id),
+                            force_fetch=False,
+                            force_recompute=force_recompute,
+                            user_id=user_id,
+                            job_id=pj.id,
+                        )
+                        pj.task_id = getattr(async_res, "id", "") or ""
+                        pj.save(update_fields=["task_id"])
+                        messages.success(request, "Run game demandé." + (" (force recompute)" if force_recompute else ""))
+
+                else:
+                    messages.error(request, f"Action inconnue: {action!r}")
+
+            except Exception as e:
+                messages.error(request, f"Erreur trigger: {e}")
+
+            return redirect("trigger_page")
+
+        return render(
+            request,
+            "trigger.html",
+            {
+                "scenarios": scenarios,
+                "backtests": backtests,
+                "games": games,
+                "alert_defs": alert_defs,
+            },
+        )

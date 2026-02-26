@@ -429,3 +429,62 @@ class BacktestForm(forms.ModelForm):
             if not isinstance(item, dict):
                 raise forms.ValidationError("Each signal line must be an object")
         return value
+
+
+class GameScenarioForm(forms.ModelForm):
+    """CRUD form for GameScenario."""
+
+    class Meta:
+        from .models import GameScenario
+
+        model = GameScenario
+        fields = [
+            # Identity
+            "name",
+            "description",
+            "active",
+            "study_days",
+            "tradability_threshold",
+            "email_recipients",
+            # Scenario params
+            "a",
+            "b",
+            "c",
+            "d",
+            "e",
+            "vc",
+            "fl",
+            "n1",
+            "n2",
+            "n3",
+            "n4",
+            "n5",
+            "k2j",
+            "cr",
+            "m_v",
+            # Backtest params
+            "capital_total",
+            "capital_per_ticker",
+            "signal_lines",
+            "close_positions_at_end",
+        ]
+        widgets = {
+            "description": forms.Textarea(attrs={"rows": 3}),
+            "email_recipients": forms.Textarea(
+                attrs={
+                    "rows": 3,
+                    "placeholder": "Emails séparés par virgule, point-virgule ou retour ligne",
+                }
+            ),
+        }
+
+    def clean_signal_lines(self):
+        value = self.cleaned_data.get("signal_lines")
+        if value in (None, ""):
+            return []
+        if not isinstance(value, list):
+            raise forms.ValidationError("signal_lines must be a JSON list")
+        for item in value:
+            if not isinstance(item, dict):
+                raise forms.ValidationError("Each signal line must be an object")
+        return value

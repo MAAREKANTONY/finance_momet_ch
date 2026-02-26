@@ -237,6 +237,89 @@ class Study(models.Model):
         return self.name
 
 
+class GameScenario(models.Model):
+    """"Scénario de Jeu".
+
+    Merge entity combining Scenario params + Backtest rules + recipients.
+
+    Runs daily on *all* symbols, computing only the per-ticker BMD KPI for the
+    last `study_days` market days ending today.
+
+    Stores only the current day's snapshot in `today_results` (no history).
+    """
+
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+
+    study_days = models.PositiveIntegerField(default=1000)
+
+    active = models.BooleanField(default=True)
+
+    tradability_threshold = models.DecimalField(
+        max_digits=12,
+        decimal_places=6,
+        validators=[MinValueValidator(Decimal("0"))],
+        default=Decimal("0"),
+        help_text="Seuil de tradabilité (BMD >= seuil => OK).",
+    )
+
+    email_recipients = models.TextField(blank=True, default="")
+
+    # --- Scenario fields (same defaults/constraints) ---
+    a = models.DecimalField(max_digits=18, decimal_places=6, default=1)
+    b = models.DecimalField(max_digits=18, decimal_places=6, default=1)
+    c = models.DecimalField(max_digits=18, decimal_places=6, default=1)
+    d = models.DecimalField(max_digits=18, decimal_places=6, default=1)
+    e = models.DecimalField(
+        max_digits=18,
+        decimal_places=6,
+        default=1,
+        validators=[MinValueValidator(0.0001)],
+    )
+    vc = models.DecimalField(max_digits=6, decimal_places=4, default=Decimal("0.5"))
+    fl = models.DecimalField(max_digits=6, decimal_places=4, default=Decimal("0.5"))
+
+    n1 = models.PositiveIntegerField(default=5)
+    n2 = models.PositiveIntegerField(default=3)
+    n3 = models.PositiveIntegerField(default=0)
+    n4 = models.PositiveIntegerField(default=0)
+    n5 = models.PositiveIntegerField(default=100)
+    k2j = models.PositiveIntegerField(default=10)
+    cr = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("10"))
+    m_v = models.PositiveIntegerField(default=20)
+
+    # Internal scenario used to persist DailyMetric/Alert.
+    engine_scenario = models.OneToOneField(
+        "Scenario",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="game_scenario",
+    )
+
+    # --- Backtest fields (same defaults) ---
+    capital_total = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    capital_per_ticker = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+    signal_lines = models.JSONField(default=list, blank=True)
+    close_positions_at_end = models.BooleanField(default=True)
+    settings = models.JSONField(default=dict, blank=True)
+
+    last_run_at = models.DateTimeField(null=True, blank=True)
+    last_run_status = models.CharField(max_length=20, blank=True, default="")
+    last_run_message = models.TextField(blank=True, default="")
+    today_results = models.JSONField(default=dict, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [models.Index(fields=["active", "last_run_at"], name="core_gamesce_active_idx")]
+
+    def __str__(self) -> str:
+        return self.name
+
+
 class SymbolScenario(models.Model):
     symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
     scenario = models.ForeignKey(Scenario, on_delete=models.CASCADE)
@@ -570,6 +653,8 @@ class ProcessingJob(models.Model):
         FETCH_BARS = "FETCH_BARS", "Fetch Daily Bars"
         COMPUTE_METRICS = "COMPUTE_METRICS", "Compute Metrics"
         RUN_BACKTEST = "RUN_BACKTEST", "Run Backtest"
+        RUN_GAME = "RUN_GAME", "Run Game Scenario"
+        SEND_EMAILS = "SEND_EMAILS", "Send Emails"
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"

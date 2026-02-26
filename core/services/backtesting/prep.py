@@ -19,6 +19,7 @@ from datetime import date
 from django.db.models import Min, Max
 
 from core.models import Backtest, DailyBar, DailyMetric, Symbol
+from core.services.metrics_depth import check_metrics_depth
 
 
 @dataclass
@@ -40,7 +41,7 @@ def _metrics_cover_range(symbol_id: int, scenario_id: int, start: date, end: dat
     return bool(agg["mn"] and agg["mx"] and agg["mn"] <= start and agg["mx"] >= end)
 
 
-def prepare_backtest_data(backtest: Backtest) -> BacktestPrepReport:
+def prepare_backtest_data(backtest: Backtest, *, force_full_recompute: bool = False) -> BacktestPrepReport:
     """
     Ensure data required for the backtest exists.
 
@@ -54,7 +55,8 @@ def prepare_backtest_data(backtest: Backtest) -> BacktestPrepReport:
     did_compute = False
 
     # Lazy import to avoid circular imports (tasks -> prep -> tasks)
-    from core.tasks import fetch_daily_bars_task, compute_metrics_task
+    from core.tasks import fetch_daily_bars_task
+    from core.tasks import _compute_metrics_for_scenario
 
     # Determine universe (snapshot if present, else scenario symbols)
     tickers = backtest.universe_snapshot or []
@@ -75,21 +77,34 @@ def prepare_backtest_data(backtest: Backtest) -> BacktestPrepReport:
         did_fetch = True
         notes.append("Ran fetch_daily_bars_task().")
 
-    # Check metrics coverage
-    missing_metrics = []
-    for s in symbols:
-        if not _metrics_cover_range(s.id, backtest.scenario_id, backtest.start_date, backtest.end_date):
-            missing_metrics.append(s.ticker)
+    # Check metrics depth (single grouped query) and decide whether we must full recompute.
+    symbol_ids = list(symbols.values_list("id", flat=True))
+    depth = check_metrics_depth(
+        scenario_id=backtest.scenario_id,
+        symbol_ids=symbol_ids,
+        required_start=backtest.start_date,
+        required_end=backtest.end_date,
+    )
 
-    if missing_metrics:
-        notes.append(
-            f"Missing DailyMetric/Alert coverage for {len(missing_metrics)} symbols (sample: {', '.join(missing_metrics[:10])}{'...' if len(missing_metrics) > 10 else ''})."
+    needs_full = bool(force_full_recompute) or depth.needs_full_recompute()
+    if needs_full:
+        if force_full_recompute:
+            notes.append("Force Full Recompute requested from UI.")
+        if depth.needs_full_recompute():
+            notes.append(
+                f"Insufficient metrics depth for date range: missing coverage on {len(depth.missing_symbol_ids)}/{depth.total_symbols} symbols."
+            )
+        # Full recompute (scoped to the backtest universe only) – no formula change.
+        _compute_metrics_for_scenario(
+            symbols_qs=symbols,
+            scenario=backtest.scenario,
+            recompute_all=True,
+            job=None,
         )
-        compute_metrics_task(recompute_all=False)
         did_compute = True
-        notes.append("Ran compute_metrics_task(recompute_all=False).")
+        notes.append("Ran full recompute for this scenario (scoped to backtest universe).")
 
-    if not missing_bars and not missing_metrics:
+    if not missing_bars and not needs_full:
         notes.append("All prerequisite data already present for the requested date range.")
 
     return BacktestPrepReport(did_fetch_bars=did_fetch, did_compute_metrics=did_compute, notes=notes)

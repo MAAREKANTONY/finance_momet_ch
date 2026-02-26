@@ -96,9 +96,9 @@
         <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Calculer indicateurs</button>
       </form>
 
-      <form method="post" action="{% url 'backtest_recompute_metrics' bt.id %}" onsubmit="return confirm('Recompute complet : cela recalculera toutes les dates pour le scénario de ce backtest. Continuer ?');">
+      <form method="post" action="{% url 'backtest_recompute_metrics' bt.id %}" onsubmit="return confirm('Force Full Recompute : recalcul complet des métriques pour toute la profondeur du scénario de ce backtest. Continuer ?');">
         {% csrf_token %}
-        <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Recompute complet</button>
+        <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Force Full Recompute</button>
       </form>
       <form method="post" action="{% url 'run_recompute_all_now' %}" onsubmit="return confirm('⚠️ Recompute complet : vous avez choisi tous les scénarios. Cela peut être très long. Continuer ?');">
         {% csrf_token %}

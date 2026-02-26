@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Application version (shown in UI footer)
 # NOTE: can be overridden via environment variable APP_VERSION
-APP_VERSION = os.getenv("APP_VERSION", "V7.0.3")
+APP_VERSION = "V7.0.8-STEP1"
 
 # Load .env if present (does not override real env vars by default)
 load_dotenv(BASE_DIR / ".env", override=False)
@@ -143,3 +143,12 @@ CSRF_COOKIE_SECURE = os.getenv("CSRF_COOKIE_SECURE", "1") == "1"
 SESSION_COOKIE_SECURE = os.getenv("SESSION_COOKIE_SECURE", "1") == "1"
 CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Lax")
 SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
+
+# ProcessingJob cleanup thresholds (minutes)
+JOB_STALE_HEARTBEAT_MINUTES = int(os.getenv('JOB_STALE_HEARTBEAT_MINUTES', '15'))
+JOB_STALE_STARTED_MINUTES = int(os.getenv('JOB_STALE_STARTED_MINUTES', '30'))
+JOB_STALE_PENDING_MINUTES = int(os.getenv('JOB_STALE_PENDING_MINUTES', '60'))
+
+# GameScenario scheduler defaults (used by core.tasks)
+GAME_SCENARIO_RUN_HOUR = int(os.getenv('GAME_SCENARIO_RUN_HOUR', '3'))
+GAME_SCENARIO_RUN_MINUTE = int(os.getenv('GAME_SCENARIO_RUN_MINUTE', '5'))

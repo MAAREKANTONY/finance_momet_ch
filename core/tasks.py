@@ -610,6 +610,39 @@ def send_alert_definition_now_task(definition_id: int):
     return _send_alert_definition_email(defn, last.date)
 
 
+
+
+@shared_task(bind=True)
+def send_alert_definition_job_task(self, *, alert_definition_id: int, user_id=None, job_id=None):
+    """Tracked job wrapper to send a single AlertDefinition immediately."""
+    job = None
+    if job_id:
+        job = ProcessingJob.objects.filter(id=job_id).first()
+        if job:
+            job.status = ProcessingJob.Status.RUNNING
+            job.task_id = getattr(self.request, "id", "") or ""
+            job.started_at = timezone.now()
+            job.message = f"En cours (envoi alerte {alert_definition_id})"
+            job.save(update_fields=["status", "task_id", "started_at", "message"])
+
+    try:
+        # Reuse the existing sending logic synchronously so we can update the job status reliably.
+        send_alert_definition_now_task(alert_definition_id)
+
+        if job:
+            job.status = ProcessingJob.Status.DONE
+            job.finished_at = timezone.now()
+            job.message = f"Terminé (envoi alerte {alert_definition_id})"
+            job.save(update_fields=["status", "finished_at", "message"])
+        return {"status": "ok"}
+
+    except Exception as e:
+        if job:
+            job.status = ProcessingJob.Status.FAILED
+            job.finished_at = timezone.now()
+            job.message = f"Erreur (envoi alerte {alert_definition_id}): {e}"
+            job.save(update_fields=["status", "finished_at", "message"])
+        raise
 @shared_task
 def check_and_send_scheduled_alerts_task():
     """Runs every minute.
@@ -675,6 +708,81 @@ def check_and_send_scheduled_alerts_task():
 
     return ";".join(results)
 
+def run_game_scenario_task(game_id: int, force_fetch: bool = False, force_recompute: bool = False):
+    """Run one GameScenario end-to-end."""
+    from core.services.game_scenarios.runner import run_game_scenario_now
+
+    return run_game_scenario_now(game_id, force_fetch=force_fetch, force_recompute=force_recompute)
+
+
+def _maybe_run_scheduled_game_scenarios(now_dt):
+    """Minute-level scheduler for GameScenarios.
+
+    Uses settings:
+      GAME_SCENARIO_RUN_HOUR (default 3)
+      GAME_SCENARIO_RUN_MINUTE (default 5)
+
+    Runs each active GameScenario at most once per day (based on today_results.date).
+    """
+    try:
+        hour = int(getattr(settings, "GAME_SCENARIO_RUN_HOUR", 3))
+        minute = int(getattr(settings, "GAME_SCENARIO_RUN_MINUTE", 5))
+    except Exception:
+        hour, minute = 3, 5
+
+    if now_dt.hour != hour or now_dt.minute != minute:
+        return "games_not_due"
+
+    today = now_dt.date()
+    qs = GameScenario.objects.filter(active=True)
+    scheduled = 0
+    for gs in qs:
+        last = gs.today_results.get("date") if isinstance(gs.today_results, dict) else None
+        if last == str(today):
+            continue
+        if (gs.last_run_status or "").lower() == "running":
+            continue
+        run_game_scenario_task.delay(gs.id)
+        scheduled += 1
+    # --- Additive: GameScenarios scheduler (daily BMD table) ---
+    try:
+        results.append(_maybe_run_scheduled_game_scenarios(now))
+    except Exception as e:
+        results.append(f"games_error:{e}")
+
+    return f"games_scheduled:{scheduled}"
+
+
+
+@shared_task(bind=True)
+def run_game_scenario_job_task(self, *, game_id: int, force_fetch: bool = False, force_recompute: bool = False, user_id=None, job_id=None):
+    """Tracked wrapper for GameScenario runs."""
+    job = None
+    if job_id:
+        job = ProcessingJob.objects.filter(id=job_id).first()
+        if job:
+            job.status = ProcessingJob.Status.RUNNING
+            job.task_id = getattr(self.request, "id", "") or ""
+            job.started_at = timezone.now()
+            job.message = f"En cours (run game {game_id})"
+            job.save(update_fields=["status", "task_id", "started_at", "message"])
+    try:
+        from core.services.game_scenarios.runner import run_game_scenario_now
+        run_game_scenario_now(game_id, force_fetch=force_fetch, force_recompute=force_recompute)
+
+        if job:
+            job.status = ProcessingJob.Status.DONE
+            job.finished_at = timezone.now()
+            job.message = f"Terminé (run game {game_id})"
+            job.save(update_fields=["status", "finished_at", "message"])
+        return {"status": "ok"}
+    except Exception as e:
+        if job:
+            job.status = ProcessingJob.Status.FAILED
+            job.finished_at = timezone.now()
+            job.message = f"Erreur (run game {game_id}): {e}"
+            job.save(update_fields=["status", "finished_at", "message"])
+        raise
 @shared_task
 def run_backtest_task(backtest_id: int):
     # Lazy imports to avoid circular imports
@@ -826,3 +934,50 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
         job.finished_at = timezone.now()
         job.save(update_fields=["status", "error", "finished_at"])
         raise
+
+
+@shared_task
+def cleanup_stale_processing_jobs_task() -> dict:
+    """Mark stale / zombie ProcessingJob rows as FAILED to keep /jobs and admin usable.
+
+    This is defensive: if a worker is killed, redeployed, or crashes, the DB row can stay RUNNING/PENDING forever.
+
+    Rules (conservative):
+    - RUNNING with heartbeat older than JOB_STALE_HEARTBEAT_MINUTES => FAILED
+    - RUNNING with no heartbeat and started_at older than JOB_STALE_STARTED_MINUTES => FAILED
+    - PENDING older than JOB_STALE_PENDING_MINUTES => FAILED (likely never picked up)
+    """
+    from django.conf import settings as dj_settings
+    from django.db.models import Q
+    from django.utils import timezone
+
+    hb_min = int(getattr(dj_settings, "JOB_STALE_HEARTBEAT_MINUTES", 15))
+    started_min = int(getattr(dj_settings, "JOB_STALE_STARTED_MINUTES", 30))
+    pending_min = int(getattr(dj_settings, "JOB_STALE_PENDING_MINUTES", 60))
+
+    now = timezone.now()
+    from datetime import timedelta
+
+    hb_cutoff = now - timedelta(minutes=hb_min)
+    started_cutoff = now - timedelta(minutes=started_min)
+    pending_cutoff = now - timedelta(minutes=pending_min)
+
+    # RUNNING stale by heartbeat
+    q_running_hb = Q(status=ProcessingJob.Status.RUNNING) & Q(heartbeat_at__isnull=False) & Q(heartbeat_at__lt=hb_cutoff)
+    # RUNNING stale by started_at without heartbeat
+    q_running_nohb = Q(status=ProcessingJob.Status.RUNNING) & Q(heartbeat_at__isnull=True) & Q(started_at__isnull=False) & Q(started_at__lt=started_cutoff)
+    # PENDING too old
+    q_pending_old = Q(status=ProcessingJob.Status.PENDING) & Q(created_at__lt=pending_cutoff)
+
+    stale_qs = ProcessingJob.objects.filter(q_running_hb | q_running_nohb | q_pending_old)
+
+    updated = 0
+    for job in stale_qs.only("id", "status"):
+        ProcessingJob.objects.filter(id=job.id).update(
+            status=ProcessingJob.Status.FAILED,
+            finished_at=now,
+            error="Auto-marked as FAILED (stale job cleanup).",
+        )
+        updated += 1
+
+    return {"updated": updated, "heartbeat_minutes": hb_min, "started_minutes": started_min, "pending_minutes": pending_min}

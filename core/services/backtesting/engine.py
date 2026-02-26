@@ -884,3 +884,343 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     }
 
     return BacktestEngineResult(results=results, logs=logs)
+
+
+def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) -> dict[str, dict[str, Any]]:
+    """Compute ONLY per-ticker KPI finals (no per-day rows, no portfolio).
+
+    Additive helper used by "GameScenario" to avoid huge memory usage.
+
+    Returns: {"TICKER": {"lines": [{"line_index":1, "BMD":"...", ...}, ...], "best_bmd":"..."}}
+    """
+    logs: list[str] = []
+
+    # Universe
+    raw_universe = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
+    tickers: list[str] = []
+    if isinstance(raw_universe, list):
+        for item in raw_universe:
+            if isinstance(item, dict):
+                t = item.get("ticker") or item.get("symbol") or item.get("code")
+                if t is not None:
+                    tickers.append(str(t).strip())
+            else:
+                tickers.append(str(item).strip())
+    else:
+        try:
+            tickers = [str(x).strip() for x in list(raw_universe)]
+        except Exception:
+            tickers = [str(raw_universe).strip()]
+    tickers = [t for t in tickers if t]
+    if not tickers:
+        return {}
+
+    # Params
+    CP_raw = Decimal(str(backtest.capital_total or 0))
+    CP_infinite = (CP_raw == 0)
+    global_cash = None if CP_infinite else CP_raw
+    CT = Decimal(str(backtest.capital_per_ticker or 0))
+    X = Decimal("0")  # Game mode: eligibility bypass (include_all)
+    include_all = True
+
+    signal_lines = backtest.signal_lines or []
+    if not isinstance(signal_lines, list) or not signal_lines:
+        signal_lines = [{"buy": "A1", "sell": "B1"}]
+
+    symbols = list(Symbol.objects.filter(ticker__in=tickers))
+    sym_by_ticker = {s.ticker: s for s in symbols}
+
+    start_d = backtest.start_date
+    end_d = backtest.end_date
+
+    data_by_ticker: dict[str, dict[str, Any]] = {}
+    all_dates: set[date] = set()
+
+    for ticker in tickers:
+        sym = sym_by_ticker.get(ticker)
+        if not sym:
+            continue
+
+        bars = list(
+            DailyBar.objects.filter(symbol=sym, date__gte=start_d, date__lte=end_d)
+            .order_by("date")
+            .values("date", "close")
+        )
+        if not bars:
+            continue
+
+        price_by_date: dict[date, Any] = {}
+        for b in bars:
+            d = b["date"]
+            all_dates.add(d)
+            price_by_date[d] = b.get("close")
+
+        metrics: dict[date, tuple[Any, Any, Any, Any, Any, Any, Any]] = {
+            m["date"]: (
+                m.get("ratio_P"),
+                m.get("K1"),
+                m.get("K1f"),
+                m.get("K2f"),
+                m.get("K2"),
+                m.get("K3"),
+                m.get("K4"),
+            )
+            for m in DailyMetric.objects.filter(
+                symbol=sym,
+                scenario_id=backtest.scenario_id,
+                date__gte=start_d,
+                date__lte=end_d,
+            ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4")
+        }
+        alerts = {
+            a["date"]: _alerts_set(a["alerts"])
+            for a in Alert.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=start_d, date__lte=end_d)
+            .values("date", "alerts")
+        }
+
+        data_by_ticker[ticker] = {"price_by_date": price_by_date, "metrics": metrics, "alerts": alerts}
+
+    if not data_by_ticker:
+        return {}
+
+    dates_sorted = sorted(all_dates)
+    if max_days and max_days > 0 and len(dates_sorted) > max_days:
+        dates_sorted = dates_sorted[-int(max_days):]
+
+    # State per (ticker,line)
+    state: dict[tuple[str, int], dict[str, Any]] = {}
+    for ticker in data_by_ticker.keys():
+        for li, line in enumerate(signal_lines):
+            state[(ticker, li)] = {
+                "buy_code": str(line.get("buy") or "").upper(),
+                "sell_code": str(line.get("sell") or "").upper(),
+                "allocated": False,
+                "cash_ticker": Decimal("0"),
+                "shares": 0,
+                "position_open": False,
+                "entry_price": None,
+                "entry_date": None,
+                "trade_count": 0,
+                "sum_g": Decimal("0"),
+                "tradable_days": 0,
+                "tradable_days_in_position": 0,
+                "prev_k": None,
+            }
+
+    def _ratio_tradable(_mtuple) -> tuple[bool, Decimal | None, Decimal | None]:
+        # Game mode: always tradable
+        return True, None, None
+
+    # Daily loop
+    for d in dates_sorted:
+        # SELL phase
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            price_by_date = tdata["price_by_date"]
+            if d not in price_by_date:
+                continue
+            close_d = _to_dec(price_by_date[d])
+            if close_d is None:
+                continue
+
+            day_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
+
+            G_today: Decimal | None = None
+
+            def _do_sell(reason: str):
+                nonlocal G_today
+                if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
+                    return
+                proceeds = Decimal(st["shares"]) * close_d
+                st["cash_ticker"] = st["cash_ticker"] + proceeds
+                entry = Decimal(st["entry_price"])
+                if entry != 0:
+                    G_today = (close_d - entry) / entry
+                st["trade_count"] += 1
+                st["sum_g"] += (G_today or Decimal("0"))
+                st["position_open"] = False
+                st["entry_price"] = None
+                st["shares"] = 0
+                st["entry_date"] = None
+                logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
+
+            sell_code = st["sell_code"]
+            if st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
+                k_today = (tdata["metrics"].get(d) or None)
+                k_prev = st.get("prev_k") or None
+                k1f_prev = _to_dec(_metric_val(k_prev, _M_K1F))
+                k1f_today = _to_dec(_metric_val(k_today, _M_K1F))
+                if _cross_down(k1f_prev, k1f_today, Decimal("0"), Decimal("0")):
+                    _do_sell("AUTO (B1f: K1f cross 0 down)")
+                else:
+                    candidates_prev: list[tuple[str, Decimal]] = []
+                    for key, idx in (("K1", _M_K1), ("K2", _M_K2), ("K3", _M_K3), ("K4", _M_K4)):
+                        v = _to_dec(_metric_val(k_prev, idx))
+                        if v is None or k1f_prev is None:
+                            continue
+                        if v > k1f_prev:
+                            candidates_prev.append((key, v))
+                    if candidates_prev and k1f_prev is not None and k1f_today is not None:
+                        target_key, _ = min(candidates_prev, key=lambda x: x[1])
+                        idx_map = {"K1": _M_K1, "K2": _M_K2, "K3": _M_K3, "K4": _M_K4}
+                        target_prev = _to_dec(_metric_val(k_prev, idx_map.get(target_key, _M_K1)))
+                        target_today = _to_dec(_metric_val(k_today, idx_map.get(target_key, _M_K1)))
+                        if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
+                            _do_sell(f"AUTO ({target_key}: K1f cross down)")
+
+            elif sell_code and sell_code in day_alerts and st["position_open"]:
+                _do_sell(f"signal {sell_code}")
+
+            # Keep prev_k for special sells
+            if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
+                st["prev_k"] = tdata["metrics"].get(d)
+
+        # BUY allocation phase
+        candidates_need_alloc = []
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            if d not in tdata["price_by_date"]:
+                continue
+            if st["position_open"]:
+                continue
+            buy_code = st["buy_code"]
+            if not buy_code:
+                continue
+            day_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            if buy_code not in day_alerts:
+                continue
+            tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
+            if not tradable:
+                continue
+
+            if not st["allocated"]:
+                if CP_infinite:
+                    st["allocated"] = True
+                    st["cash_ticker"] = CT
+                else:
+                    candidates_need_alloc.append((ratio_pct or Decimal("0"), ticker, li))
+
+        if (not CP_infinite) and candidates_need_alloc:
+            candidates_need_alloc.sort(key=lambda x: x[0], reverse=True)
+            for _ratio_pct, ticker, li in candidates_need_alloc:
+                if global_cash is None:
+                    break
+                if global_cash < CT or CT <= 0:
+                    break
+                st = state[(ticker, li)]
+                if st["allocated"]:
+                    continue
+                st["allocated"] = True
+                st["cash_ticker"] = CT
+                global_cash -= CT
+
+        # BUY execution
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            if d not in tdata["price_by_date"]:
+                continue
+            if st["position_open"]:
+                continue
+            buy_code = st["buy_code"]
+            if not buy_code:
+                continue
+            day_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            if buy_code not in day_alerts:
+                continue
+            tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
+            if not tradable:
+                continue
+            if not st["allocated"]:
+                continue
+            close_d = _to_dec(tdata["price_by_date"][d])
+            if close_d is None or close_d <= 0:
+                continue
+            cash = st["cash_ticker"]
+            shares = int((cash / close_d).to_integral_value(rounding="ROUND_FLOOR"))
+            if shares <= 0:
+                continue
+            st["shares"] = shares
+            st["cash_ticker"] = cash - (Decimal(shares) * close_d)
+            st["position_open"] = True
+            st["entry_price"] = str(close_d)
+            st["entry_date"] = d
+
+        # End-of-day counters
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            if d not in tdata["price_by_date"]:
+                continue
+            tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
+            if tradable:
+                st["tradable_days"] += 1
+                if st["position_open"] and st["shares"] > 0:
+                    st["tradable_days_in_position"] += 1
+
+    # Force close if requested
+    if backtest.close_positions_at_end and dates_sorted:
+        last_date = dates_sorted[-1]
+        for (ticker, li), st in state.items():
+            if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
+                continue
+            tdata = data_by_ticker.get(ticker)
+            if not tdata:
+                continue
+            close_d = _to_dec(tdata["price_by_date"].get(last_date))
+            if close_d is None:
+                continue
+            entry = Decimal(st["entry_price"])
+            G_today = None
+            if entry != 0:
+                G_today = (close_d - entry) / entry
+            st["trade_count"] += 1
+            st["sum_g"] += (G_today or Decimal("0"))
+            st["position_open"] = False
+            st["entry_price"] = None
+            st["shares"] = 0
+            st["entry_date"] = None
+
+    # Build finals
+    out: dict[str, dict[str, Any]] = {}
+    for ticker in data_by_ticker.keys():
+        tentry: dict[str, Any] = {"lines": []}
+        best_bmd: Decimal | None = None
+        for li, _line in enumerate(signal_lines):
+            st = state[(ticker, li)]
+            N = st["trade_count"]
+            BT = st["sum_g"]
+            tradable_days = int(st.get("tradable_days") or 0)
+            in_pos_days = int(st.get("tradable_days_in_position") or 0)
+            not_in_pos_days = max(0, tradable_days - in_pos_days)
+            BMJ = None if not_in_pos_days == 0 else (BT / Decimal(not_in_pos_days))
+            BMD = None if in_pos_days == 0 else (BT / Decimal(in_pos_days))
+            if BMD is not None:
+                if best_bmd is None or BMD > best_bmd:
+                    best_bmd = BMD
+            tentry["lines"].append(
+                {
+                    "line_index": li + 1,
+                    "buy": st["buy_code"],
+                    "sell": st["sell_code"],
+                    "final": {
+                        "N": N,
+                        "BT": str(BT),
+                        "TRADABLE_DAYS": tradable_days,
+                        "TRADABLE_DAYS_NOT_IN_POSITION": not_in_pos_days,
+                        "TRADABLE_DAYS_IN_POSITION_CLOSED": in_pos_days,
+                        "BMJ": None if BMJ is None else str(BMJ),
+                        "BMD": None if BMD is None else str(BMD),
+                    },
+                }
+            )
+        tentry["best_bmd"] = None if best_bmd is None else str(best_bmd)
+        out[ticker] = tentry
+    return out
