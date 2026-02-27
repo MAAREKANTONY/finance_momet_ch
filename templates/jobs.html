@@ -117,27 +117,18 @@
 </table>
 <div class="card" style="margin-top:12px;">
   <div class="row" style="justify-content:space-between; align-items:center;">
-    <div class="muted">
-      Page {{ page_obj.number }} / {{ page_obj.paginator.num_pages }} —
-      {{ page_obj.paginator.count }} jobs
-    </div>
-    <div style="display:flex; gap:8px; align-items:center;">
-      {% if page_obj.has_previous %}
-        <a class="btn" href="{% url 'jobs_page' %}?{% if query_string %}{{ query_string }}&{% endif %}page=1">⏮</a>
-        <a class="btn" href="{% url 'jobs_page' %}?{% if query_string %}{{ query_string }}&{% endif %}page={{ page_obj.previous_page_number }}">◀</a>
-      {% else %}
-        <span class="btn muted">⏮</span>
-        <span class="btn muted">◀</span>
-      {% endif %}
+  <div class="muted">
+    Affichage des {{ jobs|length }} derniers jobs{% if status %} (status={{ status }}){% endif %}{% if job_type %} (type={{ job_type }}){% endif %}.
+  </div>
 
-      {% if page_obj.has_next %}
-        <a class="btn" href="{% url 'jobs_page' %}?{% if query_string %}{{ query_string }}&{% endif %}page={{ page_obj.next_page_number }}">▶</a>
-        <a class="btn" href="{% url 'jobs_page' %}?{% if query_string %}{{ query_string }}&{% endif %}page={{ page_obj.paginator.num_pages }}">⏭</a>
-      {% else %}
-        <span class="btn muted">▶</span>
-        <span class="btn muted">⏭</span>
-      {% endif %}
-    </div>
+  <div style="display:flex; gap:8px; align-items:center;">
+    {% if has_next and next_cursor %}
+      <a class="btn" href="{% url 'jobs_page' %}?{% if query_string %}{{ query_string }}&{% endif %}cursor={{ next_cursor }}">Plus anciens ▶</a>
+    {% else %}
+      <span class="btn muted">Plus anciens ▶</span>
+    {% endif %}
+    <a class="btn" href="{% url 'jobs_page' %}?{% if query_string %}{{ query_string }}&{% endif %}cursor=0">Derniers ⟳</a>
   </div>
 </div>
+
 {% endblock %}

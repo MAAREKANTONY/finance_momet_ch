@@ -1806,9 +1806,9 @@ def logs_page(request):
 def jobs_page(request):
     """List background processing jobs (pending/running/done/failed).
 
-    In production this table can get large. We paginate the listing and keep DB work bounded.
+    This page must stay fast in production even with many jobs.
+    We use keyset pagination (by id) and defer large text fields.
     """
-    from django.core.paginator import Paginator
     from django.db.models import Count
 
     status = (request.GET.get("status") or "").strip().upper()
@@ -1820,36 +1820,46 @@ def jobs_page(request):
     if job_type:
         qs = qs.filter(job_type=job_type)
 
-        # Counters for quick navigation can be expensive on very large tables.
-    # Default: do not compute counts unless explicitly requested.
+    # Optional counters (can be expensive). Disabled by default.
     show_counts = request.GET.get("show_counts") == "1"
     counts = {k: 0 for k in ["PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED", "KILLED"]}
     if show_counts:
         counts_qs = ProcessingJob.objects.values("status").annotate(c=Count("id"))
         for row in counts_qs:
-            counts[row["status"]] = row["c"]
+            if row["status"] in counts:
+                counts[row["status"]] = row["c"]
 
-    # Pagination
+    # Keyset pagination (avoid OFFSET + COUNT(*))
     try:
         page_size = int(request.GET.get("page_size") or 50)
     except ValueError:
-        page_size = 100
+        page_size = 50
     page_size = max(25, min(page_size, 200))
 
-    paginator = Paginator(qs.order_by("-created_at"), page_size)
-    page_obj = paginator.get_page(request.GET.get("page") or 1)
+    try:
+        cursor = int(request.GET.get("cursor") or 0)
+    except ValueError:
+        cursor = 0
 
-    # Preserve filters across pagination links
+    qs = qs.order_by("-id")
+    if cursor > 0:
+        qs = qs.filter(id__lt=cursor)
+
+    rows = list(qs[: page_size + 1])
+    has_next = len(rows) > page_size
+    jobs = rows[:page_size]
+    next_cursor = jobs[-1].id if (has_next and jobs) else None
+
+    # Preserve filters across links
     q = request.GET.copy()
-    q.pop("page", None)
+    q.pop("cursor", None)
     query_string = q.urlencode()
 
     return render(
         request,
         "jobs.html",
         {
-            "page_obj": page_obj,
-            "jobs": page_obj.object_list,
+            "jobs": jobs,
             "status": status,
             "job_type": job_type,
             "counts": counts,
@@ -1857,10 +1867,11 @@ def jobs_page(request):
             "page_size": page_size,
             "query_string": query_string,
             "show_counts": show_counts,
-            "page_sizes": [25, 50, 100, 200, 500],
+            "page_sizes": [25, 50, 100, 200],
+            "has_next": has_next,
+            "next_cursor": next_cursor,
         },
     )
-
 
 
 @login_required
@@ -3587,3 +3598,15 @@ def trigger_page(request: HttpRequest):
                 "alert_defs": alert_defs,
             },
         )
+
+
+@login_required
+def backtest_debug(request, pk: int):
+    """On-demand view for heavy debug JSON (kept out of main backtest page for performance)."""
+    import json
+    bt = get_object_or_404(Backtest, pk=pk)
+    try:
+        results_pretty = json.dumps(bt.results or {}, ensure_ascii=False, indent=2, default=str)
+    except Exception:
+        results_pretty = str(bt.results)
+    return render(request, "backtest_debug.html", {"bt": bt, "results_pretty": results_pretty})

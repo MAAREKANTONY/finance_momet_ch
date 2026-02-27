@@ -188,7 +188,10 @@
 {% if bt.status == 'DONE' and bt.results %}
   <div class="card">
     <strong>Synthèse</strong>
-    <pre style="white-space:pre-wrap; margin-top:8px;">{{ bt.results|safe }}</pre>
+    <div style="margin-top:8px; display:flex; gap:8px; align-items:center;">
+      <span class="muted">Résultats JSON masqués pour performance.</span>
+      <a class="btn" href="{% url 'backtest_debug' bt.id %}" target="_blank">Détail JSON</a>
+    </div>
   </div>
 
   {% if bt.results.prep %}

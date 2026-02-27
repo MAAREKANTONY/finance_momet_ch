@@ -86,6 +86,7 @@ urlpatterns = [
     path("backtests/new/", views.backtest_create, name="backtest_create"),
     path("backtests/<int:pk>/edit/", views.backtest_update, name="backtest_update"),
     path("backtests/<int:pk>/", views.backtest_detail, name="backtest_detail"),
+    path("backtests/<int:pk>/debug/", views.backtest_debug, name="backtest_debug"),
     path("backtests/<int:pk>/delete/", views.backtest_delete, name="backtest_delete"),
     path("backtests/<int:pk>/fetch_data/", views.backtest_fetch_data, name="backtest_fetch_data"),
     path("backtests/<int:pk>/compute_metrics/", views.backtest_compute_metrics, name="backtest_compute_metrics"),
