@@ -93,8 +93,7 @@
           {% endif %}
         </td>
         <td>
-          {% if j.message %}{{ j.message }}{% endif %}
-          {% if j.error %}<div class="muted" style="color:#b00;">{{ j.error }}</div>{% endif %}
+          <a class="btn" style="padding:4px 8px;" href="{% url 'job_detail' j.id %}">Détail</a>
         </td>
         <td style="white-space:nowrap;">
           {% if j.status == "PENDING" or j.status == "RUNNING" %}

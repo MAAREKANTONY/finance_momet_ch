@@ -10,6 +10,7 @@ from django.db.models import Max, Q
 from django.db.models.deletion import ProtectedError
 from django.views.decorators.http import require_POST, require_GET, require_http_methods
 from django.utils import timezone
+
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font, Alignment
@@ -1813,7 +1814,7 @@ def jobs_page(request):
     status = (request.GET.get("status") or "").strip().upper()
     job_type = (request.GET.get("type") or "").strip().upper()
 
-    qs = ProcessingJob.objects.select_related("backtest", "scenario", "created_by")
+    qs = ProcessingJob.objects.select_related("backtest", "scenario", "created_by").defer("message", "error")
     if status in {"PENDING", "RUNNING", "DONE", "FAILED", "CANCELLED", "KILLED"}:
         qs = qs.filter(status=status)
     if job_type:
@@ -1830,10 +1831,10 @@ def jobs_page(request):
 
     # Pagination
     try:
-        page_size = int(request.GET.get("page_size") or 100)
+        page_size = int(request.GET.get("page_size") or 50)
     except ValueError:
         page_size = 100
-    page_size = max(25, min(page_size, 500))
+    page_size = max(25, min(page_size, 200))
 
     paginator = Paginator(qs.order_by("-created_at"), page_size)
     page_obj = paginator.get_page(request.GET.get("page") or 1)
@@ -1861,6 +1862,15 @@ def jobs_page(request):
     )
 
 
+
+@login_required
+def job_detail(request, pk: int):
+    """Show a single ProcessingJob with full message/error.
+
+    We keep /jobs list fast by deferring large text fields; this page loads them on demand.
+    """
+    job = get_object_or_404(ProcessingJob.objects.select_related("backtest", "scenario", "created_by"), pk=pk)
+    return render(request, "job_detail.html", {"job": job})
 
 @login_required
 def job_cancel(request, pk: int):

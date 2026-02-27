@@ -70,6 +70,13 @@ def compute_full_for_symbol_scenario(
     k2j = int(getattr(scenario, "k2j", 10) or 10)
     cr = D(getattr(scenario, "cr", D("10")))
 
+    # --- Kf3 floating line parameters (V7.x, additive) ---
+    n5f3 = int(getattr(scenario, "n5f3", 100) or 100)
+    crf3 = D(getattr(scenario, "crf3", D("10")))
+    nampL3 = int(getattr(scenario, "nampL3", 100) or 100)
+    baseL3 = D(getattr(scenario, "baseL3", D("0.02")))
+    periodeL3 = int(getattr(scenario, "periodeL3", 100) or 100)
+
     # --- V line parameters (V5.2.37) ---
     m_v = int(getattr(scenario, "m_v", 20) or 20)
     m1_v = max(1, int(m_v / 2))
@@ -95,6 +102,12 @@ def compute_full_for_symbol_scenario(
     n5_half = max(1, (n5 // 2)) if n5 and n5 > 0 else 1
     p_for_k2f = deque(maxlen=(n5 + n5_half - 1) if n5 and n5 > 0 else 1)  # store P for Mf1/Xf1 windows
 
+    # Kf3 rolling windows
+    n5f3_half = max(1, (n5f3 // 2)) if n5f3 and n5f3 > 0 else 1
+    p_for_kf3 = deque(maxlen=(n5f3 + n5f3_half) if n5f3 and n5f3 > 0 else 1)  # newest -> oldest
+    deltas_for_kf3 = deque(maxlen=5000)  # signed deltas (ratio)
+    abs_for_kf3 = deque(maxlen=5000)  # abs(deltas)
+
     # V line rolling windows
     highs_for_v = deque(maxlen=m_v if m_v and m_v > 0 else 1)  # daily highs
     vpre_for_v = deque(maxlen=m1_v if m1_v and m1_v > 0 else 1)  # V_pre values
@@ -104,6 +117,7 @@ def compute_full_for_symbol_scenario(
     prev_high = None
     prev_vline = None
     prev_k = None  # (K1,K2f,K1f,K2,K3,K4) for alert crossing
+    prev_kf3 = None
 
     metrics: List[DailyMetric] = []
     alerts: List[Alert] = []
@@ -130,6 +144,9 @@ def compute_full_for_symbol_scenario(
         # Keep P history for K2f Mf1/Xf1 computation (newest first)
         p_for_k2f.appendleft(P)
 
+        # Keep P history for Kf3 (newest first)
+        p_for_kf3.appendleft(P)
+
         # --- K2f daily variation based on P (study price) ---
         daily_var = None
         if prev_P is not None and prev_P != 0:
@@ -138,9 +155,15 @@ def compute_full_for_symbol_scenario(
         if daily_var is not None and n5 and n5 > 0:
             var_for_k2f.appendleft(daily_var)
 
+        # Kf3 deltas history (signed + abs)
+        if daily_var is not None:
+            deltas_for_kf3.appendleft(daily_var)
+            abs_for_kf3.appendleft(abs(daily_var))
+
         # Defaults
         M = X = M1 = X1 = T = Q = S = None
         K1 = K1f = K2f_pre = K2f = K2 = K3 = K4 = None
+        Kf3 = None
         diff_slope = None
         V = slope_P = sum_pos_P = nb_pos_P = ratio_P = amp_h = None
 
@@ -262,6 +285,60 @@ def compute_full_for_symbol_scenario(
                         if len(pre_for_k2f) >= k2j:
                             K2f = sum(list(pre_for_k2f)[:k2j]) / D(k2j)
 
+            # --- Kf3 floating line (V7.x) ---
+            try:
+                if crf3 is None:
+                    crf3 = D("10")
+                n5f3_eff = max(1, int(n5f3 or 1))
+                n5f3_half_eff = max(1, int(n5f3_eff // 2))
+                namp_eff = max(1, int(nampL3 or 1))
+                periode_nom = max(1, int(periodeL3 or 1))
+
+                # amp from last namp_eff abs deltas (newest first)
+                abs_list = list(abs_for_kf3)
+                abs_slice = abs_list[:namp_eff] if len(abs_list) >= namp_eff else abs_list
+                amp = (sum(abs_slice) / D(len(abs_slice))) if abs_slice else None
+
+                if amp is None or amp <= 0 or baseL3 is None or baseL3 <= 0:
+                    periode_dyn = D(periode_nom)
+                else:
+                    k = amp / baseL3
+                    periode_dyn = (D(periode_nom) / k) if k not in (None, 0) else D(periode_nom)
+
+                try:
+                    periode_int = int(Decimal(periode_dyn).to_integral_value(rounding="ROUND_HALF_UP"))
+                except Exception:
+                    try:
+                        periode_int = int(round(float(periode_dyn)))
+                    except Exception:
+                        periode_int = periode_nom
+                periode_int = max(1, min(5000, int(periode_int)))
+
+                # slope_deg mean of signed deltas over periode_int (newest first)
+                d_list = list(deltas_for_kf3)
+                d_slice = d_list[:periode_int] if len(d_list) >= periode_int else d_list
+                slope_deg_f3 = (sum(d_slice) / D(len(d_slice))) if d_slice else None
+
+                # Mf1/Xf1 windows using newest-first P list
+                if slope_deg_f3 is not None and len(p_for_kf3) >= (n5f3_eff + n5f3_half_eff) and e not in (None, 0):
+                    p_list = list(p_for_kf3)
+                    max_list = []
+                    min_list = []
+                    for i in range(n5f3_half_eff):
+                        window = p_list[i : i + n5f3_eff]
+                        if len(window) != n5f3_eff:
+                            break
+                        max_list.append(max(window))
+                        min_list.append(min(window))
+                    if len(max_list) == n5f3_half_eff and len(min_list) == n5f3_half_eff:
+                        Mf1_f3 = sum(max_list) / D(len(max_list))
+                        Xf1_f3 = sum(min_list) / D(len(min_list))
+                        Ef_f3 = Mf1_f3 - Xf1_f3
+                        FC_f3 = slope_deg_f3 * crf3 * (Ef_f3 / e)
+                        Kf3 = Mf1_f3 - FC_f3
+            except Exception:
+                Kf3 = None
+
         # Persist metric
         metrics.append(
             DailyMetric(
@@ -280,6 +357,7 @@ def compute_full_for_symbol_scenario(
                 K1f=K1f,
                 K2f=K2f,
                 K2f_pre=K2f_pre,
+                Kf3=Kf3,
                 V_pre=V_pre_line,
                 V_line=V_line_line,
                 K2=K2,
@@ -300,7 +378,7 @@ def compute_full_for_symbol_scenario(
         # Signals are defined as strict crossings around 0 for the indicator series.
         # For indicators defined as K = P - Line, this is equivalent to P crossing that Line.
         if prev_k is not None and P is not None:
-            prev_P, prev_M1, prev_X1, prev_Q, prev_S, prev_K1, prev_K1f, prev_K2f = prev_k
+            prev_P, prev_M1, prev_X1, prev_Q, prev_S, prev_K1, prev_K1f, prev_K2f, prev_Kf3 = prev_k
 
             def cross0(prev_x, cur_x, pos_code, neg_code):
                 prev_x = D(prev_x)
@@ -349,6 +427,27 @@ def compute_full_for_symbol_scenario(
             except Exception:
                 pass
 
+            # AF3/BF3 : P crosses the Kf3 price line
+            try:
+                prev_p = D(prev_P)
+                cur_p = D(P)
+                prev_kf3 = D(prev_Kf3)
+                cur_kf3 = D(Kf3)
+                cross_up = (
+                    prev_p is not None and cur_p is not None and prev_kf3 is not None and cur_kf3 is not None
+                    and (prev_p < prev_kf3) and (cur_p > cur_kf3)
+                )
+                cross_down = (
+                    prev_p is not None and cur_p is not None and prev_kf3 is not None and cur_kf3 is not None
+                    and (prev_p > prev_kf3) and (cur_p < cur_kf3)
+                )
+                if cross_up:
+                    current_alerts.append("AF3")
+                if cross_down:
+                    current_alerts.append("BF3")
+            except Exception:
+                pass
+
         # V line alerts (I1/J1): High crosses V_line
         try:
             if prev_high is not None and prev_vline is not None and H is not None and V_line_line is not None:
@@ -372,7 +471,7 @@ def compute_full_for_symbol_scenario(
 
         # Keep what we need for next-day crossings.
         if P is not None and M1 is not None and X1 is not None and Q is not None and S is not None:
-            prev_k = (P, M1, X1, Q, S, K1, K1f, K2f)
+            prev_k = (P, M1, X1, Q, S, K1, K1f, K2f, Kf3)
 
         # Update V line previous values
         if H is not None:

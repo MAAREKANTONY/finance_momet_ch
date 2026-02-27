@@ -17,6 +17,10 @@ BACKTEST_SIGNAL_CHOICES = [
     ("A2f", "A2f (P croise K2f de bas en haut)"),
     ("B2f", "B2f (P croise K2f de haut en bas)"),
 
+    # Kf3 (floating price line 3)
+    ("AF3", "AF3 (P croise Kf3 de bas en haut)"),
+    ("BF3", "BF3 (P croise Kf3 de haut en bas)"),
+
     # V line (rolling max-high then rolling mean)
     ("I1", "I1 (High croise V de bas en haut)"),
     ("J1", "J1 (High croise V de haut en bas)"),
@@ -112,6 +116,12 @@ class ScenarioForm(forms.ModelForm):
             "n5",
             "k2j",
             "cr",
+            # Kf3 params
+            "n5f3",
+            "crf3",
+            "nampL3",
+            "baseL3",
+            "periodeL3",
             "m_v",
             "history_years",
             "active",
@@ -461,6 +471,12 @@ class GameScenarioForm(forms.ModelForm):
             "n5",
             "k2j",
             "cr",
+            # Kf3 params
+            "n5f3",
+            "crf3",
+            "nampL3",
+            "baseL3",
+            "periodeL3",
             "m_v",
             # Backtest params
             "capital_total",

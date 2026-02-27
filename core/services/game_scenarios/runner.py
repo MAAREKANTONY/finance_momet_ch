@@ -38,6 +38,12 @@ def _sync_engine_scenario(game: GameScenario) -> Scenario:
         "n5",
         "k2j",
         "cr",
+        # Kf3 (floating line 3)
+        "n5f3",
+        "crf3",
+        "nampL3",
+        "baseL3",
+        "periodeL3",
         "m_v",
     ]:
         setattr(sc, f, getattr(game, f))

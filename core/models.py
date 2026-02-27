@@ -83,6 +83,39 @@ class Scenario(models.Model):
         help_text="K2f: indice de correction CR (défaut 10).",
     )
 
+    # --- Kf3 floating line parameters (V7.x) ---
+    # Equivalent of N5/CR but for floating line 3.
+    n5f3 = models.PositiveIntegerField(
+        default=100,
+        help_text="Kf3: fenêtre N5f3 (jours) pour max/min flottants (défaut 100).",
+    )
+    crf3 = models.DecimalField(
+        max_digits=10,
+        decimal_places=4,
+        default=Decimal('10'),
+        help_text="Kf3: indice de correction CRf3 (défaut 10).",
+    )
+
+    # Dynamic slope window (L3):
+    # amp(t) = mean over NampL3 of abs((P-P-1)/P-1)
+    # k(t) = amp/base
+    # periode(t) = periodeL3 / k
+    nampL3 = models.PositiveIntegerField(
+        default=100,
+        help_text="Kf3: NampL3 (jours) pour la moyenne des variations absolues (défaut 100).",
+    )
+    baseL3 = models.DecimalField(
+        max_digits=12,
+        decimal_places=6,
+        default=Decimal('0.02'),
+        validators=[MinValueValidator(0.000001)],
+        help_text="Kf3: base (défaut 0.02).",
+    )
+    periodeL3 = models.PositiveIntegerField(
+        default=100,
+        help_text="Kf3: période nominale (défaut 100).",
+    )
+
     # --- V line parameters (V5.2.37) ---
     # M_V: window (in days) used for the rolling max of daily highs.
     # Default: 20 days.
@@ -287,6 +320,18 @@ class GameScenario(models.Model):
     k2j = models.PositiveIntegerField(default=10)
     cr = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("10"))
     m_v = models.PositiveIntegerField(default=20)
+
+    # --- Kf3 parameters (same defaults as Scenario) ---
+    n5f3 = models.PositiveIntegerField(default=100)
+    crf3 = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal("10"))
+    nampL3 = models.PositiveIntegerField(default=100)
+    baseL3 = models.DecimalField(
+        max_digits=12,
+        decimal_places=6,
+        default=Decimal("0.02"),
+        validators=[MinValueValidator(Decimal("0.000001"))],
+    )
+    periodeL3 = models.PositiveIntegerField(default=100)
 
     # Internal scenario used to persist DailyMetric/Alert.
     engine_scenario = models.OneToOneField(
@@ -531,6 +576,9 @@ class DailyMetric(models.Model):
     # K2f_pre: pre-line before moving average (step 7 in spec). Stored to enable exact
     # rolling mean computation in incremental mode without recomputing history.
     K2f_pre = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+
+    # Kf3: floating line 3 (price line)
+    Kf3 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K2 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K3 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K4 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)

@@ -22,6 +22,13 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     k2j = int(getattr(scenario, "k2j", 10) or 10)
     cr = D(getattr(scenario, "cr", D("10")))
 
+    # Kf3 parameters (floating line 3)
+    n5f3 = int(getattr(scenario, "n5f3", 100) or 100)
+    crf3 = D(getattr(scenario, "crf3", D("10")))
+    nampL3 = int(getattr(scenario, "nampL3", 100) or 100)
+    baseL3 = D(getattr(scenario, "baseL3", D("0.02")))
+    periodeL3 = int(getattr(scenario, "periodeL3", 100) or 100)
+
     # V line parameters (V5.2.37)
     m_v = int(getattr(scenario, "m_v", 20) or 20)
     m1_v = max(1, int(m_v / 2))
@@ -351,6 +358,103 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
         V_pre = None
         V_line = None
 
+    # --- Kf3 floating line (V7.x) ---
+    # Additive only: does not change legacy formulas.
+    #
+    # Implementation details:
+    # - amp(t) = mean over NampL3 of abs(delta)
+    # - k(t) = amp/base
+    # - periode(t) = periodeL3 / k
+    # - periode is rounded (HALF_UP) and clamped to [1..5000]
+    # - if amp<=0 or base<=0 => periode = periodeL3
+    # - slope_deg = mean over `periode` of signed delta
+    # - Mf1/Xf1: same construction as K2f but using N5f3 (and half window)
+    # - Kf3 = Mf1 - slope_deg * CRf3 * (Ef/e)
+    Kf3 = None
+    try:
+        n5f3_eff = max(1, int(n5f3 or 1))
+        n5f3_half = max(1, n5f3_eff // 2)
+        namp_eff = max(1, int(nampL3 or 1))
+        periode_nom = max(1, int(periodeL3 or 1))
+        if crf3 is None:
+            crf3 = D("10")
+
+        # Need enough P history for Mf1/Xf1 and amp/slope:
+        # - Mf1/Xf1 requires windows of size N5f3 for the last N5f3/2 days => N5f3 + (N5f3/2) P values incl. today
+        # - amp needs NampL3 deltas => NampL3+1 P values incl. today
+        need_p = max(n5f3_eff + n5f3_half, namp_eff + 1)
+
+        prior_p_desc = list(
+            DailyMetric.objects.filter(symbol=symbol, scenario=scenario, date__lt=trading_date, P__isnull=False)
+            .order_by("-date")
+            .values_list("P", flat=True)[: max(0, need_p - 1)]
+        )
+        p_hist = list(reversed([D(x) for x in prior_p_desc if D(x) is not None])) + [D(P)]
+
+        if len(p_hist) >= 2 and e not in (None, 0) and baseL3 is not None:
+            # Build deltas for available history
+            deltas = []
+            ok = True
+            for i in range(1, len(p_hist)):
+                p0 = D(p_hist[i - 1])
+                p1 = D(p_hist[i])
+                if p0 in (None, 0) or p1 is None:
+                    ok = False
+                    break
+                deltas.append((p1 - p0) / p0)
+
+            if ok and deltas:
+                # amp over last namp_eff deltas (absolute)
+                amp_slice = deltas[-namp_eff:] if len(deltas) >= namp_eff else deltas
+                amp = sum([abs(D(x)) for x in amp_slice]) / D(len(amp_slice))
+
+                # periode dynamic
+                if amp is None or amp <= 0 or baseL3 <= 0:
+                    periode_dyn = D(periode_nom)
+                else:
+                    k = amp / baseL3
+                    periode_dyn = (D(periode_nom) / k) if k not in (None, 0) else D(periode_nom)
+
+                # rounding + clamp
+                try:
+                    periode_int = int(Decimal(periode_dyn).to_integral_value(rounding="ROUND_HALF_UP"))
+                except Exception:
+                    try:
+                        periode_int = int(round(float(periode_dyn)))
+                    except Exception:
+                        periode_int = periode_nom
+
+                periode_int = max(1, min(5000, int(periode_int)))
+
+                # slope_deg = mean over `periode_int` signed deltas
+                slope_slice = deltas[-periode_int:] if len(deltas) >= periode_int else deltas
+                slope_deg_f3 = sum([D(x) for x in slope_slice]) / D(len(slope_slice))
+
+                # Mf1/Xf1 over last n5f3_half days of rolling max/min over N5f3
+                if len(p_hist) >= (n5f3_eff + n5f3_half):
+                    max_list = []
+                    min_list = []
+                    # For each day u in the last n5f3_half days (including today), compute max/min over last n5f3_eff P values.
+                    for j in range(n5f3_half):
+                        end_idx = len(p_hist) - j  # exclusive
+                        start_idx = end_idx - n5f3_eff
+                        if start_idx < 0:
+                            break
+                        window = p_hist[start_idx:end_idx]
+                        if len(window) != n5f3_eff:
+                            break
+                        max_list.append(max(window))
+                        min_list.append(min(window))
+
+                    if len(max_list) == n5f3_half and len(min_list) == n5f3_half:
+                        Mf1_f3 = sum(max_list) / D(len(max_list))
+                        Xf1_f3 = sum(min_list) / D(len(min_list))
+                        Ef_f3 = Mf1_f3 - Xf1_f3
+                        FC_f3 = slope_deg_f3 * crf3 * (Ef_f3 / e)
+                        Kf3 = Mf1_f3 - FC_f3
+    except Exception:
+        Kf3 = None
+
     # Persist all indicators, including K1f (needed for A1f/B1f alerts + exports)
     metric, _ = DailyMetric.objects.update_or_create(
         symbol=symbol,
@@ -369,6 +473,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             "K1f": K1f,
             "K2f": K2f,
             "K2f_pre": K2f_pre,
+            "Kf3": Kf3,
             "V_pre": V_pre,
             "V_line": V_line,
             "K2": K2,
@@ -444,6 +549,28 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             alerts.append("A2f")
         if cross_down:
             alerts.append("B2f")
+    except Exception:
+        pass
+
+    # Kf3 alerts (AF3/BF3) based on P crossing the Kf3 PRICE line
+    try:
+        prev_p = D(getattr(prev_metric, "P", None))
+        cur_p = D(getattr(metric, "P", None))
+        prev_kf3 = D(getattr(prev_metric, "Kf3", None))
+        cur_kf3 = D(getattr(metric, "Kf3", None))
+
+        cross_up = (
+            prev_p is not None and cur_p is not None and prev_kf3 is not None and cur_kf3 is not None
+            and (prev_p < prev_kf3) and (cur_p > cur_kf3)
+        )
+        cross_down = (
+            prev_p is not None and cur_p is not None and prev_kf3 is not None and cur_kf3 is not None
+            and (prev_p > prev_kf3) and (cur_p < cur_kf3)
+        )
+        if cross_up:
+            alerts.append("AF3")
+        if cross_down:
+            alerts.append("BF3")
     except Exception:
         pass
 

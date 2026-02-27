@@ -171,6 +171,9 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
             str(s.n1), str(s.n2), str(s.n3), str(s.n4),
             # K2f parameters (additive but must participate in the hash to keep metrics consistent)
             str(getattr(s, 'n5', None)), str(getattr(s, 'k2j', None)), str(getattr(s, 'cr', None)),
+            # Kf3 parameters
+            str(getattr(s, 'n5f3', None)), str(getattr(s, 'crf3', None)),
+            str(getattr(s, 'nampL3', None)), str(getattr(s, 'baseL3', None)), str(getattr(s, 'periodeL3', None)),
         ])
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
@@ -191,7 +194,13 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
     n5 = int(getattr(scenario, 'n5', 0) or 0)
     k2j = int(getattr(scenario, 'k2j', 0) or 0)
     # K2f requires enough history to compute N5 variations + K2J smoothing.
-    lookback_trading = max((n1 + n2 + 5), (n3 + n4 + 5), (n1 + 5), (n5 + k2j + 5), 20)
+    n5f3 = int(getattr(scenario, 'n5f3', 0) or 0)
+    nampL3 = int(getattr(scenario, 'nampL3', 0) or 0)
+    periodeL3 = int(getattr(scenario, 'periodeL3', 0) or 0)
+    # Kf3 needs Mf1/Xf1: n5f3 + n5f3/2, plus amp window, plus slope window (can expand but we clamp to 5000).
+    lookback_kf3 = max((n5f3 + max(1, n5f3 // 2) + 5) if n5f3 else 0, (nampL3 + 5) if nampL3 else 0, (periodeL3 + 5) if periodeL3 else 0)
+
+    lookback_trading = max((n1 + n2 + 5), (n3 + n4 + 5), (n1 + 5), (n5 + k2j + 5), lookback_kf3, 20)
     buffer_days = lookback_trading * 2 + 10
 
     computed_rows = 0
