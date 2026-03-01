@@ -654,7 +654,7 @@ def send_alert_definition_job_task(self, *, alert_definition_id: int, user_id=No
         raise
 @shared_task
 def check_and_send_scheduled_alerts_task():
-    """Runs every minute.
+    """Runs every hour (minute=0), with Redis lock to prevent overlaps.
 
     Legacy behavior (NO-REGRESSION):
     - Uses `EmailSettings` to send ONE recap email for all scenarios.
@@ -663,6 +663,20 @@ def check_and_send_scheduled_alerts_task():
     - Also evaluates user-defined `AlertDefinition` rules (scenarios + lines + recipients + schedule).
     """
     from django.utils import timezone as dj_tz
+    # --- Anti-overlap lock (prevents queue backlog if beat fires while a previous run is still running) ---
+    acquired_lock = False
+    try:
+        from django.conf import settings as dj_settings
+        import redis
+        r = redis.Redis.from_url(dj_settings.CELERY_BROKER_URL)
+        # Keep the lock slightly below the schedule interval (1h) to tolerate crashes without permanent lock.
+        acquired_lock = bool(r.set('lock:check_scheduled_alerts', '1', nx=True, ex=55 * 60))
+    except Exception:
+        # If Redis lock fails, we proceed (no regression).
+        acquired_lock = True
+    if not acquired_lock:
+        return 'locked_skip'
+
     email_cfg = EmailSettings.get_solo()
 
     try:

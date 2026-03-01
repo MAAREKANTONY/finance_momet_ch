@@ -131,7 +131,7 @@ EMAIL_HOUR = int(os.getenv("EMAIL_HOUR", "23"))
 CELERY_BEAT_SCHEDULE = {
     "check-scheduled-alerts": {
         "task": "core.tasks.check_and_send_scheduled_alerts_task",
-        "schedule": crontab(minute="*"),
+        "schedule": crontab(minute=0),
     },
     "fetch-daily-bars": {"task": "core.tasks.fetch_daily_bars_task", "schedule": crontab(hour=FETCH_BARS_HOUR, minute=5)},
     "compute-metrics": {"task": "core.tasks.compute_metrics_task", "schedule": crontab(hour=COMPUTE_HOUR, minute=15)},
