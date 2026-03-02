@@ -140,6 +140,7 @@ CELERY_BEAT_SCHEDULE = {
     "fetch-daily-bars": {"task": "core.tasks.fetch_daily_bars_task", "schedule": crontab(hour=FETCH_BARS_HOUR, minute=5)},
     "compute-metrics": {"task": "core.tasks.compute_metrics_task", "schedule": crontab(hour=COMPUTE_HOUR, minute=15)},
     "send-daily-alerts": {"task": "core.tasks.send_daily_alerts_task", "schedule": crontab(hour=EMAIL_HOUR, minute=25)},
+    "daily-system-refresh": {"task": "core.tasks.daily_system_refresh_job_task", "schedule": crontab(hour=DAILY_REFRESH_HOUR, minute=DAILY_REFRESH_MINUTE)},
 }
 
 # Cookie security (recommended in prod; keep enabled even if DEBUG=0)
