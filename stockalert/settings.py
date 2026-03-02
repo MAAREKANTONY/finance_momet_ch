@@ -128,6 +128,10 @@ FETCH_BARS_HOUR = int(os.getenv("FETCH_BARS_HOUR", "23"))
 COMPUTE_HOUR = int(os.getenv("COMPUTE_HOUR", "23"))
 EMAIL_HOUR = int(os.getenv("EMAIL_HOUR", "23"))
 
+# Daily batch (bars fetch + metrics compute + games tables)
+DAILY_REFRESH_HOUR = int(os.getenv("DAILY_REFRESH_HOUR", "8"))
+DAILY_REFRESH_MINUTE = int(os.getenv("DAILY_REFRESH_MINUTE", "0"))
+
 CELERY_BEAT_SCHEDULE = {
     "check-scheduled-alerts": {
         "task": "core.tasks.check_and_send_scheduled_alerts_task",

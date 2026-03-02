@@ -6,7 +6,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from core.models import Backtest, DailyBar, GameScenario, Scenario, Symbol
+from core.models import Backtest, DailyBar, GameScenario, Scenario, Symbol, ProcessingJob
 from core.services.backtesting.engine import run_backtest_kpi_only
 from core.services.metrics_depth import check_metrics_depth
 
@@ -61,7 +61,40 @@ def _sync_engine_scenario(game: GameScenario) -> Scenario:
     return sc
 
 
-def run_game_scenario_now(game_id: int, *, force_fetch: bool = False, force_recompute: bool = False) -> dict:
+class GameJobCancelled(Exception):
+    pass
+
+
+class GameJobKilled(Exception):
+    pass
+
+
+def _job_checkpoint(job: ProcessingJob | None) -> None:
+    """Cooperative cancellation + heartbeat for Game runs."""
+    if job is None:
+        return
+    try:
+        job.refresh_from_db(fields=["cancel_requested", "kill_requested", "status"])
+        if job.kill_requested:
+            raise GameJobKilled("kill requested")
+        if job.cancel_requested:
+            raise GameJobCancelled("cancel requested")
+        ProcessingJob.objects.filter(id=job.id).update(heartbeat_at=timezone.now())
+    except (GameJobCancelled, GameJobKilled):
+        raise
+    except Exception:
+        # If the checkpoint failed for any other reason, do not block the run.
+        return
+
+
+def run_game_scenario_now(
+    game_id: int,
+    *,
+    force_fetch: bool = False,
+    force_recompute: bool = False,
+    skip_metrics: bool = False,
+    job: ProcessingJob | None = None,
+) -> dict:
     """Run a game scenario end-to-end.
 
     Steps:
@@ -71,6 +104,8 @@ def run_game_scenario_now(game_id: int, *, force_fetch: bool = False, force_reco
     - Run KPI-only backtest and store today's snapshot
     """
     game = GameScenario.objects.get(id=game_id)
+
+    _job_checkpoint(job)
 
     if not game.active:
         game.last_run_at = timezone.now()
@@ -88,12 +123,14 @@ def run_game_scenario_now(game_id: int, *, force_fetch: bool = False, force_reco
 
     symbols = Symbol.objects.filter(active=True).order_by("ticker")
 
+    _job_checkpoint(job)
+
     # 1) Fetch bars (if necessary)
     from core.tasks import _fetch_daily_bars_for_symbols, _compute_metrics_for_scenario
 
     # Outputsize heuristic: study window + buffer
     outputsize = min(5000, int(game.study_days or 1000) + 400)
-    _fetch_daily_bars_for_symbols(symbol_qs=symbols, outputsize=outputsize, force_full=bool(force_fetch), job=None)
+    _fetch_daily_bars_for_symbols(symbol_qs=symbols, outputsize=outputsize, force_full=bool(force_fetch), job=job)
 
     # 2) Determine date window
     end_d = DailyBar.objects.order_by("-date").values_list("date", flat=True).first() or date.today()
@@ -111,8 +148,13 @@ def run_game_scenario_now(game_id: int, *, force_fetch: bool = False, force_reco
     auto_force = depth.needs_full_recompute()
     do_full = bool(force_recompute) or bool(auto_force)
 
+    _job_checkpoint(job)
+
     # 4) Compute metrics/alerts
-    _compute_metrics_for_scenario(symbols_qs=symbols, scenario=scenario, recompute_all=bool(do_full), job=None)
+    # Optimization: allow callers (e.g. daily refresh job) to refresh metrics separately
+    # and skip this step when depth is sufficient.
+    if (not skip_metrics) or bool(do_full):
+        _compute_metrics_for_scenario(symbols_qs=symbols, scenario=scenario, recompute_all=bool(do_full), job=job)
 
     # 5) Build an in-memory Backtest config for KPI-only computation
     tickers = list(symbols.values_list("ticker", flat=True))
@@ -131,6 +173,8 @@ def run_game_scenario_now(game_id: int, *, force_fetch: bool = False, force_reco
     )
 
     out = run_backtest_kpi_only(bt, max_days=int(game.study_days or 1000))
+
+    _job_checkpoint(job)
 
     # 6) Build today's snapshot
     rows = []

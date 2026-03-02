@@ -87,6 +87,21 @@ docker compose exec web python manage.py send_daily_alerts
 - Celery Beat exécute chaque minute `check_and_send_scheduled_alerts_task` et déclenche l'envoi au bon moment.
 - Boutons UI: "Lancer les calculs" et "Envoyer l’email maintenant".
 
+## Refresh quotidien (V7.x)
+
+Une tâche planifiée exécute **tous les jours à 08:00** (timezone de l'app) un refresh global:
+
+1) Fetch des **DailyBars** pour **tous les tickers actifs** (delta fetch, pas de full refresh)
+2) Calcul des métriques pour **tous les Scénarios actifs** + **tous les Games actifs** (incremental)
+   - Optimisation: dé-duplication par **signature canonique** (hash des paramètres indicateurs)
+   - Si plusieurs Scénarios/Games partagent exactement la même signature, on calcule une seule fois puis on *clone*
+     les DailyMetric/Alert sur les autres (sans modifier les formules).
+3) Calcul des tableaux des **Games** via run de **tous les GameScenarios actifs** (avec `skip_metrics=True`)
+
+Task: `core.tasks.daily_system_refresh_job_task`
+
+⚠️ Important: configure la timezone de l'app via `APP_TIMEZONE` (ex: `Asia/Jerusalem`) sinon le 08:00 sera en UTC.
+
 ## V6.0.0
 - Fix: backtests now match alert codes case-insensitively (A1f/B1f work correctly).
 - Packaging: clean single-root zip.
@@ -279,3 +294,13 @@ For 2 vCPU:
 - rotate logs (docker json logs can grow)
 - monitor disk usage of `/data/backtests`
 - optional: retention policy (cron) to delete old backtests’ parquet folders (ONLY if you decide; not implemented here)
+
+
+## Daily batch schedule
+
+The daily end-to-end refresh (fetch bars + compute metrics + games tables) is scheduled via Celery Beat.
+Configure in `.env`:
+
+- `APP_TIMEZONE` (e.g. `Asia/Jerusalem`)
+- `DAILY_REFRESH_HOUR` (default `8`)
+- `DAILY_REFRESH_MINUTE` (default `0`)

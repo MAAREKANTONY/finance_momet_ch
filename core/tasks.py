@@ -8,7 +8,7 @@ import hashlib
 from datetime import timedelta
 from django.db.models import Max, Q
 
-from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, AlertDefinition
+from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, AlertDefinition, GameScenario
 from .models import Backtest
 from .models import ProcessingJob
 from .services.provider_twelvedata import TwelveDataClient
@@ -16,6 +16,7 @@ from .services.calculations import compute_for_symbol_scenario
 from .services.calculations_fast import compute_full_for_symbol_scenario
 
 from django.utils import timezone
+import json
 
 
 class JobCancelled(Exception):
@@ -165,19 +166,8 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
     """Compute DailyMetric + Alert for a given scenario and subset of symbols."""
     symbols = list(symbols_qs)
 
-    def scenario_hash(s: Scenario) -> str:
-        payload = "|".join([
-            str(s.a), str(s.b), str(s.c), str(s.d), str(s.e), str(getattr(s,'vc',None)), str(getattr(s,'fl',None)),
-            str(s.n1), str(s.n2), str(s.n3), str(s.n4),
-            # K2f parameters (additive but must participate in the hash to keep metrics consistent)
-            str(getattr(s, 'n5', None)), str(getattr(s, 'k2j', None)), str(getattr(s, 'cr', None)),
-            # Kf3 parameters
-            str(getattr(s, 'n5f3', None)), str(getattr(s, 'crf3', None)),
-            str(getattr(s, 'nampL3', None)), str(getattr(s, 'baseL3', None)), str(getattr(s, 'periodeL3', None)),
-        ])
-        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
-
-    cur_hash = scenario_hash(scenario)
+    # Canonical signature of indicator parameters (stable across Scenario/GameScenario).
+    cur_hash = indicator_signature(scenario)
     needs_full = recompute_all or (scenario.last_computed_config_hash and scenario.last_computed_config_hash != cur_hash)
 
     if needs_full:
@@ -242,6 +232,117 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
 
     Scenario.objects.filter(id=scenario.id).update(last_computed_config_hash=cur_hash)
     return {"symbols": len(symbols), "rows": computed_rows, "full": bool(needs_full)}
+
+
+def _indicator_params_from_scenario_like(obj) -> dict:
+    """Canonical dict of parameters that affect indicator computations.
+
+    IMPORTANT:
+    - Must include every parameter that changes the math.
+    - Must be stable across Scenario and GameScenario objects.
+    - Must not include metadata (name, description, ids, timestamps).
+    """
+    # Normalize Decimals/None/ints as strings to make hash stable across DB/Python types.
+    def norm(x):
+        if x is None:
+            return None
+        try:
+            # Decimal, int, str... -> string form
+            return str(x)
+        except Exception:
+            return repr(x)
+
+    fields = [
+        # Common core
+        "a", "b", "c", "d", "e", "vc", "fl",
+        "n1", "n2", "n3", "n4",
+        # K2f
+        "n5", "k2j", "cr",
+        # Kf3
+        "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
+        # V line
+        "m_v",
+    ]
+    return {f: norm(getattr(obj, f, None)) for f in fields}
+
+
+def indicator_signature(obj) -> str:
+    """SHA-256 of a canonical JSON payload of indicator parameters."""
+    payload = json.dumps(_indicator_params_from_scenario_like(obj), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _buffer_days_for_scenario(scenario: Scenario) -> int:
+    """Compute the same rolling window buffer used by incremental compute."""
+    n1 = int(scenario.n1 or 0)
+    n2 = int(scenario.n2 or 0)
+    n3 = int(scenario.n3 or 0)
+    n4 = int(scenario.n4 or 0)
+    n5 = int(getattr(scenario, 'n5', 0) or 0)
+    k2j = int(getattr(scenario, 'k2j', 0) or 0)
+    n5f3 = int(getattr(scenario, 'n5f3', 0) or 0)
+    nampL3 = int(getattr(scenario, 'nampL3', 0) or 0)
+    periodeL3 = int(getattr(scenario, 'periodeL3', 0) or 0)
+
+    lookback_kf3 = max(
+        (n5f3 + max(1, n5f3 // 2) + 5) if n5f3 else 0,
+        (nampL3 + 5) if nampL3 else 0,
+        (periodeL3 + 5) if periodeL3 else 0,
+    )
+    lookback_trading = max((n1 + n2 + 5), (n3 + n4 + 5), (n1 + 5), (n5 + k2j + 5), lookback_kf3, 20)
+    return int(lookback_trading * 2 + 10)
+
+
+def _clone_metrics_and_alerts(
+    *,
+    from_scenario: Scenario,
+    to_scenario: Scenario,
+    symbols: list[Symbol],
+    start_date,
+    job: ProcessingJob | None = None,
+) -> None:
+    """Clone metrics+alerts from one scenario to another for a given date window.
+
+    This enables safe deduplication when the indicator parameters are identical.
+    """
+    metric_fields = [
+        "date",
+        "P", "M", "M1", "X", "X1", "T", "Q", "S",
+        "K1", "K1f", "K2f", "K2f_pre",
+        "Kf3", "K2", "K3", "K4",
+        "V_pre", "V_line",
+        "V", "slope_P", "sum_pos_P", "nb_pos_P", "ratio_P", "amp_h",
+    ]
+
+    for sym in symbols:
+        _job_checkpoint(job, heartbeat=False)
+
+        # Delete the target window first (keep behavior aligned with incremental compute).
+        if start_date is not None:
+            DailyMetric.objects.filter(symbol=sym, scenario=to_scenario, date__gte=start_date).delete()
+            Alert.objects.filter(symbol=sym, scenario=to_scenario, date__gte=start_date).delete()
+            src_metrics_qs = DailyMetric.objects.filter(symbol=sym, scenario=from_scenario, date__gte=start_date)
+            src_alerts_qs = Alert.objects.filter(symbol=sym, scenario=from_scenario, date__gte=start_date)
+        else:
+            DailyMetric.objects.filter(symbol=sym, scenario=to_scenario).delete()
+            Alert.objects.filter(symbol=sym, scenario=to_scenario).delete()
+            src_metrics_qs = DailyMetric.objects.filter(symbol=sym, scenario=from_scenario)
+            src_alerts_qs = Alert.objects.filter(symbol=sym, scenario=from_scenario)
+
+        # Copy metrics
+        m_rows = list(src_metrics_qs.values(*metric_fields))
+        if m_rows:
+            objs = [DailyMetric(symbol=sym, scenario=to_scenario, **row) for row in m_rows]
+            DailyMetric.objects.bulk_create(objs, batch_size=5000)
+
+        # Copy alerts
+        a_rows = list(src_alerts_qs.values("date", "alerts"))
+        if a_rows:
+            aobjs = [Alert(symbol=sym, scenario=to_scenario, date=row["date"], alerts=row["alerts"]) for row in a_rows]
+            Alert.objects.bulk_create(aobjs, batch_size=5000)
+
+    # Keep config hash aligned to avoid unexpected full recompute on next runs.
+    Scenario.objects.filter(id=to_scenario.id).update(last_computed_config_hash=from_scenario.last_computed_config_hash)
 
 
 @shared_task
@@ -736,6 +837,225 @@ def run_game_scenario_task(game_id: int, force_fetch: bool = False, force_recomp
     from core.services.game_scenarios.runner import run_game_scenario_now
 
     return run_game_scenario_now(game_id, force_fetch=force_fetch, force_recompute=force_recompute)
+
+
+def _ensure_game_engine_scenario(game: GameScenario) -> Scenario:
+    """Create/update the internal Scenario used by a GameScenario.
+
+    Duplicates the logic from game runner to avoid circular imports.
+    """
+    sc = game.engine_scenario
+    if sc is None:
+        sc = Scenario(
+            name=f"[GAME] {game.name}",
+            description=f"Auto-generated scenario for GameScenario #{game.id}",
+            active=False,
+            is_default=False,
+        )
+
+    for f in [
+        "a", "b", "c", "d", "e", "vc", "fl",
+        "n1", "n2", "n3", "n4",
+        "n5", "k2j", "cr",
+        "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
+        "m_v",
+    ]:
+        setattr(sc, f, getattr(game, f))
+
+    sc.name = f"[GAME] {game.name}"
+    sc.description = f"Auto-generated scenario for GameScenario #{game.id}"
+    sc.active = False
+    sc.is_default = False
+    sc.save()
+
+    if game.engine_scenario_id != sc.id:
+        game.engine_scenario = sc
+        game.save(update_fields=["engine_scenario", "updated_at"])
+    return sc
+
+
+@shared_task(bind=True)
+def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
+    """Daily end-to-end refresh (scheduled at 08:00).
+
+    What it does (as requested):
+      1) Fetch latest DailyBars for ALL active tickers (delta fetch, no full refresh)
+      2) Compute indicators for ALL active Scenarios (incremental; no full recompute unless operator forces it manually)
+      3) Compute Game tables by running ALL active GameScenarios (uses their incremental compute rules)
+
+    Safety:
+      - Redis lock prevents overlaps
+      - ProcessingJob tracking + cooperative cancel/kill
+    """
+    job = None
+    if job_id:
+        job = ProcessingJob.objects.filter(id=job_id).first()
+    if job is None:
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            task_id=getattr(self.request, "id", "") or "",
+            created_by_id=user_id,
+            message="Daily system refresh (scheduled)",
+        )
+
+    # --- Anti-overlap lock (daily) ---
+    acquired_lock = False
+    try:
+        import redis
+        r = redis.Redis.from_url(settings.CELERY_BROKER_URL)
+        # 6 hours TTL is a safe upper bound for heavy runs.
+        acquired_lock = bool(r.set('lock:daily_system_refresh', '1', nx=True, ex=6 * 60 * 60))
+    except Exception:
+        acquired_lock = True
+    if not acquired_lock:
+        job.status = ProcessingJob.Status.DONE
+        job.started_at = timezone.now()
+        job.finished_at = timezone.now()
+        job.message = "Daily refresh skipped (lock already held)"
+        job.save(update_fields=["status", "started_at", "finished_at", "message"])
+        return "locked_skip"
+
+    job.status = ProcessingJob.Status.RUNNING
+    job.started_at = timezone.now()
+    job.save(update_fields=["status", "started_at"])
+
+    try:
+        # 1) Fetch bars for ALL active symbols
+        symbols = Symbol.objects.filter(active=True).order_by("ticker")
+
+        # Outputsize heuristic: max(scenarios history_years, games study_days)
+        max_years = Scenario.objects.filter(active=True).order_by("-history_years").values_list("history_years", flat=True).first() or 2
+        max_study_days = GameScenario.objects.filter(active=True).order_by("-study_days").values_list("study_days", flat=True).first() or 0
+        outputsize = max(desired_outputsize_years(int(max_years)), min(5000, int(max_study_days) + 400) if max_study_days else 0)
+        outputsize = max(260, min(5000, int(outputsize)))
+
+        job.message = f"Step1/3 Fetch DailyBars (delta) outputsize={outputsize}"
+        job.save(update_fields=["message"])
+        _fetch_daily_bars_for_symbols(symbol_qs=symbols, outputsize=outputsize, force_full=False, job=job)
+
+        # 2) Compute metrics for ALL active scenarios + ALL active games' engine scenarios.
+        #    Optimization: canonical signature (hash of indicator parameters) => compute once per signature,
+        #    then clone metrics+alerts to other scenarios that share the exact same parameters.
+
+        symbols_all = list(Symbol.objects.filter(active=True).order_by("ticker"))
+
+        targets = []  # list of dicts: {"scenario": Scenario, "symbols": list[Symbol], "kind": str, "owner_id": int}
+
+        # Regular scenarios
+        for sc in Scenario.objects.filter(active=True).order_by("id"):
+            sc_syms = list(sc.symbols.filter(active=True).order_by("ticker"))
+            if not sc_syms:
+                continue
+            targets.append({"scenario": sc, "symbols": sc_syms, "kind": "scenario", "owner_id": sc.id})
+
+        # Game engine scenarios (parameters can differ from regular scenarios)
+        games = list(GameScenario.objects.filter(active=True).order_by("id"))
+        for g in games:
+            sc = _ensure_game_engine_scenario(g)
+            targets.append({"scenario": sc, "symbols": symbols_all, "kind": "game", "owner_id": g.id})
+
+        # Group by signature
+        groups = {}
+        for t in targets:
+            sig = indicator_signature(t["scenario"])
+            groups.setdefault(sig, []).append(t)
+
+        done_groups = 0
+        for sig, group_targets in groups.items():
+            _job_checkpoint(job)
+            done_groups += 1
+
+            # Pick primary scenario for real computation
+            primary = group_targets[0]["scenario"]
+
+            # Union of symbols across targets for the primary compute
+            union_ids = set()
+            for t in group_targets:
+                for s in t["symbols"]:
+                    union_ids.add(s.id)
+            union_symbols = list(Symbol.objects.filter(id__in=list(union_ids)).order_by("ticker"))
+
+            job.message = (
+                f"Step2/3 Compute metrics group={done_groups}/{len(groups)} "
+                f"sig={sig[:10]} primary_scenario={primary.id} symbols={len(union_symbols)} targets={len(group_targets)}"
+            )
+            job.save(update_fields=["message"])
+
+            # Compute once (incremental)
+            _compute_metrics_for_scenario(symbols_qs=union_symbols, scenario=primary, recompute_all=False, job=job)
+
+            # Ensure primary keeps its signature hash set
+            Scenario.objects.filter(id=primary.id).update(last_computed_config_hash=sig)
+
+            # Clone to the other scenarios in this group
+            for t in group_targets[1:]:
+                _job_checkpoint(job, heartbeat=False)
+                to_sc = t["scenario"]
+                to_syms = t["symbols"]
+                buffer_days = _buffer_days_for_scenario(primary)
+
+                # Determine start_date for cloning window based on target's last computed date.
+                # If the target has no data, we clone full history for its symbol scope.
+                last_dt = DailyMetric.objects.filter(scenario=to_sc, symbol__in=to_syms).aggregate(m=Max("date"))["m"]
+                start_dt = (last_dt - timedelta(days=buffer_days)) if last_dt else None
+
+                job.message = (
+                    f"Step2/3 Clone metrics sig={sig[:10]} from={primary.id} to={to_sc.id} "
+                    f"symbols={len(to_syms)} start={start_dt or 'ALL'}"
+                )
+                job.save(update_fields=["message"])
+
+                _clone_metrics_and_alerts(
+                    from_scenario=primary,
+                    to_scenario=to_sc,
+                    symbols=to_syms,
+                    start_date=start_dt,
+                    job=job,
+                )
+
+        done_sc = sum(1 for t in targets if t["kind"] == "scenario")
+
+        # 3) Run ALL active games (compute today's tables).
+        # We pass skip_metrics=True because metrics were refreshed in step2.
+        from core.services.game_scenarios.runner import run_game_scenario_now, GameJobCancelled, GameJobKilled
+        total_g = len(games)
+        done_g = 0
+        for gs in games:
+            _job_checkpoint(job)
+            job.message = f"Step3/3 Run game={gs.id} ({done_g+1}/{total_g})"
+            job.save(update_fields=["message"])
+            try:
+                run_game_scenario_now(gs.id, force_fetch=False, force_recompute=False, skip_metrics=True, job=job)
+            except (GameJobCancelled, GameJobKilled):
+                raise
+            done_g += 1
+
+        job.status = ProcessingJob.Status.DONE
+        job.finished_at = timezone.now()
+        job.message = f"Daily refresh OK: symbols={symbols.count()} scenarios={done_sc} games={done_g}"
+        job.save(update_fields=["status", "finished_at", "message"])
+        return job.message
+
+    except JobCancelled:
+        job.status = ProcessingJob.Status.CANCELLED
+        job.finished_at = timezone.now()
+        job.message = (job.message or "") + "\nCancelled by user."
+        job.save(update_fields=["status", "finished_at", "message"])
+        return "cancelled"
+    except JobKilled:
+        job.status = ProcessingJob.Status.KILLED
+        job.finished_at = timezone.now()
+        job.message = (job.message or "") + "\nKilled by user."
+        job.save(update_fields=["status", "finished_at", "message"])
+        return "killed"
+    except Exception as e:
+        job.status = ProcessingJob.Status.FAILED
+        job.finished_at = timezone.now()
+        job.error = str(e)
+        job.message = (job.message or "") + f"\nFAILED: {e}"
+        job.save(update_fields=["status", "finished_at", "error", "message"])
+        raise
 
 
 def _maybe_run_scheduled_game_scenarios(now_dt):
