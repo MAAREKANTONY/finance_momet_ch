@@ -80,5 +80,18 @@ class BacktestAdmin(admin.ModelAdmin):
 class ProcessingJobAdmin(admin.ModelAdmin):
     list_display = ("id", "job_type", "status", "created_at", "started_at", "finished_at", "backtest", "scenario")
     list_filter = ("status", "job_type")
-    search_fields = ("message", "error", "task_id")
+    # IMPORTANT (prod): avoid searching large TextFields (message/error) from the changelist.
+    # It can trigger full table scans and huge memory usage.
+    search_fields = ("task_id",)
     date_hierarchy = "created_at"
+
+    # Keep the changelist responsive even with many rows.
+    ordering = ("-id",)
+    list_select_related = ("backtest", "scenario")
+    list_per_page = 50
+    show_full_result_count = False  # avoids expensive COUNT(*) on large tables
+
+    def get_queryset(self, request):
+        qs = super().get_queryset(request)
+        # Avoid loading heavy text columns for the changelist.
+        return qs.defer("message", "error")
