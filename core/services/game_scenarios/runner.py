@@ -164,6 +164,7 @@ def run_game_scenario_now(
         end_date=end_d,
         capital_total=game.capital_total,
         capital_per_ticker=game.capital_per_ticker,
+        capital_mode=getattr(game, "capital_mode", "REINVEST"),
         ratio_threshold=0,
         include_all_tickers=True,
         signal_lines=game.signal_lines or [{"buy": "A1", "sell": "B1"}],
@@ -189,6 +190,42 @@ def run_game_scenario_now(
         thr_ratio = None
     for ticker, tentry in out.items():
         best = tentry.get("best_bmd")  # ratio (string/Decimal/None)
+
+        # Extract the KPI counters from the line that produced the best BMD.
+        best_final: dict = {}
+        try:
+            best_dec = None if best is None else Decimal(str(best))
+        except Exception:
+            best_dec = None
+        if best_dec is not None:
+            try:
+                for line in (tentry.get("lines") or []):
+                    fin = (line or {}).get("final") or {}
+                    bmd_val = fin.get("BMD")
+                    if bmd_val is None:
+                        continue
+                    try:
+                        if Decimal(str(bmd_val)) == best_dec:
+                            best_final = fin
+                            break
+                    except Exception:
+                        continue
+            except Exception:
+                best_final = {}
+
+        # Derive ratios (percent values, 0..100). Stored as strings for JSON stability.
+        td = int(best_final.get("TRADABLE_DAYS") or 0) if isinstance(best_final, dict) else 0
+        ip = int(best_final.get("TRADABLE_DAYS_IN_POSITION_CLOSED") or 0) if isinstance(best_final, dict) else 0
+        nip = int(best_final.get("TRADABLE_DAYS_NOT_IN_POSITION") or 0) if isinstance(best_final, dict) else 0
+        ratio_ip = None
+        ratio_nip = None
+        if td > 0:
+            try:
+                ratio_ip = str((Decimal(ip) / Decimal(td)) * Decimal("100"))
+                ratio_nip = str((Decimal(nip) / Decimal(td)) * Decimal("100"))
+            except Exception:
+                ratio_ip = None
+                ratio_nip = None
         ok = False
         if best is not None and thr_ratio is not None:
             try:
@@ -197,7 +234,18 @@ def run_game_scenario_now(
             except Exception:
                 ok = False
         # Keep raw ratio in snapshot; display layer formats as %.
-        rows.append({"ticker": ticker, "bmd": best, "ok": bool(ok)})
+        rows.append(
+            {
+                "ticker": ticker,
+                "bmd": best,
+                "ok": bool(ok),
+                "TRADABLE_DAYS": td,
+                "TRADABLE_DAYS_IN_POSITION_CLOSED": ip,
+                "RATIO_IN_POSITION": ratio_ip,
+                "TRADABLE_DAYS_NOT_IN_POSITION": nip,
+                "RATIO_NOT_IN_POSITION": ratio_nip,
+            }
+        )
 
     snapshot = {"date": str(end_d), "rows": rows, "threshold_pct": str(thr_pct)}
 

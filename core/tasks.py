@@ -11,6 +11,7 @@ from django.db.models import Max, Q
 from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, AlertDefinition, GameScenario
 from .models import Backtest
 from .models import ProcessingJob
+from .exports import build_scenario_workbook_write_only
 from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
 from .services.calculations_fast import compute_full_for_symbol_scenario
@@ -1324,3 +1325,89 @@ def cleanup_stale_processing_jobs_task() -> dict:
         updated += 1
 
     return {"updated": updated, "heartbeat_minutes": hb_min, "started_minutes": started_min, "pending_minutes": pending_min}
+
+
+@shared_task(bind=True)
+def export_scenario_xlsx_task(
+    self,
+    *,
+    job_id: int,
+    scenario_id: int,
+    ticker: str = "",
+    exchange: str = "",
+    date_from: str = "",
+    date_to: str = "",
+):
+    """Asynchronously export a Scenario workbook to /data/exports.
+
+    Doing this in Celery avoids Gunicorn OOM/timeout on large scenario exports.
+    """
+
+    from pathlib import Path
+    from django.utils import timezone
+    from .models import Scenario, Symbol
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        job.task_id = getattr(self.request, "id", "") or ""
+        job.status = ProcessingJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.message = (
+            f"Export XLSX scenario_id={scenario_id} ticker={ticker or '*'} exchange={exchange or '*'} "
+            f"from={date_from or '-'} to={date_to or '-'}"
+        )
+        job.save(update_fields=["task_id", "status", "started_at", "message"])
+
+    try:
+        scenario = Scenario.objects.get(id=scenario_id)
+        symbols_qs = Symbol.objects.filter(active=True)
+        if ticker:
+            symbols_qs = symbols_qs.filter(ticker=ticker)
+        if exchange:
+            symbols_qs = symbols_qs.filter(exchange=exchange)
+
+        wb = build_scenario_workbook_write_only(
+            scenario=scenario,
+            symbols_qs=symbols_qs,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+        export_dir = Path("/data/exports/scenario") / str(scenario_id)
+        export_dir.mkdir(parents=True, exist_ok=True)
+
+        safe_name = "".join([c if c.isalnum() or c in ("-", "_") else "_" for c in (scenario.name or "scenario")])[:50] or "scenario"
+        filename = f"{safe_name}_job{job_id}.xlsx"
+        out_path = export_dir / filename
+
+        wb.save(out_path)
+
+        if job:
+            job.status = ProcessingJob.Status.DONE
+            job.finished_at = timezone.now()
+            job.output_file = str(out_path)
+            job.output_name = filename
+            job.message = (job.message or "") + f"\n\nFichier prêt: {out_path}"
+            job.save(update_fields=["status", "finished_at", "output_file", "output_name", "message"])
+
+        return {"output": str(out_path)}
+
+    except JobCancelled:
+        if job:
+            job.status = ProcessingJob.Status.CANCELLED
+            job.finished_at = timezone.now()
+            job.save(update_fields=["status", "finished_at"])
+        return {"cancelled": True}
+    except JobKilled:
+        if job:
+            job.status = ProcessingJob.Status.KILLED
+            job.finished_at = timezone.now()
+            job.save(update_fields=["status", "finished_at"])
+        return {"killed": True}
+    except Exception as e:
+        if job:
+            job.status = ProcessingJob.Status.FAILED
+            job.finished_at = timezone.now()
+            job.error = f"{type(e).__name__}: {e}"
+            job.save(update_fields=["status", "finished_at", "error"])
+        raise

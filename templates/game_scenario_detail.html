@@ -46,6 +46,11 @@
     <tr>
       <th>Ticker</th>
       <th>BMD (%)</th>
+      <th>TRADABLE_DAYS</th>
+      <th>TRADABLE_DAYS_IN_POSITION_CLOSED</th>
+      <th>RATIO_IN_POSITION (%)</th>
+      <th>TRADABLE_DAYS_NOT_IN_POSITION</th>
+      <th>RATIO_NOT_IN_POSITION (%)</th>
       <th>Tradable</th>
     </tr>
   </thead>
@@ -54,10 +59,15 @@
       <tr>
         <td>{{ r.ticker }}</td>
         <td>{% if r.bmd is not None %}{{ r.bmd|pct:2 }}{% else %}-{% endif %}</td>
+        <td>{{ r.TRADABLE_DAYS|default:"-" }}</td>
+        <td>{{ r.TRADABLE_DAYS_IN_POSITION_CLOSED|default:"-" }}</td>
+        <td>{% if r.RATIO_IN_POSITION is not None %}{{ r.RATIO_IN_POSITION|floatformat:2 }}{% else %}-{% endif %}</td>
+        <td>{{ r.TRADABLE_DAYS_NOT_IN_POSITION|default:"-" }}</td>
+        <td>{% if r.RATIO_NOT_IN_POSITION is not None %}{{ r.RATIO_NOT_IN_POSITION|floatformat:2 }}{% else %}-{% endif %}</td>
         <td>{% if r.ok %}✅{% else %}❌{% endif %}</td>
       </tr>
     {% empty %}
-      <tr><td colspan="3" class="muted">Aucun résultat (lancez le jeu).</td></tr>
+      <tr><td colspan="8" class="muted">Aucun résultat (lancez le jeu).</td></tr>
     {% endfor %}
   </tbody>
 </table>

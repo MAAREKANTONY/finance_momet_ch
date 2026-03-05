@@ -416,6 +416,7 @@ class BacktestForm(forms.ModelForm):
             "end_date",
             "capital_total",
             "capital_per_ticker",
+            "capital_mode",
             "ratio_threshold",
             "include_all_tickers",
             "signal_lines",
@@ -481,6 +482,7 @@ class GameScenarioForm(forms.ModelForm):
             # Backtest params
             "capital_total",
             "capital_per_ticker",
+            "capital_mode",
             "signal_lines",
             "close_positions_at_end",
         ]

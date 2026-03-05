@@ -118,6 +118,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     global_cash = None if CP_infinite else CP_raw
 
     CT = Decimal(str(backtest.capital_per_ticker or 0))
+    capital_mode = str(getattr(backtest, "capital_mode", "REINVEST") or "REINVEST").upper()
+    fixed_capital = (capital_mode == "FIXED")
     X = Decimal(str(backtest.ratio_threshold or 0))  # percent threshold
     include_all = bool(getattr(backtest, "include_all_tickers", False))
 
@@ -247,6 +249,9 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "sell_code": str(line.get("sell") or "").strip().upper(),
                 "allocated": False,
                 "cash_ticker": Decimal("0"),
+                # Realized PnL that is NOT reinvested when fixed_capital is enabled.
+                # Always included in portfolio equity.
+                "bank": Decimal("0"),
                 "position_open": False,
                 "entry_price": None,
                 "shares": 0,
@@ -290,11 +295,13 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
 
         cash_allocated = Decimal("0")
         positions_value = Decimal("0")
+        bank_total = Decimal("0")
 
         for (tk, _li), st in state.items():
             if not st.get("allocated"):
                 continue
             cash_allocated += Decimal(st.get("cash_ticker") or 0)
+            bank_total += Decimal(st.get("bank") or 0)
             shares = int(st.get("shares") or 0)
             if shares > 0:
                 px = data_by_ticker.get(tk, {}).get("price_by_date", {}).get(d)
@@ -312,7 +319,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             invested = CP_raw - global_cash_val
             capital_total = CP_raw
 
-        equity = global_cash_val + cash_allocated + positions_value
+        equity = global_cash_val + cash_allocated + positions_value + bank_total
 
         if peak_equity is None or equity > peak_equity:
             peak_equity = equity
@@ -327,6 +334,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "date": str(d),
                 "global_cash": str(global_cash_val),
                 "cash_allocated": str(cash_allocated),
+                "bank_total": str(bank_total),
                 "positions_value": str(positions_value),
                 "equity": str(equity),
                 "invested": str(invested),
@@ -364,7 +372,15 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
                     return
                 proceeds = Decimal(st["shares"]) * close_d
-                st["cash_ticker"] = st["cash_ticker"] + proceeds
+                if fixed_capital:
+                    # Total value after closing the position (includes any cash left from rounding on BUY).
+                    total_after = Decimal(st["cash_ticker"]) + proceeds
+                    # Keep realized PnL in bank; reset cash_ticker back to CT for the next BUY.
+                    st["bank"] = Decimal(st.get("bank") or 0) + (total_after - CT)
+                    st["cash_ticker"] = CT
+                else:
+                    # Legacy behaviour: reinvest everything (capital evolves with PnL).
+                    st["cash_ticker"] = st["cash_ticker"] + proceeds
                 entry = Decimal(st["entry_price"])
                 if entry != 0:
                     G_today = (close_d - entry) / entry
@@ -450,6 +466,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "forced_close": forced_close,
                 "allocated": st["allocated"],
                 "cash_ticker": str(st["cash_ticker"]),
+                "bank": str(st.get("bank") or Decimal("0")),
                 "shares": st["shares"],
                 "N": N,
                 "S_G_N": None if S_G_N is None else str(S_G_N),
@@ -559,6 +576,10 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 continue
 
             cash = st["cash_ticker"]
+            if fixed_capital and st.get("allocated"):
+                # In fixed mode, each new BUY starts from the initial CT (no reinvest).
+                cash = CT
+                st["cash_ticker"] = CT
             shares = int((cash / close_d).to_integral_value(rounding="ROUND_FLOOR"))
             if shares <= 0:
                 continue
@@ -695,7 +716,12 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if close_d is None:
                 continue
             proceeds = Decimal(st["shares"]) * close_d
-            st["cash_ticker"] = st["cash_ticker"] + proceeds
+            if fixed_capital:
+                total_after = Decimal(st["cash_ticker"]) + proceeds
+                st["bank"] = Decimal(st.get("bank") or 0) + (total_after - CT)
+                st["cash_ticker"] = CT
+            else:
+                st["cash_ticker"] = st["cash_ticker"] + proceeds
             entry = Decimal(st["entry_price"])
             G_today = None
             if entry != 0:
@@ -723,6 +749,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 rows[-1]["action_G"] = None if G_today is None else str(G_today)
                 rows[-1]["shares"] = 0
                 rows[-1]["cash_ticker"] = str(st["cash_ticker"])
+                rows[-1]["bank"] = str(st.get("bank") or Decimal("0"))
                 # recompute cumulative metrics after forced close
                 N = st["trade_count"]
                 S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
@@ -762,6 +789,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                     "forced_close": True,
                     "allocated": st["allocated"],
                     "cash_ticker": str(st["cash_ticker"]),
+                    "bank": str(st.get("bank") or Decimal("0")),
                     "shares": 0,
                     "N": N,
                     "S_G_N": None if S_G_N is None else str(S_G_N),
@@ -784,6 +812,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             "CP": str(CP_raw),
             "CP_infinite": CP_infinite,
             "CT": str(CT),
+            "capital_mode": "FIXED" if fixed_capital else "REINVEST",
             "X": str(X),
             "signal_lines": signal_lines,
             "global_cash_end": None if global_cash is None else str(global_cash),
@@ -920,6 +949,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
     CP_infinite = (CP_raw == 0)
     global_cash = None if CP_infinite else CP_raw
     CT = Decimal(str(backtest.capital_per_ticker or 0))
+    capital_mode = str(getattr(backtest, "capital_mode", "REINVEST") or "REINVEST").upper()
+    fixed_capital = (capital_mode == "FIXED")
     X = Decimal("0")  # Game mode: eligibility bypass (include_all)
     include_all = True
 
@@ -996,6 +1027,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 "sell_code": str(line.get("sell") or "").upper(),
                 "allocated": False,
                 "cash_ticker": Decimal("0"),
+                "bank": Decimal("0"),
                 "shares": 0,
                 "position_open": False,
                 "entry_price": None,
@@ -1035,7 +1067,12 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
                     return
                 proceeds = Decimal(st["shares"]) * close_d
-                st["cash_ticker"] = st["cash_ticker"] + proceeds
+                if fixed_capital:
+                    total_after = Decimal(st["cash_ticker"]) + proceeds
+                    st["bank"] = Decimal(st.get("bank") or 0) + (total_after - CT)
+                    st["cash_ticker"] = CT
+                else:
+                    st["cash_ticker"] = st["cash_ticker"] + proceeds
                 entry = Decimal(st["entry_price"])
                 if entry != 0:
                     G_today = (close_d - entry) / entry
@@ -1143,6 +1180,9 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             if close_d is None or close_d <= 0:
                 continue
             cash = st["cash_ticker"]
+            if fixed_capital and st.get("allocated"):
+                cash = CT
+                st["cash_ticker"] = CT
             shares = int((cash / close_d).to_integral_value(rounding="ROUND_FLOOR"))
             if shares <= 0:
                 continue

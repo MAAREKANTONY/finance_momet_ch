@@ -80,6 +80,7 @@ urlpatterns = [
     path("logs/", views.logs_page, name="logs_page"),
     path("jobs/", views.jobs_page, name="jobs_page"),
     path("jobs/<int:pk>/", views.job_detail, name="job_detail"),
+    path("jobs/<int:pk>/download/", views.job_download, name="job_download"),
     path("jobs/<int:pk>/cancel/", views.job_cancel, name="job_cancel"),
     path("jobs/<int:pk>/kill/", views.job_kill, name="job_kill"),
     path("backtests/", views.backtests_page, name="backtests_page"),

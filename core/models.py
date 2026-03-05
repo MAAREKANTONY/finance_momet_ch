@@ -343,8 +343,20 @@ class GameScenario(models.Model):
     )
 
     # --- Backtest fields (same defaults) ---
+    class CapitalMode(models.TextChoices):
+        REINVEST = "REINVEST", "Reinvest (capital évolutif)"
+        FIXED = "FIXED", "Fixed (capital initial constant)"
+
     capital_total = models.DecimalField(max_digits=18, decimal_places=2, default=0)
     capital_per_ticker = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+
+    # Controls whether CT evolves with realized gains/losses per ticker (legacy behaviour)
+    # or stays fixed at the initial CT at each new BUY.
+    capital_mode = models.CharField(
+        max_length=12,
+        choices=CapitalMode.choices,
+        default=CapitalMode.REINVEST,
+    )
     signal_lines = models.JSONField(default=list, blank=True)
     close_positions_at_end = models.BooleanField(default=True)
     settings = models.JSONField(default=dict, blank=True)
@@ -395,6 +407,10 @@ class Backtest(models.Model):
         DONE = "DONE", "Done"
         FAILED = "FAILED", "Failed"
 
+    class CapitalMode(models.TextChoices):
+        REINVEST = "REINVEST", "Reinvest (capital évolutif)"
+        FIXED = "FIXED", "Fixed (capital initial constant)"
+
     name = models.CharField(max_length=120)
     description = models.TextField(blank=True, default="")
 
@@ -412,6 +428,14 @@ class Backtest(models.Model):
 
     # CT: capital allocated per ticker / per position (first activation).
     capital_per_ticker = models.DecimalField(max_digits=18, decimal_places=2, default=0)
+
+    # Controls whether CT evolves with realized gains/losses per ticker (legacy behaviour)
+    # or stays fixed at the initial CT at each new BUY.
+    capital_mode = models.CharField(
+        max_length=12,
+        choices=CapitalMode.choices,
+        default=CapitalMode.REINVEST,
+    )
 
     # X: ratio_p threshold expressed in percent (e.g. 5.00 means 5%).
     ratio_threshold = models.DecimalField(max_digits=6, decimal_places=2, default=0)
@@ -703,6 +727,7 @@ class ProcessingJob(models.Model):
         RUN_BACKTEST = "RUN_BACKTEST", "Run Backtest"
         RUN_GAME = "RUN_GAME", "Run Game Scenario"
         SEND_EMAILS = "SEND_EMAILS", "Send Emails"
+        EXPORT_SCENARIO_XLSX = "EXPORT_SCENARIO_XLSX", "Export Scenario XLSX"
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"
@@ -743,6 +768,10 @@ class ProcessingJob(models.Model):
 
     message = models.TextField(blank=True, default="")
     error = models.TextField(blank=True, default="")
+
+    # Optional artifact produced by the job (e.g. async exports)
+    output_file = models.CharField(max_length=512, blank=True, default="")
+    output_name = models.CharField(max_length=255, blank=True, default="")
 
     # Manual stop controls (additive, backward compatible)
     cancel_requested = models.BooleanField(default=False)

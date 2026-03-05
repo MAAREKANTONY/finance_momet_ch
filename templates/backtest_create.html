@@ -54,6 +54,12 @@
         {% if form.capital_per_ticker.errors %}<div class="error">{{ form.capital_per_ticker.errors }}</div>{% endif %}
       </div>
       <div>
+        <label for="{{ form.capital_mode.id_for_label }}">Mode capital</label><br>
+        {{ form.capital_mode }}
+        <div class="muted">Reinvest = CT évolue avec gains/pertes (mode actuel). Fixed = CT reste constant à chaque BUY.</div>
+        {% if form.capital_mode.errors %}<div class="error">{{ form.capital_mode.errors }}</div>{% endif %}
+      </div>
+      <div>
         <label for="{{ form.ratio_threshold.id_for_label }}">Seuil ratio_p (X %)</label><br>
         {{ form.ratio_threshold }}
         {% if form.ratio_threshold.errors %}<div class="error">{{ form.ratio_threshold.errors }}</div>{% endif %}

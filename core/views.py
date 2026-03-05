@@ -141,21 +141,22 @@ def alerts_table(request):
 
 @login_required
 def alerts_export_csv(request):
-    date_str = request.GET.get("date") or ""
-    scenario_id = request.GET.get("scenario") or ""
-    qs = Alert.objects.select_related("symbol", "scenario").all().order_by("date", "scenario__name", "symbol__ticker")
-    if date_str:
-        qs = qs.filter(date=date_str)
-    if scenario_id:
-        qs = qs.filter(scenario_id=scenario_id)
+    date_str = (request.GET.get("date") or "").strip()
+    scenario_id = (request.GET.get("scenario") or "").strip()
 
-    response = HttpResponse(content_type="text/csv; charset=utf-8")
-    response["Content-Disposition"] = 'attachment; filename="alerts.csv"'
-    writer = csv.writer(response)
-    writer.writerow(["date", "ticker", "exchange", "scenario", "alerts"])
-    for a in qs:
-        writer.writerow([a.date.isoformat(), a.symbol.ticker, a.symbol.exchange, a.scenario.name, a.alerts])
-    return response
+    from .models import ProcessingJob
+    from .tasks import export_alerts_csv_task
+
+    job = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.EXPORT_ALERTS_CSV,
+        status=ProcessingJob.Status.PENDING,
+        created_by=request.user,
+        message="Queued alerts CSV export",
+    )
+    async_result = export_alerts_csv_task.delay(job_id=job.id, date_str=date_str, scenario_id=scenario_id)
+    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
+    messages.success(request, f"Export Alerts CSV lancé en background (job #{job.id}).")
+    return redirect("job_detail", pk=job.id)
 
 
 def _autosize(ws):
@@ -277,15 +278,28 @@ def data_export_scenario_xlsx(request, scenario_id: int):
     if exchange:
         symbols_qs = symbols_qs.filter(exchange=exchange)
 
-    wb = _build_scenario_workbook(scenario, symbols_qs, date_from=date_from, date_to=date_to)
+    # Async export to avoid Gunicorn OOM/timeouts on large scenarios.
+    from .models import ProcessingJob
+    from .tasks import export_scenario_xlsx_task
 
-    bio = BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    safe_name = "".join([c if c.isalnum() or c in ("-","_") else "_" for c in scenario.name])[:50] or "scenario"
-    resp = HttpResponse(bio.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    resp["Content-Disposition"] = f'attachment; filename="{safe_name}.xlsx"'
-    return resp
+    job = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.EXPORT_SCENARIO_XLSX,
+        status=ProcessingJob.Status.PENDING,
+        scenario=scenario,
+        created_by=request.user,
+        message=f"Queued XLSX export for scenario {scenario_id}",
+    )
+    async_result = export_scenario_xlsx_task.delay(
+        job_id=job.id,
+        scenario_id=scenario.id,
+        ticker=ticker,
+        exchange=exchange,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
+    messages.success(request, f"Export XLSX lancé en background (job #{job.id}).")
+    return redirect("job_detail", pk=job.id)
 
 
 @login_required
@@ -295,104 +309,56 @@ def data_export_all_scenarios_zip(request):
     date_from = (request.GET.get("from") or "").strip()
     date_to = (request.GET.get("to") or "").strip()
 
-    symbols_qs = Symbol.objects.filter(active=True)
-    if ticker:
-        symbols_qs = symbols_qs.filter(ticker=ticker)
-    if exchange:
-        symbols_qs = symbols_qs.filter(exchange=exchange)
+    from .models import ProcessingJob
+    from .tasks import export_all_scenarios_zip_task
 
-    scenarios = Scenario.objects.filter(active=True).order_by("name")
-
-    zip_bytes = BytesIO()
-    with pyzip.ZipFile(zip_bytes, "w", compression=pyzip.ZIP_DEFLATED) as zf:
-        for scenario in scenarios:
-            wb = _build_scenario_workbook(scenario, symbols_qs, date_from=date_from, date_to=date_to)
-            wb_io = BytesIO()
-            wb.save(wb_io)
-            wb_io.seek(0)
-            safe_name = "".join([c if c.isalnum() or c in ("-","_") else "_" for c in scenario.name])[:50] or "scenario"
-            zf.writestr(f"{safe_name}.xlsx", wb_io.getvalue())
-
-    zip_bytes.seek(0)
-    resp = HttpResponse(zip_bytes.getvalue(), content_type="application/zip")
-    resp["Content-Disposition"] = 'attachment; filename="scenarios_exports.zip"'
-    return resp
+    job = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.EXPORT_ALL_SCENARIOS_ZIP,
+        status=ProcessingJob.Status.PENDING,
+        created_by=request.user,
+        message="Queued ZIP export for all scenarios",
+    )
+    async_result = export_all_scenarios_zip_task.delay(
+        job_id=job.id,
+        ticker=ticker,
+        exchange=exchange,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
+    messages.success(request, f"Export ZIP lancé en background (job #{job.id}).")
+    return redirect("job_detail", pk=job.id)
 
 
 @login_required
 def data_export_xlsx(request):
-    # Legacy combined export retained (3 sheets)
+    # Legacy combined export retained (3 sheets) -> now async to avoid OOM/timeouts.
     ticker = (request.GET.get("ticker") or "").strip()
     exchange = (request.GET.get("exchange") or "").strip()
     scenario_id = (request.GET.get("scenario") or "").strip()
     date_from = (request.GET.get("from") or "").strip()
     date_to = (request.GET.get("to") or "").strip()
 
-    symbols_qs = Symbol.objects.all()
-    if ticker:
-        symbols_qs = symbols_qs.filter(ticker=ticker)
-    if exchange:
-        symbols_qs = symbols_qs.filter(exchange=exchange)
+    from .models import ProcessingJob
+    from .tasks import export_data_xlsx_task
 
-    symbol_ids = list(symbols_qs.values_list("id", flat=True))
-    bars = DailyBar.objects.filter(symbol_id__in=symbol_ids).select_related("symbol").order_by("symbol__ticker", "date")
-    if date_from:
-        bars = bars.filter(date__gte=date_from)
-    if date_to:
-        bars = bars.filter(date__lte=date_to)
-
-    metrics = DailyMetric.objects.filter(symbol_id__in=symbol_ids).select_related("symbol", "scenario").order_by("symbol__ticker", "scenario__name", "date")
-    if scenario_id:
-        metrics = metrics.filter(scenario_id=scenario_id)
-    if date_from:
-        metrics = metrics.filter(date__gte=date_from)
-    if date_to:
-        metrics = metrics.filter(date__lte=date_to)
-
-    alerts = Alert.objects.filter(symbol_id__in=symbol_ids).select_related("symbol", "scenario").order_by("symbol__ticker", "scenario__name", "date")
-    if scenario_id:
-        alerts = alerts.filter(scenario_id=scenario_id)
-    if date_from:
-        alerts = alerts.filter(date__gte=date_from)
-    if date_to:
-        alerts = alerts.filter(date__lte=date_to)
-
-    wb = Workbook()
-    wb.remove(wb.active)
-
-    ws1 = wb.create_sheet("DailyBars")
-    header1 = ["ticker", "exchange", "date", "open", "high", "low", "close", "volume", "change_amount", "change_pct", "source"]
-    ws1.append(header1); _header(ws1, 1)
-    for b in bars:
-        ws1.append([b.symbol.ticker, b.symbol.exchange, b.date.isoformat(), float(b.open), float(b.high), float(b.low), float(b.close),
-                    int(b.volume) if getattr(b, "volume", None) is not None else None,
-                    float(b.change_amount) if b.change_amount is not None else None,
-                    float(b.change_pct) if b.change_pct is not None else None, b.source])
-    _autosize(ws1)
-
-    ws2 = wb.create_sheet("DailyMetrics")
-    header2 = ["ticker","exchange","scenario","date","P","M","M1","X","X1","T","Q","S","K1","K1f","K2f","K2f_pre","K2","K3","K4"]
-    ws2.append(header2); _header(ws2, 1)
-    def f(x): return float(x) if x is not None else None
-    for m in metrics:
-        ws2.append([
-            m.symbol.ticker, m.symbol.exchange, m.scenario.name, m.date.isoformat(),
-            f(m.P), f(m.M), f(m.M1), f(m.X), f(m.X1), f(m.T), f(m.Q), f(m.S),
-            f(m.K1), f(m.K1f), f(getattr(m,"K2f",None)), f(getattr(m,"K2f_pre",None)), f(m.K2), f(m.K3), f(m.K4)
-        ])
-    _autosize(ws2)
-
-    ws3 = wb.create_sheet("Alerts")
-    header3 = ["date","ticker","exchange","scenario","alerts"]
-    ws3.append(header3); _header(ws3, 1)
-    for a in alerts:
-        ws3.append([a.date.isoformat(), a.symbol.ticker, a.symbol.exchange, a.scenario.name, a.alerts])
-    _autosize(ws3)
-
-    bio = BytesIO(); wb.save(bio); bio.seek(0)
-    resp = HttpResponse(bio.getvalue(), content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    resp["Content-Disposition"] = 'attachment; filename="stock_data_export.xlsx"'
-    return resp
+    job = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.EXPORT_DATA_XLSX,
+        status=ProcessingJob.Status.PENDING,
+        created_by=request.user,
+        message="Queued legacy data XLSX export",
+    )
+    async_result = export_data_xlsx_task.delay(
+        job_id=job.id,
+        ticker=ticker,
+        exchange=exchange,
+        scenario_id=scenario_id,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
+    messages.success(request, f"Export XLSX lancé en background (job #{job.id}).")
+    return redirect("job_detail", pk=job.id)
 
 
 @login_required
@@ -1883,6 +1849,36 @@ def job_detail(request, pk: int):
     job = get_object_or_404(ProcessingJob.objects.select_related("backtest", "scenario", "created_by"), pk=pk)
     return render(request, "job_detail.html", {"job": job})
 
+
+@login_required
+def job_download(request, pk: int):
+    """Download an artifact produced by a ProcessingJob (e.g. async XLSX export)."""
+    from django.http import FileResponse, Http404
+    from pathlib import Path
+
+    job = get_object_or_404(ProcessingJob.objects.select_related("created_by"), pk=pk)
+    if job.created_by and job.created_by != request.user and not request.user.is_staff:
+        raise Http404("Not allowed")
+
+    p = (job.output_file or "").strip()
+    if not p:
+        raise Http404("No file")
+
+    path = Path(p)
+    # Safety: only allow files under /data/exports
+    try:
+        path_resolved = path.resolve()
+        if not str(path_resolved).startswith(str(Path("/data/exports").resolve())):
+            raise Http404("Invalid path")
+    except Exception:
+        raise Http404("Invalid path")
+
+    if not path_resolved.exists():
+        raise Http404("Missing file")
+
+    filename = (job.output_name or path_resolved.name)
+    return FileResponse(open(path_resolved, "rb"), as_attachment=True, filename=filename)
+
 @login_required
 def job_cancel(request, pk: int):
     """Request a cooperative cancellation for a running/pending job.
@@ -2211,68 +2207,38 @@ def backtest_results(request, pk: int):
 
 @login_required
 def backtest_export_debug_csv(request, pk: int):
-    """Export a debug CSV for one (ticker, line) from Backtest.results."""
+    """Async export debug CSV for one (ticker, line) from Backtest.results."""
     bt = get_object_or_404(Backtest, pk=pk)
-    results = bt.results or {}
-    tickers_map = results.get("tickers") or {}
-    if not tickers_map:
-        messages.warning(request, "Aucun résultat à exporter (lance le backtest).")
-        return redirect("backtest_detail", pk=pk)
+    ticker = (request.GET.get("ticker") or "").strip()
+    line = (request.GET.get("line") or "").strip()
 
-    ticker = request.GET.get("ticker") or next(iter(tickers_map.keys()))
-    tentry = tickers_map.get(ticker) or next(iter(tickers_map.values()))
-    ticker = ticker if ticker in tickers_map else next(iter(tickers_map.keys()))
+    from .models import ProcessingJob
+    from .tasks import export_backtest_debug_csv_task
 
-    try:
-        line_index = int(request.GET.get("line", "1"))
-    except ValueError:
-        line_index = 1
-    lines = tentry.get("lines") or []
-    line = next((l for l in lines if int(l.get("line_index", 0)) == line_index), None)
-    if line is None and lines:
-        line = lines[0]
-        line_index = int(line.get("line_index", 1))
-
-    try:
-        from .services.backtesting.results_offload import load_daily_from_line
-
-        daily = load_daily_from_line(line or {})
-    except Exception:
-        daily = (line or {}).get("daily") or []
-    if not daily:
-        messages.warning(request, "Pas de données journalières pour cet export.")
-        return redirect("backtest_results", pk=pk)
-
-    # Build a stable header (union of keys)
-    header_keys = []
-    seen = set()
-    for row in daily:
-        for k in row.keys():
-            if k not in seen:
-                seen.add(k)
-                header_keys.append(k)
-
-    response = HttpResponse(content_type="text/csv; charset=utf-8")
-    filename = f"backtest_{bt.id}_{ticker}_L{line_index}_debug.csv"
-    response["Content-Disposition"] = f'attachment; filename="{filename}"'
-
-    writer = csv.writer(response)
-    writer.writerow(header_keys)
-    for row in daily:
-        writer.writerow([row.get(k, "") for k in header_keys])
-
-    return response
+    job = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.EXPORT_BACKTEST_DEBUG_CSV,
+        status=ProcessingJob.Status.PENDING,
+        backtest=bt,
+        created_by=request.user,
+        message=f"Queued debug CSV export for backtest {pk}",
+    )
+    async_result = export_backtest_debug_csv_task.delay(
+        job_id=job.id,
+        backtest_id=bt.id,
+        ticker=ticker,
+        line=line,
+    )
+    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
+    messages.success(request, f"Export Debug CSV lancé en background (job #{job.id}).")
+    return redirect("job_detail", pk=job.id)
 
 
-@login_required
-def backtest_export_excel(request, pk: int):
+def _build_backtest_workbook_full(bt):
     """Export full backtest results to Excel (settings + universe + summary + daily sheets + charts)."""
-    bt = get_object_or_404(Backtest, pk=pk)
     results = bt.results or {}
     tickers_map = results.get("tickers") or {}
     if not tickers_map:
-        messages.warning(request, "Aucun résultat à exporter (lance le backtest).")
-        return redirect("backtest_detail", pk=pk)
+        raise ValueError("Aucun résultat à exporter (lance le backtest).")
 
     # --- Volume guards (optional) ---
     num_tickers_total = len(tickers_map)
@@ -2574,20 +2540,24 @@ def backtest_export_excel(request, pk: int):
                 except Exception:
                     pass
 
-    bio = BytesIO()
-    wb.save(bio)
-    bio.seek(0)
+    
+    return wb, f"backtest_{bt.id}_export"
 
-    response = HttpResponse(
-        bio.getvalue(),
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    )
-    response["Content-Disposition"] = f'attachment; filename="backtest_{bt.id}_export.xlsx"'
-    return response
+def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str = "top", chart_limit: str = "", chart_ticker: str = "", chart_line: str = ""):
+    """Return (Workbook, base_filename) for compact backtest export (Celery-safe)."""
+    from types import SimpleNamespace
 
+    class _GD(dict):
+        def get(self, k, default=None):
+            return super().get(k, default)
 
-@login_required
-def backtest_export_excel_compact(request, pk: int):
+    request = SimpleNamespace(GET=_GD({
+        "charts": charts,
+        "chart_mode": chart_mode,
+        "chart_limit": chart_limit,
+        "chart_ticker": chart_ticker,
+        "chart_line": chart_line,
+    }))
     """Google Sheets-friendly compact export.
 
     This export is designed for many tickers:
@@ -2606,12 +2576,10 @@ def backtest_export_excel_compact(request, pk: int):
       - chart_line=1 (optionnel, utilisé uniquement si chart_mode=first)
     """
 
-    bt = get_object_or_404(Backtest, pk=pk)
     results = bt.results or {}
     tickers_map = results.get("tickers") or {}
     if not tickers_map:
-        messages.warning(request, "Aucun résultat à exporter (lance le backtest).")
-        return redirect("backtest_detail", pk=pk)
+        raise ValueError("Aucun résultat à exporter (lance le backtest).")
 
     # --- Volume guards (optional) ---
     num_tickers_total = len(tickers_map)
@@ -2991,15 +2959,59 @@ def backtest_export_excel_compact(request, pk: int):
             ws_c.append(["(Charts indisponibles dans cet environnement)"])
 
     # Return file
-    bio = BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    response = HttpResponse(
-        bio.getvalue(),
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    
+    return wb, f"backtest_{bt.id}_compact"
+
+
+
+def backtest_export_excel(request, pk: int):
+    """Async export full backtest results to Excel (robust for large results)."""
+    bt = get_object_or_404(Backtest, pk=pk)
+    from .models import ProcessingJob
+    from .tasks import export_backtest_excel_task
+
+    job = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.EXPORT_BACKTEST_XLSX,
+        status=ProcessingJob.Status.PENDING,
+        backtest=bt,
+        created_by=request.user,
+        message=f"Queued backtest XLSX export for backtest {pk}",
     )
-    response["Content-Disposition"] = f'attachment; filename="backtest_{bt.id}_export_compact.xlsx"'
-    return response
+    async_result = export_backtest_excel_task.delay(job_id=job.id, backtest_id=bt.id)
+    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
+    messages.success(request, f"Export Backtest XLSX lancé en background (job #{job.id}).")
+    return redirect("job_detail", pk=job.id)
+
+
+@login_required
+def backtest_export_excel_compact(request, pk: int):
+    """Async export compact backtest Excel."""
+    bt = get_object_or_404(Backtest, pk=pk)
+    charts = (request.GET.get("charts") or "1").strip()
+    chart_mode = (request.GET.get("chart_mode") or "top").strip()
+    chart_limit = (request.GET.get("chart_limit") or "").strip()
+    chart_ticker = (request.GET.get("chart_ticker") or "").strip()
+    chart_line = (request.GET.get("chart_line") or "").strip()
+
+    from .models import ProcessingJob
+    from .tasks import export_backtest_excel_compact_task
+
+    job = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.EXPORT_BACKTEST_XLSX_COMPACT,
+        status=ProcessingJob.Status.PENDING,
+        backtest=bt,
+        created_by=request.user,
+        message=f"Queued compact backtest XLSX export for backtest {pk}",
+    )
+    async_result = export_backtest_excel_compact_task.delay(
+        job_id=job.id,
+        backtest_id=bt.id,
+        charts=charts,
+        chart_mode=chart_mode,
+    )
+    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
+    messages.success(request, f"Export Backtest Compact lancé en background (job #{job.id}).")
+    return redirect("job_detail", pk=job.id)
 
 
 def _safe_fs_segment(value: str) -> str:
@@ -3283,37 +3295,19 @@ def game_scenario_launch(request: HttpRequest, pk: int):
 @login_required
 def game_scenario_export_xlsx(request: HttpRequest, pk: int):
     obj = get_object_or_404(GameScenario, pk=pk)
-    snapshot = obj.today_results if isinstance(obj.today_results, dict) else {}
-    # Backward compatible threshold key (older snapshots used 'threshold').
-    if "threshold_pct" not in snapshot:
-        snapshot["threshold_pct"] = str(snapshot.get("threshold") or obj.tradability_threshold)
-    rows = snapshot.get("rows") or []
+    from .models import ProcessingJob
+    from .tasks import export_game_scenario_xlsx_task
 
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "BMD"
-    ws.append(["ticker", "BMD", "OK", "threshold", "date"])
-    threshold = snapshot.get("threshold") or str(obj.tradability_threshold)
-    dt = snapshot.get("date") or ""
-    for r in rows:
-        ws.append([r.get("ticker"), r.get("bmd"), "OK" if r.get("ok") else "NO", threshold, dt])
-
-    for col in range(1, 6):
-        ws.cell(row=1, column=col).font = Font(bold=True)
-        ws.column_dimensions[get_column_letter(col)].width = 18
-    ws.freeze_panes = "A2"
-
-    bio = BytesIO()
-    wb.save(bio)
-    bio.seek(0)
-    filename = f"game_{obj.pk}_{dt}.xlsx".replace(":", "_")
-    resp = HttpResponse(
-        bio.getvalue(),
-        content_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    job = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.EXPORT_GAME_SCENARIO_XLSX,
+        status=ProcessingJob.Status.PENDING,
+        created_by=request.user,
+        message=f"Queued GameScenario XLSX export for game {pk}",
     )
-    resp["Content-Disposition"] = f'attachment; filename="{filename}"'
-    return resp
-
+    async_result = export_game_scenario_xlsx_task.delay(job_id=job.id, game_scenario_id=obj.id)
+    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
+    messages.success(request, f"Export Game XLSX lancé en background (job #{job.id}).")
+    return redirect("job_detail", pk=job.id)
 
 
 @login_required

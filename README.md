@@ -304,3 +304,10 @@ Configure in `.env`:
 - `APP_TIMEZONE` (e.g. `Asia/Jerusalem`)
 - `DAILY_REFRESH_HOUR` (default `8`)
 - `DAILY_REFRESH_MINUTE` (default `0`)
+
+
+## Async exports (robust)
+
+Heavy exports (Scenario XLSX, All Scenarios ZIP, legacy Data XLSX, Backtest XLSX, Backtest Compact XLSX, Backtest Debug CSV, GameScenario XLSX, Alerts CSV) are now executed in Celery.
+
+When you trigger an export from the UI, a ProcessingJob is created and you are redirected to the job detail page where you can download the generated file when the job is DONE.

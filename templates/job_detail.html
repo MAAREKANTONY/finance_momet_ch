@@ -37,6 +37,9 @@
   {% endif %}
 
   <div class="row" style="gap:8px; margin-top:12px;">
+    {% if job.output_file and job.status == "DONE" %}
+      <a class="btn" href="{% url 'job_download' job.id %}">Download</a>
+    {% endif %}
     <form method="post" action="{% url 'job_cancel' job.id %}">
       {% csrf_token %}
       <button class="btn" type="submit" {% if job.status != "RUNNING" and job.status != "PENDING" %}disabled{% endif %}>Cancel</button>
