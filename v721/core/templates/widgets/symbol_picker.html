@@ -1,0 +1,244 @@
+{% comment %}
+Context:
+- widget.name, widget.value (list of selected ids as strings)
+- widget.attrs.data_selected_json : JSON array of selected {id, ticker, name}
+- widget.attrs.data_search_url : URL to fetch symbols (returns JSON list)
+{% endcomment %}
+
+<div class="symbol-picker-root" data-search-url="{{ widget.attrs.data_search_url|default:'' }}">
+  <div style="display:none">
+    <select name="{{ widget.name }}" id="id_{{ widget.name }}" multiple>
+      {% for v in widget.value %}
+        <option value="{{ v }}" selected></option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="grid-2" style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start;">
+    <div class="card" style="padding: 10px;">
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+        <strong>Disponibles</strong>
+        <input type="text" class="sp-search" placeholder="Rechercher (ticker, nom)…" style="flex:1; min-width:120px;">
+      </div>
+      <div class="muted" style="margin-bottom:8px;">
+        Astuce: tu peux coller une liste (AAPL, MSFT, NVDA) et appuyer Entrée.
+      </div>
+      <div class="sp-available" style="border:1px solid #ddd; border-radius:8px; max-height:280px; overflow:auto; padding:6px;"></div>
+      <div style="display:flex; gap:8px; margin-top:8px; flex-wrap:wrap;">
+        <button type="button" class="btn sp-add-all">Ajouter tous les résultats</button>
+        <button type="button" class="btn sp-clear-search">Effacer recherche</button>
+      </div>
+    </div>
+
+    <div class="card" style="padding: 10px;">
+      <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
+        <strong>Sélectionnés</strong>
+        <span class="muted sp-count"></span>
+        <div style="flex:1"></div>
+        <button type="button" class="btn sp-clear-all">Vider</button>
+      </div>
+      <div class="sp-selected" style="border:1px solid #ddd; border-radius:8px; max-height:320px; overflow:auto; padding:6px;"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+(function(){
+  const root = document.currentScript.previousElementSibling;
+  if (!root || !root.classList.contains('symbol-picker-root')) return;
+
+  const searchUrl = root.getAttribute('data-search-url');
+  const availableEl = root.querySelector('.sp-available');
+  const selectedEl = root.querySelector('.sp-selected');
+  const searchEl = root.querySelector('.sp-search');
+  const countEl = root.querySelector('.sp-count');
+  const addAllBtn = root.querySelector('.sp-add-all');
+  const clearAllBtn = root.querySelector('.sp-clear-all');
+  const clearSearchBtn = root.querySelector('.sp-clear-search');
+  const selectEl = root.querySelector('select[multiple]');
+
+  // Initial selected list provided by form
+  let selected = [];
+  try {
+    selected = JSON.parse(root.closest('.symbol-picker-root')?.dataset?.selectedJson || root.getAttribute('data-selected-json') || '[]');
+  } catch (e) { selected = []; }
+
+  // We store the latest search results for "add all"
+  let lastResults = [];
+
+  function escapeHtml(s){
+    return (s ?? '').toString().replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  function selectedIdsSet(){
+    const s = new Set();
+    selected.forEach(x => s.add(String(x.id)));
+    return s;
+  }
+
+  function syncHiddenSelect(){
+    // Rebuild <select> options with selected ids (labels not needed for submission)
+    selectEl.innerHTML = '';
+    selected.forEach(x => {
+      const opt = document.createElement('option');
+      opt.value = String(x.id);
+      opt.selected = true;
+      opt.textContent = x.ticker || x.name || String(x.id);
+      selectEl.appendChild(opt);
+    });
+    countEl.textContent = `(${selected.length})`;
+  }
+
+  function renderSelected(){
+    selectedEl.innerHTML = '';
+    selected
+      .slice()
+      .sort((a,b) => (a.ticker||'').localeCompare(b.ticker||''))
+      .forEach(x => {
+        const row = document.createElement('div');
+        row.style.display = 'flex';
+        row.style.alignItems = 'center';
+        row.style.justifyContent = 'space-between';
+        row.style.gap = '8px';
+        row.style.padding = '4px 6px';
+        row.style.borderBottom = '1px solid #eee';
+
+        const label = document.createElement('div');
+        label.innerHTML = `<strong>${escapeHtml(x.ticker || '')}</strong> <span class="muted">${escapeHtml(x.name || '')}</span>`;
+        row.appendChild(label);
+
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'btn';
+        btn.textContent = 'Retirer';
+        btn.addEventListener('click', () => {
+          selected = selected.filter(y => String(y.id) !== String(x.id));
+          syncHiddenSelect();
+          renderSelected();
+          // Refresh available list if a search is active
+          if ((searchEl.value || '').trim().length > 0) doSearch(searchEl.value.trim());
+        });
+        row.appendChild(btn);
+
+        selectedEl.appendChild(row);
+      });
+  }
+
+  function renderAvailable(results){
+    availableEl.innerHTML = '';
+    if (!results || results.length === 0){
+      availableEl.innerHTML = '<div class="muted" style="padding:6px;">Aucun résultat.</div>';
+      return;
+    }
+    const selSet = selectedIdsSet();
+    results.forEach(x => {
+      const row = document.createElement('div');
+      row.style.display='flex';
+      row.style.justifyContent='space-between';
+      row.style.alignItems='center';
+      row.style.gap='8px';
+      row.style.padding='4px 6px';
+      row.style.borderBottom='1px solid #eee';
+
+      const label = document.createElement('div');
+      label.innerHTML = `<strong>${escapeHtml(x.ticker || '')}</strong> <span class="muted">${escapeHtml(x.name || '')}</span>`;
+      row.appendChild(label);
+
+      const btn = document.createElement('button');
+      btn.type='button';
+      btn.className='btn';
+      if (selSet.has(String(x.id))){
+        btn.disabled = true;
+        btn.textContent = 'Ajouté';
+      } else {
+        btn.textContent = 'Ajouter';
+        btn.addEventListener('click', () => {
+          selected.push(x);
+          syncHiddenSelect();
+          renderSelected();
+          btn.disabled = true;
+          btn.textContent = 'Ajouté';
+        });
+      }
+      row.appendChild(btn);
+      availableEl.appendChild(row);
+    });
+  }
+
+  async function doSearch(raw){
+    const q = (raw || '').trim();
+    // Support paste list "AAPL, MSFT" => search each token and add all matches
+    const tokens = q.split(/[,\s]+/).filter(Boolean);
+    const isList = tokens.length >= 2 || (tokens.length === 1 && tokens[0].length >= 2 && q.includes(','));
+    const params = new URLSearchParams();
+    params.set('q', q);
+    params.set('limit', '50');
+    params.set('exclude', Array.from(selectedIdsSet()).join(','));
+    const url = searchUrl ? `${searchUrl}?${params.toString()}` : `/symbols/search/?${params.toString()}`;
+
+    try{
+      const resp = await fetch(url, {headers: {'X-Requested-With': 'XMLHttpRequest'}});
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      const data = await resp.json();
+      lastResults = Array.isArray(data) ? data : (data.results || []);
+      renderAvailable(lastResults);
+    }catch(e){
+      availableEl.innerHTML = '<div class="muted" style="padding:6px;">Erreur recherche.</div>';
+    }
+  }
+
+  // Wire buttons
+  addAllBtn.addEventListener('click', () => {
+    const selSet = selectedIdsSet();
+    (lastResults || []).forEach(x => {
+      if (!selSet.has(String(x.id))) selected.push(x);
+    });
+    syncHiddenSelect();
+    renderSelected();
+    // refresh available so buttons show "Ajouté"
+    renderAvailable(lastResults);
+  });
+
+  clearAllBtn.addEventListener('click', () => {
+    selected = [];
+    syncHiddenSelect();
+    renderSelected();
+    // refresh available
+    if ((searchEl.value || '').trim().length > 0) doSearch(searchEl.value.trim());
+  });
+
+  clearSearchBtn.addEventListener('click', () => {
+    searchEl.value = '';
+    lastResults = [];
+    renderAvailable([]);
+  });
+
+  // Search on input (debounced)
+  let t = null;
+  searchEl.addEventListener('input', () => {
+    clearTimeout(t);
+    t = setTimeout(() => {
+      const q = searchEl.value.trim();
+      if (!q) { lastResults = []; renderAvailable([]); return; }
+      doSearch(q);
+    }, 200);
+  });
+  searchEl.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Enter'){
+      ev.preventDefault();
+      const q = searchEl.value.trim();
+      if (q) doSearch(q);
+    }
+  });
+
+  // Load initial selected passed via widget value -> but we need labels; use data-selected-json if provided
+  // Fallback: if no JSON, keep select options (labels are blank) but submission works.
+  // We'll try to read from a script tag attribute (set by forms).
+  const ds = root.getAttribute('data-selected-json');
+  if (ds){
+    try{ selected = JSON.parse(ds); }catch(e){}
+  }
+  syncHiddenSelect();
+  renderSelected();
+})();
+</script>

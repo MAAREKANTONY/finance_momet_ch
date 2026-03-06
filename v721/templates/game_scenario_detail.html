@@ -1,0 +1,75 @@
+{% extends "base.html" %}
+{% load backtest_extras %}
+
+{% block content %}
+<h2>Jeu — {{ obj.name }}</h2>
+
+{% if obj.description %}<p>{{ obj.description }}</p>{% endif %}
+
+<div class="card">
+  <p>
+    <b>Actif:</b> {% if obj.active %}✅{% else %}❌{% endif %}
+    &nbsp; | &nbsp;
+    <b>Jours étude:</b> {{ obj.study_days }}
+    &nbsp; | &nbsp;
+    <b>Seuil:</b> {{ obj.tradability_threshold }}
+  </p>
+  <p>
+    <b>Dernier run:</b> {% if obj.last_run_at %}{{ obj.last_run_at }}{% else %}-{% endif %}
+    &nbsp; | &nbsp;
+    <b>Statut:</b> {{ obj.last_run_status }}
+  </p>
+  {% if obj.last_run_message %}<p class="muted">{{ obj.last_run_message }}</p>{% endif %}
+
+  <form method="post" action="{% url 'game_scenario_launch' obj.pk %}" style="display:inline;">
+    {% csrf_token %}
+    <button class="btn" type="submit">Launch</button>
+  </form>
+
+  <form method="post" action="{% url 'game_scenario_launch' obj.pk %}" style="display:inline;" onsubmit="return confirm('Force Full Recompute : recalcul complet des métriques pour toute la profondeur. Continuer ?');">
+    {% csrf_token %}
+    <input type="hidden" name="force_recompute" value="1" />
+    <button class="btn" type="submit">Force Full Recompute</button>
+  </form>
+  <a class="btn" href="{% url 'game_scenario_export_xlsx' obj.pk %}">Export XLS</a>
+  <a class="btn" href="{% url 'game_scenario_edit' obj.pk %}">Edit</a>
+  <a class="btn" href="{% url 'game_scenarios_page' %}">Retour</a>
+</div>
+
+<h3>Résultats du jour</h3>
+{% if snapshot.date %}
+  <p class="muted">Date: {{ snapshot.date }} | Threshold: {{ snapshot.threshold_pct }}%</p>
+{% endif %}
+
+<table>
+  <thead>
+    <tr>
+      <th>Ticker</th>
+      <th>BMD (%)</th>
+      <th>TRADABLE_DAYS</th>
+      <th>TRADABLE_DAYS_IN_POSITION_CLOSED</th>
+      <th>RATIO_IN_POSITION (%)</th>
+      <th>TRADABLE_DAYS_NOT_IN_POSITION</th>
+      <th>RATIO_NOT_IN_POSITION (%)</th>
+      <th>Tradable</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in rows %}
+      <tr>
+        <td>{{ r.ticker }}</td>
+        <td>{% if r.bmd is not None %}{{ r.bmd|pct:2 }}{% else %}-{% endif %}</td>
+        <td>{{ r.TRADABLE_DAYS|default:"-" }}</td>
+        <td>{{ r.TRADABLE_DAYS_IN_POSITION_CLOSED|default:"-" }}</td>
+        <td>{% if r.RATIO_IN_POSITION is not None %}{{ r.RATIO_IN_POSITION|floatformat:2 }}{% else %}-{% endif %}</td>
+        <td>{{ r.TRADABLE_DAYS_NOT_IN_POSITION|default:"-" }}</td>
+        <td>{% if r.RATIO_NOT_IN_POSITION is not None %}{{ r.RATIO_NOT_IN_POSITION|floatformat:2 }}{% else %}-{% endif %}</td>
+        <td>{% if r.ok %}✅{% else %}❌{% endif %}</td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="8" class="muted">Aucun résultat (lancez le jeu).</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+{% endblock %}
