@@ -3,21 +3,11 @@
 <h2>Traitements (jobs)</h2>
 
 <div class="card">
-  {% if show_counts %}
-<div class="row" style="align-items:center;">
-    <div><span class="pill">PENDING: {{ counts.PENDING }}</span></div>
-    <div><span class="pill">RUNNING: {{ counts.RUNNING }}</span></div>
-    <div><span class="pill">DONE: {{ counts.DONE }}</span></div>
-    <div><span class="pill">FAILED: {{ counts.FAILED }}</span></div>
-    <div><span class="pill">CANCELLED: {{ counts.CANCELLED }}</span></div>
-    <div><span class="pill">KILLED: {{ counts.KILLED }}</span></div>
+  <div class="muted" style="margin-top:6px;">
+    Vue allégée pour rester stable en production. Les compteurs globaux sont volontairement désactivés ici.
   </div>
-{% else %}
-  <div class="muted" style="margin-top:6px;">Compteurs désactivés (table volumineuse). <a href="{% url 'jobs_page' %}?{% if query_string %}{{ query_string }}&{% endif %}show_counts=1">Afficher les compteurs</a></div>
-{% endif %}
 
   <form method="get" style="display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin-top:12px;">
-    {% if show_counts %}<input type="hidden" name="show_counts" value="1">{% endif %}
     <label class="muted">Status</label>
     <select name="status">
       <option value="" {% if not status %}selected{% endif %}>Tous</option>
@@ -38,16 +28,16 @@
     </select>
 
     <label class="muted">Page</label>
-<select name="page_size">
-        {% for s in page_sizes %}
-    <option value="{{ s }}" {% if page_size|stringformat:"s" == s %}selected{% endif %}>{{ s }}</option>
-  {% endfor %}
-</select>
+    <select name="page_size">
+      {% for s in page_sizes %}
+        <option value="{{ s }}" {% if page_size == s %}selected{% endif %}>{{ s }}</option>
+      {% endfor %}
+    </select>
 
     <button class="btn" type="submit">Filtrer</button>
     <a class="btn" href="{% url 'jobs_page' %}">Reset</a>
   </form>
-</div>
+</div></div>
 
 <table>
   <thead>

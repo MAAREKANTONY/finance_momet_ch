@@ -1,6 +1,6 @@
 from django.contrib import admin
 from django.urls import path, include
-from core import views
+from core import job_views, views
 
 urlpatterns = [
     path("admin/", admin.site.urls),
@@ -79,11 +79,11 @@ urlpatterns = [
 
     path("logs/", views.logs_page, name="logs_page"),
     path("health/memory/", views.memory_status, name="memory_status"),
-    path("jobs/", views.jobs_page, name="jobs_page"),
-    path("jobs/<int:pk>/", views.job_detail, name="job_detail"),
-    path("jobs/<int:pk>/download/", views.job_download, name="job_download"),
-    path("jobs/<int:pk>/cancel/", views.job_cancel, name="job_cancel"),
-    path("jobs/<int:pk>/kill/", views.job_kill, name="job_kill"),
+    path("jobs/", job_views.jobs_page, name="jobs_page"),
+    path("jobs/<int:pk>/", job_views.job_detail, name="job_detail"),
+    path("jobs/<int:pk>/download/", job_views.job_download, name="job_download"),
+    path("jobs/<int:pk>/cancel/", job_views.job_cancel, name="job_cancel"),
+    path("jobs/<int:pk>/kill/", job_views.job_kill, name="job_kill"),
     path("backtests/", views.backtests_page, name="backtests_page"),
     path("backtests/new/", views.backtest_create, name="backtest_create"),
     path("backtests/<int:pk>/edit/", views.backtest_update, name="backtest_update"),
