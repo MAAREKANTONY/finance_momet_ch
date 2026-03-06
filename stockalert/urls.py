@@ -78,6 +78,7 @@ urlpatterns = [
     path("api/symbol_search/", views.api_symbol_search, name="api_symbol_search"),
 
     path("logs/", views.logs_page, name="logs_page"),
+    path("health/memory/", views.memory_status, name="memory_status"),
     path("jobs/", views.jobs_page, name="jobs_page"),
     path("jobs/<int:pk>/", views.job_detail, name="job_detail"),
     path("jobs/<int:pk>/download/", views.job_download, name="job_download"),

@@ -46,6 +46,7 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "core.middleware.RequestMemoryLogMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.contrib.sessions.middleware.SessionMiddleware",
     "django.middleware.common.CommonMiddleware",
@@ -157,3 +158,22 @@ JOB_STALE_PENDING_MINUTES = int(os.getenv('JOB_STALE_PENDING_MINUTES', '60'))
 # GameScenario scheduler defaults (used by core.tasks)
 GAME_SCENARIO_RUN_HOUR = int(os.getenv('GAME_SCENARIO_RUN_HOUR', '3'))
 GAME_SCENARIO_RUN_MINUTE = int(os.getenv('GAME_SCENARIO_RUN_MINUTE', '5'))
+
+
+# Lightweight request/memory diagnostics (console only; no behavior change)
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "memory": {
+            "handlers": ["console"],
+            "level": os.getenv("REQUEST_MEMORY_LOG_LEVEL", "INFO"),
+            "propagate": False,
+        },
+    },
+}

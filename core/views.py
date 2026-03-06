@@ -1751,6 +1751,21 @@ from django.core.paginator import Paginator
 
 
 @login_required
+def memory_status(request):
+    """Small diagnostic endpoint for the current web process memory.
+
+    Restricted to staff users to avoid exposing internals.
+    """
+    if not request.user.is_staff:
+        raise Http404()
+    payload = {
+        "path": request.path,
+        **get_process_memory_snapshot(),
+    }
+    return JsonResponse(payload)
+
+
+@login_required
 def logs_page(request):
     """Log viewer to help debug async/background jobs."""
     from django.core.paginator import Paginator
