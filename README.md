@@ -311,3 +311,16 @@ Configure in `.env`:
 Heavy exports (Scenario XLSX, All Scenarios ZIP, legacy Data XLSX, Backtest XLSX, Backtest Compact XLSX, Backtest Debug CSV, GameScenario XLSX, Alerts CSV) are now executed in Celery.
 
 When you trigger an export from the UI, a ProcessingJob is created and you are redirected to the job detail page where you can download the generated file when the job is DONE.
+
+
+## Runtime hardening
+
+The web service now starts through `/app/docker/entrypoint.web.sh` and Gunicorn reads settings from `gunicorn.conf.py`.
+Configure web worker behavior with:
+
+- `WEB_CONCURRENCY` (default `1`)
+- `GUNICORN_TIMEOUT` (default `120`)
+- `GUNICORN_MAX_REQUESTS` (default `20`)
+- `GUNICORN_MAX_REQUESTS_JITTER` (default `10`)
+
+These changes are runtime-only and do not change business logic.
