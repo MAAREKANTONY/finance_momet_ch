@@ -1944,8 +1944,15 @@ def job_kill(request, pk: int):
 
 @login_required
 def backtests_page(request):
-    """Archive page: list saved backtests with a simple search."""
-    qs = Backtest.objects.select_related("scenario").all()
+    """Archive page: list saved backtests with a simple search.
+
+    Important: defer heavy JSON payloads. Backtest.results can be very large and
+    should never be pulled into the archive list page.
+    """
+    qs = Backtest.objects.select_related("scenario").defer(
+        "results", "settings", "universe_snapshot", "signal_lines", "error_message",
+        "scenario__description",
+    )
     q = (request.GET.get("q") or "").strip()
     scenario_id = (request.GET.get("scenario") or "").strip()
 
@@ -3188,7 +3195,10 @@ def symbol_search(request: HttpRequest) -> JsonResponse:
 
 # --- Game Scenarios (Scénario de Jeu) ---
 def game_scenarios_page(request: HttpRequest):
-    qs = GameScenario.objects.all().order_by("-created_at")
+    # Keep the list page light: today_results may contain a full daily snapshot.
+    qs = GameScenario.objects.defer(
+        "today_results", "settings", "signal_lines", "last_run_message", "description"
+    ).order_by("-created_at")
     return render(request, "game_scenarios_list.html", {"items": qs})
 
 
@@ -3333,10 +3343,14 @@ def trigger_page(request: HttpRequest):
         This page is intentionally operational: it exposes explicit buttons for
         common Celery jobs, with optional scoping to a scenario/backtest/game.
         """
-        scenarios = Scenario.objects.order_by("name", "id").all()
-        backtests = Backtest.objects.order_by("-id").all()
-        games = GameScenario.objects.order_by("-id").all()
-        alert_defs = AlertDefinition.objects.order_by("name", "id").all()
+        scenarios = Scenario.objects.only("id", "name").order_by("name", "id")
+        backtests = Backtest.objects.only("id", "name").defer(
+            "results", "settings", "universe_snapshot", "signal_lines", "error_message"
+        ).order_by("-id")
+        games = GameScenario.objects.only("id", "name").defer(
+            "today_results", "settings", "signal_lines", "last_run_message", "description"
+        ).order_by("-id")
+        alert_defs = AlertDefinition.objects.only("id", "name").order_by("name", "id")
 
         if request.method == "POST":
             action = (request.POST.get("action") or "").strip()

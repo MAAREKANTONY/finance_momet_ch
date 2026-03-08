@@ -295,6 +295,23 @@ class GameScenario(models.Model):
         default=Decimal("0"),
         help_text="Seuil de tradabilité (BMD >= seuil => OK).",
     )
+    npente = models.PositiveIntegerField(
+        default=100,
+        help_text="Nombre de jours utilisés pour calculer la moyenne des pentes.",
+    )
+    slope_threshold = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        default=Decimal("0"),
+        help_text="Seuil minimal de pente moyenne (ratio brut, ex: 0.001 = 0.1%).",
+    )
+    presence_threshold_pct = models.DecimalField(
+        max_digits=8,
+        decimal_places=4,
+        validators=[MinValueValidator(Decimal("0"))],
+        default=Decimal("30"),
+        help_text="Seuil minimal de temps de présence en position (%).",
+    )
 
     email_recipients = models.TextField(blank=True, default="")
 

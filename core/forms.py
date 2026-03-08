@@ -456,6 +456,9 @@ class GameScenarioForm(forms.ModelForm):
             "active",
             "study_days",
             "tradability_threshold",
+            "npente",
+            "slope_threshold",
+            "presence_threshold_pct",
             "email_recipients",
             # Scenario params
             "a",

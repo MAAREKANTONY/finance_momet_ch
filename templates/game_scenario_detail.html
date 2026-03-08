@@ -12,7 +12,13 @@
     &nbsp; | &nbsp;
     <b>Jours étude:</b> {{ obj.study_days }}
     &nbsp; | &nbsp;
-    <b>Seuil:</b> {{ obj.tradability_threshold }}
+    <b>Seuil BMD:</b> {{ obj.tradability_threshold }}%
+    &nbsp; | &nbsp;
+    <b>Npente:</b> {{ obj.npente }}
+    &nbsp; | &nbsp;
+    <b>Seuil pente:</b> {{ obj.slope_threshold }}
+    &nbsp; | &nbsp;
+    <b>Seuil présence:</b> {{ obj.presence_threshold_pct }}%
   </p>
   <p>
     <b>Dernier run:</b> {% if obj.last_run_at %}{{ obj.last_run_at }}{% else %}-{% endif %}
@@ -38,7 +44,7 @@
 
 <h3>Résultats du jour</h3>
 {% if snapshot.date %}
-  <p class="muted">Date: {{ snapshot.date }} | Threshold: {{ snapshot.threshold_pct }}%</p>
+  <p class="muted">Date: {{ snapshot.date }} | BMD threshold: {{ snapshot.threshold_pct }}% | Npente: {{ snapshot.npente|default:obj.npente }} | Slope threshold: {{ snapshot.slope_threshold|default:obj.slope_threshold }} | Presence threshold: {{ snapshot.presence_threshold_pct|default:obj.presence_threshold_pct }}%</p>
 {% endif %}
 
 <table>
@@ -46,11 +52,10 @@
     <tr>
       <th>Ticker</th>
       <th>BMD (%)</th>
+      <th>AVG_SLOPE</th>
       <th>TRADABLE_DAYS</th>
       <th>TRADABLE_DAYS_IN_POSITION_CLOSED</th>
       <th>RATIO_IN_POSITION (%)</th>
-      <th>TRADABLE_DAYS_NOT_IN_POSITION</th>
-      <th>RATIO_NOT_IN_POSITION (%)</th>
       <th>Tradable</th>
     </tr>
   </thead>
@@ -59,15 +64,14 @@
       <tr>
         <td>{{ r.ticker }}</td>
         <td>{% if r.bmd is not None %}{{ r.bmd|pct:2 }}{% else %}-{% endif %}</td>
+        <td>{% if r.avg_slope is not None %}{{ r.avg_slope|floatformat:6 }}{% else %}-{% endif %}</td>
         <td>{{ r.TRADABLE_DAYS|default:"-" }}</td>
         <td>{{ r.TRADABLE_DAYS_IN_POSITION_CLOSED|default:"-" }}</td>
         <td>{% if r.RATIO_IN_POSITION is not None %}{{ r.RATIO_IN_POSITION|floatformat:2 }}{% else %}-{% endif %}</td>
-        <td>{{ r.TRADABLE_DAYS_NOT_IN_POSITION|default:"-" }}</td>
-        <td>{% if r.RATIO_NOT_IN_POSITION is not None %}{{ r.RATIO_NOT_IN_POSITION|floatformat:2 }}{% else %}-{% endif %}</td>
         <td>{% if r.ok %}✅{% else %}❌{% endif %}</td>
       </tr>
     {% empty %}
-      <tr><td colspan="8" class="muted">Aucun résultat (lancez le jeu).</td></tr>
+      <tr><td colspan="6" class="muted">Aucun résultat (lancez le jeu).</td></tr>
     {% endfor %}
   </tbody>
 </table>

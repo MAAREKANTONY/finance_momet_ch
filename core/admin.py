@@ -93,5 +93,9 @@ class ProcessingJobAdmin(admin.ModelAdmin):
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
-        # Avoid loading heavy text columns for the changelist.
-        return qs.defer("message", "error")
+        # Avoid loading heavy local text columns and huge related JSON payloads.
+        return qs.defer(
+            "message", "error",
+            "backtest__results", "backtest__settings", "backtest__universe_snapshot", "backtest__signal_lines",
+            "scenario__description",
+        )

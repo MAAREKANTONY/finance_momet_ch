@@ -11,6 +11,37 @@ from core.services.backtesting.engine import run_backtest_kpi_only
 from core.services.metrics_depth import check_metrics_depth
 
 
+def _compute_avg_slope_for_ticker(*, symbol_id: int, end_d: date, npente: int) -> str | None:
+    """Return average daily slope over the last `npente` market days for one ticker.
+
+    slope(t) = (P(t) - P(t-1)) / P(t-1)
+    Stored as raw ratio (0.001 = 0.1%).
+    """
+    try:
+        window = max(int(npente or 0), 1) + 1
+    except Exception:
+        window = 101
+    bars = list(
+        DailyBar.objects.filter(symbol_id=symbol_id, date__lte=end_d)
+        .order_by("-date")
+        .values_list("close", flat=True)[:window]
+    )
+    if len(bars) < 2:
+        return None
+    closes = list(reversed([Decimal(str(v)) for v in bars if v is not None]))
+    slopes = []
+    for prev_p, cur_p in zip(closes, closes[1:]):
+        if prev_p == 0:
+            continue
+        slopes.append((cur_p - prev_p) / prev_p)
+        if len(slopes) >= max(int(npente or 0), 1):
+            break
+    if not slopes:
+        return None
+    avg = sum(slopes, Decimal("0")) / Decimal(len(slopes))
+    return str(avg)
+
+
 def _sync_engine_scenario(game: GameScenario) -> Scenario:
     """Create or update the internal Scenario used to persist metrics/alerts."""
     sc = game.engine_scenario
@@ -122,6 +153,7 @@ def run_game_scenario_now(
     scenario = _sync_engine_scenario(game)
 
     symbols = Symbol.objects.filter(active=True).order_by("ticker")
+    symbol_map = dict(symbols.values_list("ticker", "id"))
 
     _job_checkpoint(job)
 
@@ -180,14 +212,23 @@ def run_game_scenario_now(
     # 6) Build today's snapshot
     rows = []
     # NOTE: BMD returned by the engine is a *ratio* (0.01 == 1%).
-    # UX choice: in the Game UI, the user enters the threshold as a *percent* value
+    # UX choice: in the Game UI, the BMD threshold is entered as a *percent* value
     # (e.g. 0.3 means 0.3%). We therefore convert it to a ratio for the comparison.
-    thr_pct = game.tradability_threshold  # percent value (0.3 == 0.3%)
-    thr_ratio = None
+    thr_pct = game.tradability_threshold
     try:
         thr_ratio = Decimal(str(thr_pct)) / Decimal("100")
     except Exception:
         thr_ratio = None
+    try:
+        slope_threshold = Decimal(str(game.slope_threshold))
+    except Exception:
+        slope_threshold = None
+    try:
+        presence_threshold_pct = Decimal(str(game.presence_threshold_pct))
+    except Exception:
+        presence_threshold_pct = None
+    npente = int(game.npente or 100)
+
     for ticker, tentry in out.items():
         best = tentry.get("best_bmd")  # ratio (string/Decimal/None)
 
@@ -213,41 +254,57 @@ def run_game_scenario_now(
             except Exception:
                 best_final = {}
 
-        # Derive ratios (percent values, 0..100). Stored as strings for JSON stability.
         td = int(best_final.get("TRADABLE_DAYS") or 0) if isinstance(best_final, dict) else 0
         ip = int(best_final.get("TRADABLE_DAYS_IN_POSITION_CLOSED") or 0) if isinstance(best_final, dict) else 0
-        nip = int(best_final.get("TRADABLE_DAYS_NOT_IN_POSITION") or 0) if isinstance(best_final, dict) else 0
         ratio_ip = None
-        ratio_nip = None
+        ratio_ip_dec = None
         if td > 0:
             try:
-                ratio_ip = str((Decimal(ip) / Decimal(td)) * Decimal("100"))
-                ratio_nip = str((Decimal(nip) / Decimal(td)) * Decimal("100"))
+                ratio_ip_dec = (Decimal(ip) / Decimal(td)) * Decimal("100")
+                ratio_ip = str(ratio_ip_dec)
             except Exception:
                 ratio_ip = None
-                ratio_nip = None
+                ratio_ip_dec = None
+
+        symbol_id = symbol_map.get(ticker)
+        avg_slope = _compute_avg_slope_for_ticker(symbol_id=symbol_id, end_d=end_d, npente=npente) if symbol_id else None
+        try:
+            avg_slope_dec = None if avg_slope is None else Decimal(str(avg_slope))
+        except Exception:
+            avg_slope_dec = None
+
         ok = False
-        if best is not None and thr_ratio is not None:
+        if best is not None and thr_ratio is not None and slope_threshold is not None and presence_threshold_pct is not None:
             try:
                 bmd_ratio = Decimal(str(best))
-                ok = (bmd_ratio >= thr_ratio)
+                ok = (
+                    (bmd_ratio >= thr_ratio)
+                    and (avg_slope_dec is not None and avg_slope_dec >= slope_threshold)
+                    and (ratio_ip_dec is not None and ratio_ip_dec >= presence_threshold_pct)
+                )
             except Exception:
                 ok = False
-        # Keep raw ratio in snapshot; display layer formats as %.
+
         rows.append(
             {
                 "ticker": ticker,
                 "bmd": best,
+                "avg_slope": avg_slope,
                 "ok": bool(ok),
                 "TRADABLE_DAYS": td,
                 "TRADABLE_DAYS_IN_POSITION_CLOSED": ip,
                 "RATIO_IN_POSITION": ratio_ip,
-                "TRADABLE_DAYS_NOT_IN_POSITION": nip,
-                "RATIO_NOT_IN_POSITION": ratio_nip,
             }
         )
 
-    snapshot = {"date": str(end_d), "rows": rows, "threshold_pct": str(thr_pct)}
+    snapshot = {
+        "date": str(end_d),
+        "rows": rows,
+        "threshold_pct": str(thr_pct),
+        "npente": npente,
+        "slope_threshold": str(game.slope_threshold),
+        "presence_threshold_pct": str(game.presence_threshold_pct),
+    }
 
     with transaction.atomic():
         game = GameScenario.objects.select_for_update().get(id=game_id)

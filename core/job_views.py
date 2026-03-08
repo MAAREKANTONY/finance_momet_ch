@@ -129,7 +129,10 @@ def jobs_page(request: HttpRequest) -> HttpResponse:
 @login_required
 def job_detail(request: HttpRequest, pk: int) -> HttpResponse:
     job = get_object_or_404(
-        ProcessingJob.objects.select_related("backtest", "scenario", "created_by"),
+        ProcessingJob.objects.select_related("backtest", "scenario", "created_by").defer(
+            "backtest__results", "backtest__settings", "backtest__universe_snapshot", "backtest__signal_lines",
+            "scenario__description",
+        ),
         pk=pk,
     )
     return render(request, "job_detail.html", {"job": job})
@@ -137,7 +140,13 @@ def job_detail(request: HttpRequest, pk: int) -> HttpResponse:
 
 @login_required
 def job_download(request: HttpRequest, pk: int) -> HttpResponse:
-    job = get_object_or_404(ProcessingJob.objects.select_related("created_by"), pk=pk)
+    job = get_object_or_404(
+        ProcessingJob.objects.select_related("created_by", "backtest", "scenario").defer(
+            "backtest__results", "backtest__settings", "backtest__universe_snapshot", "backtest__signal_lines",
+            "scenario__description",
+        ),
+        pk=pk,
+    )
     if job.created_by and job.created_by != request.user and not request.user.is_staff:
         raise Http404("Not allowed")
 
