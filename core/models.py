@@ -116,6 +116,17 @@ class Scenario(models.Model):
         help_text="Kf3: période nominale (défaut 100).",
     )
 
+    npente = models.PositiveIntegerField(
+        default=100,
+        help_text="Nombre de jours utilisés pour calculer SUM((P(t)-P(t-1))/P(t-1)) pour SPa/SPv.",
+    )
+    slope_threshold = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        default=Decimal("0.1"),
+        help_text="Seuil de pente utilisé par SPa/SPv (ratio brut, ex: 0.1 = 10%).",
+    )
+
     # --- V line parameters (V5.2.37) ---
     # M_V: window (in days) used for the rolling max of daily highs.
     # Default: 20 days.
@@ -302,8 +313,8 @@ class GameScenario(models.Model):
     slope_threshold = models.DecimalField(
         max_digits=18,
         decimal_places=8,
-        default=Decimal("0"),
-        help_text="Seuil minimal de pente moyenne (ratio brut, ex: 0.001 = 0.1%).",
+        default=Decimal("0.1"),
+        help_text="Seuil de pente utilisé à la fois pour la tradabilité du Game et pour SPa/SPv (ratio brut, ex: 0.1 = 10%).",
     )
     presence_threshold_pct = models.DecimalField(
         max_digits=8,
@@ -632,6 +643,7 @@ class DailyMetric(models.Model):
 
     V = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # daily close variation ratio
     slope_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # avg of V over last N3 days
+    sum_slope = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # sum of daily study-price slopes over Npente days
     sum_pos_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # sum positive slope_P
     nb_pos_P = models.PositiveIntegerField(null=True, blank=True)
     ratio_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # nb_pos_P / N4

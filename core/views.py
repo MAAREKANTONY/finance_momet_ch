@@ -828,6 +828,8 @@ def _clone_scenario_for_study(*, study_name: str, created_by, source: Scenario |
             n5=source.n5,
             k2j=source.k2j,
             cr=source.cr,
+            npente=getattr(source, "npente", 100),
+            slope_threshold=getattr(source, "slope_threshold", 0.1),
             m_v=source.m_v,
             history_years=source.history_years,
             active=True,

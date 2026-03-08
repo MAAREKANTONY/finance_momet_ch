@@ -21,6 +21,10 @@ BACKTEST_SIGNAL_CHOICES = [
     ("AF3", "AF3 (P croise Kf3 de bas en haut)"),
     ("BF3", "BF3 (P croise Kf3 de haut en bas)"),
 
+    # SUM_SLOPE threshold crossing
+    ("SPa", "SPa (SUM_SLOPE croise le seuil de pente vers le haut)"),
+    ("SPv", "SPv (SUM_SLOPE croise le seuil de pente vers le bas)"),
+
     # V line (rolling max-high then rolling mean)
     ("I1", "I1 (High croise V de bas en haut)"),
     ("J1", "J1 (High croise V de haut en bas)"),
@@ -122,6 +126,8 @@ class ScenarioForm(forms.ModelForm):
             "nampL3",
             "baseL3",
             "periodeL3",
+            "npente",
+            "slope_threshold",
             "m_v",
             "history_years",
             "active",
@@ -331,6 +337,8 @@ class StudyScenarioForm(forms.ModelForm):
             "n5",
             "k2j",
             "cr",
+            "npente",
+            "slope_threshold",
             "m_v",
             "history_years",
             "symbols",

@@ -6,41 +6,31 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from core.models import Backtest, DailyBar, GameScenario, Scenario, Symbol, ProcessingJob
+from core.models import Backtest, DailyMetric, GameScenario, Scenario, Symbol, ProcessingJob
 from core.services.backtesting.engine import run_backtest_kpi_only
 from core.services.metrics_depth import check_metrics_depth
 
 
-def _compute_avg_slope_for_ticker(*, symbol_id: int, end_d: date, npente: int) -> str | None:
-    """Return cumulative slope over the last `npente` market days for one ticker.
+def _compute_avg_slope_for_ticker(*, scenario_id: int, symbol_id: int, end_d: date) -> str | None:
+    """Return the latest persisted SUM_SLOPE metric for one ticker/game scenario.
 
-    slope(t) = (P(t) - P(t-1)) / P(t-1)
-    Result = SUM(slope(t)) on the last `npente` valid slopes.
-    Stored as raw ratio (0.001 = 0.1%).
+    SUM_SLOPE is computed from the scenario study price P and persisted in DailyMetric.
+    Stored as raw ratio (0.1 = 10%).
     """
-    try:
-        window = max(int(npente or 0), 1) + 1
-    except Exception:
-        window = 101
-    bars = list(
-        DailyBar.objects.filter(symbol_id=symbol_id, date__lte=end_d)
+    dm = (
+        DailyMetric.objects.filter(
+            scenario_id=scenario_id,
+            symbol_id=symbol_id,
+            date__lte=end_d,
+            sum_slope__isnull=False,
+        )
         .order_by("-date")
-        .values_list("close", flat=True)[:window]
+        .only("sum_slope")
+        .first()
     )
-    if len(bars) < 2:
+    if dm is None or dm.sum_slope is None:
         return None
-    closes = list(reversed([Decimal(str(v)) for v in bars if v is not None]))
-    slopes = []
-    for prev_p, cur_p in zip(closes, closes[1:]):
-        if prev_p == 0:
-            continue
-        slopes.append((cur_p - prev_p) / prev_p)
-        if len(slopes) >= max(int(npente or 0), 1):
-            break
-    if not slopes:
-        return None
-    total = sum(slopes, Decimal("0"))
-    return str(total)
+    return str(dm.sum_slope)
 
 
 def _sync_engine_scenario(game: GameScenario) -> Scenario:
@@ -76,6 +66,8 @@ def _sync_engine_scenario(game: GameScenario) -> Scenario:
         "nampL3",
         "baseL3",
         "periodeL3",
+        "npente",
+        "slope_threshold",
         "m_v",
     ]:
         setattr(sc, f, getattr(game, f))
@@ -268,7 +260,7 @@ def run_game_scenario_now(
                 ratio_ip_dec = None
 
         symbol_id = symbol_map.get(ticker)
-        avg_slope = _compute_avg_slope_for_ticker(symbol_id=symbol_id, end_d=end_d, npente=npente) if symbol_id else None
+        avg_slope = _compute_avg_slope_for_ticker(scenario_id=scenario.id, symbol_id=symbol_id, end_d=end_d) if symbol_id else None
         try:
             avg_slope_dec = None if avg_slope is None else Decimal(str(avg_slope))
         except Exception:

@@ -188,6 +188,7 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
     n5f3 = int(getattr(scenario, 'n5f3', 0) or 0)
     nampL3 = int(getattr(scenario, 'nampL3', 0) or 0)
     periodeL3 = int(getattr(scenario, 'periodeL3', 0) or 0)
+    npente = int(getattr(scenario, 'npente', 0) or 0)
     # Kf3 needs Mf1/Xf1: n5f3 + n5f3/2, plus amp window, plus slope window (can expand but we clamp to 5000).
     lookback_kf3 = max((n5f3 + max(1, n5f3 // 2) + 5) if n5f3 else 0, (nampL3 + 5) if nampL3 else 0, (periodeL3 + 5) if periodeL3 else 0)
 
@@ -261,6 +262,8 @@ def _indicator_params_from_scenario_like(obj) -> dict:
         "n5", "k2j", "cr",
         # Kf3
         "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
+        # SUM_SLOPE / SPa-SPv
+        "npente", "slope_threshold",
         # V line
         "m_v",
     ]
@@ -284,13 +287,15 @@ def _buffer_days_for_scenario(scenario: Scenario) -> int:
     n5f3 = int(getattr(scenario, 'n5f3', 0) or 0)
     nampL3 = int(getattr(scenario, 'nampL3', 0) or 0)
     periodeL3 = int(getattr(scenario, 'periodeL3', 0) or 0)
+    npente = int(getattr(scenario, 'npente', 0) or 0)
 
     lookback_kf3 = max(
         (n5f3 + max(1, n5f3 // 2) + 5) if n5f3 else 0,
         (nampL3 + 5) if nampL3 else 0,
         (periodeL3 + 5) if periodeL3 else 0,
     )
-    lookback_trading = max((n1 + n2 + 5), (n3 + n4 + 5), (n1 + 5), (n5 + k2j + 5), lookback_kf3, 20)
+    lookback_sum_slope = (npente + 5) if npente else 0
+    lookback_trading = max((n1 + n2 + 5), (n3 + n4 + 5), (n1 + 5), (n5 + k2j + 5), lookback_kf3, lookback_sum_slope, 20)
     return int(lookback_trading * 2 + 10)
 
 
@@ -312,7 +317,7 @@ def _clone_metrics_and_alerts(
         "K1", "K1f", "K2f", "K2f_pre",
         "Kf3", "K2", "K3", "K4",
         "V_pre", "V_line",
-        "V", "slope_P", "sum_pos_P", "nb_pos_P", "ratio_P", "amp_h",
+        "V", "slope_P", "sum_slope", "sum_pos_P", "nb_pos_P", "ratio_P", "amp_h",
     ]
 
     for sym in symbols:
@@ -859,6 +864,7 @@ def _ensure_game_engine_scenario(game: GameScenario) -> Scenario:
         "n1", "n2", "n3", "n4",
         "n5", "k2j", "cr",
         "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
+        "npente", "slope_threshold",
         "m_v",
     ]:
         setattr(sc, f, getattr(game, f))

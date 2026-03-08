@@ -155,6 +155,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
 
     n3 = int(getattr(scenario, "n3", 0) or 0)
     n4 = int(getattr(scenario, "n4", 0) or 0)
+    npente = int(getattr(scenario, "npente", 100) or 100)
 
     slope_P = None
     if n3 and n3 > 0:
@@ -170,6 +171,22 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                     vs.append((c2 - c1) * D(100) / c1)
             if len(vs) == n3:
                 slope_P = sum(vs) / D(n3)
+
+    sum_slope = None
+    if npente and npente > 0:
+        prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:npente])
+        prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
+        p_series = prior_Ps + [D(P)]
+        if len(p_series) >= 2:
+            vals = []
+            for i in range(1, len(p_series)):
+                p0 = D(p_series[i - 1])
+                p1 = D(p_series[i])
+                if p0 in (None, 0) or p1 is None:
+                    continue
+                vals.append((p1 - p0) / p0)
+            if vals:
+                sum_slope = sum(vals)
 
     sum_pos_P = None
     nb_pos_P = None
@@ -481,6 +498,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             "K4": K4,
             "V": V,
             "slope_P": slope_P,
+            "sum_slope": sum_slope,
             "sum_pos_P": sum_pos_P,
             "nb_pos_P": nb_pos_P,
             "ratio_P": ratio_P,
@@ -571,6 +589,19 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             alerts.append("AF3")
         if cross_down:
             alerts.append("BF3")
+    except Exception:
+        pass
+
+    # SUM_SLOPE alerts (SPa/SPv) based on crossing the configured slope threshold
+    try:
+        prev_sum_slope = D(getattr(prev_metric, "sum_slope", None))
+        cur_sum_slope = D(getattr(metric, "sum_slope", None))
+        slope_threshold = D(getattr(scenario, "slope_threshold", None))
+        if prev_sum_slope is not None and cur_sum_slope is not None and slope_threshold is not None:
+            if (prev_sum_slope < slope_threshold) and (cur_sum_slope > slope_threshold):
+                alerts.append("SPa")
+            elif (prev_sum_slope > slope_threshold) and (cur_sum_slope < slope_threshold):
+                alerts.append("SPv")
     except Exception:
         pass
 

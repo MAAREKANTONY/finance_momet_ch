@@ -77,6 +77,10 @@ def compute_full_for_symbol_scenario(
     baseL3 = D(getattr(scenario, "baseL3", D("0.02")))
     periodeL3 = int(getattr(scenario, "periodeL3", 100) or 100)
 
+    # --- SUM_SLOPE / SPa-SPv ---
+    npente = int(getattr(scenario, "npente", 100) or 100)
+    slope_threshold = D(getattr(scenario, "slope_threshold", D("0.1")))
+
     # --- V line parameters (V5.2.37) ---
     m_v = int(getattr(scenario, "m_v", 20) or 20)
     m1_v = max(1, int(m_v / 2))
@@ -94,6 +98,7 @@ def compute_full_for_symbol_scenario(
     prior_X = deque(maxlen=n2 if n2 > 0 else 1)
 
     closes_for_slope = deque(maxlen=(n3 + 1) if n3 and n3 > 0 else 1)
+    sum_slope_window = deque(maxlen=(npente + 1) if npente and npente > 0 else 1)
     slopes_for_ratio = deque(maxlen=n4 if n4 and n4 > 0 else 1)
 
     # K2f rolling windows
@@ -116,7 +121,8 @@ def compute_full_for_symbol_scenario(
     prev_P = None
     prev_high = None
     prev_vline = None
-    prev_k = None  # (K1,K2f,K1f,K2,K3,K4) for alert crossing
+    prev_k = None  # (P,M1,X1,Q,S,K1,K1f,K2f,Kf3) for alert crossing
+    prev_sum_slope = None
     prev_kf3 = None
 
     metrics: List[DailyMetric] = []
@@ -165,7 +171,7 @@ def compute_full_for_symbol_scenario(
         K1 = K1f = K2f_pre = K2f = K2 = K3 = K4 = None
         Kf3 = None
         diff_slope = None
-        V = slope_P = sum_pos_P = nb_pos_P = ratio_P = amp_h = None
+        V = slope_P = sum_slope = sum_pos_P = nb_pos_P = ratio_P = amp_h = None
 
         # --- V line (V5.2.37) ---
         V_pre_line = None
@@ -217,6 +223,20 @@ def compute_full_for_symbol_scenario(
                     vs.append((c2 - c1) * D(100) / c1)
                 if ok and len(vs) == n3:
                     slope_P = sum(vs) / D(n3)
+
+        # sum_slope: SUM((P(t)-P(t-1))/P(t-1)) over Npente days
+        if npente and npente > 0 and P is not None:
+            sum_slope_window.appendleft(P)
+            if len(sum_slope_window) >= 2:
+                vals = []
+                max_i = min(npente, len(sum_slope_window) - 1)
+                for i in range(max_i):
+                    p1 = D(sum_slope_window[i])
+                    p0 = D(sum_slope_window[i + 1])
+                    if p0 not in (None, 0) and p1 is not None:
+                        vals.append((p1 - p0) / p0)
+                if vals:
+                    sum_slope = sum(vals)
 
         # ratio_P, amp_h depend on last n4 slopes (including current day if any)
         if n4 and n4 > 0 and n3 and n3 > 0 and slope_P is not None:
@@ -365,6 +385,7 @@ def compute_full_for_symbol_scenario(
                 K4=K4,
                 V=V,
                 slope_P=slope_P,
+                sum_slope=sum_slope,
                 sum_pos_P=sum_pos_P,
                 nb_pos_P=nb_pos_P,
                 ratio_P=ratio_P,
@@ -448,6 +469,16 @@ def compute_full_for_symbol_scenario(
             except Exception:
                 pass
 
+        # SUM_SLOPE alerts (SPa/SPv)
+        try:
+            if prev_sum_slope is not None and sum_slope is not None and slope_threshold is not None:
+                if (prev_sum_slope < slope_threshold) and (sum_slope > slope_threshold):
+                    current_alerts.append("SPa")
+                elif (prev_sum_slope > slope_threshold) and (sum_slope < slope_threshold):
+                    current_alerts.append("SPv")
+        except Exception:
+            pass
+
         # V line alerts (I1/J1): High crosses V_line
         try:
             if prev_high is not None and prev_vline is not None and H is not None and V_line_line is not None:
@@ -472,6 +503,7 @@ def compute_full_for_symbol_scenario(
         # Keep what we need for next-day crossings.
         if P is not None and M1 is not None and X1 is not None and Q is not None and S is not None:
             prev_k = (P, M1, X1, Q, S, K1, K1f, K2f, Kf3)
+        prev_sum_slope = sum_slope
 
         # Update V line previous values
         if H is not None:
