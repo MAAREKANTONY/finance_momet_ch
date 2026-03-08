@@ -8,7 +8,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Application version (shown in UI footer)
 # NOTE: can be overridden via environment variable APP_VERSION
-APP_VERSION = "V7.0.8-STEP1"
+APP_VERSION = os.getenv("APP_VERSION", "V7.0.24")
 
 # Load .env if present (does not override real env vars by default)
 load_dotenv(BASE_DIR / ".env", override=False)
@@ -124,6 +124,17 @@ CELERY_TIMEZONE = TIME_ZONE
 
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 DEFAULT_EXCHANGE = os.getenv("DEFAULT_EXCHANGE", "")
+
+# Twelve Data safety throttling
+# Keep the default below the provider hard limit to preserve a margin and avoid
+# bursty minute-overflows on full-market refreshes.
+TWELVEDATA_RATE_LIMIT_ENABLED = os.getenv("TWELVEDATA_RATE_LIMIT_ENABLED", "1") == "1"
+TWELVEDATA_MAX_CALLS_PER_MINUTE = int(os.getenv("TWELVEDATA_MAX_CALLS_PER_MINUTE", "340"))
+TWELVEDATA_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("TWELVEDATA_RATE_LIMIT_WINDOW_SECONDS", "60"))
+TWELVEDATA_RATE_LIMIT_SLEEP_BUFFER_SECONDS = float(os.getenv("TWELVEDATA_RATE_LIMIT_SLEEP_BUFFER_SECONDS", "0.25"))
+TWELVEDATA_RATE_LIMIT_KEY_PREFIX = os.getenv("TWELVEDATA_RATE_LIMIT_KEY_PREFIX", "ratelimit:twelvedata")
+TWELVEDATA_BACKOFF_SECONDS = int(os.getenv("TWELVEDATA_BACKOFF_SECONDS", "65"))
+TWELVEDATA_MAX_RETRIES = int(os.getenv("TWELVEDATA_MAX_RETRIES", "3"))
 
 FETCH_BARS_HOUR = int(os.getenv("FETCH_BARS_HOUR", "23"))
 COMPUTE_HOUR = int(os.getenv("COMPUTE_HOUR", "23"))

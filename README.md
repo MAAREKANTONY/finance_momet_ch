@@ -324,3 +324,21 @@ Configure web worker behavior with:
 - `GUNICORN_MAX_REQUESTS_JITTER` (default `10`)
 
 These changes are runtime-only and do not change business logic.
+
+
+## Twelve Data rate limiting
+
+To protect full-market fetches from minute-credit overflows, the app can throttle
+provider calls globally through Redis. Recommended production values:
+
+```env
+TWELVEDATA_RATE_LIMIT_ENABLED=1
+TWELVEDATA_MAX_CALLS_PER_MINUTE=340
+TWELVEDATA_RATE_LIMIT_WINDOW_SECONDS=60
+TWELVEDATA_RATE_LIMIT_SLEEP_BUFFER_SECONDS=0.25
+TWELVEDATA_BACKOFF_SECONDS=65
+TWELVEDATA_MAX_RETRIES=3
+```
+
+This keeps a safety margin below a 377 calls/minute plan and allows large full
+fetches to span multiple minutes without hard failures.

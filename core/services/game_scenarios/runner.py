@@ -12,9 +12,10 @@ from core.services.metrics_depth import check_metrics_depth
 
 
 def _compute_avg_slope_for_ticker(*, symbol_id: int, end_d: date, npente: int) -> str | None:
-    """Return average daily slope over the last `npente` market days for one ticker.
+    """Return cumulative slope over the last `npente` market days for one ticker.
 
     slope(t) = (P(t) - P(t-1)) / P(t-1)
+    Result = SUM(slope(t)) on the last `npente` valid slopes.
     Stored as raw ratio (0.001 = 0.1%).
     """
     try:
@@ -38,8 +39,8 @@ def _compute_avg_slope_for_ticker(*, symbol_id: int, end_d: date, npente: int) -
             break
     if not slopes:
         return None
-    avg = sum(slopes, Decimal("0")) / Decimal(len(slopes))
-    return str(avg)
+    total = sum(slopes, Decimal("0"))
+    return str(total)
 
 
 def _sync_engine_scenario(game: GameScenario) -> Scenario:
