@@ -6,7 +6,7 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
-from core.models import Backtest, DailyMetric, GameScenario, Scenario, Symbol, ProcessingJob
+from core.models import Backtest, DailyBar, DailyMetric, GameScenario, Scenario, Symbol, ProcessingJob
 from core.services.backtesting.engine import run_backtest_kpi_only
 from core.services.metrics_depth import check_metrics_depth
 
