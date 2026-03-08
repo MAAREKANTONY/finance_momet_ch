@@ -31,6 +31,14 @@ class TwelveDataClient:
             or "rate limit" in msg
         )
 
+    @staticmethod
+    def _is_no_data_for_dates_error_message(message: str) -> bool:
+        msg = (message or "").lower()
+        return (
+            "no data is available on the specified dates" in msg
+            or "try setting different start/end dates" in msg
+        )
+
     def _request_once(self, path: str, params: dict):
         if not self.api_key:
             raise RuntimeError("TWELVE_DATA_API_KEY is missing. Set it in .env")
@@ -88,6 +96,12 @@ class TwelveDataClient:
 
         Twelve Data supports optional start_date / end_date filters. When provided,
         the API returns values within the requested range.
+
+        Provider quirk handled here:
+        an incremental request with start_date/end_date can sometimes fail with
+        "No data is available on the specified dates" even for symbols that are
+        otherwise valid. In that case we transparently retry once without the date
+        filters and let the caller deduplicate / upsert.
         """
         params = {"symbol": symbol, "interval": "1day", "outputsize": outputsize, "format": "JSON"}
         if exchange:
@@ -96,7 +110,26 @@ class TwelveDataClient:
             params["start_date"] = start_date
         if end_date:
             params["end_date"] = end_date
-        data = self._get("/time_series", params)
+        try:
+            data = self._get("/time_series", params)
+        except RuntimeError as e:
+            if (start_date or end_date) and self._is_no_data_for_dates_error_message(str(e)):
+                fallback_params = {
+                    "symbol": symbol,
+                    "interval": "1day",
+                    "outputsize": outputsize,
+                    "format": "JSON",
+                }
+                if exchange:
+                    fallback_params["exchange"] = exchange
+                logger.warning(
+                    "[twelvedata] incremental fetch returned no data for %s%s; retrying once without date filters",
+                    symbol,
+                    f":{exchange}" if exchange else "",
+                )
+                data = self._get("/time_series", fallback_params)
+            else:
+                raise
         return data.get("values") or []
 
     def symbol_search(self, query: str, limit: int = 12, instrument_type: str = ""):
