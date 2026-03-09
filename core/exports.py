@@ -87,6 +87,7 @@ def build_scenario_workbook_write_only(
             "K4",
             "K2f",
             "K2f_pre",
+            "Kf2bis",
         )
 
         # Build a date->metric mapping (can be large but bounded per symbol).
@@ -134,6 +135,7 @@ def build_scenario_workbook_write_only(
             "K1f",
             "K2f",
             "K2f_pre",
+            "Kf2bis",
             "K2",
             "K3",
             "K4",
@@ -173,6 +175,7 @@ def build_scenario_workbook_write_only(
                 f(m.K1f) if m else None,
                 f(getattr(m, "K2f", None)) if m else None,
                 f(getattr(m, "K2f_pre", None)) if m else None,
+                f(getattr(m, "Kf2bis", None)) if m else None,
                 f(m.K2) if m else None,
                 f(m.K3) if m else None,
                 f(m.K4) if m else None,

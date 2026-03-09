@@ -251,6 +251,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
 
     K2f_pre = None
     K2f = None
+    Kf2bis = None
     diff_slope = None
 
     try:
@@ -311,6 +312,21 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                 Mf1 = sum(max_list) / D(len(max_list))
                 Xf1 = sum(min_list) / D(len(min_list))
                 Ef = Mf1 - Xf1
+
+                # Kf2bis(t) = Mf1(t) - Ef(t) * p(t), with p = SUM(delta_j over N2 days)
+                if n2 and n2 > 0 and len(P_series) >= (n2 + 1):
+                    p_vals = []
+                    p_series_n2 = P_series[-(n2 + 1):]
+                    for j in range(1, len(p_series_n2)):
+                        p_prev2 = D(p_series_n2[j - 1])
+                        p_cur2 = D(p_series_n2[j])
+                        if p_prev2 in (None, 0) or p_cur2 is None:
+                            p_vals = []
+                            break
+                        p_vals.append((p_cur2 - p_prev2) / p_prev2)
+                    if len(p_vals) == n2:
+                        p_sum = sum(p_vals)
+                        Kf2bis = Mf1 - (Ef * p_sum)
 
                 # FC(t) = slope_deg(t) × CR × Ef(t) / e
                 FC = slope_deg * cr * (Ef / e)
@@ -490,6 +506,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             "K1f": K1f,
             "K2f": K2f,
             "K2f_pre": K2f_pre,
+            "Kf2bis": Kf2bis,
             "Kf3": Kf3,
             "V_pre": V_pre,
             "V_line": V_line,
@@ -567,6 +584,28 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             alerts.append("A2f")
         if cross_down:
             alerts.append("B2f")
+    except Exception:
+        pass
+
+    # Kf2bis alerts (A2bis/B2bis) based on P crossing the Kf2bis PRICE line
+    try:
+        prev_p = D(getattr(prev_metric, "P", None))
+        cur_p = D(getattr(metric, "P", None))
+        prev_kf2bis = D(getattr(prev_metric, "Kf2bis", None))
+        cur_kf2bis = D(getattr(metric, "Kf2bis", None))
+
+        cross_up = (
+            prev_p is not None and cur_p is not None and prev_kf2bis is not None and cur_kf2bis is not None
+            and (prev_p < prev_kf2bis) and (cur_p > cur_kf2bis)
+        )
+        cross_down = (
+            prev_p is not None and cur_p is not None and prev_kf2bis is not None and cur_kf2bis is not None
+            and (prev_p > prev_kf2bis) and (cur_p < cur_kf2bis)
+        )
+        if cross_up:
+            alerts.append("A2bis")
+        if cross_down:
+            alerts.append("B2bis")
     except Exception:
         pass
 

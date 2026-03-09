@@ -121,7 +121,7 @@ def compute_full_for_symbol_scenario(
     prev_P = None
     prev_high = None
     prev_vline = None
-    prev_k = None  # (P,M1,X1,Q,S,K1,K1f,K2f,Kf3) for alert crossing
+    prev_k = None  # (P,M1,X1,Q,S,K1,K1f,K2f,Kf2bis,Kf3) for alert crossing
     prev_sum_slope = None
     prev_kf3 = None
 
@@ -168,7 +168,7 @@ def compute_full_for_symbol_scenario(
 
         # Defaults
         M = X = M1 = X1 = T = Q = S = None
-        K1 = K1f = K2f_pre = K2f = K2 = K3 = K4 = None
+        K1 = K1f = K2f_pre = K2f = Kf2bis = K2 = K3 = K4 = None
         Kf3 = None
         diff_slope = None
         V = slope_P = sum_slope = sum_pos_P = nb_pos_P = ratio_P = amp_h = None
@@ -294,6 +294,11 @@ def compute_full_for_symbol_scenario(
                     Xf1 = sum(min_list) / D(len(min_list))
                     Ef = Mf1 - Xf1
 
+                    # Kf2bis(t) = Mf1(t) - Ef(t) * p(t), with p = SUM(delta_j over N2 days)
+                    if n2 and n2 > 0 and len(v_list) >= n2:
+                        p_sum = sum(v_list[:n2])
+                        Kf2bis = Mf1 - (Ef * p_sum)
+
                     # FC(t) = slope_deg(t) × CR × Ef(t) / e
                     FC = slope_deg * cr * (Ef / e)
 
@@ -377,6 +382,7 @@ def compute_full_for_symbol_scenario(
                 K1f=K1f,
                 K2f=K2f,
                 K2f_pre=K2f_pre,
+                Kf2bis=Kf2bis,
                 Kf3=Kf3,
                 V_pre=V_pre_line,
                 V_line=V_line_line,
@@ -399,7 +405,7 @@ def compute_full_for_symbol_scenario(
         # Signals are defined as strict crossings around 0 for the indicator series.
         # For indicators defined as K = P - Line, this is equivalent to P crossing that Line.
         if prev_k is not None and P is not None:
-            prev_P, prev_M1, prev_X1, prev_Q, prev_S, prev_K1, prev_K1f, prev_K2f, prev_Kf3 = prev_k
+            prev_P, prev_M1, prev_X1, prev_Q, prev_S, prev_K1, prev_K1f, prev_K2f, prev_Kf2bis, prev_Kf3 = prev_k
 
             def cross0(prev_x, cur_x, pos_code, neg_code):
                 prev_x = D(prev_x)
@@ -445,6 +451,27 @@ def compute_full_for_symbol_scenario(
                     current_alerts.append("A2f")
                 if cross_down:
                     current_alerts.append("B2f")
+            except Exception:
+                pass
+
+            # A2bis/B2bis : P crosses the Kf2bis price line
+            try:
+                prev_p = D(prev_P)
+                cur_p = D(P)
+                prev_kf2bis = D(prev_Kf2bis)
+                cur_kf2bis = D(Kf2bis)
+                cross_up = (
+                    prev_p is not None and cur_p is not None and prev_kf2bis is not None and cur_kf2bis is not None
+                    and (prev_p < prev_kf2bis) and (cur_p > cur_kf2bis)
+                )
+                cross_down = (
+                    prev_p is not None and cur_p is not None and prev_kf2bis is not None and cur_kf2bis is not None
+                    and (prev_p > prev_kf2bis) and (cur_p < cur_kf2bis)
+                )
+                if cross_up:
+                    current_alerts.append("A2bis")
+                if cross_down:
+                    current_alerts.append("B2bis")
             except Exception:
                 pass
 
@@ -502,7 +529,7 @@ def compute_full_for_symbol_scenario(
 
         # Keep what we need for next-day crossings.
         if P is not None and M1 is not None and X1 is not None and Q is not None and S is not None:
-            prev_k = (P, M1, X1, Q, S, K1, K1f, K2f, Kf3)
+            prev_k = (P, M1, X1, Q, S, K1, K1f, K2f, Kf2bis, Kf3)
         prev_sum_slope = sum_slope
 
         # Update V line previous values

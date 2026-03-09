@@ -314,7 +314,7 @@ def _clone_metrics_and_alerts(
     metric_fields = [
         "date",
         "P", "M", "M1", "X", "X1", "T", "Q", "S",
-        "K1", "K1f", "K2f", "K2f_pre",
+        "K1", "K1f", "K2f", "K2f_pre", "Kf2bis",
         "Kf3", "K2", "K3", "K4",
         "V_pre", "V_line",
         "V", "slope_P", "sum_slope", "sum_pos_P", "nb_pos_P", "ratio_P", "amp_h",

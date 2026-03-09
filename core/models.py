@@ -55,7 +55,7 @@ class Scenario(models.Model):
     fl = models.DecimalField(max_digits=6, decimal_places=4, default=Decimal('0.5'))
 
     n1 = models.PositiveIntegerField(default=5)
-    n2 = models.PositiveIntegerField(default=3)
+    n2 = models.PositiveIntegerField(default=3, help_text="Fenêtre N2 (jours), utilisée aussi pour la ligne flottante 2 bis.")
     n3 = models.PositiveIntegerField(default=0)
     n4 = models.PositiveIntegerField(default=0)
 
@@ -341,7 +341,7 @@ class GameScenario(models.Model):
     fl = models.DecimalField(max_digits=6, decimal_places=4, default=Decimal("0.5"))
 
     n1 = models.PositiveIntegerField(default=5)
-    n2 = models.PositiveIntegerField(default=3)
+    n2 = models.PositiveIntegerField(default=3, help_text="Fenêtre N2 (jours), utilisée aussi pour la ligne flottante 2 bis.")
     n3 = models.PositiveIntegerField(default=0)
     n4 = models.PositiveIntegerField(default=0)
     n5 = models.PositiveIntegerField(default=100)
@@ -631,6 +631,8 @@ class DailyMetric(models.Model):
 
     # Kf3: floating line 3 (price line)
     Kf3 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
+    # Kf2bis: floating line 2 bis (price line)
+    Kf2bis = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K2 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K3 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)
     K4 = models.DecimalField(max_digits=18, decimal_places=6, null=True, blank=True)

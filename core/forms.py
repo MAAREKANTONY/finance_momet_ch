@@ -16,6 +16,8 @@ BACKTEST_SIGNAL_CHOICES = [
     # K2f (floating price line)
     ("A2f", "A2f (P croise K2f de bas en haut)"),
     ("B2f", "B2f (P croise K2f de haut en bas)"),
+    ("A2bis", "A2bis (P croise Kf2bis de bas en haut)"),
+    ("B2bis", "B2bis (P croise Kf2bis de haut en bas)"),
 
     # Kf3 (floating price line 3)
     ("AF3", "AF3 (P croise Kf3 de bas en haut)"),

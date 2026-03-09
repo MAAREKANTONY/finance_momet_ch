@@ -122,8 +122,10 @@ def alerts_table(request):
     # NOTE: This is *display-only* and must be kept in sync with the engine outputs.
     all_alert_codes = [
         "A1", "B1", "A1f", "B1f",
-        "A2f", "B2f",  # K2f alerts
-        "I1", "J1",    # V line alerts (High crossing V)
+        "A2f", "B2f", "A2bis", "B2bis",
+        "AF3", "BF3",
+        "SPa", "SPv",
+        "I1", "J1",
         "C1", "D1", "E1", "F1", "G1", "H1",
     ]
 
@@ -221,7 +223,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
             "date",
             "open","high","low","close","volume","change_amount","change_pct",
             "V","slope_P","sum_pos_P","nb_pos_P","ratio_P","amp_h",
-            "P","M","M1","X","X1","T","Q","S","K1","K1f","K2f","K2f_pre","K2","K3","K4",
+            "P","M","M1","X","X1","T","Q","S","K1","K1f","K2f","K2f_pre","Kf2bis","K2","K3","K4",
             "alerts",
         ]
         ws.append(header)
@@ -253,6 +255,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
                 f(m.K1f) if m else None,
                 f(getattr(m,"K2f",None)) if m else None,
                 f(getattr(m,"K2f_pre",None)) if m else None,
+                f(getattr(m,"Kf2bis",None)) if m else None,
                 f(m.K2) if m else None,
                 f(m.K3) if m else None,
                 f(m.K4) if m else None,
