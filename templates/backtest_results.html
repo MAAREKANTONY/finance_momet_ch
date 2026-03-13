@@ -51,7 +51,9 @@
       <th>Max drawdown</th><td>{{ portfolio_kpi.max_drawdown|pct:3 }}</td>
     </tr>
     <tr>
-      <th>NB jours investis</th><td colspan="5">{{ portfolio_kpi.NB_DAYS }}</td>
+      <th>NB jours investis</th><td>{{ portfolio_kpi.NB_DAYS }}</td>
+      <th>Nb tickers joués</th><td>{{ portfolio_kpi.NB_PLAYED_TICKERS }}</td>
+      <th>RATIO_IN_POSITION moyen (tickers joués)</th><td>{{ portfolio_kpi.AVG_RATIO_IN_POSITION_PLAYED|num:2 }}%</td>
     </tr>
   </table>
 

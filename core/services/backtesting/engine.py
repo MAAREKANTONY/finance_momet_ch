@@ -892,6 +892,35 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if inv > 0:
                 nb_days_invested += 1
 
+    # Average RATIO_IN_POSITION across played tickers only.
+    # A ticker is considered "played" if at least one line has N > 0.
+    # If several signal lines exist for the same ticker, we first average
+    # the played-line ratios for that ticker, then average across tickers.
+    played_ticker_ratios: list[Decimal] = []
+    for _ticker, tentry in results.get("tickers", {}).items():
+        ticker_ratios: list[Decimal] = []
+        for line in (tentry.get("lines") or []):
+            final = line.get("final") or {}
+            try:
+                n_trades = int(final.get("N") or 0)
+            except Exception:
+                n_trades = 0
+            if n_trades <= 0:
+                continue
+            ratio_raw = final.get("RATIO_IN_POSITION")
+            if ratio_raw in (None, ""):
+                continue
+            try:
+                ticker_ratios.append(Decimal(str(ratio_raw)))
+            except Exception:
+                continue
+        if ticker_ratios:
+            played_ticker_ratios.append(sum(ticker_ratios) / Decimal(len(ticker_ratios)))
+
+    avg_ratio_in_position_played = None
+    if played_ticker_ratios:
+        avg_ratio_in_position_played = sum(played_ticker_ratios) / Decimal(len(played_ticker_ratios))
+
     bt_return = None
     bmj_return = None
     if invested_end > 0:
@@ -907,6 +936,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             "BT": None if bt_return is None else str(bt_return),
             "BMJ": None if bmj_return is None else str(bmj_return),
             "NB_DAYS": nb_days_invested,
+            "AVG_RATIO_IN_POSITION_PLAYED": None if avg_ratio_in_position_played is None else str(avg_ratio_in_position_played),
+            "NB_PLAYED_TICKERS": len(played_ticker_ratios),
             "max_drawdown": str(max_drawdown),
         },
         "daily": portfolio_daily,
