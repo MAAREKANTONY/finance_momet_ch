@@ -55,6 +55,16 @@
       <th>Nb tickers joués</th><td>{{ portfolio_kpi.NB_PLAYED_TICKERS }}</td>
       <th>RATIO_IN_POSITION moyen (tickers joués)</th><td>{{ portfolio_kpi.AVG_RATIO_IN_POSITION_PLAYED|num:2 }}%</td>
     </tr>
+    <tr>
+      <th>Actions avec BMD &gt; 0</th><td>{{ portfolio_kpi.POSITIVE_BMD_TICKERS }}</td>
+      <th>Gain moyen (BMD &gt; 0)</th><td>{{ portfolio_kpi.POSITIVE_BMD_AVG_GAIN|pct:3 }}</td>
+      <th>RATIO_IN_POSITION moyen (BMD &gt; 0)</th><td>{{ portfolio_kpi.POSITIVE_BMD_AVG_RATIO_IN_POSITION|num:2 }}%</td>
+    </tr>
+    <tr>
+      <th>Actions avec BMD ≤ 0 / null</th><td>{{ portfolio_kpi.NON_POSITIVE_BMD_TICKERS }}</td>
+      <th>Gain moyen (BMD ≤ 0 / null)</th><td>{{ portfolio_kpi.NON_POSITIVE_BMD_AVG_GAIN|pct:3 }}</td>
+      <th>RATIO_IN_POSITION moyen (BMD ≤ 0 / null)</th><td>{{ portfolio_kpi.NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION|num:2 }}%</td>
+    </tr>
   </table>
 
   <div style="margin-top:10px;">

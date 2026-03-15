@@ -892,13 +892,22 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if inv > 0:
                 nb_days_invested += 1
 
-    # Average RATIO_IN_POSITION across played tickers only.
+    # Portfolio-level synthesis across played tickers only.
     # A ticker is considered "played" if at least one line has N > 0.
     # If several signal lines exist for the same ticker, we first average
-    # the played-line ratios for that ticker, then average across tickers.
+    # the played-line metrics ticker by ticker, then aggregate globally.
     played_ticker_ratios: list[Decimal] = []
+    played_ticker_bmds: list[Decimal] = []
+    positive_ticker_count = 0
+    positive_ticker_bmds: list[Decimal] = []
+    positive_ticker_ratios: list[Decimal] = []
+    non_positive_ticker_count = 0
+    non_positive_ticker_bmds: list[Decimal] = []
+    non_positive_ticker_ratios: list[Decimal] = []
+
     for _ticker, tentry in results.get("tickers", {}).items():
         ticker_ratios: list[Decimal] = []
+        ticker_bmds: list[Decimal] = []
         for line in (tentry.get("lines") or []):
             final = line.get("final") or {}
             try:
@@ -907,19 +916,67 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 n_trades = 0
             if n_trades <= 0:
                 continue
+
             ratio_raw = final.get("RATIO_IN_POSITION")
-            if ratio_raw in (None, ""):
-                continue
-            try:
-                ticker_ratios.append(Decimal(str(ratio_raw)))
-            except Exception:
-                continue
+            if ratio_raw not in (None, ""):
+                try:
+                    ticker_ratios.append(Decimal(str(ratio_raw)))
+                except Exception:
+                    pass
+
+            bmd_raw = final.get("BMD")
+            if bmd_raw not in (None, ""):
+                try:
+                    ticker_bmds.append(Decimal(str(bmd_raw)))
+                except Exception:
+                    pass
+
+        if not ticker_ratios and not ticker_bmds:
+            continue
+
+        ticker_avg_ratio = None
         if ticker_ratios:
-            played_ticker_ratios.append(sum(ticker_ratios) / Decimal(len(ticker_ratios)))
+            ticker_avg_ratio = sum(ticker_ratios) / Decimal(len(ticker_ratios))
+            played_ticker_ratios.append(ticker_avg_ratio)
+
+        ticker_avg_bmd = None
+        if ticker_bmds:
+            ticker_avg_bmd = sum(ticker_bmds) / Decimal(len(ticker_bmds))
+            played_ticker_bmds.append(ticker_avg_bmd)
+
+        # Split played tickers into BMD > 0 vs BMD <= 0 (or null).
+        # If BMD is missing for a played ticker, classify it in the non-positive bucket.
+        if ticker_avg_bmd is not None and ticker_avg_bmd > 0:
+            positive_ticker_count += 1
+            positive_ticker_bmds.append(ticker_avg_bmd)
+            if ticker_avg_ratio is not None:
+                positive_ticker_ratios.append(ticker_avg_ratio)
+        else:
+            non_positive_ticker_count += 1
+            if ticker_avg_bmd is not None:
+                non_positive_ticker_bmds.append(ticker_avg_bmd)
+            if ticker_avg_ratio is not None:
+                non_positive_ticker_ratios.append(ticker_avg_ratio)
 
     avg_ratio_in_position_played = None
     if played_ticker_ratios:
         avg_ratio_in_position_played = sum(played_ticker_ratios) / Decimal(len(played_ticker_ratios))
+
+    avg_bmd_positive = None
+    if positive_ticker_bmds:
+        avg_bmd_positive = sum(positive_ticker_bmds) / Decimal(len(positive_ticker_bmds))
+
+    avg_ratio_positive = None
+    if positive_ticker_ratios:
+        avg_ratio_positive = sum(positive_ticker_ratios) / Decimal(len(positive_ticker_ratios))
+
+    avg_bmd_non_positive = None
+    if non_positive_ticker_bmds:
+        avg_bmd_non_positive = sum(non_positive_ticker_bmds) / Decimal(len(non_positive_ticker_bmds))
+
+    avg_ratio_non_positive = None
+    if non_positive_ticker_ratios:
+        avg_ratio_non_positive = sum(non_positive_ticker_ratios) / Decimal(len(non_positive_ticker_ratios))
 
     bt_return = None
     bmj_return = None
@@ -938,6 +995,12 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             "NB_DAYS": nb_days_invested,
             "AVG_RATIO_IN_POSITION_PLAYED": None if avg_ratio_in_position_played is None else str(avg_ratio_in_position_played),
             "NB_PLAYED_TICKERS": len(played_ticker_ratios),
+            "POSITIVE_BMD_TICKERS": positive_ticker_count,
+            "POSITIVE_BMD_AVG_GAIN": None if avg_bmd_positive is None else str(avg_bmd_positive),
+            "POSITIVE_BMD_AVG_RATIO_IN_POSITION": None if avg_ratio_positive is None else str(avg_ratio_positive),
+            "NON_POSITIVE_BMD_TICKERS": non_positive_ticker_count,
+            "NON_POSITIVE_BMD_AVG_GAIN": None if avg_bmd_non_positive is None else str(avg_bmd_non_positive),
+            "NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION": None if avg_ratio_non_positive is None else str(avg_ratio_non_positive),
             "max_drawdown": str(max_drawdown),
         },
         "daily": portfolio_daily,
