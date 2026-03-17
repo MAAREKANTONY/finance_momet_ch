@@ -17,21 +17,6 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
         return None, None
 
     a = D(scenario.a); b = D(scenario.b); c = D(scenario.c); d = D(scenario.d); e = D(scenario.e)
-    # K2f parameters (all configurable on Scenario; additive, does not change legacy formulas)
-    n5 = int(getattr(scenario, "n5", 100) or 100)
-    k2j = int(getattr(scenario, "k2j", 10) or 10)
-    cr = D(getattr(scenario, "cr", D("10")))
-
-    # Kf3 parameters (floating line 3)
-    n5f3 = int(getattr(scenario, "n5f3", 100) or 100)
-    crf3 = D(getattr(scenario, "crf3", D("10")))
-    nampL3 = int(getattr(scenario, "nampL3", 100) or 100)
-    baseL3 = D(getattr(scenario, "baseL3", D("0.02")))
-    periodeL3 = int(getattr(scenario, "periodeL3", 100) or 100)
-
-    # V line parameters (V5.2.37)
-    m_v = int(getattr(scenario, "m_v", 20) or 20)
-    m1_v = max(1, int(m_v / 2))
     denom = (a + b + c + d)
     if denom == 0:
         return None, None
@@ -73,108 +58,11 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     K3 = P - Q
     K4 = P - S
 
-    # --- K2f floating line (V5.2.32) ---
-    # Definitions (using P as "prix d'étude"):
-    # (1) daily variation v = (P - P(-1)) / P(-1)   (ratio, not percent)
-    # (2) pente1 = sum_{N5 days} v * 100
-    # (3) pente_deg = pente1 / 90
-    # (4) uses existing scenario.e
-    # (5) CR (scenario.cr, default 10)
-    # (6) FC = pente_deg * T * CR
-    # (7) K2f_pre = M1 - FC
-    # (8) K2f = moving average of K2f_pre over K2J days
-    # (9) pente2 = sum_{N5/2 days} v * 100
-    # (10) diff = pente2 - pente1
-    # Alerts:
-    # - A2f: P crosses K2f from below to above
-    # - B2f: P crosses K2f from above to below
-
-    K2f_pre = None
-    K2f = None
-    k2f_diff = None
-
-    try:
-        if n5 and n5 > 1 and e not in (None, 0) and cr is not None and K1 is not None:
-            # Build P series: last N5 previous P values (ascending) + today's P
-            prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:n5])
-            prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
-            P_series = prior_Ps + [D(P)]
-            # Need N5 variations => N5+1 P values
-            if len(P_series) >= (n5 + 1):
-                # keep only the last N5+1 values
-                P_series = P_series[-(n5 + 1) :]
-                vars_ = []
-                ok = True
-                for i in range(1, len(P_series)):
-                    p0 = D(P_series[i - 1])
-                    p1 = D(P_series[i])
-                    if p0 in (None, 0) or p1 is None:
-                        ok = False
-                        break
-                    vars_.append((p1 - p0) / p0)
-                if ok and len(vars_) == n5:
-                    pente1 = sum(vars_) * D(100)
-                    half = max(1, int(n5 / 2))
-                    pente2 = sum(vars_[-half:]) * D(100)
-                    k2f_diff = pente2 - pente1
-
-                    pente_deg = pente1 / D(90)
-                    # FC = pente_deg * T * CR  (T already computed above)
-                    FC = pente_deg * T * cr
-                    # K2f_pre is a PRICE line (homogeneous with P and M1)
-                    K2f_pre = M1 - FC
-
-                    if k2j and k2j > 0:
-                        prior_pre_desc = list(
-                            DailyMetric.objects.filter(
-                                symbol=symbol,
-                                scenario=scenario,
-                                date__lt=trading_date,
-                                K2f_pre__isnull=False,
-                            )
-                            .order_by("-date")
-                            .values_list("K2f_pre", flat=True)[: max(0, k2j - 1)]
-                        )
-                        prior_pre = list(reversed([D(x) for x in prior_pre_desc if D(x) is not None]))
-                        pre_series = prior_pre + [D(K2f_pre)]
-                        if len(pre_series) >= k2j:
-                            pre_series = pre_series[-k2j:]
-                            K2f = sum(pre_series) / D(len(pre_series))
-    except Exception:
-        # K2f is additive; never break the legacy computations
-        K2f_pre = None
-        K2f = None
-        k2f_diff = None
-
-    # --- Trend indicators (V, slope_P, sum_pos_P, nb_pos_P, ratio_P, amp_h) ---
-    V = None
-    prev_bar = DailyBar.objects.filter(symbol=symbol, date__lt=trading_date).order_by("-date").first()
-    if prev_bar and D(prev_bar.close) and D(prev_bar.close) != 0:
-        # Percent change (already *100)
-        V = (D(bar.close) - D(prev_bar.close)) * D(100) / D(prev_bar.close)
-
-    n3 = int(getattr(scenario, "n3", 0) or 0)
-    n4 = int(getattr(scenario, "n4", 0) or 0)
+    # SUM_SLOPE on study price P
     npente = int(getattr(scenario, "npente", 100) or 100)
-
-    slope_P = None
-    if n3 and n3 > 0:
-        # Need N3 days of V (requires N3+1 bars including the close of the day before the window)
-        bars_desc = list(DailyBar.objects.filter(symbol=symbol, date__lte=trading_date).order_by("-date")[: (n3 + 1)])
-        if len(bars_desc) >= (n3 + 1):
-            vs = []
-            for i in range(n3):
-                c2 = D(bars_desc[i].close)
-                c1 = D(bars_desc[i+1].close)
-                if c1 and c1 != 0:
-                    # Percent change (already *100)
-                    vs.append((c2 - c1) * D(100) / c1)
-            if len(vs) == n3:
-                slope_P = sum(vs) / D(n3)
-
     sum_slope = None
     if npente and npente > 0:
-        prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:npente])
+        prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:max(npente, n2)])
         prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
         p_series = prior_Ps + [D(P)]
         if len(p_series) >= 2:
@@ -186,309 +74,26 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                     continue
                 vals.append((p1 - p0) / p0)
             if vals:
-                sum_slope = sum(vals)
+                sum_slope = sum(vals[-npente:])
 
-    sum_pos_P = None
-    nb_pos_P = None
-    ratio_P = None
-    amp_h = None
-    if n4 and n4 > 0 and n3 and n3 > 0:
-        # Ensure current day slope is included even if metrics are computed out-of-order
-        recent_metrics = list(DailyMetric.objects.filter(symbol=symbol, scenario=scenario, date__lte=trading_date, slope_P__isnull=False).order_by("-date")[:n4])
-        # If current day isn't saved yet, we will include slope_P computed above
-        if slope_P is not None and (not recent_metrics or recent_metrics[0].date != trading_date):
-            # fabricate an in-memory record for current day
-            class _Tmp: pass
-            tmp=_Tmp(); tmp.slope_P=slope_P; tmp.date=trading_date
-            recent_metrics = [tmp] + recent_metrics
-            recent_metrics = recent_metrics[:n4]
-
-        if len(recent_metrics) == n4:
-            positives = [D(m.slope_P) for m in recent_metrics if D(m.slope_P) is not None and D(m.slope_P) > 0]
-            nb_pos_P = len(positives)
-            sum_pos_P = sum(positives) if positives else D(0)
-            # Already a percentage
-            ratio_P = D(nb_pos_P) * D(100) / D(n4)
-            if nb_pos_P > 0:
-                # Already a percentage
-                amp_h = (sum_pos_P * D(100)) / (D(nb_pos_P) * D(n3))
-
-    # --- K1f correction (uses ratio_p in [0..1], ratio_P is stored as percent [0..100]) ---
-    vc = D(getattr(scenario, 'vc', None))
-    if vc is None:
-        vc = D('0.5')
-    fl = D(getattr(scenario, 'fl', None))
-    if fl is None:
-        fl = D('0.5')
-    ratio_p = (D(ratio_P) / D(100)) if ratio_P is not None else None
-    E = (M1 - X1) if (M1 is not None and X1 is not None) else None
-    C = D(0)
-    if ratio_p is not None and E is not None and vc is not None:
-        C = (vc - ratio_p) * fl * E
-    K1f = (K1 + C) if K1 is not None else None
-
-    # --- K2f floating line (V5.2.32) ---
-    # All computations are additive (new fields) and do not alter existing K1/K2/K3/K4 logic.
-    #
-    # Definitions (from user spec):
-    # 1) delta(t) = (P(t) - P(t-1)) / P(t-1)  (ratio, not percent)
-    # 2) slope1 = Σ(delta on last N5 days) × 100
-    # 3) slope_deg = slope1 / 90
-    # 4) Let h = floor(N5/2) (min 1)
-    # 5) For each u, Mmax(u) = max(P over last N5 days ending at u)
-    #    and Xmin(u) = min(P over last N5 days ending at u)
-    # 6) Mf1(t) = average over last h days of Mmax(u)
-    #    Xf1(t) = average over last h days of Xmin(u)
-    #    Ef(t)  = Mf1(t) - Xf1(t)
-    # 7) CR correction index (default 10)
-    # 8) FC(t) = slope_deg(t) × CR × Ef(t) / e
-    # 9) K2f_pre(t) = Mf1(t) - FC(t)
-    # 10) K2f(t) = moving average over last K2J days of K2f_pre
-    # 11) slope2 = Σ(delta on last h days) × 100
-    # 12) diff_slope = slope2 - slope1
-    # 13) Buy (A2f): P crosses K2f bottom-up
-    # 14) Sell (B2f): P crosses K2f top-down
-
-    K2f_pre = None
-    K2f = None
-    Kf2bis = None
-    diff_slope = None
-
-    try:
-        n5_eff = max(1, int(n5 or 1))
-        n5_half = max(1, n5_eff // 2)
-        k2j_eff = max(1, int(k2j or 1))
-    except Exception:
-        n5_eff = 100
-        n5_half = 50
-        k2j_eff = 10
-
-    if cr is None:
-        cr = D("10")
-
-    # We need enough P history to compute:
-    # - N5 daily variations (needs N5 prior P when adding today's P)
-    # - Mf1/Xf1 which require windows of length N5 over the last h days (needs N5 + h - 1 P values incl. today)
-    needed_prior = max(n5_eff, n5_eff + n5_half - 1) - 1  # minus 1 because today's P is appended
-    prior_P = list(prior_metrics.values_list("P", flat=True)[: max(0, needed_prior)])
-
-    if len(prior_P) >= max(0, needed_prior) and e not in (None, 0) and M1 is not None:
-        # Chronological series: oldest -> newest, then append today's P
-        P_series = list(reversed([D(x) for x in prior_P])) + [P]
-
-        # --- delta variations over last N5 days ---
-        variations = []
-        ok = True
-        for i in range(1, len(P_series)):
-            p_prev = D(P_series[i - 1])
-            p_cur = D(P_series[i])
-            if p_prev is None or p_prev == 0 or p_cur is None:
-                ok = False
-                break
-            variations.append((p_cur - p_prev) / p_prev)
-
-        if ok and len(variations) >= n5_eff:
-            variations = variations[-n5_eff:]
-            slope1 = sum(variations) * D(100)
-            slope2 = sum(variations[-n5_half:]) * D(100) if len(variations) >= n5_half else None
-            if slope2 is not None:
-                diff_slope = slope2 - slope1
-
-            slope_deg = slope1 / D(90) if D(90) != 0 else None
-
-            # --- Mf1 / Xf1 from rolling max/min of P over N5, averaged over last h days ---
-            # Requires that P_series has at least (N5 + h - 1) values.
-            if slope_deg is not None and cr is not None and len(P_series) >= (n5_eff + n5_half - 1):
-                max_list = []
-                min_list = []
-                last_idx = len(P_series) - 1
-                for i in range(n5_half):
-                    end_idx = last_idx - i
-                    start_idx = end_idx - (n5_eff - 1)
-                    window = P_series[start_idx : end_idx + 1]
-                    max_list.append(max(window))
-                    min_list.append(min(window))
-
-                Mf1 = sum(max_list) / D(len(max_list))
-                Xf1 = sum(min_list) / D(len(min_list))
-                Ef = Mf1 - Xf1
-
-                # Kf2bis(t) = Mf1(t) - Ef(t) * p(t), with p = SUM(delta_j over N2 days)
-                if n2 and n2 > 0 and len(P_series) >= (n2 + 1):
-                    p_vals = []
-                    p_series_n2 = P_series[-(n2 + 1):]
-                    for j in range(1, len(p_series_n2)):
-                        p_prev2 = D(p_series_n2[j - 1])
-                        p_cur2 = D(p_series_n2[j])
-                        if p_prev2 in (None, 0) or p_cur2 is None:
-                            p_vals = []
-                            break
-                        p_vals.append((p_cur2 - p_prev2) / p_prev2)
-                    if len(p_vals) == n2:
-                        p_sum = sum(p_vals)
-                        Kf2bis = Mf1 - (Ef * p_sum)
-
-                # FC(t) = slope_deg(t) × CR × Ef(t) / e
-                FC = slope_deg * cr * (Ef / e)
-
-                # K2f_pre(t) = Mf1(t) - FC(t)
-                K2f_pre = Mf1 - FC
-
-                # Rolling mean over last K2J pre-line values (including today)
-                prior_pre = list(
-                    DailyMetric.objects.filter(
-                        symbol=symbol,
-                        scenario=scenario,
-                        date__lt=trading_date,
-                        K2f_pre__isnull=False,
-                    )
-                    .order_by("-date")
-                    .values_list("K2f_pre", flat=True)[: max(0, k2j_eff - 1)]
-                )
-                pre_series = list(reversed([D(x) for x in prior_pre])) + [K2f_pre]
-                if len(pre_series) >= k2j_eff:
-                    pre_series = pre_series[-k2j_eff:]
-                    K2f = sum(pre_series) / D(len(pre_series))
-
-    # --- end K2f ---
-
-    # --- V line (V5.2.37) ---
-    # 1) V_pre = max(High) over last M days (M = scenario.m_v)
-    # 2) V_line = moving average of V_pre over M1 days, with M1 = M/2
-    # Alerts:
-    # - I1: High crosses V_line from below to above (buy)
-    # - J1: High crosses V_line from above to below (sell)
-    V_pre = None
-    V_line = None
-    try:
-        if m_v and m_v > 1:
-            highs_desc = list(
-                DailyBar.objects.filter(symbol=symbol, date__lte=trading_date)
-                .order_by("-date")
-                .values_list("high", flat=True)[:m_v]
-            )
-            highs = [D(x) for x in highs_desc if D(x) is not None]
-            if len(highs) >= m_v:
-                V_pre = max(highs)
-
-                # rolling mean on V_pre values (including today)
-                prior_vpre_desc = list(
-                    DailyMetric.objects.filter(
-                        symbol=symbol,
-                        scenario=scenario,
-                        date__lt=trading_date,
-                        V_pre__isnull=False,
-                    )
-                    .order_by("-date")
-                    .values_list("V_pre", flat=True)[: max(0, m1_v - 1)]
-                )
-                prior_vpre = list(reversed([D(x) for x in prior_vpre_desc if D(x) is not None]))
-                vpre_series = prior_vpre + [D(V_pre)]
-                if len(vpre_series) >= m1_v:
-                    vpre_series = vpre_series[-m1_v:]
-                    V_line = sum(vpre_series) / D(len(vpre_series))
-    except Exception:
-        V_pre = None
-        V_line = None
-
-    # --- Kf3 floating line (V7.x) ---
-    # Additive only: does not change legacy formulas.
-    #
-    # Implementation details:
-    # - amp(t) = mean over NampL3 of abs(delta)
-    # - k(t) = amp/base
-    # - periode(t) = periodeL3 / k
-    # - periode is rounded (HALF_UP) and clamped to [1..5000]
-    # - if amp<=0 or base<=0 => periode = periodeL3
-    # - slope_deg = mean over `periode` of signed delta
-    # - Mf1/Xf1: same construction as K2f but using N5f3 (and half window)
-    # - Kf3 = Mf1 - slope_deg * CRf3 * (Ef/e)
-    Kf3 = None
-    try:
-        n5f3_eff = max(1, int(n5f3 or 1))
-        n5f3_half = max(1, n5f3_eff // 2)
-        namp_eff = max(1, int(nampL3 or 1))
-        periode_nom = max(1, int(periodeL3 or 1))
-        if crf3 is None:
-            crf3 = D("10")
-
-        # Need enough P history for Mf1/Xf1 and amp/slope:
-        # - Mf1/Xf1 requires windows of size N5f3 for the last N5f3/2 days => N5f3 + (N5f3/2) P values incl. today
-        # - amp needs NampL3 deltas => NampL3+1 P values incl. today
-        need_p = max(n5f3_eff + n5f3_half, namp_eff + 1)
-
-        prior_p_desc = list(
-            DailyMetric.objects.filter(symbol=symbol, scenario=scenario, date__lt=trading_date, P__isnull=False)
-            .order_by("-date")
-            .values_list("P", flat=True)[: max(0, need_p - 1)]
-        )
-        p_hist = list(reversed([D(x) for x in prior_p_desc if D(x) is not None])) + [D(P)]
-
-        if len(p_hist) >= 2 and e not in (None, 0) and baseL3 is not None:
-            # Build deltas for available history
-            deltas = []
-            ok = True
-            for i in range(1, len(p_hist)):
-                p0 = D(p_hist[i - 1])
-                p1 = D(p_hist[i])
+    Kf = None
+    if n2 and n2 > 0:
+        prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:n2])
+        prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
+        p_series = prior_Ps + [D(P)]
+        if len(p_series) >= (n2 + 1):
+            vals_n2 = []
+            for i in range(1, len(p_series[-(n2 + 1):])):
+                p0 = D(p_series[-(n2 + 1):][i - 1])
+                p1 = D(p_series[-(n2 + 1):][i])
                 if p0 in (None, 0) or p1 is None:
-                    ok = False
+                    vals_n2 = []
                     break
-                deltas.append((p1 - p0) / p0)
+                vals_n2.append((p1 - p0) / p0)
+            if len(vals_n2) == n2:
+                p_sum = sum(vals_n2)
+                Kf = M1 - (T * p_sum)
 
-            if ok and deltas:
-                # amp over last namp_eff deltas (absolute)
-                amp_slice = deltas[-namp_eff:] if len(deltas) >= namp_eff else deltas
-                amp = sum([abs(D(x)) for x in amp_slice]) / D(len(amp_slice))
-
-                # periode dynamic
-                if amp is None or amp <= 0 or baseL3 <= 0:
-                    periode_dyn = D(periode_nom)
-                else:
-                    k = amp / baseL3
-                    periode_dyn = (D(periode_nom) / k) if k not in (None, 0) else D(periode_nom)
-
-                # rounding + clamp
-                try:
-                    periode_int = int(Decimal(periode_dyn).to_integral_value(rounding="ROUND_HALF_UP"))
-                except Exception:
-                    try:
-                        periode_int = int(round(float(periode_dyn)))
-                    except Exception:
-                        periode_int = periode_nom
-
-                periode_int = max(1, min(5000, int(periode_int)))
-
-                # slope_deg = mean over `periode_int` signed deltas
-                slope_slice = deltas[-periode_int:] if len(deltas) >= periode_int else deltas
-                slope_deg_f3 = sum([D(x) for x in slope_slice]) / D(len(slope_slice))
-
-                # Mf1/Xf1 over last n5f3_half days of rolling max/min over N5f3
-                if len(p_hist) >= (n5f3_eff + n5f3_half):
-                    max_list = []
-                    min_list = []
-                    # For each day u in the last n5f3_half days (including today), compute max/min over last n5f3_eff P values.
-                    for j in range(n5f3_half):
-                        end_idx = len(p_hist) - j  # exclusive
-                        start_idx = end_idx - n5f3_eff
-                        if start_idx < 0:
-                            break
-                        window = p_hist[start_idx:end_idx]
-                        if len(window) != n5f3_eff:
-                            break
-                        max_list.append(max(window))
-                        min_list.append(min(window))
-
-                    if len(max_list) == n5f3_half and len(min_list) == n5f3_half:
-                        Mf1_f3 = sum(max_list) / D(len(max_list))
-                        Xf1_f3 = sum(min_list) / D(len(min_list))
-                        Ef_f3 = Mf1_f3 - Xf1_f3
-                        FC_f3 = slope_deg_f3 * crf3 * (Ef_f3 / e)
-                        Kf3 = Mf1_f3 - FC_f3
-    except Exception:
-        Kf3 = None
-
-    # Persist all indicators, including K1f (needed for A1f/B1f alerts + exports)
     metric, _ = DailyMetric.objects.update_or_create(
         symbol=symbol,
         scenario=scenario,
@@ -503,35 +108,27 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             "Q": Q,
             "S": S,
             "K1": K1,
-            "K1f": K1f,
-            "K2f": K2f,
-            "K2f_pre": K2f_pre,
-            "Kf2bis": Kf2bis,
-            "Kf3": Kf3,
-            "V_pre": V_pre,
-            "V_line": V_line,
+            "K1f": None,
+            "K2f": None,
+            "K2f_pre": None,
+            "Kf2bis": Kf,
+            "Kf3": None,
+            "V_pre": None,
+            "V_line": None,
             "K2": K2,
             "K3": K3,
             "K4": K4,
-            "V": V,
-            "slope_P": slope_P,
+            "V": None,
+            "slope_P": None,
             "sum_slope": sum_slope,
-            "sum_pos_P": sum_pos_P,
-            "nb_pos_P": nb_pos_P,
-            "ratio_P": ratio_P,
-            "amp_h": amp_h,
+            "sum_pos_P": None,
+            "nb_pos_P": None,
+            "ratio_P": None,
+            "amp_h": None,
         },
     )
 
-    prev_metric = DailyMetric.objects.filter(
-        symbol=symbol,
-        scenario=scenario,
-        date__lt=trading_date,
-        K1__isnull=False,
-        K2__isnull=False,
-        K3__isnull=False,
-        K4__isnull=False,
-    ).order_by("-date").first()
+    prev_metric = DailyMetric.objects.filter(symbol=symbol, scenario=scenario, date__lt=trading_date).order_by("-date").first()
     if not prev_metric:
         return metric, None
 
@@ -552,8 +149,6 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # A1/B1 : K1 crosses 0  (K1 = P - M1)
     cross0(prev_metric.K1, metric.K1, "A1", "B1")
 
-    # A1f/B1f : K1f crosses 0
-    cross0(prev_metric.K1f, metric.K1f, "A1f", "B1f")
 
     # C1/D1 : K2 crosses 0  (K2 = P - X1)
     cross0(prev_metric.K2, metric.K2, "C1", "D1")
@@ -564,70 +159,25 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # G1/H1 : K4 crosses 0  (K4 = P - S)
     cross0(prev_metric.K4, metric.K4, "G1", "H1")
 
-    # K2f alerts (A2f/B2f) based on P crossing the K2f PRICE line
+    # Kf alerts (Af/Bf) based on P crossing the Kf price line
     try:
         prev_p = D(getattr(prev_metric, "P", None))
         cur_p = D(getattr(metric, "P", None))
-        prev_k2f = D(getattr(prev_metric, "K2f", None))
-        cur_k2f = D(getattr(metric, "K2f", None))
+        prev_kf = D(getattr(prev_metric, "Kf2bis", None))
+        cur_kf = D(getattr(metric, "Kf2bis", None))
 
         cross_up = (
-            prev_p is not None and cur_p is not None and prev_k2f is not None and cur_k2f is not None
-            and (prev_p < prev_k2f) and (cur_p > cur_k2f)
+            prev_p is not None and cur_p is not None and prev_kf is not None and cur_kf is not None
+            and (prev_p < prev_kf) and (cur_p > cur_kf)
         )
         cross_down = (
-            prev_p is not None and cur_p is not None and prev_k2f is not None and cur_k2f is not None
-            and (prev_p > prev_k2f) and (cur_p < cur_k2f)
-        )
-
-        if cross_up:
-            alerts.append("A2f")
-        if cross_down:
-            alerts.append("B2f")
-    except Exception:
-        pass
-
-    # Kf2bis alerts (A2bis/B2bis) based on P crossing the Kf2bis PRICE line
-    try:
-        prev_p = D(getattr(prev_metric, "P", None))
-        cur_p = D(getattr(metric, "P", None))
-        prev_kf2bis = D(getattr(prev_metric, "Kf2bis", None))
-        cur_kf2bis = D(getattr(metric, "Kf2bis", None))
-
-        cross_up = (
-            prev_p is not None and cur_p is not None and prev_kf2bis is not None and cur_kf2bis is not None
-            and (prev_p < prev_kf2bis) and (cur_p > cur_kf2bis)
-        )
-        cross_down = (
-            prev_p is not None and cur_p is not None and prev_kf2bis is not None and cur_kf2bis is not None
-            and (prev_p > prev_kf2bis) and (cur_p < cur_kf2bis)
+            prev_p is not None and cur_p is not None and prev_kf is not None and cur_kf is not None
+            and (prev_p > prev_kf) and (cur_p < cur_kf)
         )
         if cross_up:
-            alerts.append("A2bis")
+            alerts.append("Af")
         if cross_down:
-            alerts.append("B2bis")
-    except Exception:
-        pass
-
-    # Kf3 alerts (AF3/BF3) based on P crossing the Kf3 PRICE line
-    try:
-        prev_p = D(getattr(prev_metric, "P", None))
-        cur_p = D(getattr(metric, "P", None))
-        prev_kf3 = D(getattr(prev_metric, "Kf3", None))
-        cur_kf3 = D(getattr(metric, "Kf3", None))
-
-        cross_up = (
-            prev_p is not None and cur_p is not None and prev_kf3 is not None and cur_kf3 is not None
-            and (prev_p < prev_kf3) and (cur_p > cur_kf3)
-        )
-        cross_down = (
-            prev_p is not None and cur_p is not None and prev_kf3 is not None and cur_kf3 is not None
-            and (prev_p > prev_kf3) and (cur_p < cur_kf3)
-        )
-        if cross_up:
-            alerts.append("AF3")
-        if cross_down:
-            alerts.append("BF3")
+            alerts.append("Bf")
     except Exception:
         pass
 
@@ -644,20 +194,6 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     except Exception:
         pass
 
-    # V line alerts (I1/J1) based on High crossing the V_line
-    try:
-        prev_high = D(getattr(prev_bar, "high", None)) if prev_bar else None
-        cur_high = D(bar.high)
-        prev_vline = D(getattr(prev_metric, "V_line", None))
-        cur_vline = D(getattr(metric, "V_line", None))
-
-        if prev_high is not None and cur_high is not None and prev_vline is not None and cur_vline is not None:
-            if (prev_high < prev_vline) and (cur_high > cur_vline):
-                alerts.append("I1")
-            elif (prev_high > prev_vline) and (cur_high < cur_vline):
-                alerts.append("J1")
-    except Exception:
-        pass
 
     if alerts:
         alert_obj, _ = Alert.objects.update_or_create(symbol=symbol, scenario=scenario, date=trading_date, defaults={"alerts": ",".join(alerts)})

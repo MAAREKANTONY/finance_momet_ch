@@ -1,6 +1,6 @@
 ## Version
 
-- V6.0.0: Ajout de la ligne flottante K2f (pré-ligne + moyenne mobile) + alertes A2f/B2f + paramètres scénario (N5, K2J, CR) + intégration Backtests/Alertes.
+- V6.0.0: Ajout de la ligne flottante K2f (pré-ligne + moyenne mobile) + alertes Af/Bf + paramètres scénario (N5, K2J, CR) + intégration Backtests/Alertes.
 - V6.0.0: Page "Aide indicateurs" (formules + alertes), ajout du lien UI, et correctif: persistance de K1f (indispensable pour A1f/B1f + exports) + filtres Alertes incluent A1f/B1f.
 - V6.0.0: Ajout FL (facteur de lissage) pour la correction K1f. Formule: C = (VC - ratio_p) * FL * (M1 - X1).
 - V6.0.0: Ajout VC + indicateur K1f + alertes A1f/B1f + intégration backtests.
@@ -108,7 +108,7 @@ Task: `core.tasks.daily_system_refresh_job_task`
 
 ---
 
-## K2f floating line (A2f/B2f) — V6.0.0
+## K2f floating line (Af/Bf) — V6.0.0
 
 ### Paramètres scénario
 Tous les paramètres ci-dessous sont **dans le modèle Scenario**, modifiables via l'UI.

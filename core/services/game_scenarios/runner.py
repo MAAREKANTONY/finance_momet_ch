@@ -46,29 +46,9 @@ def _sync_engine_scenario(game: GameScenario) -> Scenario:
 
     # Copy scenario parameters (NO silent math change)
     for f in [
-        "a",
-        "b",
-        "c",
-        "d",
-        "e",
-        "vc",
-        "fl",
-        "n1",
-        "n2",
-        "n3",
-        "n4",
-        "n5",
-        "k2j",
-        "cr",
-        # Kf3 (floating line 3)
-        "n5f3",
-        "crf3",
-        "nampL3",
-        "baseL3",
-        "periodeL3",
-        "npente",
-        "slope_threshold",
-        "m_v",
+        "a", "b", "c", "d", "e",
+        "n1", "n2",
+        "npente", "slope_threshold",
     ]:
         setattr(sc, f, getattr(game, f))
 

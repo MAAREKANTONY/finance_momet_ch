@@ -121,12 +121,8 @@ def alerts_table(request):
     # UI list of alert codes available for filtering on /alerts.
     # NOTE: This is *display-only* and must be kept in sync with the engine outputs.
     all_alert_codes = [
-        "A1", "B1", "A1f", "B1f",
-        "A2f", "B2f", "A2bis", "B2bis",
-        "AF3", "BF3",
-        "SPa", "SPv",
-        "I1", "J1",
-        "C1", "D1", "E1", "F1", "G1", "H1",
+        "A1", "B1", "C1", "D1", "E1", "F1", "G1", "H1",
+        "Af", "Bf", "SPa", "SPv",
     ]
 
     return render(request, "alerts.html", {
@@ -211,9 +207,8 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
         ws.append([f"Description: {scenario.description}"])
         ws.append([
             f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
-            f"vc={getattr(scenario,'vc',None)} fl={getattr(scenario,'fl',None)} "
-            f"| N1={scenario.n1} N2={scenario.n2} N3={scenario.n3} N4={scenario.n4} "
-            f"| K2f: N5={getattr(scenario,'n5',None)} K2J={getattr(scenario,'k2j',None)} CR={getattr(scenario,'cr',None)} "
+                        f"| N1={scenario.n1} N2={scenario.n2} "
+            f"| SUM_SLOPE: Npente={getattr(scenario,'npente',None)} seuil={getattr(scenario,'slope_threshold',None)} "
             f"| history_years={scenario.history_years}"
         ])
         ws.append([f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
@@ -222,8 +217,8 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
         header = [
             "date",
             "open","high","low","close","volume","change_amount","change_pct",
-            "V","slope_P","sum_pos_P","nb_pos_P","ratio_P","amp_h",
-            "P","M","M1","X","X1","T","Q","S","K1","K1f","K2f","K2f_pre","Kf2bis","K2","K3","K4",
+            "sum_slope",
+            "P","M","M1","X","X1","T","Q","S","K1","Kf","K2","K3","K4",
             "alerts",
         ]
         ws.append(header)
@@ -237,12 +232,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
             ws.append([
                 b.date.isoformat(),
                 f(b.open), f(b.high), f(b.low), f(b.close), (int(b.volume) if b.volume is not None else None), f(b.change_amount), f(b.change_pct),
-                f(m.V) if m else None,
-                f(m.slope_P) if m else None,
-                f(m.sum_pos_P) if m else None,
-                (m.nb_pos_P if m and m.nb_pos_P is not None else None),
-                f(m.ratio_P) if m else None,
-                f(m.amp_h) if m else None,
+                f(m.sum_slope) if m else None,
                 f(m.P) if m else None,
                 f(m.M) if m else None,
                 f(m.M1) if m else None,
@@ -252,10 +242,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
                 f(m.Q) if m else None,
                 f(m.S) if m else None,
                 f(m.K1) if m else None,
-                f(m.K1f) if m else None,
-                f(getattr(m,"K2f",None)) if m else None,
-                f(getattr(m,"K2f_pre",None)) if m else None,
-                f(getattr(m,"Kf2bis",None)) if m else None,
+                f(getattr(m, "Kf2bis", None)) if m else None,
                 f(m.K2) if m else None,
                 f(m.K3) if m else None,
                 f(m.K4) if m else None,
@@ -822,18 +809,10 @@ def _clone_scenario_for_study(*, study_name: str, created_by, source: Scenario |
             c=source.c,
             d=source.d,
             e=source.e,
-            vc=source.vc,
-            fl=source.fl,
             n1=source.n1,
             n2=source.n2,
-            n3=source.n3,
-            n4=source.n4,
-            n5=source.n5,
-            k2j=source.k2j,
-            cr=source.cr,
             npente=getattr(source, "npente", 100),
             slope_threshold=getattr(source, "slope_threshold", 0.1),
-            m_v=source.m_v,
             history_years=source.history_years,
             active=True,
         )
@@ -906,7 +885,7 @@ def _clone_backtest_for_study(*, study_name: str, scenario: Scenario, created_by
         ratio_threshold=0,
         include_all_tickers=False,
         # sensible default: one line A2f/B2f (can be edited)
-        signal_lines=[{"buy": "A2f", "sell": "B2f"}],
+        signal_lines=[{"buy": "Af", "sell": "Bf"}],
         close_positions_at_end=True,
         created_by=created_by,
     )
@@ -1233,16 +1212,10 @@ def scenario_duplicate(request, pk: int):
             "c": source.c,
             "d": source.d,
             "e": source.e,
-            "vc": source.vc,
-            "fl": source.fl,
             "n1": source.n1,
             "n2": source.n2,
-            "n3": source.n3,
-            "n4": source.n4,
-            "n5": source.n5,
-            "k2j": source.k2j,
-            "cr": source.cr,
-            "m_v": source.m_v,
+            "npente": getattr(source, "npente", 100),
+            "slope_threshold": getattr(source, "slope_threshold", 0.1),
             "history_years": source.history_years,
             "active": source.active,
             # Many-to-many: pre-select the same tickers as the source scenario.

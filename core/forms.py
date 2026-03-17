@@ -4,32 +4,16 @@ import json
 BACKTEST_SIGNAL_CHOICES = [
     ("A1", "A1 (K1 croise 0 vers le haut)"),
     ("B1", "B1 (K1 croise 0 vers le bas)"),
-    ("A1f", "A1f (K1f croise 0 vers le haut)"),
-    ("B1f", "B1f (K1f croise 0 vers le bas)"),
     ("C1", "C1 (K2 croise 0 vers le haut)"),
     ("D1", "D1 (K2 croise 0 vers le bas)"),
     ("E1", "E1 (K3 croise 0 vers le haut)"),
     ("F1", "F1 (K3 croise 0 vers le bas)"),
     ("G1", "G1 (K4 croise 0 vers le haut)"),
     ("H1", "H1 (K4 croise 0 vers le bas)"),
-
-    # K2f (floating price line)
-    ("A2f", "A2f (P croise K2f de bas en haut)"),
-    ("B2f", "B2f (P croise K2f de haut en bas)"),
-    ("A2bis", "A2bis (P croise Kf2bis de bas en haut)"),
-    ("B2bis", "B2bis (P croise Kf2bis de haut en bas)"),
-
-    # Kf3 (floating price line 3)
-    ("AF3", "AF3 (P croise Kf3 de bas en haut)"),
-    ("BF3", "BF3 (P croise Kf3 de haut en bas)"),
-
-    # SUM_SLOPE threshold crossing
+    ("Af", "Af (P croise Kf de bas en haut)"),
+    ("Bf", "Bf (P croise Kf de haut en bas)"),
     ("SPa", "SPa (SUM_SLOPE croise le seuil de pente vers le haut)"),
     ("SPv", "SPv (SUM_SLOPE croise le seuil de pente vers le bas)"),
-
-    # V line (rolling max-high then rolling mean)
-    ("I1", "I1 (High croise V de bas en haut)"),
-    ("J1", "J1 (High croise V de haut en bas)"),
 ]
 
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
@@ -113,38 +97,17 @@ class ScenarioForm(forms.ModelForm):
             "c",
             "d",
             "e",
-            "vc",
-            "fl",
             "n1",
             "n2",
-            "n3",
-            "n4",
-            "n5",
-            "k2j",
-            "cr",
-            # Kf3 params
-            "n5f3",
-            "crf3",
-            "nampL3",
-            "baseL3",
-            "periodeL3",
             "npente",
             "slope_threshold",
-            "m_v",
             "history_years",
             "active",
             "symbols",
         ]
         widgets = {
             "description": forms.Textarea(attrs={"rows": 3}),
-            # Prevent entering 0 (division by zero risk)
             "e": forms.NumberInput(attrs={"min": 0.0001, "step": 0.0001}),
-            "vc": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),
-            "fl": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),
-            "n5": forms.NumberInput(attrs={"min": 1, "step": 1}),
-            "k2j": forms.NumberInput(attrs={"min": 1, "step": 1}),
-            "cr": forms.NumberInput(attrs={"min": 0, "step": 0.0001}),
-            "m_v": forms.NumberInput(attrs={"min": 2, "step": 1}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -324,35 +287,20 @@ class StudyScenarioForm(forms.ModelForm):
     class Meta:
         model = Scenario
         fields = [
-            # indicator params
             "a",
             "b",
             "c",
             "d",
             "e",
-            "vc",
-            "fl",
             "n1",
             "n2",
-            "n3",
-            "n4",
-            "n5",
-            "k2j",
-            "cr",
             "npente",
             "slope_threshold",
-            "m_v",
             "history_years",
             "symbols",
         ]
         widgets = {
             "e": forms.NumberInput(attrs={"min": 0.0001, "step": 0.0001}),
-            "vc": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),
-            "fl": forms.NumberInput(attrs={"min": 0, "max": 1, "step": 0.0001}),
-            "n5": forms.NumberInput(attrs={"min": 1, "step": 1}),
-            "k2j": forms.NumberInput(attrs={"min": 1, "step": 1}),
-            "cr": forms.NumberInput(attrs={"min": 0, "step": 0.0001}),
-            "m_v": forms.NumberInput(attrs={"min": 2, "step": 1}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -460,7 +408,6 @@ class GameScenarioForm(forms.ModelForm):
 
         model = GameScenario
         fields = [
-            # Identity
             "name",
             "description",
             "active",
@@ -470,29 +417,13 @@ class GameScenarioForm(forms.ModelForm):
             "slope_threshold",
             "presence_threshold_pct",
             "email_recipients",
-            # Scenario params
             "a",
             "b",
             "c",
             "d",
             "e",
-            "vc",
-            "fl",
             "n1",
             "n2",
-            "n3",
-            "n4",
-            "n5",
-            "k2j",
-            "cr",
-            # Kf3 params
-            "n5f3",
-            "crf3",
-            "nampL3",
-            "baseL3",
-            "periodeL3",
-            "m_v",
-            # Backtest params
             "capital_total",
             "capital_per_ticker",
             "capital_mode",

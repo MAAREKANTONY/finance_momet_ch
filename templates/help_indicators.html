@@ -1,274 +1,33 @@
 {% extends "base.html" %}
 {% block content %}
-<h2>Aide — indicateurs, signaux, variables et Games</h2>
-
+<h1>Aide indicateurs</h1>
 <div class="card">
-  <p class="muted">
-    Cette page est la référence fonctionnelle du moteur. Elle regroupe les variables de scénario,
-    les indicateurs calculés, les signaux d'achat / vente, ainsi que les métriques spécifiques aux Games.
-    Sauf mention contraire, le prix utilisé est le <strong>prix composite P(t)</strong>.
-  </p>
-</div>
-
-<div class="card">
-  <details open>
-    <summary><strong>1) Prix composite P(t)</strong></summary>
-    <div style="margin-top:10px;">
-      <p><strong>Inputs (DailyBar)</strong> : F = Close, H = High, L = Low, O = Open</p>
-      <p><strong>Paramètres scénario</strong> : a, b, c, d</p>
-      <pre>P(t) = (a·F(t) + b·H(t) + c·L(t) + d·O(t)) / (a+b+c+d)</pre>
-      <p class="muted">C'est ce prix P(t) qui est utilisé dans les calculs des indicateurs legacy, des lignes flottantes et des signaux de pente.</p>
-    </div>
-  </details>
-
-  <details open>
-    <summary><strong>2) Rendement journalier</strong></summary>
-    <div style="margin-top:10px;">
-      <pre>δj(t) = (P(t) - P(t-1)) / P(t-1)</pre>
-      <p>Utilisé par :</p>
-      <ul>
-        <li>K2f</li>
-        <li>Kf2bis</li>
-        <li>Kf3</li>
-        <li>SUM_SLOPE / SPa / SPv</li>
-      </ul>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>3) Variables de scénario — résumé complet</strong></summary>
-    <div style="margin-top:10px; overflow-x:auto;">
-      <table>
-        <thead>
-          <tr>
-            <th>Variable</th>
-            <th>Rôle</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>a, b, c, d</td><td>Poids du prix composite P(t) à partir de Close / High / Low / Open.</td></tr>
-          <tr><td>N1</td><td>Fenêtre courte utilisée dans les indicateurs legacy et dans slope1 de K2f.</td></tr>
-          <tr><td>N2</td><td>Fenêtre longue legacy, utilisée aussi pour la somme p de Kf2bis.</td></tr>
-          <tr><td>N3</td><td>Fenêtre de slope_P pour le calcul de RATIO_P / AMP_H.</td></tr>
-          <tr><td>N4</td><td>Fenêtre d'agrégation de slope_P pour nb_pos_P, sum_pos_P, RATIO_P, AMP_H.</td></tr>
-          <tr><td>e</td><td>Facteur d'élasticité / d'amplitude.</td></tr>
-          <tr><td>VC</td><td>Valeur centrale de correction de K1f via ratio_p.</td></tr>
-          <tr><td>FL</td><td>Facteur de levier de la correction K1f.</td></tr>
-          <tr><td>N5</td><td>Fenêtre locale de K2f pour les max/min flottants Mf1 / Xf1.</td></tr>
-          <tr><td>K2J</td><td>Fenêtre de lissage final de K2f.</td></tr>
-          <tr><td>cr</td><td>Coefficient de réaction de K2f.</td></tr>
-          <tr><td>N5f3</td><td>Fenêtre locale de Kf3 pour les max/min flottants.</td></tr>
-          <tr><td>crf3</td><td>Coefficient de réaction de Kf3.</td></tr>
-          <tr><td>NampL3</td><td>Fenêtre de moyenne des rendements absolus dans Kf3.</td></tr>
-          <tr><td>baseL3</td><td>Base de normalisation de la période adaptative de Kf3.</td></tr>
-          <tr><td>periodeL3</td><td>Période nominale de Kf3.</td></tr>
-          <tr><td>Npente</td><td>Fenêtre utilisée pour SUM_SLOPE et les signaux SPa / SPv.</td></tr>
-          <tr><td>Seuil de pente</td><td>Seuil utilisé pour les signaux SPa / SPv. Exemple : 0.1 = 10% en ratio brut.</td></tr>
-          <tr><td>M (m_v)</td><td>Fenêtre utilisée pour la ligne V basée sur les High. La moyenne mobile finale utilise M/2.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>4) Famille legacy — M, X, M1, X1, T, Q, S</strong></summary>
-    <div style="margin-top:10px;">
-      <p><strong>Fenêtres</strong> : N1 et N2</p>
-      <pre>M(t)  = max(P(t-1), ..., P(t-N1))
-X(t)  = min(P(t-1), ..., P(t-N1))
-M1(t) = moyenne sur N2 jours de M(t)
-X1(t) = moyenne sur N2 jours de X(t)
-T(t)  = (M1(t) - X1(t)) / e
-Q(t)  = M1(t) - T(t)
-S(t)  = M1(t) + T(t)</pre>
-      <p class="muted">Cette famille sert aux indicateurs K1, K2, K3, K4 et K1f. Elle est distincte des grandeurs flottantes Mf1 / Xf1 utilisées dans K2f, Kf2bis et Kf3.</p>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>5) Indicateurs legacy — K1, K2, K3, K4</strong></summary>
-    <div style="margin-top:10px;">
-      <pre>K1(t) = P(t) - M1(t)
-K2(t) = P(t) - X1(t)
-K3(t) = P(t) - Q(t)
-K4(t) = P(t) - S(t)</pre>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>6) K1f</strong></summary>
-    <div style="margin-top:10px;">
-      <pre>E(t)       = M1(t) - X1(t)
-ratio_p(t) = RATIO_P(t) / 100
-C(t)       = (VC - ratio_p(t)) · FL · E(t)
-K1f(t)     = K1(t) + C(t)</pre>
-      <p class="muted">K1f ajoute une correction dépendante de RATIO_P, VC et FL à la ligne K1.</p>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>7) Indicateurs de tendance — V, slope_P, nb_pos_P, sum_pos_P, RATIO_P, AMP_H</strong></summary>
-    <div style="margin-top:10px;">
-      <ul>
-        <li><strong>V</strong> : variation journalière du close vs close veille, exprimée en %.</li>
-        <li><strong>slope_P</strong> : moyenne des variations journalières sur N3 jours.</li>
-        <li><strong>nb_pos_P</strong> : nombre de slope_P positifs sur N4 jours.</li>
-        <li><strong>sum_pos_P</strong> : somme des slope_P positifs sur N4 jours.</li>
-        <li><strong>RATIO_P</strong> : nb_pos_P / N4 × 100.</li>
-        <li><strong>AMP_H</strong> : intensité moyenne des hausses dérivée de sum_pos_P, nb_pos_P et N3.</li>
-      </ul>
-    </div>
-  </details>
-
-  <details open>
-    <summary><strong>8) K2f — ligne flottante 2</strong></summary>
-    <div style="margin-top:10px;">
-      <p><strong>Fenêtres / paramètres</strong> : N1, N2, N5, K2J, cr, e</p>
-      <pre>slope1(t)     = moyenne sur N1 jours de δj(t)
-slope2(t)     = moyenne sur N2 jours de δj(t)
-slope_deg(t)  = slope1(t) - slope2(t)
-h             = max(1, floor(N5/2))
-Mf1(t)        = moyenne sur h jours des max de P sur des fenêtres glissantes de taille N5
-Xf1(t)        = moyenne sur h jours des min de P sur des fenêtres glissantes de taille N5
-Ef(t)         = Mf1(t) - Xf1(t)
-K2f(t)        = Mf1(t) - slope_deg(t) · cr · Ef(t) / e</pre>
-      <p class="muted">K2f est la ligne flottante 2 actuellement utilisée pour les signaux AF / BF.</p>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>9) Kf2bis — ligne flottante 2 bis</strong></summary>
-    <div style="margin-top:10px;">
-      <p><strong>Fenêtre / paramètres</strong> : N2, N5, e</p>
-      <pre>p(t)      = somme sur N2 jours de δj(t)
-Ef(t)     = Mf1(t) - Xf1(t)
-Kf2bis(t) = Mf1(t) - Ef(t) · p(t)</pre>
-      <p class="muted">Mf1, Xf1 et Ef sont les mêmes grandeurs locales que pour K2f.</p>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>10) Kf3 — ligne flottante 3</strong></summary>
-    <div style="margin-top:10px;">
-      <p><strong>Paramètres</strong> : N5f3, crf3, NampL3, baseL3, periodeL3, e</p>
-      <pre>r(t)            = (P(t) - P(t-1)) / P(t-1)
-amp(t)          = moyenne sur NampL3 jours de |r(t)|
-k(t)            = amp(t) / baseL3
-periode(t)      = periodeL3 · baseL3 / amp(t)
-slope_degL3(t)  = moyenne de r(t) sur periode(t)
-Mf1L3(t)        = moyenne locale des max de P sur N5f3
-Xf1L3(t)        = moyenne locale des min de P sur N5f3
-EfL3(t)         = Mf1L3(t) - Xf1L3(t)
-Kf3(t)          = Mf1L3(t) - slope_degL3(t) · crf3 · EfL3(t) / e</pre>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>11) Ligne V basée sur les plus hauts</strong></summary>
-    <div style="margin-top:10px;">
-      <pre>M              = m_v
-M1             = max(1, floor(M/2))
-V_pre(t)       = max(High) sur M jours
-V_line(t)      = moyenne mobile sur M1 jours de V_pre</pre>
-      <p>La ligne V compare les <strong>High</strong> du marché à une ligne de résistance lissée.</p>
-    </div>
-  </details>
-
-  <details open>
-    <summary><strong>12) SUM_SLOPE et signaux SPa / SPv</strong></summary>
-    <div style="margin-top:10px;">
-      <p><strong>Paramètres</strong> : Npente, Seuil de pente</p>
-      <pre>SUM_SLOPE(t) = somme sur Npente jours de δj(t)</pre>
-      <p><strong>Déclencheur achat SPa</strong> :</p>
-      <pre>SUM_SLOPE(t-1) &lt; Seuil_de_pente
-et
-SUM_SLOPE(t)   &gt; Seuil_de_pente</pre>
-      <p><strong>Déclencheur vente SPv</strong> :</p>
-      <pre>SUM_SLOPE(t-1) &gt; Seuil_de_pente
-et
-SUM_SLOPE(t)   &lt; Seuil_de_pente</pre>
-      <p class="muted">Ces signaux sont disponibles dans les backtests, alertes et Games.</p>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>13) Signaux / déclencheurs disponibles</strong></summary>
-    <div style="margin-top:10px; overflow-x:auto;">
-      <table>
-        <thead>
-          <tr>
-            <th>Code</th>
-            <th>Définition</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>A1</td><td>K1 croise 0 de bas en haut.</td></tr>
-          <tr><td>B1</td><td>K1 croise 0 de haut en bas.</td></tr>
-          <tr><td>A1f</td><td>K1f croise 0 de bas en haut.</td></tr>
-          <tr><td>B1f</td><td>K1f croise 0 de haut en bas.</td></tr>
-          <tr><td>C1</td><td>K2 croise 0 de bas en haut.</td></tr>
-          <tr><td>D1</td><td>K2 croise 0 de haut en bas.</td></tr>
-          <tr><td>E1</td><td>K3 croise 0 de bas en haut.</td></tr>
-          <tr><td>F1</td><td>K3 croise 0 de haut en bas.</td></tr>
-          <tr><td>G1</td><td>K4 croise 0 de bas en haut.</td></tr>
-          <tr><td>H1</td><td>K4 croise 0 de haut en bas.</td></tr>
-          <tr><td>AF</td><td>P croise K2f de bas en haut.</td></tr>
-          <tr><td>BF</td><td>P croise K2f de haut en bas.</td></tr>
-          <tr><td>A2bis</td><td>P croise Kf2bis de bas en haut.</td></tr>
-          <tr><td>B2bis</td><td>P croise Kf2bis de haut en bas.</td></tr>
-          <tr><td>AF3</td><td>P croise Kf3 de bas en haut.</td></tr>
-          <tr><td>BF3</td><td>P croise Kf3 de haut en bas.</td></tr>
-          <tr><td>I1</td><td>High croise la ligne V de bas en haut.</td></tr>
-          <tr><td>J1</td><td>High croise la ligne V de haut en bas.</td></tr>
-          <tr><td>SPa</td><td>SUM_SLOPE croise le Seuil de pente de bas en haut.</td></tr>
-          <tr><td>SPv</td><td>SUM_SLOPE croise le Seuil de pente de haut en bas.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </details>
-
-  <details>
-    <summary><strong>14) Où les signaux sont utilisés</strong></summary>
-    <div style="margin-top:10px;">
-      <ul>
-        <li><strong>Alertes</strong> : filtrage et envoi des alertes quotidiennes.</li>
-        <li><strong>Backtests</strong> : BUY / SELL sélectionnent un code de signal.</li>
-        <li><strong>Games</strong> : les calculs journaliers utilisent les mêmes métriques et signaux de base.</li>
-      </ul>
-    </div>
-  </details>
-
-  <details open>
-    <summary><strong>15) Variables spécifiques aux Games</strong></summary>
-    <div style="margin-top:10px; overflow-x:auto;">
-      <table>
-        <thead>
-          <tr>
-            <th>Variable</th>
-            <th>Définition</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr><td>BMD</td><td>Performance issue du backtest / score de tradabilité.</td></tr>
-          <tr><td>TRADABLE_DAYS</td><td>Nombre de jours où le ticker est considéré tradable.</td></tr>
-          <tr><td>TRADABLE_DAYS_IN_POSITION_CLOSED</td><td>Nombre de jours tradables terminés en position fermée.</td></tr>
-          <tr><td>RATIO_IN_POSITION</td><td>Pourcentage du temps où le ticker est en position.</td></tr>
-          <tr><td>SUM_SLOPE</td><td>Momentum cumulé sur Npente jours, utilisé aussi pour SPa / SPv.</td></tr>
-          <tr><td>tradability_threshold</td><td>Seuil minimal de BMD pour considérer le ticker tradable.</td></tr>
-          <tr><td>slope_threshold</td><td>Seuil minimal de SUM_SLOPE pour la tradabilité et les signaux SPa / SPv.</td></tr>
-          <tr><td>presence_threshold_pct</td><td>Seuil minimal de RATIO_IN_POSITION.</td></tr>
-        </tbody>
-      </table>
-      <p><strong>Condition de tradabilité Game</strong> :</p>
-      <pre>BMD &gt;= tradability_threshold
-SUM_SLOPE &gt;= slope_threshold
-RATIO_IN_POSITION &gt;= presence_threshold_pct</pre>
-    </div>
-  </details>
-</div>
-
-<div class="card">
-  <h3>Référence rapide</h3>
-  <p class="muted">Les métriques numériques détaillées sont visibles dans les exports DailyMetrics. Les codes de signaux sont visibles dans le champ <code>alerts</code>, les alertes quotidiennes, les backtests et les Games.</p>
+  <p>Version nettoyée du moteur : les indicateurs actifs sont P, δj, M/X, M1/X1, T, Q, S, K1, K2, K3, K4, Kf, SUM_SLOPE et les signaux associés.</p>
+  <h3>Prix de référence</h3>
+  <pre>P(t) = (a·F(t) + b·H(t) + c·L(t) + d·O(t)) / (a+b+c+d)</pre>
+  <h3>Rendement journalier</h3>
+  <pre>δj(t) = (P(t) - P(t-1)) / P(t-1)</pre>
+  <h3>Legacy conservé</h3>
+  <pre>M(t)=max(P(t-1)...P(t-N1))
+X(t)=min(P(t-1)...P(t-N1))
+M1(t)=moyenne sur N2 de M
+X1(t)=moyenne sur N2 de X
+T(t)=(M1(t)-X1(t))/e
+Q(t)=M1(t)-T(t)
+S(t)=M1(t)+T(t)
+K1=P-M1
+K2=P-X1
+K3=P-Q
+K4=P-S</pre>
+  <h3>Kf</h3>
+  <pre>p(t) = somme sur N2 de δj
+Kf(t) = M1(t) - T(t)·p(t)</pre>
+  <h3>SUM_SLOPE</h3>
+  <pre>SUM_SLOPE(t) = somme sur Npente de δj(t)</pre>
+  <h3>Signaux actifs</h3>
+  <ul>
+    <li>A1 / B1</li><li>C1 / D1</li><li>E1 / F1</li><li>G1 / H1</li><li>Af / Bf</li><li>SPa / SPv</li>
+  </ul>
+  <p class="muted">Supprimé de l'interface et du moteur actif : K1f, K2f, Kf3, ligne V, signaux A1f/B1f, A2f/B2f, AF3/BF3, I1/J1, ainsi que les variables N3, N4, N5, VC, FL, cr, N5f3, crf3, NampL3, baseL3, periodeL3 et m_v.</p>
 </div>
 {% endblock %}
