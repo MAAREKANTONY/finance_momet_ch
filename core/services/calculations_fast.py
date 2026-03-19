@@ -92,8 +92,8 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
             if vals and npente > 0:
                 sum_slope = sum(vals[:npente])
 
-        if n2 > 0 and len(p_window) >= (n2 + 1):
-            base_p = D(p_window[n2])
+        if npente > 0 and len(p_window) >= (npente + 1):
+            base_p = D(p_window[npente])
             cur_p = D(p_window[0])
             if base_p not in (None, 0) and cur_p is not None:
                 slope_vrai = (cur_p - base_p) / base_p

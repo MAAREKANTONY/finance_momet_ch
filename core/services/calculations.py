@@ -83,11 +83,6 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
         prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
         p_series = prior_Ps + [D(P)]
         if len(p_series) >= (n2 + 1):
-            base_p = D(p_series[-(n2 + 1)])
-            cur_p = D(p_series[-1])
-            if base_p not in (None, 0) and cur_p is not None:
-                slope_vrai = (cur_p - base_p) / base_p
-
             vals_n2 = []
             for i in range(1, len(p_series[-(n2 + 1):])):
                 p0 = D(p_series[-(n2 + 1):][i - 1])
@@ -99,6 +94,16 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             if len(vals_n2) == n2:
                 p_sum = sum(vals_n2)
                 Kf = M1 - (T * p_sum)
+
+    if npente and npente > 0:
+        prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:npente])
+        prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
+        p_series = prior_Ps + [D(P)]
+        if len(p_series) >= (npente + 1):
+            base_p = D(p_series[-(npente + 1)])
+            cur_p = D(p_series[-1])
+            if base_p not in (None, 0) and cur_p is not None:
+                slope_vrai = (cur_p - base_p) / base_p
 
     metric, _ = DailyMetric.objects.update_or_create(
         symbol=symbol,
