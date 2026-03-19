@@ -122,7 +122,7 @@ def alerts_table(request):
     # NOTE: This is *display-only* and must be kept in sync with the engine outputs.
     all_alert_codes = [
         "A1", "B1", "C1", "D1", "E1", "F1", "G1", "H1",
-        "Af", "Bf", "SPa", "SPv",
+        "Af", "Bf", "SPa", "SPv", "SPVa", "SPVv",
     ]
 
     return render(request, "alerts.html", {
@@ -208,7 +208,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
         ws.append([
             f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
                         f"| N1={scenario.n1} N2={scenario.n2} "
-            f"| SUM_SLOPE: Npente={getattr(scenario,'npente',None)} seuil={getattr(scenario,'slope_threshold',None)} "
+            f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil={getattr(scenario,'slope_threshold',None)} "
             f"| history_years={scenario.history_years}"
         ])
         ws.append([f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
@@ -217,7 +217,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
         header = [
             "date",
             "open","high","low","close","volume","change_amount","change_pct",
-            "sum_slope",
+            "sum_slope","slope_vrai",
             "P","M","M1","X","X1","T","Q","S","K1","Kf","K2","K3","K4",
             "alerts",
         ]
@@ -233,6 +233,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
                 b.date.isoformat(),
                 f(b.open), f(b.high), f(b.low), f(b.close), (int(b.volume) if b.volume is not None else None), f(b.change_amount), f(b.change_pct),
                 f(m.sum_slope) if m else None,
+                f(getattr(m, "slope_vrai", None)) if m else None,
                 f(m.P) if m else None,
                 f(m.M) if m else None,
                 f(m.M1) if m else None,

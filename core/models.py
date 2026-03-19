@@ -124,7 +124,7 @@ class Scenario(models.Model):
         max_digits=18,
         decimal_places=8,
         default=Decimal("0.1"),
-        help_text="Seuil de pente utilisé par SPa/SPv (ratio brut, ex: 0.1 = 10%).",
+        help_text="Seuil de pente utilisé par SPa/SPv et SPVa/SPVv (ratio brut, ex: 0.1 = 10%).",
     )
 
     # --- V line parameters (V5.2.37) ---
@@ -314,7 +314,7 @@ class GameScenario(models.Model):
         max_digits=18,
         decimal_places=8,
         default=Decimal("0.1"),
-        help_text="Seuil de pente utilisé à la fois pour la tradabilité du Game et pour SPa/SPv (ratio brut, ex: 0.1 = 10%).",
+        help_text="Seuil de pente utilisé à la fois pour la tradabilité du Game, SPa/SPv et SPVa/SPVv (ratio brut, ex: 0.1 = 10%).",
     )
     presence_threshold_pct = models.DecimalField(
         max_digits=8,
@@ -646,6 +646,7 @@ class DailyMetric(models.Model):
     V = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # daily close variation ratio
     slope_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # avg of V over last N3 days
     sum_slope = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # sum of daily study-price slopes over Npente days
+    slope_vrai = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # (P(t)-P(t-N2))/P(t-N2)
     sum_pos_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # sum positive slope_P
     nb_pos_P = models.PositiveIntegerField(null=True, blank=True)
     ratio_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # nb_pos_P / N4

@@ -14,6 +14,8 @@ BACKTEST_SIGNAL_CHOICES = [
     ("Bf", "Bf (P croise Kf de haut en bas)"),
     ("SPa", "SPa (SUM_SLOPE croise le seuil de pente vers le haut)"),
     ("SPv", "SPv (SUM_SLOPE croise le seuil de pente vers le bas)"),
+    ("SPVa", "SPVa (SLOPE_VRAI croise le seuil de pente vers le haut)"),
+    ("SPVv", "SPVv (SLOPE_VRAI croise le seuil de pente vers le bas)"),
 ]
 
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study

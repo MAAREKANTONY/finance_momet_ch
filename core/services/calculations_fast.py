@@ -1,7 +1,7 @@
 """Fast bulk computations for DailyMetric/Alert.
 
 Optimized full recompute path aligned with the cleaned indicator set:
-P, M/X, M1/X1, T, Q/S, K1..K4, Kf, SUM_SLOPE and alerts.
+P, M/X, M1/X1, T, Q/S, K1..K4, Kf, SUM_SLOPE, SLOPE_VRAI and alerts.
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
 
     prev_alert_tuple = None  # (P, Q, S, K1, K2, K3, K4, Kf)
     prev_sum_slope = None
+    prev_slope_vrai = None
 
     metrics: List[DailyMetric] = []
     alerts: List[Alert] = []
@@ -68,6 +69,7 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
         M = X = M1 = X1 = T = Q = S = None
         K1 = K2 = K3 = K4 = Kf = None
         sum_slope = None
+        slope_vrai = None
 
         if n1 > 0 and len(prior_P) >= n1:
             M = max(prior_P)
@@ -89,6 +91,12 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
                     vals.append((p1 - p0) / p0)
             if vals and npente > 0:
                 sum_slope = sum(vals[:npente])
+
+        if n2 > 0 and len(p_window) >= (n2 + 1):
+            base_p = D(p_window[n2])
+            cur_p = D(p_window[0])
+            if base_p not in (None, 0) and cur_p is not None:
+                slope_vrai = (cur_p - base_p) / base_p
 
         if M1 is not None and X1 is not None and e not in (None, 0):
             T = (M1 - X1) / e
@@ -138,6 +146,7 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
                 V=None,
                 slope_P=None,
                 sum_slope=sum_slope,
+                slope_vrai=slope_vrai,
                 sum_pos_P=None,
                 nb_pos_P=None,
                 ratio_P=None,
@@ -180,12 +189,19 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
             elif prev_sum_slope > slope_threshold and sum_slope < slope_threshold:
                 day_alerts.append("SPv")
 
+        if prev_slope_vrai is not None and slope_vrai is not None and slope_threshold is not None:
+            if prev_slope_vrai < slope_threshold and slope_vrai > slope_threshold:
+                day_alerts.append("SPVa")
+            elif prev_slope_vrai > slope_threshold and slope_vrai < slope_threshold:
+                day_alerts.append("SPVv")
+
         if day_alerts:
             alerts.append(Alert(symbol=symbol, scenario=scenario, date=trading_date, alerts=",".join(day_alerts)))
 
         if None not in (P, Q, S):
             prev_alert_tuple = (P, Q, S, K1, K2, K3, K4, Kf)
         prev_sum_slope = sum_slope
+        prev_slope_vrai = slope_vrai
         if n1 > 0:
             prior_P.appendleft(P)
 

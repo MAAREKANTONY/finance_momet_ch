@@ -61,6 +61,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     # SUM_SLOPE on study price P
     npente = int(getattr(scenario, "npente", 100) or 100)
     sum_slope = None
+    slope_vrai = None
     if npente and npente > 0:
         prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:max(npente, n2)])
         prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
@@ -82,6 +83,11 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
         prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
         p_series = prior_Ps + [D(P)]
         if len(p_series) >= (n2 + 1):
+            base_p = D(p_series[-(n2 + 1)])
+            cur_p = D(p_series[-1])
+            if base_p not in (None, 0) and cur_p is not None:
+                slope_vrai = (cur_p - base_p) / base_p
+
             vals_n2 = []
             for i in range(1, len(p_series[-(n2 + 1):])):
                 p0 = D(p_series[-(n2 + 1):][i - 1])
@@ -121,6 +127,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             "V": None,
             "slope_P": None,
             "sum_slope": sum_slope,
+            "slope_vrai": slope_vrai,
             "sum_pos_P": None,
             "nb_pos_P": None,
             "ratio_P": None,
@@ -191,6 +198,19 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                 alerts.append("SPa")
             elif (prev_sum_slope > slope_threshold) and (cur_sum_slope < slope_threshold):
                 alerts.append("SPv")
+    except Exception:
+        pass
+
+    # SLOPE_VRAI alerts (SPVa/SPVv) based on crossing the configured slope threshold
+    try:
+        prev_slope_vrai = D(getattr(prev_metric, "slope_vrai", None))
+        cur_slope_vrai = D(getattr(metric, "slope_vrai", None))
+        slope_threshold = D(getattr(scenario, "slope_threshold", None))
+        if prev_slope_vrai is not None and cur_slope_vrai is not None and slope_threshold is not None:
+            if (prev_slope_vrai < slope_threshold) and (cur_slope_vrai > slope_threshold):
+                alerts.append("SPVa")
+            elif (prev_slope_vrai > slope_threshold) and (cur_slope_vrai < slope_threshold):
+                alerts.append("SPVv")
     except Exception:
         pass
 

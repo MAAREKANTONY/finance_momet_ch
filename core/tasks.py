@@ -317,7 +317,7 @@ def _clone_metrics_and_alerts(
         "K1", "K1f", "K2f", "K2f_pre", "Kf2bis",
         "Kf3", "K2", "K3", "K4",
         "V_pre", "V_line",
-        "V", "slope_P", "sum_slope", "sum_pos_P", "nb_pos_P", "ratio_P", "amp_h",
+        "V", "slope_P", "sum_slope", "slope_vrai", "sum_pos_P", "nb_pos_P", "ratio_P", "amp_h",
     ]
 
     for sym in symbols:

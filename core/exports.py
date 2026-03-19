@@ -72,6 +72,7 @@ def build_scenario_workbook_write_only(
             "nb_pos_P",
             "ratio_P",
             "amp_h",
+            "slope_vrai",
             "P",
             "M",
             "M1",
@@ -100,9 +101,8 @@ def build_scenario_workbook_write_only(
         ws.append([f"Description: {scenario.description}"])
         ws.append([
             f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
-            f"vc={getattr(scenario,'vc',None)} fl={getattr(scenario,'fl',None)} "
-            f"| N1={scenario.n1} N2={scenario.n2} N3={scenario.n3} N4={scenario.n4} "
-            f"| K2f: N5={getattr(scenario,'n5',None)} K2J={getattr(scenario,'k2j',None)} CR={getattr(scenario,'cr',None)} "
+            f"| N1={scenario.n1} N2={scenario.n2} "
+            f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil={getattr(scenario,'slope_threshold',None)} "
             f"| history_years={scenario.history_years}"
         ])
         ws.append([f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
@@ -123,6 +123,7 @@ def build_scenario_workbook_write_only(
             "nb_pos_P",
             "ratio_P",
             "amp_h",
+            "slope_vrai",
             "P",
             "M",
             "M1",
@@ -163,6 +164,7 @@ def build_scenario_workbook_write_only(
                 (m.nb_pos_P if m and m.nb_pos_P is not None else None),
                 f(m.ratio_P) if m else None,
                 f(m.amp_h) if m else None,
+                f(getattr(m, "slope_vrai", None)) if m else None,
                 f(m.P) if m else None,
                 f(m.M) if m else None,
                 f(m.M1) if m else None,

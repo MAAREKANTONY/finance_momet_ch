@@ -20,5 +20,6 @@ p(t) = somme sur N2 de δj
 Kf(t) = M1(t) - T(t)·p(t)
 
 SUM_SLOPE(t) = somme sur Npente de δj
+SLOPE_VRAI(t) = (P(t) - P(t-N2)) / P(t-N2)
 
-Signaux actifs: A1, B1, C1, D1, E1, F1, G1, H1, Af, Bf, SPa, SPv.
+Signaux actifs: A1, B1, C1, D1, E1, F1, G1, H1, Af, Bf, SPa, SPv, SPVa, SPVv.
