@@ -11,7 +11,7 @@
       {% if field.name == 'signal_lines' %}
         <div class="field" style="margin-top:16px;">
           <label>Signal lines (Buy / Sell)</label>
-          <div class="muted">Définis une ou plusieurs paires Buy/Sell. Ex: Buy=Af, Sell=Bf. Tu peux aussi activer un mode spécial par ligne.</div>
+          <div class="muted">Chaque ligne peut contenir 1 à N conditions BUY et 1 à N conditions SELL. La logique est un ET logique à l'intérieur d'une ligne.</div>
 
           <div class="card" style="margin-top:10px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
             <div style="flex:1;">
@@ -70,175 +70,117 @@
   const body = document.getElementById("signal-lines-body");
   const hidden = document.getElementById("id_signal_lines");
   const addBtn = document.getElementById("add-line");
+  const form = document.getElementById("backtest-form") || document.getElementById("game-scenario-form");
   const summary = document.getElementById("strategy-summary");
 
-  function makeSelect(value) {
+  function normalizeCodes(value) {
+    if (!value) return [];
+    if (Array.isArray(value)) return value.filter(Boolean);
+    return [value];
+  }
+
+  function makeMultiSelect(values) {
     const sel = document.createElement("select");
+    sel.multiple = true;
+    sel.size = Math.min(6, Math.max(4, SIGNAL_CHOICES.length));
     sel.style.minWidth = "260px";
-    const empty = document.createElement("option");
-    empty.value = "";
-    empty.textContent = "-- choisir --";
-    sel.appendChild(empty);
+    const selected = new Set(normalizeCodes(values));
     for (const [code, label] of SIGNAL_CHOICES) {
       const opt = document.createElement("option");
       opt.value = code;
       opt.textContent = label;
-      if (value && value === code) opt.selected = true;
+      if (selected.has(code)) opt.selected = true;
       sel.appendChild(opt);
     }
     return sel;
   }
 
+  function selectedValues(selectEl) {
+    return Array.from(selectEl.options).filter(o => o.selected).map(o => o.value);
+  }
+
   function makeModeSelect(value) {
     const sel = document.createElement("select");
     sel.style.minWidth = "180px";
-
-    const optStd = document.createElement("option");
-    optStd.value = "standard";
-    optStd.textContent = "Standard (BUY/SELL fixes)";
-    sel.appendChild(optStd);
-
-    const optSpec = document.createElement("option");
-    optSpec.value = "special_k1f";
-    optSpec.textContent = "Spécial (SELL auto via K1f)";
-    sel.appendChild(optSpec);
-
+    sel.innerHTML = '<option value="standard">Standard (ET logique)</option><option value="special_k1f">Spécial: K1f auto-sell</option>';
     sel.value = value || "standard";
     return sel;
   }
 
-  function parseHidden() {
-    try {
-      const raw = (hidden.value || "[]").trim();
-      return JSON.parse(raw || "[]");
-    } catch (e) {
-      return [];
-    }
+  function formatCodes(codes) {
+    const arr = normalizeCodes(codes);
+    return arr.length ? arr.join(" & ") : "—";
   }
 
-  function saveHidden(lines) {
-    hidden.value = JSON.stringify(lines);
-  }
-
-  function getLinesFromDOM() {
-    const rows = body.querySelectorAll("tr");
-    const lines = [];
-    rows.forEach((tr) => {
-      const mode = tr.querySelector("select[data-role='mode']")?.value || "standard";
-      const buy = tr.querySelector("select[data-role='buy']")?.value || "";
-      let sell = tr.querySelector("select[data-role='sell']")?.value || "";
-      if (mode === "special_k1f") {
-        sell = SPECIAL_SELL;
-      }
-      lines.push({ mode, buy, sell });
-    });
-    return lines;
-  }
-
-  function renderSummary(lines) {
+  function updateSummary() {
     if (!summary) return;
-    if (!lines.length) {
-      summary.textContent = "—";
-      return;
-    }
-    const parts = lines.map((l, idx) => {
-      const mode = (l.mode === "special_k1f") ? "SELL auto" : "Std";
-      const buy = l.buy || "(no BUY)";
-      const sell = (l.mode === "special_k1f") ? "AUTO(K1f)" : (l.sell || "(no SELL)");
-      return `L${idx + 1}: ${mode} | BUY=${buy} | SELL=${sell}`;
+    const rows = body.querySelectorAll("tr");
+    if (!rows.length) { summary.textContent = "—"; return; }
+    const parts = [];
+    rows.forEach((tr, i) => {
+      const mode = tr.querySelector('[data-role="mode"]')?.value || 'standard';
+      const buy = selectedValues(tr.querySelector('[data-role="buy"]'));
+      const sell = mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]'));
+      parts.push(`L${i+1}: BUY=${formatCodes(buy)} | SELL=${mode === 'special_k1f' ? 'AUTO(K1f)' : formatCodes(sell)}`);
     });
-    summary.textContent = parts.join("  •  ");
+    summary.textContent = parts.join('  •  ');
   }
 
-  function updateAll() {
-    const lines = getLinesFromDOM();
-    saveHidden(lines);
-    renderSummary(lines);
-  }
-
-  function addRow(initial) {
+  function addRow(idx, item) {
+    item = item || {};
     const tr = document.createElement("tr");
-
-    const tdIdx = document.createElement("td");
-    tdIdx.className = "muted";
-    tdIdx.style.textAlign = "center";
-    tr.appendChild(tdIdx);
-
-    const tdMode = document.createElement("td");
-    const modeSel = makeModeSelect(initial?.mode || "standard");
-    modeSel.setAttribute("data-role", "mode");
-    tdMode.appendChild(modeSel);
-    tr.appendChild(tdMode);
-
-    const tdBuy = document.createElement("td");
-    const buySel = makeSelect(initial?.buy || "");
-    buySel.setAttribute("data-role", "buy");
-    tdBuy.appendChild(buySel);
-    tr.appendChild(tdBuy);
-
-    const tdSell = document.createElement("td");
-    const sellSel = makeSelect(initial?.sell && initial?.sell !== SPECIAL_SELL ? initial.sell : "");
-    sellSel.setAttribute("data-role", "sell");
-    tdSell.appendChild(sellSel);
-    tr.appendChild(tdSell);
-
-    const tdAct = document.createElement("td");
-    const del = document.createElement("button");
-    del.type = "button";
-    del.className = "btn";
-    del.textContent = "Suppr.";
-    del.addEventListener("click", () => {
-      tr.remove();
-      renumber();
-      updateAll();
-    });
-    tdAct.appendChild(del);
-    tr.appendChild(tdAct);
-
-    function applyModeUI() {
-      const mode = modeSel.value;
-      if (mode === "special_k1f") {
-        sellSel.disabled = true;
-      } else {
-        sellSel.disabled = false;
-      }
+    tr.innerHTML = '<td></td><td></td><td></td><td></td><td></td>';
+    tr.children[0].textContent = idx + 1;
+    const modeSel = makeModeSelect(item.mode || ((normalizeCodes(item.sell)[0] || '') === SPECIAL_SELL ? 'special_k1f' : 'standard'));
+    modeSel.setAttribute('data-role','mode');
+    tr.children[1].appendChild(modeSel);
+    const buySel = makeMultiSelect(item.buy || []);
+    buySel.setAttribute('data-role','buy');
+    tr.children[2].appendChild(buySel);
+    const sellSel = makeMultiSelect((normalizeCodes(item.sell)[0] || '') === SPECIAL_SELL ? [] : (item.sell || []));
+    sellSel.setAttribute('data-role','sell');
+    tr.children[3].appendChild(sellSel);
+    const del = document.createElement('button');
+    del.type = 'button';
+    del.className = 'btn';
+    del.textContent = 'Supprimer';
+    del.onclick = () => { tr.remove(); renumber(); serialize(); };
+    tr.children[4].appendChild(del);
+    function applyMode() {
+      sellSel.disabled = modeSel.value === 'special_k1f';
     }
-
-    modeSel.addEventListener("change", () => {
-      applyModeUI();
-      updateAll();
-    });
-    buySel.addEventListener("change", updateAll);
-    sellSel.addEventListener("change", updateAll);
-
+    modeSel.addEventListener('change', () => { applyMode(); serialize(); });
+    buySel.addEventListener('change', serialize);
+    sellSel.addEventListener('change', serialize);
     body.appendChild(tr);
-    applyModeUI();
-    renumber();
+    applyMode();
   }
 
   function renumber() {
-    const rows = body.querySelectorAll("tr");
-    rows.forEach((tr, i) => {
-      const td = tr.children[0];
-      if (td) td.textContent = String(i + 1);
-    });
+    Array.from(body.querySelectorAll('tr')).forEach((tr, i) => tr.children[0].textContent = i + 1);
+    updateSummary();
   }
 
-  // init
-  const initial = parseHidden();
-  if (Array.isArray(initial) && initial.length) {
-    initial.forEach((l) => addRow(l));
-  } else {
-    addRow({ mode: "standard", buy: "", sell: "" });
-  }
-  updateAll();
-
-  if (addBtn) {
-    addBtn.addEventListener("click", () => {
-      addRow({ mode: "standard", buy: "", sell: "" });
-      updateAll();
+  function serialize() {
+    const out = [];
+    body.querySelectorAll('tr').forEach((tr) => {
+      const mode = tr.querySelector('[data-role="mode"]')?.value || 'standard';
+      const buy = selectedValues(tr.querySelector('[data-role="buy"]'));
+      const sell = mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]'));
+      if (buy.length || sell.length) out.push({mode, buy, sell});
     });
+    hidden.value = JSON.stringify(out);
+    updateSummary();
   }
+
+  let initial = [];
+  try { initial = JSON.parse(hidden.value || '[]'); } catch(e) { initial = []; }
+  if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', buy:['Af'], sell:['Bf']}];
+  initial.forEach((it, idx) => addRow(idx, it));
+  renumber();
+  serialize();
+  addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', buy:[], sell:[]}); renumber(); serialize(); });
+  form?.addEventListener('submit', serialize);
 })();
 </script>
 

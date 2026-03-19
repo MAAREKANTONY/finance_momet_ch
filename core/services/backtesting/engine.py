@@ -83,6 +83,51 @@ def _metric_val(mtuple: tuple | None, idx: int) -> Any:
         return None
 
 
+def _normalize_codes(value: Any) -> list[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        code = value.strip().upper()
+        return [code] if code else []
+    if isinstance(value, (list, tuple)):
+        out: list[str] = []
+        for item in value:
+            if item in (None, ""):
+                continue
+            code = str(item).strip().upper()
+            if code:
+                out.append(code)
+        return out
+    return [str(value).strip().upper()] if str(value).strip() else []
+
+
+def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
+    if not isinstance(signal_lines, list) or not signal_lines:
+        return [{"mode": "standard", "buy": ["AF"], "sell": ["BF"]}]
+    out: list[dict[str, Any]] = []
+    for raw in signal_lines:
+        if not isinstance(raw, dict):
+            continue
+        mode = str(raw.get("mode") or "standard").strip() or "standard"
+        buy_codes = _normalize_codes(raw.get("buy") or raw.get("buy_conditions"))
+        sell_codes = _normalize_codes(raw.get("sell") or raw.get("sell_conditions"))
+        if buy_codes or sell_codes:
+            out.append({"mode": mode, "buy": buy_codes, "sell": sell_codes})
+    return out or [{"mode": "standard", "buy": ["AF"], "sell": ["BF"]}]
+
+
+def _match_all(day_alerts: set[str], codes: list[str]) -> bool:
+    codes = _normalize_codes(codes)
+    if not codes:
+        return False
+    return all(code in day_alerts for code in codes)
+
+
+def _codes_label(codes: list[str]) -> str:
+    norm = _normalize_codes(codes)
+    return " & ".join(norm) if norm else ""
+
+
 def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     """
     Feature 4:
@@ -123,10 +168,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     X = Decimal(str(backtest.ratio_threshold or 0))  # percent threshold
     include_all = bool(getattr(backtest, "include_all_tickers", False))
 
-    signal_lines = backtest.signal_lines or []
-    if not isinstance(signal_lines, list) or not signal_lines:
-        # Default: A1/B1
-        signal_lines = [{"buy": "A1", "sell": "B1"}]
+    signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
     # Resolve symbols in one query
     symbols = list(Symbol.objects.filter(ticker__in=tickers))
@@ -245,8 +287,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     for ticker in data_by_ticker.keys():
         for li, line in enumerate(signal_lines):
             state[(ticker, li)] = {
-                "buy_code": str(line.get("buy") or "").strip().upper(),
-                "sell_code": str(line.get("sell") or "").strip().upper(),
+                "buy_codes": _normalize_codes(line.get("buy")),
+                "sell_codes": _normalize_codes(line.get("sell")),
                 "allocated": False,
                 "cash_ticker": Decimal("0"),
                 # Realized PnL that is NOT reinvested when fixed_capital is enabled.
@@ -399,7 +441,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 st["shares"] = 0
                 logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
 
-            sell_code = st["sell_code"]
+            sell_codes = st["sell_codes"]
+            sell_code = sell_codes[0] if sell_codes else ""
 
             # Special sell mode: K1f crosses down either (1) 0 (B1f) or (2) the closest
             # "line above" among K1/K2/K3/K4 as of t-1.
@@ -430,8 +473,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                         if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
                             _do_sell(f"AUTO ({target_key}: K1f cross down)")
 
-            elif sell_code and sell_code in day_alerts and st["position_open"]:
-                _do_sell(f"signal {sell_code}")
+            elif sell_codes and _match_all(day_alerts, sell_codes) and st["position_open"]:
+                _do_sell(f"signal {_codes_label(sell_codes)}")
 
             # record daily row (we may update with buy action later, but keep as dict to mutate)
             N = st["trade_count"]
@@ -459,8 +502,10 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "ratio_P_pct": None if ratio_pct is None else str(ratio_pct),
                 "tradable": tradable,
                 "alerts": sorted(list(day_alerts_raw)),
-                "buy_code": st["buy_code"],
-                "sell_code": st["sell_code"],
+                "buy_code": _codes_label(st["buy_codes"]),
+                "sell_code": _codes_label(st["sell_codes"]),
+                "buy_codes": st["buy_codes"],
+                "sell_codes": st["sell_codes"],
                 "action": "SELL" if G_today is not None else None,
                 "action_G": None if G_today is None else str(G_today),
                 "forced_close": forced_close,
@@ -493,12 +538,12 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 continue
             if st["position_open"]:
                 continue
-            buy_code = st["buy_code"]
-            if not buy_code:
+            buy_codes = st["buy_codes"]
+            if not buy_codes:
                 continue
             day_alerts_raw = tdata["alerts"].get(d, set())
             day_alerts = {a.upper() for a in day_alerts_raw}
-            if buy_code not in day_alerts:
+            if not _match_all(day_alerts, buy_codes):
                 continue
 
             tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
@@ -555,12 +600,12 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if st["position_open"]:
                 continue
 
-            buy_code = st["buy_code"]
-            if not buy_code:
+            buy_codes = st["buy_codes"]
+            if not buy_codes:
                 continue
             day_alerts_raw = tdata["alerts"].get(d, set())
             day_alerts = {a.upper() for a in day_alerts_raw}
-            if buy_code not in day_alerts:
+            if not _match_all(day_alerts, buy_codes):
                 continue
 
             tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
@@ -590,7 +635,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             st["entry_price"] = str(close_d)
             st["entry_date"] = d
 
-            logs.append(f"{ticker}[L{li+1}] BUY signal {buy_code} on {d} close={close_d} shares={shares} cash_left={st['cash_ticker']}")
+            logs.append(f"{ticker}[L{li+1}] BUY signal {_codes_label(buy_codes)} on {d} close={close_d} shares={shares} cash_left={st['cash_ticker']}")
 
             # mutate last daily row to add action
             if st["daily_rows"]:
@@ -782,8 +827,10 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                     "ratio_P_pct": None,
                     "tradable": False,
                     "alerts": [],
-                    "buy_code": st["buy_code"],
-                    "sell_code": st["sell_code"],
+                    "buy_code": _codes_label(st["buy_codes"]),
+                    "sell_code": _codes_label(st["sell_codes"]),
+                    "buy_codes": st["buy_codes"],
+                    "sell_codes": st["sell_codes"],
                     "action": "FORCED_SELL",
                     "action_G": None if G_today is None else str(G_today),
                     "forced_close": True,
@@ -844,8 +891,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             BMD = None if bmd_days == 0 else (BT / Decimal(bmd_days))
             tentry["lines"].append({
                 "line_index": li + 1,
-                "buy": st["buy_code"],
-                "sell": st["sell_code"],
+                "buy": st["buy_codes"],
+                "sell": st["sell_codes"],
                 "allocated": st["allocated"],
                 "final": {
                     "N": N,
@@ -1048,9 +1095,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
     X = Decimal("0")  # Game mode: eligibility bypass (include_all)
     include_all = True
 
-    signal_lines = backtest.signal_lines or []
-    if not isinstance(signal_lines, list) or not signal_lines:
-        signal_lines = [{"buy": "A1", "sell": "B1"}]
+    signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
     symbols = list(Symbol.objects.filter(ticker__in=tickers))
     sym_by_ticker = {s.ticker: s for s in symbols}
@@ -1117,8 +1162,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
     for ticker in data_by_ticker.keys():
         for li, line in enumerate(signal_lines):
             state[(ticker, li)] = {
-                "buy_code": str(line.get("buy") or "").upper(),
-                "sell_code": str(line.get("sell") or "").upper(),
+                "buy_codes": _normalize_codes(line.get("buy")),
+                "sell_codes": _normalize_codes(line.get("sell")),
                 "allocated": False,
                 "cash_ticker": Decimal("0"),
                 "bank": Decimal("0"),
@@ -1178,7 +1223,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 st["entry_date"] = None
                 logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
 
-            sell_code = st["sell_code"]
+            sell_codes = st["sell_codes"]
+            sell_code = sell_codes[0] if sell_codes else ""
             if st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
                 k_today = (tdata["metrics"].get(d) or None)
                 k_prev = st.get("prev_k") or None
@@ -1202,8 +1248,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                         if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
                             _do_sell(f"AUTO ({target_key}: K1f cross down)")
 
-            elif sell_code and sell_code in day_alerts and st["position_open"]:
-                _do_sell(f"signal {sell_code}")
+            elif sell_codes and _match_all(day_alerts, sell_codes) and st["position_open"]:
+                _do_sell(f"signal {_codes_label(sell_codes)}")
 
             # Keep prev_k for special sells
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
@@ -1219,11 +1265,11 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 continue
             if st["position_open"]:
                 continue
-            buy_code = st["buy_code"]
-            if not buy_code:
+            buy_codes = st["buy_codes"]
+            if not buy_codes:
                 continue
             day_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
-            if buy_code not in day_alerts:
+            if not _match_all(day_alerts, buy_codes):
                 continue
             tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
             if not tradable:
@@ -1259,11 +1305,11 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 continue
             if st["position_open"]:
                 continue
-            buy_code = st["buy_code"]
-            if not buy_code:
+            buy_codes = st["buy_codes"]
+            if not buy_codes:
                 continue
             day_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
-            if buy_code not in day_alerts:
+            if not _match_all(day_alerts, buy_codes):
                 continue
             tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
             if not tradable:
@@ -1342,8 +1388,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             tentry["lines"].append(
                 {
                     "line_index": li + 1,
-                    "buy": st["buy_code"],
-                    "sell": st["sell_code"],
+                    "buy": st["buy_codes"],
+                    "sell": st["sell_codes"],
                     "final": {
                         "N": N,
                         "BT": str(BT),

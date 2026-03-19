@@ -21,6 +21,44 @@ BACKTEST_SIGNAL_CHOICES = [
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
 
 
+
+
+def _normalize_signal_code_list(value):
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        code = value.strip()
+        return [code] if code else []
+    if isinstance(value, (list, tuple)):
+        out = []
+        for item in value:
+            if item in (None, ""):
+                continue
+            if not isinstance(item, str):
+                raise forms.ValidationError("Signal conditions must be strings")
+            code = item.strip()
+            if code:
+                out.append(code)
+        return out
+    raise forms.ValidationError("Signal conditions must be a string or a JSON list of strings")
+
+
+def _clean_signal_lines_json(value):
+    if value in (None, ""):
+        return []
+    if not isinstance(value, list):
+        raise forms.ValidationError("signal_lines must be a JSON list")
+    cleaned = []
+    for item in value:
+        if not isinstance(item, dict):
+            raise forms.ValidationError("Each signal line must be an object")
+        mode = str(item.get("mode") or "standard").strip() or "standard"
+        buy = _normalize_signal_code_list(item.get("buy") or item.get("buy_conditions"))
+        sell = _normalize_signal_code_list(item.get("sell") or item.get("sell_conditions"))
+        payload = {"mode": mode, "buy": buy, "sell": sell}
+        if buy or sell:
+            cleaned.append(payload)
+    return cleaned
 class AlertDefinitionForm(forms.ModelForm):
     """CRUD form for user-defined alert definitions.
 
@@ -252,15 +290,7 @@ class StudyBacktestForm(forms.ModelForm):
         }
 
     def clean_signal_lines(self):
-        value = self.cleaned_data.get("signal_lines")
-        if value in (None, ""):
-            return []
-        if not isinstance(value, list):
-            raise forms.ValidationError("signal_lines must be a JSON list")
-        for item in value:
-            if not isinstance(item, dict):
-                raise forms.ValidationError("Each signal line must be an object")
-        return value
+        return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
 
 
 class StudyMetaForm(forms.ModelForm):
@@ -389,17 +419,7 @@ class BacktestForm(forms.ModelForm):
         }
 
     def clean_signal_lines(self):
-        """Accept JSON list; keep validation minimal for Feature 1."""
-        value = self.cleaned_data.get("signal_lines")
-        if value in (None, ""):
-            return []
-        if not isinstance(value, list):
-            raise forms.ValidationError("signal_lines must be a JSON list")
-        # Lightweight sanity check: each item should at least be a dict with buy/sell keys (optional at this stage).
-        for item in value:
-            if not isinstance(item, dict):
-                raise forms.ValidationError("Each signal line must be an object")
-        return value
+        return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
 
 
 class GameScenarioForm(forms.ModelForm):
@@ -443,12 +463,4 @@ class GameScenarioForm(forms.ModelForm):
         }
 
     def clean_signal_lines(self):
-        value = self.cleaned_data.get("signal_lines")
-        if value in (None, ""):
-            return []
-        if not isinstance(value, list):
-            raise forms.ValidationError("signal_lines must be a JSON list")
-        for item in value:
-            if not isinstance(item, dict):
-                raise forms.ValidationError("Each signal line must be an object")
-        return value
+        return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
