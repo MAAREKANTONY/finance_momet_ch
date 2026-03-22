@@ -122,7 +122,7 @@ def alerts_table(request):
     # NOTE: This is *display-only* and must be kept in sync with the engine outputs.
     all_alert_codes = [
         "A1", "B1", "C1", "D1", "E1", "F1", "G1", "H1",
-        "Af", "Bf", "SPa", "SPv", "SPVa", "SPVv",
+        "Af", "Bf", "SPa", "SPv", "SPVa", "SPVv", "SPa_basse", "SPv_basse", "SPVa_basse", "SPVv_basse",
     ]
 
     return render(request, "alerts.html", {
@@ -209,6 +209,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
             f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
                         f"| N1={scenario.n1} N2={scenario.n2} "
             f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil={getattr(scenario,'slope_threshold',None)} "
+            f"| SUM_SLOPE_BASSE/SLOPE_VRAI_BASSE: Npente_basse={getattr(scenario,'npente_basse',None)} seuil_basse={getattr(scenario,'slope_threshold_basse',None)} "
             f"| history_years={scenario.history_years}"
         ])
         ws.append([f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
@@ -814,6 +815,8 @@ def _clone_scenario_for_study(*, study_name: str, created_by, source: Scenario |
             n2=source.n2,
             npente=getattr(source, "npente", 100),
             slope_threshold=getattr(source, "slope_threshold", 0.1),
+            npente_basse=getattr(source, "npente_basse", 20),
+            slope_threshold_basse=getattr(source, "slope_threshold_basse", 0.02),
             history_years=source.history_years,
             active=True,
         )
@@ -1217,6 +1220,8 @@ def scenario_duplicate(request, pk: int):
             "n2": source.n2,
             "npente": getattr(source, "npente", 100),
             "slope_threshold": getattr(source, "slope_threshold", 0.1),
+            "npente_basse": getattr(source, "npente_basse", 20),
+            "slope_threshold_basse": getattr(source, "slope_threshold_basse", 0.02),
             "history_years": source.history_years,
             "active": source.active,
             # Many-to-many: pre-select the same tickers as the source scenario.

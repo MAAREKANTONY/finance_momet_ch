@@ -16,6 +16,10 @@ BACKTEST_SIGNAL_CHOICES = [
     ("SPv", "SPv (SUM_SLOPE croise le seuil de pente vers le bas)"),
     ("SPVa", "SPVa (SLOPE_VRAI croise le seuil de pente vers le haut)"),
     ("SPVv", "SPVv (SLOPE_VRAI croise le seuil de pente vers le bas)"),
+    ("SPa_basse", "SPa_basse (SUM_SLOPE_BASSE croise le seuil de pente basse vers le haut)"),
+    ("SPv_basse", "SPv_basse (SUM_SLOPE_BASSE croise le seuil de pente basse vers le bas)"),
+    ("SPVa_basse", "SPVa_basse (SLOPE_VRAI_BASSE croise le seuil de pente basse vers le haut)"),
+    ("SPVv_basse", "SPVv_basse (SLOPE_VRAI_BASSE croise le seuil de pente basse vers le bas)"),
 ]
 
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
@@ -152,6 +156,8 @@ class ScenarioForm(forms.ModelForm):
             "n2",
             "npente",
             "slope_threshold",
+            "npente_basse",
+            "slope_threshold_basse",
             "history_years",
             "active",
             "symbols",
@@ -339,6 +345,8 @@ class StudyScenarioForm(forms.ModelForm):
             "n2",
             "npente",
             "slope_threshold",
+            "npente_basse",
+            "slope_threshold_basse",
             "history_years",
             "symbols",
         ]
@@ -448,6 +456,8 @@ class GameScenarioForm(forms.ModelForm):
             "tradability_threshold",
             "npente",
             "slope_threshold",
+            "npente_basse",
+            "slope_threshold_basse",
             "presence_threshold_pct",
             "email_recipients",
             "a",

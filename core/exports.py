@@ -103,6 +103,7 @@ def build_scenario_workbook_write_only(
             f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
             f"| N1={scenario.n1} N2={scenario.n2} "
             f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil={getattr(scenario,'slope_threshold',None)} "
+            f"| SUM_SLOPE_BASSE/SLOPE_VRAI_BASSE: Npente_basse={getattr(scenario,'npente_basse',None)} seuil_basse={getattr(scenario,'slope_threshold_basse',None)} "
             f"| history_years={scenario.history_years}"
         ])
         ws.append([f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])

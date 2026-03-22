@@ -126,6 +126,16 @@ class Scenario(models.Model):
         default=Decimal("0.1"),
         help_text="Seuil de pente utilisé par SPa/SPv et SPVa/SPVv (ratio brut, ex: 0.1 = 10%).",
     )
+    npente_basse = models.PositiveIntegerField(
+        default=20,
+        help_text="Nombre de jours utilisés pour calculer SUM_SLOPE_BASSE et SLOPE_VRAI_BASSE.",
+    )
+    slope_threshold_basse = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        default=Decimal("0.02"),
+        help_text="Seuil de pente basse utilisé par SPa_basse/SPv_basse et SPVa_basse/SPVv_basse (ratio brut, ex: 0.02 = 2%).",
+    )
 
     # --- V line parameters (V5.2.37) ---
     # M_V: window (in days) used for the rolling max of daily highs.
@@ -315,6 +325,16 @@ class GameScenario(models.Model):
         decimal_places=8,
         default=Decimal("0.1"),
         help_text="Seuil de pente utilisé à la fois pour la tradabilité du Game, SPa/SPv et SPVa/SPVv (ratio brut, ex: 0.1 = 10%).",
+    )
+    npente_basse = models.PositiveIntegerField(
+        default=20,
+        help_text="Nombre de jours utilisés pour calculer SUM_SLOPE_BASSE et SLOPE_VRAI_BASSE.",
+    )
+    slope_threshold_basse = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        default=Decimal("0.02"),
+        help_text="Seuil de pente basse utilisé par SPa_basse/SPv_basse et SPVa_basse/SPVv_basse (ratio brut, ex: 0.02 = 2%).",
     )
     presence_threshold_pct = models.DecimalField(
         max_digits=8,
@@ -646,7 +666,9 @@ class DailyMetric(models.Model):
     V = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # daily close variation ratio
     slope_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # avg of V over last N3 days
     sum_slope = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # sum of daily study-price slopes over Npente days
-    slope_vrai = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # (P(t)-P(t-N2))/P(t-N2)
+    slope_vrai = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # (P(t)-P(t-Npente))/P(t-Npente)
+    sum_slope_basse = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # sum of daily study-price slopes over Npente_basse days
+    slope_vrai_basse = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # (P(t)-P(t-Npente_basse))/P(t-Npente_basse)
     sum_pos_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # sum positive slope_P
     nb_pos_P = models.PositiveIntegerField(null=True, blank=True)
     ratio_P = models.DecimalField(max_digits=18, decimal_places=12, null=True, blank=True)  # nb_pos_P / N4

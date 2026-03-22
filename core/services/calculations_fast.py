@@ -1,7 +1,8 @@
 """Fast bulk computations for DailyMetric/Alert.
 
 Optimized full recompute path aligned with the cleaned indicator set:
-P, M/X, M1/X1, T, Q/S, K1..K4, Kf, SUM_SLOPE, SLOPE_VRAI and alerts.
+P, M/X, M1/X1, T, Q/S, K1..K4, Kf, SUM_SLOPE, SLOPE_VRAI,
+SUM_SLOPE_BASSE, SLOPE_VRAI_BASSE and alerts.
 """
 
 from __future__ import annotations
@@ -37,16 +38,20 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
     n1 = int(getattr(scenario, "n1", 0) or 0)
     n2 = int(getattr(scenario, "n2", 0) or 0)
     npente = int(getattr(scenario, "npente", 100) or 100)
+    npente_basse = int(getattr(scenario, "npente_basse", 20) or 20)
     slope_threshold = D(getattr(scenario, "slope_threshold", D("0.1")))
+    slope_threshold_basse = D(getattr(scenario, "slope_threshold_basse", D("0.02")))
 
     prior_P = deque(maxlen=max(1, n1))
     prior_M = deque(maxlen=max(1, n2))
     prior_X = deque(maxlen=max(1, n2))
-    p_window = deque(maxlen=max(1, max(n2, npente) + 1))
+    p_window = deque(maxlen=max(1, max(n2, npente, npente_basse) + 1))
 
     prev_alert_tuple = None  # (P, Q, S, K1, K2, K3, K4, Kf)
     prev_sum_slope = None
     prev_slope_vrai = None
+    prev_sum_slope_basse = None
+    prev_slope_vrai_basse = None
 
     metrics: List[DailyMetric] = []
     alerts: List[Alert] = []
@@ -70,6 +75,8 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
         K1 = K2 = K3 = K4 = Kf = None
         sum_slope = None
         slope_vrai = None
+        sum_slope_basse = None
+        slope_vrai_basse = None
 
         if n1 > 0 and len(prior_P) >= n1:
             M = max(prior_P)
@@ -83,7 +90,7 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
 
         if len(p_window) >= 2:
             vals = []
-            max_i = min(max(n2, npente), len(p_window) - 1)
+            max_i = min(max(n2, npente, npente_basse), len(p_window) - 1)
             for i in range(max_i):
                 p1 = D(p_window[i])
                 p0 = D(p_window[i + 1])
@@ -91,12 +98,20 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
                     vals.append((p1 - p0) / p0)
             if vals and npente > 0:
                 sum_slope = sum(vals[:npente])
+            if vals and npente_basse > 0:
+                sum_slope_basse = sum(vals[:npente_basse])
 
         if npente > 0 and len(p_window) >= (npente + 1):
             base_p = D(p_window[npente])
             cur_p = D(p_window[0])
             if base_p not in (None, 0) and cur_p is not None:
                 slope_vrai = (cur_p - base_p) / base_p
+
+        if npente_basse > 0 and len(p_window) >= (npente_basse + 1):
+            base_p_basse = D(p_window[npente_basse])
+            cur_p_basse = D(p_window[0])
+            if base_p_basse not in (None, 0) and cur_p_basse is not None:
+                slope_vrai_basse = (cur_p_basse - base_p_basse) / base_p_basse
 
         if M1 is not None and X1 is not None and e not in (None, 0):
             T = (M1 - X1) / e
@@ -147,6 +162,8 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
                 slope_P=None,
                 sum_slope=sum_slope,
                 slope_vrai=slope_vrai,
+                sum_slope_basse=sum_slope_basse,
+                slope_vrai_basse=slope_vrai_basse,
                 sum_pos_P=None,
                 nb_pos_P=None,
                 ratio_P=None,
@@ -195,6 +212,18 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
             elif prev_slope_vrai > slope_threshold and slope_vrai < slope_threshold:
                 day_alerts.append("SPVv")
 
+        if prev_sum_slope_basse is not None and sum_slope_basse is not None and slope_threshold_basse is not None:
+            if prev_sum_slope_basse < slope_threshold_basse and sum_slope_basse > slope_threshold_basse:
+                day_alerts.append("SPa_basse")
+            elif prev_sum_slope_basse > slope_threshold_basse and sum_slope_basse < slope_threshold_basse:
+                day_alerts.append("SPv_basse")
+
+        if prev_slope_vrai_basse is not None and slope_vrai_basse is not None and slope_threshold_basse is not None:
+            if prev_slope_vrai_basse < slope_threshold_basse and slope_vrai_basse > slope_threshold_basse:
+                day_alerts.append("SPVa_basse")
+            elif prev_slope_vrai_basse > slope_threshold_basse and slope_vrai_basse < slope_threshold_basse:
+                day_alerts.append("SPVv_basse")
+
         if day_alerts:
             alerts.append(Alert(symbol=symbol, scenario=scenario, date=trading_date, alerts=",".join(day_alerts)))
 
@@ -202,6 +231,8 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
             prev_alert_tuple = (P, Q, S, K1, K2, K3, K4, Kf)
         prev_sum_slope = sum_slope
         prev_slope_vrai = slope_vrai
+        prev_sum_slope_basse = sum_slope_basse
+        prev_slope_vrai_basse = slope_vrai_basse
         if n1 > 0:
             prior_P.appendleft(P)
 

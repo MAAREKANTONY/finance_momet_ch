@@ -60,10 +60,14 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
 
     # SUM_SLOPE on study price P
     npente = int(getattr(scenario, "npente", 100) or 100)
+    npente_basse = int(getattr(scenario, "npente_basse", 20) or 20)
     sum_slope = None
     slope_vrai = None
-    if npente and npente > 0:
-        prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:max(npente, n2)])
+    sum_slope_basse = None
+    slope_vrai_basse = None
+    max_p_window = max(npente or 0, npente_basse or 0, n2 or 0)
+    if max_p_window and max_p_window > 0:
+        prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:max_p_window])
         prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
         p_series = prior_Ps + [D(P)]
         if len(p_series) >= 2:
@@ -74,8 +78,10 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                 if p0 in (None, 0) or p1 is None:
                     continue
                 vals.append((p1 - p0) / p0)
-            if vals:
+            if vals and npente and npente > 0:
                 sum_slope = sum(vals[-npente:])
+            if vals and npente_basse and npente_basse > 0:
+                sum_slope_basse = sum(vals[-npente_basse:])
 
     Kf = None
     if n2 and n2 > 0:
@@ -96,14 +102,16 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                 Kf = M1 - (T * p_sum)
 
     if npente and npente > 0:
-        prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:npente])
-        prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
-        p_series = prior_Ps + [D(P)]
-        if len(p_series) >= (npente + 1):
-            base_p = D(p_series[-(npente + 1)])
-            cur_p = D(p_series[-1])
-            if base_p not in (None, 0) and cur_p is not None:
-                slope_vrai = (cur_p - base_p) / base_p
+        base_p = D(p_series[-(npente + 1)]) if len(p_series) >= (npente + 1) else None
+        cur_p = D(p_series[-1]) if p_series else None
+        if base_p not in (None, 0) and cur_p is not None:
+            slope_vrai = (cur_p - base_p) / base_p
+
+    if npente_basse and npente_basse > 0:
+        base_p_basse = D(p_series[-(npente_basse + 1)]) if len(p_series) >= (npente_basse + 1) else None
+        cur_p_basse = D(p_series[-1]) if p_series else None
+        if base_p_basse not in (None, 0) and cur_p_basse is not None:
+            slope_vrai_basse = (cur_p_basse - base_p_basse) / base_p_basse
 
     metric, _ = DailyMetric.objects.update_or_create(
         symbol=symbol,
@@ -133,6 +141,8 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             "slope_P": None,
             "sum_slope": sum_slope,
             "slope_vrai": slope_vrai,
+            "sum_slope_basse": sum_slope_basse,
+            "slope_vrai_basse": slope_vrai_basse,
             "sum_pos_P": None,
             "nb_pos_P": None,
             "ratio_P": None,
@@ -216,6 +226,32 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                 alerts.append("SPVa")
             elif (prev_slope_vrai > slope_threshold) and (cur_slope_vrai < slope_threshold):
                 alerts.append("SPVv")
+    except Exception:
+        pass
+
+    # SUM_SLOPE_BASSE alerts (SPa_basse/SPv_basse)
+    try:
+        prev_sum_slope_basse = D(getattr(prev_metric, "sum_slope_basse", None))
+        cur_sum_slope_basse = D(getattr(metric, "sum_slope_basse", None))
+        slope_threshold_basse = D(getattr(scenario, "slope_threshold_basse", None))
+        if prev_sum_slope_basse is not None and cur_sum_slope_basse is not None and slope_threshold_basse is not None:
+            if (prev_sum_slope_basse < slope_threshold_basse) and (cur_sum_slope_basse > slope_threshold_basse):
+                alerts.append("SPa_basse")
+            elif (prev_sum_slope_basse > slope_threshold_basse) and (cur_sum_slope_basse < slope_threshold_basse):
+                alerts.append("SPv_basse")
+    except Exception:
+        pass
+
+    # SLOPE_VRAI_BASSE alerts (SPVa_basse/SPVv_basse)
+    try:
+        prev_slope_vrai_basse = D(getattr(prev_metric, "slope_vrai_basse", None))
+        cur_slope_vrai_basse = D(getattr(metric, "slope_vrai_basse", None))
+        slope_threshold_basse = D(getattr(scenario, "slope_threshold_basse", None))
+        if prev_slope_vrai_basse is not None and cur_slope_vrai_basse is not None and slope_threshold_basse is not None:
+            if (prev_slope_vrai_basse < slope_threshold_basse) and (cur_slope_vrai_basse > slope_threshold_basse):
+                alerts.append("SPVa_basse")
+            elif (prev_slope_vrai_basse > slope_threshold_basse) and (cur_slope_vrai_basse < slope_threshold_basse):
+                alerts.append("SPVv_basse")
     except Exception:
         pass
 
