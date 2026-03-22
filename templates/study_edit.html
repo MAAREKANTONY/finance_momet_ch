@@ -234,7 +234,7 @@
       </div>
       <div style="margin-top:12px;">
         <label><strong>Lignes de déclenchement</strong></label><br/>
-        <div class="muted">Définis les paires <code>BUY</code>/<code>SELL</code>. Le JSON est généré automatiquement.</div>
+        <div class="muted">Définis les paires <code>BUY</code>/<code>SELL</code>. Tu peux choisir ET ou OU pour chaque côté. Le JSON est généré automatiquement.</div>
 
         {# Hidden JSON field submitted to Django #}
         <textarea id="id_signal_lines" name="signal_lines" style="display:none;"></textarea>
@@ -243,8 +243,8 @@
         <table class="table" id="signalLinesTable" style="margin-top:10px;">
           <thead>
             <tr>
-              <th style="width:45%;">BUY (ET logique)</th>
-              <th style="width:45%;">SELL (ET logique)</th>
+              <th style="width:45%;">BUY</th>
+              <th style="width:45%;">SELL</th>
               <th style="width:10%;"></th>
             </tr>
           </thead>
@@ -274,18 +274,21 @@
 <script>
 (function() {
   const SIGNAL_CHOICES = [["A1","A1"],["B1","B1"],["C1","C1"],["D1","D1"],["E1","E1"],["F1","F1"],["G1","G1"],["H1","H1"],["Af","Af"],["Bf","Bf"],["SPa","SPa"],["SPv","SPv"],["SPVa","SPVa"],["SPVv","SPVv"]];
+  const LOGIC_CHOICES = [["AND", "ET"], ["OR", "OU"]];
   const hidden = document.getElementById('id_signal_lines');
   const tbody = document.querySelector('#signalLinesTable tbody');
   const addBtn = document.getElementById('addSignalLineBtn');
   const resetBtn = document.getElementById('resetSignalLinesBtn');
   if (!hidden || !tbody || !addBtn || !resetBtn) return;
   function normalize(v){ if(!v) return []; return Array.isArray(v) ? v.filter(Boolean) : [v]; }
+  function normalizeLogic(v, fallback){ const logic = String(v || fallback || 'AND').toUpperCase(); return logic === 'OR' ? 'OR' : 'AND'; }
   function makeSelect(values){ const sel=document.createElement('select'); sel.multiple=true; sel.size=6; sel.style.minWidth='240px'; const selected=new Set(normalize(values)); SIGNAL_CHOICES.forEach(([code,label])=>{ const opt=document.createElement('option'); opt.value=code; opt.textContent=label; if(selected.has(code)) opt.selected=true; sel.appendChild(opt); }); return sel; }
+  function makeLogicSelect(value, fallback){ const sel=document.createElement('select'); sel.style.minWidth='90px'; LOGIC_CHOICES.forEach(([code,label])=>{ const opt=document.createElement('option'); opt.value=code; opt.textContent=label; sel.appendChild(opt); }); sel.value=normalizeLogic(value, fallback); return sel; }
   function selected(sel){ return Array.from(sel.options).filter(o=>o.selected).map(o=>o.value); }
-  function rowTemplate(item){ const tr=document.createElement('tr'); const td1=document.createElement('td'); const td2=document.createElement('td'); const td3=document.createElement('td'); const buy=makeSelect(item?.buy||[]); buy.dataset.role='buy'; const sell=makeSelect(item?.sell||[]); sell.dataset.role='sell'; td1.appendChild(buy); td2.appendChild(sell); td3.innerHTML='<button class="btn" type="button">✕</button>'; td3.querySelector('button').onclick=()=>{tr.remove(); sync();}; [buy,sell].forEach(el=>el.addEventListener('change', sync)); tr.append(td1,td2,td3); return tr; }
-  function sync(){ const payload=Array.from(tbody.querySelectorAll('tr')).map(r=>({buy:selected(r.querySelector('[data-role="buy"]')), sell:selected(r.querySelector('[data-role="sell"]'))})).filter(x=>x.buy.length||x.sell.length); hidden.value=JSON.stringify(payload); }
-  function render(data){ tbody.innerHTML=''; (data.length?data:[{buy:['Af'],sell:['Bf']}]).forEach(item=>tbody.appendChild(rowTemplate(item))); sync(); }
-  addBtn.onclick=()=>{ tbody.appendChild(rowTemplate({buy:[],sell:[]})); sync(); };
+  function rowTemplate(item){ const tr=document.createElement('tr'); const td1=document.createElement('td'); const td2=document.createElement('td'); const td3=document.createElement('td'); const buyWrap=document.createElement('div'); buyWrap.style.display='flex'; buyWrap.style.gap='8px'; const buyLogic=makeLogicSelect(item?.buy_logic,'AND'); buyLogic.dataset.role='buy_logic'; const buy=makeSelect(item?.buy||[]); buy.dataset.role='buy'; buyWrap.append(buyLogic,buy); const sellWrap=document.createElement('div'); sellWrap.style.display='flex'; sellWrap.style.gap='8px'; const sellLogic=makeLogicSelect(item?.sell_logic,'OR'); sellLogic.dataset.role='sell_logic'; const sell=makeSelect(item?.sell||[]); sell.dataset.role='sell'; sellWrap.append(sellLogic,sell); td1.appendChild(buyWrap); td2.appendChild(sellWrap); td3.innerHTML='<button class="btn" type="button">✕</button>'; td3.querySelector('button').onclick=()=>{tr.remove(); sync();}; [buy,sell,buyLogic,sellLogic].forEach(el=>el.addEventListener('change', sync)); tr.append(td1,td2,td3); return tr; }
+  function sync(){ const payload=Array.from(tbody.querySelectorAll('tr')).map(r=>({buy:selected(r.querySelector('[data-role="buy"]')), sell:selected(r.querySelector('[data-role="sell"]')), buy_logic:normalizeLogic(r.querySelector('[data-role="buy_logic"]')?.value,'AND'), sell_logic:normalizeLogic(r.querySelector('[data-role="sell_logic"]')?.value,'OR')})).filter(x=>x.buy.length||x.sell.length); hidden.value=JSON.stringify(payload); }
+  function render(data){ tbody.innerHTML=''; (data.length?data:[{buy:['Af'],sell:['Bf'],buy_logic:'AND',sell_logic:'OR'}]).forEach(item=>tbody.appendChild(rowTemplate(item))); sync(); }
+  addBtn.onclick=()=>{ tbody.appendChild(rowTemplate({buy:[],sell:[],buy_logic:'AND',sell_logic:'OR'})); sync(); };
   resetBtn.onclick=()=>render([]);
   hidden.closest('form')?.addEventListener('submit', sync);
   try { render(JSON.parse(document.getElementById('signalLinesData').textContent || '[]')); } catch(e) { render([]); }

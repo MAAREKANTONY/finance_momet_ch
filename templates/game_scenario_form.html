@@ -11,7 +11,7 @@
       {% if field.name == 'signal_lines' %}
         <div class="field" style="margin-top:16px;">
           <label>Signal lines (Buy / Sell)</label>
-          <div class="muted">Chaque ligne peut contenir 1 à N conditions BUY et 1 à N conditions SELL. La logique est un ET logique à l'intérieur d'une ligne.</div>
+          <div class="muted">Chaque ligne peut contenir 1 à N conditions BUY et 1 à N conditions SELL. Tu peux choisir la logique ET ou OU pour chaque côté. Par défaut : BUY=ET, SELL=OU.</div>
 
           <div class="card" style="margin-top:10px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
             <div style="flex:1;">
@@ -67,6 +67,7 @@
 (function() {
   const SIGNAL_CHOICES = {{ signal_choices_json|safe }};
   const SPECIAL_SELL = "AUTO_K1F_UPPER_DOWN_B1F";
+  const LOGIC_CHOICES = [["AND", "ET"], ["OR", "OU"]];
   const body = document.getElementById("signal-lines-body");
   const hidden = document.getElementById("id_signal_lines");
   const addBtn = document.getElementById("add-line");
@@ -77,6 +78,21 @@
     if (!value) return [];
     if (Array.isArray(value)) return value.filter(Boolean);
     return [value];
+  }
+
+  function normalizeLogic(value, fallback) {
+    const logic = String(value || fallback || "AND").toUpperCase();
+    return logic === "OR" ? "OR" : "AND";
+  }
+
+  function logicLabel(value) {
+    return normalizeLogic(value, "AND") === "OR" ? "OU" : "ET";
+  }
+
+  function joinCodes(codes, logic) {
+    const arr = normalizeCodes(codes);
+    if (!arr.length) return "—";
+    return arr.join(normalizeLogic(logic, "AND") === "OR" ? " OU " : " ET ");
   }
 
   function makeMultiSelect(values) {
@@ -95,6 +111,19 @@
     return sel;
   }
 
+  function makeLogicSelect(value, fallback) {
+    const sel = document.createElement("select");
+    sel.style.minWidth = "90px";
+    for (const [code, label] of LOGIC_CHOICES) {
+      const opt = document.createElement("option");
+      opt.value = code;
+      opt.textContent = label;
+      sel.appendChild(opt);
+    }
+    sel.value = normalizeLogic(value, fallback);
+    return sel;
+  }
+
   function selectedValues(selectEl) {
     return Array.from(selectEl.options).filter(o => o.selected).map(o => o.value);
   }
@@ -102,14 +131,9 @@
   function makeModeSelect(value) {
     const sel = document.createElement("select");
     sel.style.minWidth = "180px";
-    sel.innerHTML = '<option value="standard">Standard (ET logique)</option><option value="special_k1f">Spécial: K1f auto-sell</option>';
+    sel.innerHTML = '<option value="standard">Standard</option><option value="special_k1f">Spécial: K1f auto-sell</option>';
     sel.value = value || "standard";
     return sel;
-  }
-
-  function formatCodes(codes) {
-    const arr = normalizeCodes(codes);
-    return arr.length ? arr.join(" & ") : "—";
   }
 
   function updateSummary() {
@@ -120,8 +144,10 @@
     rows.forEach((tr, i) => {
       const mode = tr.querySelector('[data-role="mode"]')?.value || 'standard';
       const buy = selectedValues(tr.querySelector('[data-role="buy"]'));
+      const buyLogic = tr.querySelector('[data-role="buy_logic"]')?.value || 'AND';
       const sell = mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]'));
-      parts.push(`L${i+1}: BUY=${formatCodes(buy)} | SELL=${mode === 'special_k1f' ? 'AUTO(K1f)' : formatCodes(sell)}`);
+      const sellLogic = tr.querySelector('[data-role="sell_logic"]')?.value || 'OR';
+      parts.push(`L${i+1}: BUY(${logicLabel(buyLogic)})=${joinCodes(buy, buyLogic)} | SELL=${mode === 'special_k1f' ? 'AUTO(K1f)' : `(${logicLabel(sellLogic)})=${joinCodes(sell, sellLogic)}`}`);
     });
     summary.textContent = parts.join('  •  ');
   }
@@ -131,27 +157,49 @@
     const tr = document.createElement("tr");
     tr.innerHTML = '<td></td><td></td><td></td><td></td><td></td>';
     tr.children[0].textContent = idx + 1;
+
     const modeSel = makeModeSelect(item.mode || ((normalizeCodes(item.sell)[0] || '') === SPECIAL_SELL ? 'special_k1f' : 'standard'));
     modeSel.setAttribute('data-role','mode');
     tr.children[1].appendChild(modeSel);
+
+    const buyWrap = document.createElement('div');
+    buyWrap.style.display = 'flex';
+    buyWrap.style.gap = '8px';
+    buyWrap.style.alignItems = 'flex-start';
+    const buyLogicSel = makeLogicSelect(item.buy_logic, 'AND');
+    buyLogicSel.setAttribute('data-role', 'buy_logic');
     const buySel = makeMultiSelect(item.buy || []);
     buySel.setAttribute('data-role','buy');
-    tr.children[2].appendChild(buySel);
+    buyWrap.appendChild(buyLogicSel);
+    buyWrap.appendChild(buySel);
+    tr.children[2].appendChild(buyWrap);
+
+    const sellWrap = document.createElement('div');
+    sellWrap.style.display = 'flex';
+    sellWrap.style.gap = '8px';
+    sellWrap.style.alignItems = 'flex-start';
+    const sellLogicSel = makeLogicSelect(item.sell_logic, 'OR');
+    sellLogicSel.setAttribute('data-role', 'sell_logic');
     const sellSel = makeMultiSelect((normalizeCodes(item.sell)[0] || '') === SPECIAL_SELL ? [] : (item.sell || []));
     sellSel.setAttribute('data-role','sell');
-    tr.children[3].appendChild(sellSel);
+    sellWrap.appendChild(sellLogicSel);
+    sellWrap.appendChild(sellSel);
+    tr.children[3].appendChild(sellWrap);
+
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'btn';
     del.textContent = 'Supprimer';
     del.onclick = () => { tr.remove(); renumber(); serialize(); };
     tr.children[4].appendChild(del);
+
     function applyMode() {
-      sellSel.disabled = modeSel.value === 'special_k1f';
+      const special = modeSel.value === 'special_k1f';
+      sellSel.disabled = special;
+      sellLogicSel.disabled = special;
     }
-    modeSel.addEventListener('change', () => { applyMode(); serialize(); });
-    buySel.addEventListener('change', serialize);
-    sellSel.addEventListener('change', serialize);
+
+    [modeSel, buySel, buyLogicSel, sellSel, sellLogicSel].forEach(el => el.addEventListener('change', () => { applyMode(); serialize(); }));
     body.appendChild(tr);
     applyMode();
   }
@@ -166,8 +214,10 @@
     body.querySelectorAll('tr').forEach((tr) => {
       const mode = tr.querySelector('[data-role="mode"]')?.value || 'standard';
       const buy = selectedValues(tr.querySelector('[data-role="buy"]'));
+      const buyLogic = tr.querySelector('[data-role="buy_logic"]')?.value || 'AND';
       const sell = mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]'));
-      if (buy.length || sell.length) out.push({mode, buy, sell});
+      const sellLogic = tr.querySelector('[data-role="sell_logic"]')?.value || 'OR';
+      if (buy.length || sell.length) out.push({mode, buy, sell, buy_logic: normalizeLogic(buyLogic, 'AND'), sell_logic: normalizeLogic(sellLogic, 'OR')});
     });
     hidden.value = JSON.stringify(out);
     updateSummary();
@@ -175,11 +225,11 @@
 
   let initial = [];
   try { initial = JSON.parse(hidden.value || '[]'); } catch(e) { initial = []; }
-  if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', buy:['Af'], sell:['Bf']}];
+  if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR'}];
   initial.forEach((it, idx) => addRow(idx, it));
   renumber();
   serialize();
-  addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', buy:[], sell:[]}); renumber(); serialize(); });
+  addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', buy:[], sell:[], buy_logic:'AND', sell_logic:'OR'}); renumber(); serialize(); });
   form?.addEventListener('submit', serialize);
 })();
 </script>

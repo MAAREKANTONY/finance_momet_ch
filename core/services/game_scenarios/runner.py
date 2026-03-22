@@ -172,7 +172,7 @@ def run_game_scenario_now(
         capital_mode=getattr(game, "capital_mode", "REINVEST"),
         ratio_threshold=0,
         include_all_tickers=True,
-        signal_lines=game.signal_lines or [{"buy": "A1", "sell": "B1"}],
+        signal_lines=game.signal_lines or [{"buy": "A1", "sell": "B1", "buy_logic": "AND", "sell_logic": "OR"}],
         close_positions_at_end=game.close_positions_at_end,
         universe_snapshot=tickers,
         settings=game.settings or {},

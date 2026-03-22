@@ -43,6 +43,11 @@ def _normalize_signal_code_list(value):
     raise forms.ValidationError("Signal conditions must be a string or a JSON list of strings")
 
 
+def _normalize_logic(value, default):
+    logic = str(value or default).strip().upper()
+    return logic if logic in {"AND", "OR"} else default
+
+
 def _clean_signal_lines_json(value):
     if value in (None, ""):
         return []
@@ -55,7 +60,13 @@ def _clean_signal_lines_json(value):
         mode = str(item.get("mode") or "standard").strip() or "standard"
         buy = _normalize_signal_code_list(item.get("buy") or item.get("buy_conditions"))
         sell = _normalize_signal_code_list(item.get("sell") or item.get("sell_conditions"))
-        payload = {"mode": mode, "buy": buy, "sell": sell}
+        payload = {
+            "mode": mode,
+            "buy": buy,
+            "sell": sell,
+            "buy_logic": _normalize_logic(item.get("buy_logic"), "AND"),
+            "sell_logic": _normalize_logic(item.get("sell_logic"), "OR"),
+        }
         if buy or sell:
             cleaned.append(payload)
     return cleaned

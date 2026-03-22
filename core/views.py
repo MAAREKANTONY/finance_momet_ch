@@ -886,7 +886,7 @@ def _clone_backtest_for_study(*, study_name: str, scenario: Scenario, created_by
         ratio_threshold=0,
         include_all_tickers=False,
         # sensible default: one line A2f/B2f (can be edited)
-        signal_lines=[{"buy": "Af", "sell": "Bf"}],
+        signal_lines=[{"buy": "Af", "sell": "Bf", "buy_logic": "AND", "sell_logic": "OR"}],
         close_positions_at_end=True,
         created_by=created_by,
     )
