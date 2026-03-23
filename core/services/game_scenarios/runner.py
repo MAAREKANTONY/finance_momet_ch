@@ -48,7 +48,7 @@ def _sync_engine_scenario(game: GameScenario) -> Scenario:
     for f in [
         "a", "b", "c", "d", "e",
         "n1", "n2",
-        "npente", "slope_threshold", "npente_basse", "slope_threshold_basse",
+        "npente", "slope_threshold", "npente_basse", "slope_threshold_basse", "nglobal",
     ]:
         setattr(sc, f, getattr(game, f))
 

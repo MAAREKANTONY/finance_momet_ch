@@ -63,7 +63,7 @@ def _alerts_set(alerts_str: str) -> set[str]:
     return {a.strip() for a in alerts_str.split(",") if a.strip()}
 
 
-# Compact metrics tuple layout: (ratio_P, K1, K1f, K2f, K2, K3, K4)
+# Compact metrics tuple layout: (ratio_P, K1, K1f, K2f, K2, K3, K4, P, Kf2bis, sum_slope, slope_vrai, sum_slope_basse, slope_vrai_basse)
 _M_RATIO_P = 0
 _M_K1 = 1
 _M_K1F = 2
@@ -71,6 +71,12 @@ _M_K2F = 3
 _M_K2 = 4
 _M_K3 = 5
 _M_K4 = 6
+_M_P = 7
+_M_KF = 8
+_M_SUM_SLOPE = 9
+_M_SLOPE_VRAI = 10
+_M_SUM_SLOPE_BASSE = 11
+_M_SLOPE_VRAI_BASSE = 12
 
 
 def _metric_val(mtuple: tuple | None, idx: int) -> Any:
@@ -137,9 +143,97 @@ def _match_codes(day_alerts: set[str], codes: list[str], logic: str = "AND") -> 
     return all(code in day_alerts for code in codes)
 
 
+_SIGNAL_STATE_PAIRS: tuple[tuple[str, str], ...] = (
+    ("AF", "BF"),
+    ("SPA", "SPV"),
+    ("SPVA", "SPVV"),
+    ("SPA_BASSE", "SPV_BASSE"),
+    ("SPVA_BASSE", "SPVV_BASSE"),
+)
+
+
+def _apply_signal_state_transitions(active_states: dict[str, bool], day_alerts: set[str]) -> set[str]:
+    """Update persistent signal states from today's event alerts and return active codes.
+
+    Each signal family is modeled as a pair of opposite states. Example:
+    - AF activates AF and deactivates BF
+    - BF activates BF and deactivates AF
+
+    The returned set contains the currently active state codes (not only today's events).
+    """
+    normalized = {str(code).strip().upper() for code in (day_alerts or set()) if str(code).strip()}
+    for positive_code, negative_code in _SIGNAL_STATE_PAIRS:
+        pos_seen = positive_code in normalized
+        neg_seen = negative_code in normalized
+        if pos_seen and not neg_seen:
+            active_states[positive_code] = True
+            active_states[negative_code] = False
+        elif neg_seen and not pos_seen:
+            active_states[positive_code] = False
+            active_states[negative_code] = True
+    return {code for code, is_active in active_states.items() if is_active}
+
+
+
+
+def _initialize_active_signal_states(active_states: dict[str, bool], metrics_tuple: tuple | None, price_value: Any, *, slope_threshold: Any = None, slope_threshold_basse: Any = None) -> set[str]:
+    """Initialize persistent states from the first in-range day values.
+
+    This avoids missing opportunities when conditions are already true on the
+    first day of the backtest/game range, without forcing a blanket buy.
+    """
+    price = _to_dec(price_value if price_value is not None else _metric_val(metrics_tuple, _M_P))
+    kf = _to_dec(_metric_val(metrics_tuple, _M_KF))
+    sum_slope = _to_dec(_metric_val(metrics_tuple, _M_SUM_SLOPE))
+    slope_vrai = _to_dec(_metric_val(metrics_tuple, _M_SLOPE_VRAI))
+    sum_slope_basse = _to_dec(_metric_val(metrics_tuple, _M_SUM_SLOPE_BASSE))
+    slope_vrai_basse = _to_dec(_metric_val(metrics_tuple, _M_SLOPE_VRAI_BASSE))
+    threshold = _to_dec(slope_threshold)
+    threshold_basse = _to_dec(slope_threshold_basse)
+
+    def set_pair(positive_code: str, negative_code: str, left: Decimal | None, right: Decimal | None):
+        if left is None or right is None:
+            return
+        if left > right:
+            active_states[positive_code] = True
+            active_states[negative_code] = False
+        elif left < right:
+            active_states[positive_code] = False
+            active_states[negative_code] = True
+
+    set_pair("AF", "BF", price, kf)
+    set_pair("SPA", "SPV", sum_slope, threshold)
+    set_pair("SPVA", "SPVV", slope_vrai, threshold)
+    set_pair("SPA_BASSE", "SPV_BASSE", sum_slope_basse, threshold_basse)
+    set_pair("SPVA_BASSE", "SPVV_BASSE", slope_vrai_basse, threshold_basse)
+    return {code for code, is_active in active_states.items() if is_active}
+
 def _codes_label(codes: list[str], logic: str = "AND") -> str:
     norm = _normalize_codes(codes)
     return " & ".join(norm) if norm else ""
+
+
+def _build_avg_global_nglobal_series(metrics_by_date: dict[date, tuple[Any, ...]], nglobal: int) -> dict[date, Decimal | None]:
+    """Per-date rolling mean of daily study-price returns over Nglobal days."""
+    from collections import deque
+
+    out: dict[date, Decimal | None] = {}
+    nglobal = int(nglobal or 0)
+    if nglobal <= 0:
+        return out
+
+    prev_p: Decimal | None = None
+    returns = deque(maxlen=nglobal)
+    for d in sorted(metrics_by_date.keys()):
+        p_val = _to_dec(_metric_val(metrics_by_date.get(d), _M_P))
+        if p_val is None:
+            out[d] = None
+            continue
+        if prev_p is not None and prev_p != 0:
+            returns.append((p_val - prev_p) / prev_p)
+        prev_p = p_val
+        out[d] = (sum(returns) / Decimal(nglobal)) if len(returns) >= nglobal else None
+    return out
 
 
 def run_backtest(backtest: Backtest) -> BacktestEngineResult:
@@ -230,8 +324,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             price_by_date[d] = b.get("close")
 
         # Metrics: store as compact tuples indexed by date to reduce memory.
-        # Tuple layout: (ratio_P, K1, K1f, K2f, K2, K3, K4)
-        metrics: dict[date, tuple[Any, Any, Any, Any, Any, Any, Any]] = {
+        # Tuple layout: (ratio_P, K1, K1f, K2f, K2, K3, K4, P, Kf2bis, sum_slope, slope_vrai, sum_slope_basse, slope_vrai_basse)
+        metrics: dict[date, tuple[Any, ...]] = {
             m["date"]: (
                 m.get("ratio_P"),
                 m.get("K1"),
@@ -240,13 +334,19 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 m.get("K2"),
                 m.get("K3"),
                 m.get("K4"),
+                m.get("P"),
+                m.get("Kf2bis"),
+                m.get("sum_slope"),
+                m.get("slope_vrai"),
+                m.get("sum_slope_basse"),
+                m.get("slope_vrai_basse"),
             )
             for m in DailyMetric.objects.filter(
                 symbol=sym,
                 scenario_id=backtest.scenario_id,
                 date__gte=start_d,
                 date__lte=end_d,
-            ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4")
+            ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4", "P", "Kf2bis", "sum_slope", "slope_vrai", "sum_slope_basse", "slope_vrai_basse")
         }
         alerts = {
             a["date"]: _alerts_set(a["alerts"])
@@ -263,6 +363,10 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
 
     if not data_by_ticker:
         return BacktestEngineResult(results={"error": "No usable tickers with data in range."}, logs=logs)
+
+    nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
+    for _ticker, _tdata in data_by_ticker.items():
+        _tdata["avg_nglobal_by_date"] = _build_avg_global_nglobal_series(_tdata.get("metrics", {}), nglobal)
 
     dates_sorted = sorted(all_dates)
     if not dates_sorted:
@@ -327,8 +431,27 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "tradable_days_in_position": 0,
                 "entry_date": None,
                 "prev_k": None,  # previous day's K-values dict (K1,K1f,K2,K3,K4)
+                "active_signal_states": {},
                 "daily_rows": [],
             }
+
+    # Initialize persistent states from the first in-range day values so we can
+    # enter on day 1 when conditions are already true, without forcing blanket buys.
+    for ticker, tdata in data_by_ticker.items():
+        first_dates = sorted(tdata["price_by_date"].keys())
+        if not first_dates:
+            continue
+        first_date = first_dates[0]
+        first_metrics = tdata.get("metrics", {}).get(first_date)
+        first_price = tdata["price_by_date"].get(first_date)
+        for li, _line in enumerate(signal_lines):
+            _initialize_active_signal_states(
+                state[(ticker, li)]["active_signal_states"],
+                first_metrics,
+                first_price,
+                slope_threshold=getattr(backtest.scenario, "slope_threshold", None),
+                slope_threshold_basse=getattr(backtest.scenario, "slope_threshold_basse", None),
+            )
 
     # Portfolio tracking (Feature 8)
     portfolio_daily: list[dict[str, Any]] = []
@@ -378,6 +501,15 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             capital_total = CP_raw
 
         equity = global_cash_val + cash_allocated + positions_value + bank_total
+        pnl_global = equity - invested
+
+        avg_global_vals: list[Decimal] = []
+        for _tk, _tdata in data_by_ticker.items():
+            _v = (_tdata.get("avg_nglobal_by_date") or {}).get(d)
+            _v = _to_dec(_v)
+            if _v is not None:
+                avg_global_vals.append(_v)
+        avg_global_nglobal = (sum(avg_global_vals) / Decimal(len(avg_global_vals))) if avg_global_vals else None
 
         if peak_equity is None or equity > peak_equity:
             peak_equity = equity
@@ -396,6 +528,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "positions_value": str(positions_value),
                 "equity": str(equity),
                 "invested": str(invested),
+                "pnl_global": str(pnl_global),
+                "avg_global_nglobal": None if avg_global_nglobal is None else str(avg_global_nglobal),
                 "drawdown": str(dd),
             }
         )
@@ -415,7 +549,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if close_d is None:
                 continue
             day_alerts_raw = tdata["alerts"].get(d, set())
-            day_alerts = {a.upper() for a in day_alerts_raw}
+            event_alerts = {a.upper() for a in day_alerts_raw}
+            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
 
             # tradable status computed for NB_JOUR_OUVRES before actions
             tradable, ratio_pct, ratio_raw = _ratio_tradable(tdata["metrics"].get(d))
@@ -560,7 +695,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if not buy_codes:
                 continue
             day_alerts_raw = tdata["alerts"].get(d, set())
-            day_alerts = {a.upper() for a in day_alerts_raw}
+            event_alerts = {a.upper() for a in day_alerts_raw}
+            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             if not _match_codes(day_alerts, buy_codes, st["buy_logic"]):
                 continue
 
@@ -622,7 +758,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if not buy_codes:
                 continue
             day_alerts_raw = tdata["alerts"].get(d, set())
-            day_alerts = {a.upper() for a in day_alerts_raw}
+            event_alerts = {a.upper() for a in day_alerts_raw}
+            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             if not _match_codes(day_alerts, buy_codes, st["buy_logic"]):
                 continue
 
@@ -883,7 +1020,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             "X": str(X),
             "signal_lines": signal_lines,
             "global_cash_end": None if global_cash is None else str(global_cash),
-            "engine_version": "5.2.1",
+            "engine_version": "5.2.2",
         },
         "tickers": {},
     }
@@ -1200,11 +1337,28 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 "tradable_days": 0,
                 "tradable_days_in_position": 0,
                 "prev_k": None,
+                "active_signal_states": {},
             }
 
     def _ratio_tradable(_mtuple) -> tuple[bool, Decimal | None, Decimal | None]:
         # Game mode: always tradable
         return True, None, None
+
+    for ticker, tdata in data_by_ticker.items():
+        first_dates = sorted(tdata["price_by_date"].keys())
+        if not first_dates:
+            continue
+        first_date = first_dates[0]
+        first_metrics = tdata.get("metrics", {}).get(first_date)
+        first_price = tdata["price_by_date"].get(first_date)
+        for li, _line in enumerate(signal_lines):
+            _initialize_active_signal_states(
+                state[(ticker, li)]["active_signal_states"],
+                first_metrics,
+                first_price,
+                slope_threshold=getattr(backtest.scenario, "slope_threshold", None),
+                slope_threshold_basse=getattr(backtest.scenario, "slope_threshold_basse", None),
+            )
 
     # Daily loop
     for d in dates_sorted:
@@ -1220,7 +1374,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             if close_d is None:
                 continue
 
-            day_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
 
             G_today: Decimal | None = None
@@ -1292,7 +1447,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             buy_codes = st["buy_codes"]
             if not buy_codes:
                 continue
-            day_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             if not _match_codes(day_alerts, buy_codes, st["buy_logic"]):
                 continue
             tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
@@ -1332,7 +1488,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             buy_codes = st["buy_codes"]
             if not buy_codes:
                 continue
-            day_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             if not _match_codes(day_alerts, buy_codes, st["buy_logic"]):
                 continue
             tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))

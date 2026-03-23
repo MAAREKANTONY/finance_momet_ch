@@ -817,6 +817,7 @@ def _clone_scenario_for_study(*, study_name: str, created_by, source: Scenario |
             slope_threshold=getattr(source, "slope_threshold", 0.1),
             npente_basse=getattr(source, "npente_basse", 20),
             slope_threshold_basse=getattr(source, "slope_threshold_basse", 0.02),
+            nglobal=getattr(source, "nglobal", 20),
             history_years=source.history_years,
             active=True,
         )
@@ -1222,6 +1223,7 @@ def scenario_duplicate(request, pk: int):
             "slope_threshold": getattr(source, "slope_threshold", 0.1),
             "npente_basse": getattr(source, "npente_basse", 20),
             "slope_threshold_basse": getattr(source, "slope_threshold_basse", 0.02),
+            "nglobal": getattr(source, "nglobal", 20),
             "history_years": source.history_years,
             "active": source.active,
             # Many-to-many: pre-select the same tickers as the source scenario.
@@ -2387,7 +2389,7 @@ def _build_backtest_workbook_full(bt):
         ws_p.append([k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "Drawdown (%)"])
+    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
@@ -2399,6 +2401,8 @@ def _build_backtest_workbook_full(bt):
             _to_float(r.get("global_cash")),
             _to_float(r.get("cash_allocated")),
             _to_float(r.get("positions_value")),
+            _to_float(r.get("pnl_global")),
+            _pct_ratio_to_percent(r.get("avg_global_nglobal")),
             _pct_ratio_to_percent(r.get("drawdown")),
         ])
 
@@ -2782,7 +2786,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ws_p.append([k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "Drawdown (%)"])
+    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
@@ -2794,6 +2798,8 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
             _to_float(r.get("global_cash")),
             _to_float(r.get("cash_allocated")),
             _to_float(r.get("positions_value")),
+            _to_float(r.get("pnl_global")),
+            _pct_ratio_to_percent(r.get("avg_global_nglobal")),
             _pct_ratio_to_percent(r.get("drawdown")),
         ])
     _auto_width(ws_p)

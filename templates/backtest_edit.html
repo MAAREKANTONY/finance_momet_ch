@@ -76,7 +76,7 @@
 
     <div class="field" style="margin-top:16px;">
       <label>Signal lines (Buy / Sell)</label>
-      <div class="muted">Chaque ligne peut contenir 1 à N conditions BUY et 1 à N conditions SELL. Tu peux choisir la logique ET ou OU pour chaque côté. Par défaut : BUY=ET, SELL=OU.</div>
+      <div class="muted">Chaque ligne peut contenir 1 à N conditions BUY et 1 à N conditions SELL. Utilise les cases à cocher pour le multi-sélecteur et les boutons radio pour choisir la logique ET ou OU. Par défaut : BUY=ET, SELL=OU.</div>
 
       <div class="card" style="margin-top:10px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
         <div style="flex:1;">
@@ -137,55 +137,86 @@
     if (Array.isArray(value)) return value.filter(Boolean);
     return [value];
   }
-
   function normalizeLogic(value, fallback) {
     const logic = String(value || fallback || "AND").toUpperCase();
     return logic === "OR" ? "OR" : "AND";
   }
-
   function logicLabel(value) {
     return normalizeLogic(value, "AND") === "OR" ? "OU" : "ET";
   }
-
   function joinCodes(codes, logic) {
     const arr = normalizeCodes(codes);
     if (!arr.length) return "—";
     return arr.join(normalizeLogic(logic, "AND") === "OR" ? " OU " : " ET ");
   }
-
-  function makeMultiSelect(values) {
-    const sel = document.createElement("select");
-    sel.multiple = true;
-    sel.size = Math.min(6, Math.max(4, SIGNAL_CHOICES.length));
-    sel.style.minWidth = "260px";
+  function makeCheckboxList(values, role) {
     const selected = new Set(normalizeCodes(values));
-    for (const [code, label] of SIGNAL_CHOICES) {
-      const opt = document.createElement("option");
-      opt.value = code;
-      opt.textContent = label;
-      if (selected.has(code)) opt.selected = true;
-      sel.appendChild(opt);
-    }
-    return sel;
+    const wrap = document.createElement('div');
+    wrap.setAttribute('data-role', role);
+    wrap.className = 'signal-checkbox-list';
+    wrap.style.display = 'grid';
+    wrap.style.gridTemplateColumns = 'repeat(auto-fill, minmax(180px, 1fr))';
+    wrap.style.gap = '6px 12px';
+    wrap.style.minWidth = '320px';
+    wrap.style.maxHeight = '180px';
+    wrap.style.overflowY = 'auto';
+    wrap.style.padding = '8px';
+    wrap.style.border = '1px solid #d0d7de';
+    wrap.style.borderRadius = '8px';
+    wrap.style.background = '#fff';
+    SIGNAL_CHOICES.forEach(([code, label]) => {
+      const line = document.createElement('label');
+      line.style.display = 'flex';
+      line.style.alignItems = 'center';
+      line.style.gap = '6px';
+      line.style.cursor = 'pointer';
+      const input = document.createElement('input');
+      input.type = 'checkbox';
+      input.value = code;
+      input.checked = selected.has(code);
+      input.setAttribute('data-code', code);
+      const span = document.createElement('span');
+      span.textContent = label;
+      line.append(input, span);
+      wrap.appendChild(line);
+    });
+    return wrap;
   }
-
-  function makeLogicSelect(value, fallback) {
-    const sel = document.createElement("select");
-    sel.style.minWidth = "90px";
-    for (const [code, label] of LOGIC_CHOICES) {
-      const opt = document.createElement("option");
-      opt.value = code;
-      opt.textContent = label;
-      sel.appendChild(opt);
-    }
-    sel.value = normalizeLogic(value, fallback);
-    return sel;
+  function makeLogicRadios(value, fallback, role, rowIndex) {
+    const current = normalizeLogic(value, fallback);
+    const wrap = document.createElement('div');
+    wrap.setAttribute('data-role', role);
+    wrap.className = 'logic-radio-group';
+    wrap.style.display = 'inline-flex';
+    wrap.style.gap = '12px';
+    wrap.style.alignItems = 'center';
+    wrap.style.flexWrap = 'wrap';
+    const name = `${role}_${rowIndex}_${Math.random().toString(36).slice(2, 8)}`;
+    LOGIC_CHOICES.forEach(([code, label]) => {
+      const line = document.createElement('label');
+      line.style.display = 'inline-flex';
+      line.style.alignItems = 'center';
+      line.style.gap = '6px';
+      line.style.cursor = 'pointer';
+      const input = document.createElement('input');
+      input.type = 'radio';
+      input.name = name;
+      input.value = code;
+      input.checked = code === current;
+      const span = document.createElement('span');
+      span.textContent = label;
+      line.append(input, span);
+      wrap.appendChild(line);
+    });
+    return wrap;
   }
-
-  function selectedValues(selectEl) {
-    return Array.from(selectEl.options).filter(o => o.selected).map(o => o.value);
+  function selectedValues(containerEl) {
+    if (!containerEl) return [];
+    return Array.from(containerEl.querySelectorAll('input[type="checkbox"]:checked')).map(o => o.value);
   }
-
+  function selectedLogic(containerEl, fallback) {
+    return normalizeLogic(containerEl?.querySelector('input[type="radio"]:checked')?.value, fallback);
+  }
   function makeModeSelect(value) {
     const sel = document.createElement("select");
     sel.style.minWidth = "180px";
@@ -193,7 +224,6 @@
     sel.value = value || "standard";
     return sel;
   }
-
   function updateSummary() {
     if (!summary) return;
     const rows = body.querySelectorAll("tr");
@@ -202,85 +232,82 @@
     rows.forEach((tr, i) => {
       const mode = tr.querySelector('[data-role="mode"]')?.value || 'standard';
       const buy = selectedValues(tr.querySelector('[data-role="buy"]'));
-      const buyLogic = tr.querySelector('[data-role="buy_logic"]')?.value || 'AND';
+      const buyLogic = selectedLogic(tr.querySelector('[data-role="buy_logic"]'), 'AND');
       const sell = mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]'));
-      const sellLogic = tr.querySelector('[data-role="sell_logic"]')?.value || 'OR';
+      const sellLogic = selectedLogic(tr.querySelector('[data-role="sell_logic"]'), 'OR');
       parts.push(`L${i+1}: BUY(${logicLabel(buyLogic)})=${joinCodes(buy, buyLogic)} | SELL=${mode === 'special_k1f' ? 'AUTO(K1f)' : `(${logicLabel(sellLogic)})=${joinCodes(sell, sellLogic)}`}`);
     });
     summary.textContent = parts.join('  •  ');
   }
-
+  function toggleCheckboxList(container, disabled) {
+    if (!container) return;
+    container.style.opacity = disabled ? '0.55' : '1';
+    container.querySelectorAll('input[type="checkbox"]').forEach((cb) => { cb.disabled = !!disabled; });
+  }
+  function toggleLogicGroup(container, disabled) {
+    if (!container) return;
+    container.style.opacity = disabled ? '0.55' : '1';
+    container.querySelectorAll('input[type="radio"]').forEach((rb) => { rb.disabled = !!disabled; });
+  }
   function addRow(idx, item) {
     item = item || {};
     const tr = document.createElement("tr");
     tr.innerHTML = '<td></td><td></td><td></td><td></td><td></td>';
     tr.children[0].textContent = idx + 1;
-
     const modeSel = makeModeSelect(item.mode || ((normalizeCodes(item.sell)[0] || '') === SPECIAL_SELL ? 'special_k1f' : 'standard'));
     modeSel.setAttribute('data-role','mode');
     tr.children[1].appendChild(modeSel);
-
     const buyWrap = document.createElement('div');
     buyWrap.style.display = 'flex';
+    buyWrap.style.flexDirection = 'column';
     buyWrap.style.gap = '8px';
-    buyWrap.style.alignItems = 'flex-start';
-    const buyLogicSel = makeLogicSelect(item.buy_logic, 'AND');
-    buyLogicSel.setAttribute('data-role', 'buy_logic');
-    const buySel = makeMultiSelect(item.buy || []);
-    buySel.setAttribute('data-role','buy');
+    const buyLogicSel = makeLogicRadios(item.buy_logic, 'AND', 'buy_logic', idx);
+    const buySel = makeCheckboxList(item.buy || [], 'buy');
     buyWrap.appendChild(buyLogicSel);
     buyWrap.appendChild(buySel);
     tr.children[2].appendChild(buyWrap);
-
     const sellWrap = document.createElement('div');
     sellWrap.style.display = 'flex';
+    sellWrap.style.flexDirection = 'column';
     sellWrap.style.gap = '8px';
-    sellWrap.style.alignItems = 'flex-start';
-    const sellLogicSel = makeLogicSelect(item.sell_logic, 'OR');
-    sellLogicSel.setAttribute('data-role', 'sell_logic');
-    const sellSel = makeMultiSelect((normalizeCodes(item.sell)[0] || '') === SPECIAL_SELL ? [] : (item.sell || []));
-    sellSel.setAttribute('data-role','sell');
+    const sellLogicSel = makeLogicRadios(item.sell_logic, 'OR', 'sell_logic', idx);
+    const sellSel = makeCheckboxList((normalizeCodes(item.sell)[0] || '') === SPECIAL_SELL ? [] : (item.sell || []), 'sell');
     sellWrap.appendChild(sellLogicSel);
     sellWrap.appendChild(sellSel);
     tr.children[3].appendChild(sellWrap);
-
     const del = document.createElement('button');
     del.type = 'button';
     del.className = 'btn';
     del.textContent = 'Supprimer';
     del.onclick = () => { tr.remove(); renumber(); serialize(); };
     tr.children[4].appendChild(del);
-
     function applyMode() {
       const special = modeSel.value === 'special_k1f';
-      sellSel.disabled = special;
-      sellLogicSel.disabled = special;
+      toggleCheckboxList(sellSel, special);
+      toggleLogicGroup(sellLogicSel, special);
     }
-
-    [modeSel, buySel, buyLogicSel, sellSel, sellLogicSel].forEach(el => el.addEventListener('change', () => { applyMode(); serialize(); }));
+    modeSel.addEventListener('change', () => { applyMode(); serialize(); });
+    [buySel, sellSel, buyLogicSel, sellLogicSel].forEach((container) => container.addEventListener('change', serialize));
     body.appendChild(tr);
     applyMode();
   }
-
   function renumber() {
     Array.from(body.querySelectorAll('tr')).forEach((tr, i) => tr.children[0].textContent = i + 1);
     updateSummary();
   }
-
   function serialize() {
     const out = [];
     body.querySelectorAll('tr').forEach((tr) => {
       const mode = tr.querySelector('[data-role="mode"]')?.value || 'standard';
       const buy = selectedValues(tr.querySelector('[data-role="buy"]'));
-      const buyLogic = tr.querySelector('[data-role="buy_logic"]')?.value || 'AND';
+      const buyLogic = selectedLogic(tr.querySelector('[data-role="buy_logic"]'), 'AND');
       const sell = mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]'));
-      const sellLogic = tr.querySelector('[data-role="sell_logic"]')?.value || 'OR';
-      if (buy.length || sell.length) out.push({mode, buy, sell, buy_logic: normalizeLogic(buyLogic, 'AND'), sell_logic: normalizeLogic(sellLogic, 'OR')});
+      const sellLogic = selectedLogic(tr.querySelector('[data-role="sell_logic"]'), 'OR');
+      if (buy.length || sell.length) out.push({mode, buy, sell, buy_logic: buyLogic, sell_logic: sellLogic});
     });
     hidden.value = JSON.stringify(out);
     updateSummary();
   }
-
   let initial = [];
   try { initial = JSON.parse(hidden.value || '[]'); } catch(e) { initial = []; }
   if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR'}];

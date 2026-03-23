@@ -158,6 +158,7 @@ class ScenarioForm(forms.ModelForm):
             "slope_threshold",
             "npente_basse",
             "slope_threshold_basse",
+            "nglobal",
             "history_years",
             "active",
             "symbols",
@@ -347,6 +348,7 @@ class StudyScenarioForm(forms.ModelForm):
             "slope_threshold",
             "npente_basse",
             "slope_threshold_basse",
+            "nglobal",
             "history_years",
             "symbols",
         ]
@@ -458,6 +460,7 @@ class GameScenarioForm(forms.ModelForm):
             "slope_threshold",
             "npente_basse",
             "slope_threshold_basse",
+            "nglobal",
             "presence_threshold_pct",
             "email_recipients",
             "a",

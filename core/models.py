@@ -136,6 +136,10 @@ class Scenario(models.Model):
         default=Decimal("0.02"),
         help_text="Seuil de pente basse utilisé par SPa_basse/SPv_basse et SPVa_basse/SPVv_basse (ratio brut, ex: 0.02 = 2%).",
     )
+    nglobal = models.PositiveIntegerField(
+        default=20,
+        help_text="Nombre de jours utilisés pour la courbe globale moyenne des rendements.",
+    )
 
     # --- V line parameters (V5.2.37) ---
     # M_V: window (in days) used for the rolling max of daily highs.
@@ -335,6 +339,10 @@ class GameScenario(models.Model):
         decimal_places=8,
         default=Decimal("0.02"),
         help_text="Seuil de pente basse utilisé par SPa_basse/SPv_basse et SPVa_basse/SPVv_basse (ratio brut, ex: 0.02 = 2%).",
+    )
+    nglobal = models.PositiveIntegerField(
+        default=20,
+        help_text="Nombre de jours utilisés pour la courbe globale moyenne des rendements.",
     )
     presence_threshold_pct = models.DecimalField(
         max_digits=8,

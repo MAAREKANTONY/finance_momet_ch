@@ -71,6 +71,14 @@
     <canvas id="portfolioChart" height="120"></canvas>
     <div class="muted" style="margin-top:8px;">Equity curve + drawdown (ratio) sur la période.</div>
   </div>
+  <div style="margin-top:18px;">
+    <canvas id="portfolioPnlChart" height="100"></canvas>
+    <div class="muted" style="margin-top:8px;">Courbe globale des gains / pertes (PnL global = Equity - Investi).</div>
+  </div>
+  <div style="margin-top:18px;">
+    <canvas id="portfolioNglobalChart" height="100"></canvas>
+    <div class="muted" style="margin-top:8px;">Moyenne globale des rendements sur Nglobal jours (prix d'étude).</div>
+  </div>
 </div>
 </details>
 {% endif %}
@@ -366,6 +374,41 @@
           y: { type: "linear", position: "left", title: { display: true, text: "Equity" } },
           y1: { type: "linear", position: "right", title: { display: true, text: "Drawdown (%)" }, grid: { drawOnChartArea: false } },
         }
+      }
+    });
+  }
+
+  const pnlCanvas = document.getElementById("portfolioPnlChart");
+  if (pnlCanvas && portRows && portRows.length) {
+    const labels = portRows.map(r => r.date);
+    const pnl = portRows.map(r => toNumber(r.pnl_global));
+    const ctx = pnlCanvas.getContext("2d");
+    new Chart(ctx, {
+      type: "line",
+      data: { labels, datasets: [{ label: "PnL global", data: pnl }] },
+      options: {
+        responsive: true,
+        spanGaps: true,
+        scales: { y: { type: "linear", title: { display: true, text: "Gain / Perte" } } }
+      }
+    });
+  }
+
+  const ngCanvas = document.getElementById("portfolioNglobalChart");
+  if (ngCanvas && portRows && portRows.length) {
+    const labels = portRows.map(r => r.date);
+    const avgNglobal = portRows.map(r => {
+      const v = toNumber(r.avg_global_nglobal);
+      return v === null ? null : (v * 100);
+    });
+    const ctx = ngCanvas.getContext("2d");
+    new Chart(ctx, {
+      type: "line",
+      data: { labels, datasets: [{ label: "Moyenne globale Nglobal (%)", data: avgNglobal }] },
+      options: {
+        responsive: true,
+        spanGaps: true,
+        scales: { y: { type: "linear", title: { display: true, text: "%" } } }
       }
     });
   }
