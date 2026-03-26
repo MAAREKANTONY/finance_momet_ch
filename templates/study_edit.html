@@ -215,6 +215,14 @@
       </div>
       <div class="grid2" style="margin-top:12px;">
         <div>
+          <label><strong>Période de warmup (jours)</strong></label><br/>
+          {{ backtest_form.warmup_days }}
+          <div class="muted">Nombre de jours calendaires calculés avant la période réelle pour reconstruire les états.</div>
+        </div>
+        <div></div>
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
           <label><strong>Capital total (CP)</strong></label><br/>
           {{ backtest_form.capital_total }}
         </div>

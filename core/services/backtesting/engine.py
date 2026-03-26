@@ -21,7 +21,7 @@ Future iterations will extend:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -285,6 +285,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     # Preload all data per ticker for date range
     start_d = backtest.start_date
     end_d = backtest.end_date
+    warmup_days = int(getattr(backtest, "warmup_days", 0) or 0)
+    fetch_start_d = (start_d - timedelta(days=warmup_days)) if (start_d and warmup_days > 0) else start_d
 
     # NOTE (performance/memory):
     # For large universes (e.g. 500+ tickers over ~10y daily), fully materializing
@@ -304,7 +306,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             continue
 
         bars_qs = (
-            DailyBar.objects.filter(symbol=sym, date__gte=start_d, date__lte=end_d)
+            DailyBar.objects.filter(symbol=sym, date__gte=fetch_start_d, date__lte=end_d)
             .order_by("date")
             .values("date", "close")
         )
@@ -344,13 +346,13 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             for m in DailyMetric.objects.filter(
                 symbol=sym,
                 scenario_id=backtest.scenario_id,
-                date__gte=start_d,
+                date__gte=fetch_start_d,
                 date__lte=end_d,
             ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4", "P", "Kf2bis", "sum_slope", "slope_vrai", "sum_slope_basse", "slope_vrai_basse")
         }
         alerts = {
             a["date"]: _alerts_set(a["alerts"])
-            for a in Alert.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=start_d, date__lte=end_d)
+            for a in Alert.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=fetch_start_d, date__lte=end_d)
             .values("date", "alerts")
         }
 
@@ -371,6 +373,11 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     dates_sorted = sorted(all_dates)
     if not dates_sorted:
         return BacktestEngineResult(results={"error": "No market dates found in range."}, logs=logs)
+
+    warmup_dates = [d for d in dates_sorted if (start_d is not None and d < start_d)]
+    real_dates_sorted = [d for d in dates_sorted if (start_d is None or d >= start_d)]
+    if not real_dates_sorted:
+        return BacktestEngineResult(results={"error": "No market dates found in effective backtest range."}, logs=logs)
 
     # Per (ticker, line_index) state
     state: dict[tuple[str, int], dict[str, Any]] = {}
@@ -435,23 +442,17 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "daily_rows": [],
             }
 
-    # Initialize persistent states from the first in-range day values so we can
-    # enter on day 1 when conditions are already true, without forcing blanket buys.
-    for ticker, tdata in data_by_ticker.items():
-        first_dates = sorted(tdata["price_by_date"].keys())
-        if not first_dates:
-            continue
-        first_date = first_dates[0]
-        first_metrics = tdata.get("metrics", {}).get(first_date)
-        first_price = tdata["price_by_date"].get(first_date)
-        for li, _line in enumerate(signal_lines):
-            _initialize_active_signal_states(
-                state[(ticker, li)]["active_signal_states"],
-                first_metrics,
-                first_price,
-                slope_threshold=getattr(backtest.scenario, "slope_threshold", None),
-                slope_threshold_basse=getattr(backtest.scenario, "slope_threshold_basse", None),
-            )
+    # Warmup phase: reconstruct persistent states before the real backtest period.
+    # No allocation, no trades, no counters during warmup.
+    for d in warmup_dates:
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata or d not in tdata.get("price_by_date", {}):
+                continue
+            event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
+            _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+            if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
+                st["prev_k"] = tdata["metrics"].get(d)
 
     # Portfolio tracking (Feature 8)
     portfolio_daily: list[dict[str, Any]] = []
@@ -535,7 +536,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
         )
 
     # Daily loop
-    for d in dates_sorted:
+    for d in real_dates_sorted:
 
         # 1) SELL phase (sell before buy)
         for (ticker, li), st in state.items():
@@ -1261,6 +1262,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
 
     start_d = backtest.start_date
     end_d = backtest.end_date
+    warmup_days = int(getattr(backtest, "warmup_days", 0) or 0)
+    fetch_start_d = (start_d - timedelta(days=warmup_days)) if (start_d and warmup_days > 0) else start_d
 
     data_by_ticker: dict[str, dict[str, Any]] = {}
     all_dates: set[date] = set()
@@ -1271,7 +1274,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             continue
 
         bars = list(
-            DailyBar.objects.filter(symbol=sym, date__gte=start_d, date__lte=end_d)
+            DailyBar.objects.filter(symbol=sym, date__gte=fetch_start_d, date__lte=end_d)
             .order_by("date")
             .values("date", "close")
         )
@@ -1297,13 +1300,13 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             for m in DailyMetric.objects.filter(
                 symbol=sym,
                 scenario_id=backtest.scenario_id,
-                date__gte=start_d,
+                date__gte=fetch_start_d,
                 date__lte=end_d,
             ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4")
         }
         alerts = {
             a["date"]: _alerts_set(a["alerts"])
-            for a in Alert.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=start_d, date__lte=end_d)
+            for a in Alert.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=fetch_start_d, date__lte=end_d)
             .values("date", "alerts")
         }
 
@@ -1313,8 +1316,12 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
         return {}
 
     dates_sorted = sorted(all_dates)
-    if max_days and max_days > 0 and len(dates_sorted) > max_days:
-        dates_sorted = dates_sorted[-int(max_days):]
+    warmup_dates = [d for d in dates_sorted if (start_d is not None and d < start_d)]
+    real_dates_sorted = [d for d in dates_sorted if (start_d is None or d >= start_d)]
+    if max_days and max_days > 0 and len(real_dates_sorted) > max_days:
+        real_dates_sorted = real_dates_sorted[-int(max_days):]
+    if not real_dates_sorted:
+        return {}
 
     # State per (ticker,line)
     state: dict[tuple[str, int], dict[str, Any]] = {}
@@ -1344,24 +1351,20 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
         # Game mode: always tradable
         return True, None, None
 
-    for ticker, tdata in data_by_ticker.items():
-        first_dates = sorted(tdata["price_by_date"].keys())
-        if not first_dates:
-            continue
-        first_date = first_dates[0]
-        first_metrics = tdata.get("metrics", {}).get(first_date)
-        first_price = tdata["price_by_date"].get(first_date)
-        for li, _line in enumerate(signal_lines):
-            _initialize_active_signal_states(
-                state[(ticker, li)]["active_signal_states"],
-                first_metrics,
-                first_price,
-                slope_threshold=getattr(backtest.scenario, "slope_threshold", None),
-                slope_threshold_basse=getattr(backtest.scenario, "slope_threshold_basse", None),
-            )
+    # Warmup phase: reconstruct persistent states before the real game period.
+    # No allocation, no trades, no counters during warmup.
+    for d in warmup_dates:
+        for (ticker, li), st in state.items():
+            tdata = data_by_ticker.get(ticker)
+            if not tdata or d not in tdata.get("price_by_date", {}):
+                continue
+            event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
+            _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+            if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
+                st["prev_k"] = tdata["metrics"].get(d)
 
     # Daily loop
-    for d in dates_sorted:
+    for d in real_dates_sorted:
         # SELL phase
         for (ticker, li), st in state.items():
             tdata = data_by_ticker.get(ticker)
@@ -1527,8 +1530,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                     st["tradable_days_in_position"] += 1
 
     # Force close if requested
-    if backtest.close_positions_at_end and dates_sorted:
-        last_date = dates_sorted[-1]
+    if backtest.close_positions_at_end and real_dates_sorted:
+        last_date = real_dates_sorted[-1]
         for (ticker, li), st in state.items():
             if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
                 continue

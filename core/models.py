@@ -414,6 +414,7 @@ class GameScenario(models.Model):
         default=CapitalMode.REINVEST,
     )
     signal_lines = models.JSONField(default=list, blank=True)
+    warmup_days = models.PositiveIntegerField(default=0, help_text="Nombre de jours calendaires de warmup avant le début réel du Game.")
     close_positions_at_end = models.BooleanField(default=True)
     settings = models.JSONField(default=dict, blank=True)
 
@@ -506,6 +507,7 @@ class Backtest(models.Model):
     # Selected lines/rules for (buy_signal, sell_signal).
     # Stored as a list of objects, e.g. [{"buy":"A1","sell":"B1"}, ...]
     signal_lines = models.JSONField(default=list, blank=True)
+    warmup_days = models.PositiveIntegerField(default=0, help_text="Nombre de jours calendaires de warmup avant le début réel du backtest.")
 
     # Default behaviour chosen: close open positions on the last available day.
     close_positions_at_end = models.BooleanField(default=True)

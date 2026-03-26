@@ -40,6 +40,12 @@
         {{ form.end_date }}
         {% if form.end_date.errors %}<div class="error">{{ form.end_date.errors }}</div>{% endif %}
       </div>
+      <div>
+        <label for="{{ form.warmup_days.id_for_label }}">Période de warmup (jours)</label><br>
+        {{ form.warmup_days }}
+        <div class="muted">Nombre de jours calendaires calculés avant la période réelle pour reconstruire les états.</div>
+        {% if form.warmup_days.errors %}<div class="error">{{ form.warmup_days.errors }}</div>{% endif %}
+      </div>
     </div>
 
     <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">

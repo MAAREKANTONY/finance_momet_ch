@@ -11,6 +11,7 @@
       <tbody>
         <tr><th>Scénario</th><td>{{ bt.scenario.name }}</td></tr>
         <tr><th>Période</th><td>{% if bt.start_date %}{{ bt.start_date }}{% else %}—{% endif %} → {% if bt.end_date %}{{ bt.end_date }}{% else %}—{% endif %}</td></tr>
+        <tr><th>Warmup (jours)</th><td>{{ bt.warmup_days|default:0 }}</td></tr>
         <tr><th>CP (capital total)</th><td>{{ bt.capital_total }}</td></tr>
         <tr><th>CT (capital par ticker)</th><td>{{ bt.capital_per_ticker }}</td></tr>
         <tr><th>X (seuil ratio_p %)</th><td>{{ bt.ratio_threshold }}</td></tr>

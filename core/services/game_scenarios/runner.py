@@ -133,21 +133,24 @@ def run_game_scenario_now(
     # 1) Fetch bars (if necessary)
     from core.tasks import _fetch_daily_bars_for_symbols, _compute_metrics_for_scenario
 
-    # Outputsize heuristic: study window + buffer
-    outputsize = min(5000, int(game.study_days or 1000) + 400)
+    warmup_days = int(getattr(game, "warmup_days", 0) or 0)
+
+    # Outputsize heuristic: study window + warmup + buffer
+    outputsize = min(5000, int(game.study_days or 1000) + warmup_days + 400)
     _fetch_daily_bars_for_symbols(symbol_qs=symbols, outputsize=outputsize, force_full=bool(force_fetch), job=job)
 
     # 2) Determine date window
     end_d = DailyBar.objects.order_by("-date").values_list("date", flat=True).first() or date.today()
     # generous calendar buffer to collect enough market days
     start_d = end_d - timedelta(days=int(game.study_days or 1000) * 3 + 45)
+    required_start_d = start_d - timedelta(days=warmup_days) if warmup_days > 0 else start_d
 
     # 3) Metrics depth check => auto full recompute when study_days increased
     symbol_ids = list(symbols.values_list("id", flat=True))
     depth = check_metrics_depth(
         scenario_id=scenario.id,
         symbol_ids=symbol_ids,
-        required_start=start_d,
+        required_start=required_start_d,
         required_end=end_d,
     )
     auto_force = depth.needs_full_recompute()
@@ -173,6 +176,7 @@ def run_game_scenario_now(
         ratio_threshold=0,
         include_all_tickers=True,
         signal_lines=game.signal_lines or [{"buy": "A1", "sell": "B1", "buy_logic": "AND", "sell_logic": "OR"}],
+        warmup_days=getattr(game, "warmup_days", 0),
         close_positions_at_end=game.close_positions_at_end,
         universe_snapshot=tickers,
         settings=game.settings or {},

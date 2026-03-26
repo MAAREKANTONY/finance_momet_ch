@@ -299,6 +299,7 @@ class StudyBacktestForm(forms.ModelForm):
             "ratio_threshold",
             "include_all_tickers",
             "signal_lines",
+            "warmup_days",
             "close_positions_at_end",
         ]
         widgets = {
@@ -431,6 +432,7 @@ class BacktestForm(forms.ModelForm):
             "ratio_threshold",
             "include_all_tickers",
             "signal_lines",
+            "warmup_days",
             "close_positions_at_end",
         ]
         widgets = {
@@ -474,6 +476,7 @@ class GameScenarioForm(forms.ModelForm):
             "capital_per_ticker",
             "capital_mode",
             "signal_lines",
+            "warmup_days",
             "close_positions_at_end",
         ]
         widgets = {
