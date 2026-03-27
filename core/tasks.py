@@ -18,6 +18,10 @@ from .services.calculations_fast import compute_full_for_symbol_scenario
 
 from django.utils import timezone
 import json
+import csv
+import io
+import zipfile
+from pathlib import Path
 
 
 class JobCancelled(Exception):
@@ -1418,4 +1422,317 @@ def export_scenario_xlsx_task(
             job.finished_at = timezone.now()
             job.error = f"{type(e).__name__}: {e}"
             job.save(update_fields=["status", "finished_at", "error"])
+        raise
+
+
+def _exports_root() -> Path:
+    root = Path('/data/exports')
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _job_export_path(job_id: int, filename: str) -> Path:
+    safe_name = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in (filename or 'export.bin'))
+    return _exports_root() / f'job_{job_id}_{safe_name}'
+
+
+def _finalize_job_file(job: ProcessingJob | None, path: Path, output_name: str, message: str = '') -> str:
+    if job:
+        job.status = ProcessingJob.Status.DONE
+        job.output_file = str(path)
+        job.output_name = output_name
+        job.message = message or job.message
+        job.finished_at = timezone.now()
+        job.save(update_fields=['status', 'output_file', 'output_name', 'message', 'finished_at'])
+    return str(path)
+
+
+def _fail_job(job: ProcessingJob | None, exc: Exception) -> None:
+    if job:
+        job.status = ProcessingJob.Status.FAILED
+        job.error = str(exc)
+        job.finished_at = timezone.now()
+        job.save(update_fields=['status', 'error', 'finished_at'])
+
+
+@shared_task(bind=True)
+def export_alerts_csv_task(self, *, job_id: int, date_str: str = '', scenario_id: str = '', ticker: str = '', alert_codes: list[str] | None = None):
+    from django.db.models import Q
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        job.task_id = getattr(self.request, 'id', '') or ''
+        job.status = ProcessingJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=['task_id', 'status', 'started_at'])
+    try:
+        qs = Alert.objects.select_related('symbol', 'scenario').all().order_by('-date', 'scenario__name', 'symbol__ticker')
+        if date_str:
+            qs = qs.filter(date=date_str)
+        if scenario_id:
+            qs = qs.filter(scenario_id=scenario_id)
+        if ticker:
+            qs = qs.filter(symbol__ticker=ticker)
+        if alert_codes:
+            q = Q()
+            for code in alert_codes:
+                code = (code or '').strip()
+                if code:
+                    q |= Q(alerts__icontains=code)
+            if q:
+                qs = qs.filter(q)
+
+        output_name = 'alerts_export.csv'
+        path = _job_export_path(job_id, output_name)
+        with path.open('w', newline='', encoding='utf-8') as f:
+            w = csv.writer(f)
+            w.writerow(['date', 'scenario_id', 'scenario_name', 'ticker', 'exchange', 'alerts'])
+            for row in qs.iterator(chunk_size=2000):
+                w.writerow([
+                    row.date.isoformat() if row.date else '',
+                    row.scenario_id or '',
+                    getattr(row.scenario, 'name', '') if row.scenario_id else '',
+                    getattr(row.symbol, 'ticker', '') if row.symbol_id else '',
+                    getattr(row.symbol, 'exchange', '') if row.symbol_id else '',
+                    row.alerts or '',
+                ])
+        return _finalize_job_file(job, path, output_name, f'Exported alerts CSV ({qs.count()} rows)')
+    except Exception as exc:
+        _fail_job(job, exc)
+        raise
+
+
+@shared_task(bind=True)
+def export_all_scenarios_zip_task(self, *, job_id: int, ticker: str = '', exchange: str = '', date_from: str = '', date_to: str = ''):
+    from .models import Scenario, Symbol
+    from .views import _build_scenario_workbook
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        job.task_id = getattr(self.request, 'id', '') or ''
+        job.status = ProcessingJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=['task_id', 'status', 'started_at'])
+    try:
+        scenarios = list(Scenario.objects.all().order_by('name', 'id'))
+        symbols_qs = Symbol.objects.filter(active=True)
+        if ticker:
+            symbols_qs = symbols_qs.filter(ticker=ticker)
+        if exchange:
+            symbols_qs = symbols_qs.filter(exchange=exchange)
+
+        output_name = 'all_scenarios_export.zip'
+        path = _job_export_path(job_id, output_name)
+        with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
+            for scenario in scenarios:
+                wb = _build_scenario_workbook(scenario, symbols_qs, date_from=date_from, date_to=date_to)
+                buf = io.BytesIO()
+                wb.save(buf)
+                safe_scn = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in scenario.name)
+                zf.writestr(f'scenario_{scenario.id}_{safe_scn}.xlsx', buf.getvalue())
+        return _finalize_job_file(job, path, output_name, f'Exported ZIP for {len(scenarios)} scenarios')
+    except Exception as exc:
+        _fail_job(job, exc)
+        raise
+
+
+@shared_task(bind=True)
+def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str = '', scenario_id: str = '', date_from: str = '', date_to: str = ''):
+    from openpyxl import Workbook
+    from .models import Scenario, Symbol, DailyBar, DailyMetric, Alert
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        job.task_id = getattr(self.request, 'id', '') or ''
+        job.status = ProcessingJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=['task_id', 'status', 'started_at'])
+    try:
+        wb = Workbook()
+        ws_bars = wb.active
+        ws_bars.title = 'Bars'
+        ws_bars.append(['ticker', 'exchange', 'date', 'open', 'high', 'low', 'close', 'volume'])
+
+        symbols_qs = Symbol.objects.filter(active=True)
+        if ticker:
+            symbols_qs = symbols_qs.filter(ticker=ticker)
+        if exchange:
+            symbols_qs = symbols_qs.filter(exchange=exchange)
+        symbol_ids = list(symbols_qs.values_list('id', flat=True))
+
+        bars = DailyBar.objects.filter(symbol_id__in=symbol_ids).select_related('symbol').order_by('symbol__ticker', 'date')
+        if date_from:
+            bars = bars.filter(date__gte=date_from)
+        if date_to:
+            bars = bars.filter(date__lte=date_to)
+        for b in bars.iterator(chunk_size=2000):
+            ws_bars.append([b.symbol.ticker, b.symbol.exchange, b.date.isoformat(), b.open, b.high, b.low, b.close, b.volume])
+
+        ws_metrics = wb.create_sheet('Metrics')
+        ws_metrics.append(['scenario_id', 'scenario_name', 'ticker', 'date', 'P', 'M', 'M1', 'X', 'X1', 'T', 'Q', 'S', 'K1', 'Kf', 'K2', 'K3', 'K4', 'sum_slope', 'slope_vrai', 'sum_slope_basse', 'slope_vrai_basse', 'ratio_P'])
+        metrics = DailyMetric.objects.select_related('scenario', 'symbol').filter(symbol_id__in=symbol_ids).order_by('scenario__name', 'symbol__ticker', 'date')
+        if scenario_id:
+            metrics = metrics.filter(scenario_id=scenario_id)
+        if date_from:
+            metrics = metrics.filter(date__gte=date_from)
+        if date_to:
+            metrics = metrics.filter(date__lte=date_to)
+        for m in metrics.iterator(chunk_size=2000):
+            ws_metrics.append([m.scenario_id, m.scenario.name if m.scenario_id else '', m.symbol.ticker if m.symbol_id else '', m.date.isoformat(), m.P, m.M, m.M1, m.X, m.X1, m.T, m.Q, m.S, m.K1, getattr(m, 'Kf2bis', None), m.K2, m.K3, m.K4, m.sum_slope, m.slope_vrai, m.sum_slope_basse, m.slope_vrai_basse, m.ratio_P])
+
+        ws_alerts = wb.create_sheet('Alerts')
+        ws_alerts.append(['scenario_id', 'scenario_name', 'ticker', 'exchange', 'date', 'alerts'])
+        alerts = Alert.objects.select_related('scenario', 'symbol').filter(symbol_id__in=symbol_ids).order_by('-date', 'scenario__name', 'symbol__ticker')
+        if scenario_id:
+            alerts = alerts.filter(scenario_id=scenario_id)
+        if date_from:
+            alerts = alerts.filter(date__gte=date_from)
+        if date_to:
+            alerts = alerts.filter(date__lte=date_to)
+        for a in alerts.iterator(chunk_size=2000):
+            ws_alerts.append([a.scenario_id, a.scenario.name if a.scenario_id else '', a.symbol.ticker if a.symbol_id else '', a.symbol.exchange if a.symbol_id else '', a.date.isoformat(), a.alerts or ''])
+
+        output_name = 'data_export.xlsx'
+        path = _job_export_path(job_id, output_name)
+        wb.save(path)
+        return _finalize_job_file(job, path, output_name, 'Exported combined data workbook')
+    except Exception as exc:
+        _fail_job(job, exc)
+        raise
+
+
+@shared_task(bind=True)
+def export_backtest_debug_csv_task(self, *, job_id: int, backtest_id: int, ticker: str = '', line: str = ''):
+    from .models import Backtest
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        job.task_id = getattr(self.request, 'id', '') or ''
+        job.status = ProcessingJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=['task_id', 'status', 'started_at'])
+    try:
+        bt = Backtest.objects.get(id=backtest_id)
+        results = bt.results or {}
+        tickers_map = results.get('tickers') or {}
+        if not ticker:
+            ticker = next(iter(tickers_map.keys()), '')
+        if not ticker or ticker not in tickers_map:
+            raise ValueError('Ticker introuvable dans les résultats du backtest.')
+        lines = (tickers_map.get(ticker) or {}).get('lines') or []
+        if line != '':
+            try:
+                line_idx = int(line)
+                selected = [ln for ln in lines if int(ln.get('line_index') or -1) == line_idx]
+            except Exception:
+                selected = []
+        else:
+            selected = lines[:1]
+        if not selected:
+            raise ValueError('Ligne introuvable dans les résultats du backtest.')
+        daily = selected[0].get('daily') or []
+        output_name = f'backtest_{backtest_id}_{ticker}_debug.csv'
+        path = _job_export_path(job_id, output_name)
+        fieldnames = sorted({k for row in daily for k in row.keys()})
+        with path.open('w', newline='', encoding='utf-8') as f:
+            w = csv.DictWriter(f, fieldnames=fieldnames)
+            w.writeheader()
+            for row in daily:
+                w.writerow(row)
+        return _finalize_job_file(job, path, output_name, f'Exported backtest debug CSV for {ticker}')
+    except Exception as exc:
+        _fail_job(job, exc)
+        raise
+
+
+@shared_task(bind=True)
+def export_backtest_excel_task(self, *, job_id: int, backtest_id: int):
+    from .models import Backtest
+    from .views import _build_backtest_workbook_full
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        job.task_id = getattr(self.request, 'id', '') or ''
+        job.status = ProcessingJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=['task_id', 'status', 'started_at'])
+    try:
+        bt = Backtest.objects.get(id=backtest_id)
+        wb, base_name = _build_backtest_workbook_full(bt)
+        output_name = f'{base_name}.xlsx'
+        path = _job_export_path(job_id, output_name)
+        wb.save(path)
+        return _finalize_job_file(job, path, output_name, f'Exported full backtest workbook for #{backtest_id}')
+    except Exception as exc:
+        _fail_job(job, exc)
+        raise
+
+
+@shared_task(bind=True)
+def export_backtest_excel_compact_task(self, *, job_id: int, backtest_id: int, charts: str = '1', chart_mode: str = 'top', chart_limit: str = '', chart_ticker: str = '', chart_line: str = ''):
+    from .models import Backtest
+    from .views import _build_backtest_workbook_compact
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        job.task_id = getattr(self.request, 'id', '') or ''
+        job.status = ProcessingJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=['task_id', 'status', 'started_at'])
+    try:
+        bt = Backtest.objects.get(id=backtest_id)
+        wb, base_name = _build_backtest_workbook_compact(bt, charts=charts, chart_mode=chart_mode, chart_limit=chart_limit, chart_ticker=chart_ticker, chart_line=chart_line)
+        output_name = f'{base_name}.xlsx'
+        path = _job_export_path(job_id, output_name)
+        wb.save(path)
+        return _finalize_job_file(job, path, output_name, f'Exported compact backtest workbook for #{backtest_id}')
+    except Exception as exc:
+        _fail_job(job, exc)
+        raise
+
+
+@shared_task(bind=True)
+def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
+    from openpyxl import Workbook
+    from .models import GameScenario
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        job.task_id = getattr(self.request, 'id', '') or ''
+        job.status = ProcessingJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=['task_id', 'status', 'started_at'])
+    try:
+        game = GameScenario.objects.get(id=game_scenario_id)
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Game'
+        ws.append(['Field', 'Value'])
+        for key, value in [
+            ('id', game.id),
+            ('name', game.name),
+            ('description', game.description or ''),
+            ('active', game.active),
+            ('study_days', game.study_days),
+            ('capital_total', game.capital_total),
+            ('capital_per_ticker', game.capital_per_ticker),
+            ('tradability_threshold', game.tradability_threshold),
+            ('presence_threshold_pct', getattr(game, 'presence_threshold_pct', '')),
+            ('warmup_days', getattr(game, 'warmup_days', '')),
+            ('last_run_at', game.last_run_at.isoformat() if game.last_run_at else ''),
+            ('last_run_status', game.last_run_status or ''),
+        ]:
+            ws.append([key, value])
+        ws2 = wb.create_sheet('TodayResults')
+        rows = game.today_results or []
+        headers = sorted({k for row in rows for k in row.keys()}) if rows else ['ticker', 'best_bmd', 'ok']
+        ws2.append(headers)
+        for row in rows:
+            ws2.append([row.get(h) for h in headers])
+        output_name = f'game_scenario_{game_scenario_id}.xlsx'
+        path = _job_export_path(job_id, output_name)
+        wb.save(path)
+        return _finalize_job_file(job, path, output_name, f'Exported GameScenario workbook for #{game_scenario_id}')
+    except Exception as exc:
+        _fail_job(job, exc)
         raise

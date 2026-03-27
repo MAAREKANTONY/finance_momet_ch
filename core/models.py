@@ -791,7 +791,14 @@ class ProcessingJob(models.Model):
         RUN_BACKTEST = "RUN_BACKTEST", "Run Backtest"
         RUN_GAME = "RUN_GAME", "Run Game Scenario"
         SEND_EMAILS = "SEND_EMAILS", "Send Emails"
+        EXPORT_ALERTS_CSV = "EXPORT_ALERTS_CSV", "Export Alerts CSV"
         EXPORT_SCENARIO_XLSX = "EXPORT_SCENARIO_XLSX", "Export Scenario XLSX"
+        EXPORT_ALL_SCENARIOS_ZIP = "EXPORT_ALL_SCENARIOS_ZIP", "Export All Scenarios ZIP"
+        EXPORT_DATA_XLSX = "EXPORT_DATA_XLSX", "Export Data XLSX"
+        EXPORT_BACKTEST_DEBUG_CSV = "EXPORT_BACKTEST_DEBUG_CSV", "Export Backtest Debug CSV"
+        EXPORT_BACKTEST_XLSX = "EXPORT_BACKTEST_XLSX", "Export Backtest XLSX"
+        EXPORT_BACKTEST_XLSX_COMPACT = "EXPORT_BACKTEST_XLSX_COMPACT", "Export Backtest XLSX Compact"
+        EXPORT_GAME_SCENARIO_XLSX = "EXPORT_GAME_SCENARIO_XLSX", "Export Game Scenario XLSX"
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"

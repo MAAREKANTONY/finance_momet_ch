@@ -141,6 +141,8 @@ def alerts_table(request):
 def alerts_export_csv(request):
     date_str = (request.GET.get("date") or "").strip()
     scenario_id = (request.GET.get("scenario") or "").strip()
+    ticker = (request.GET.get("ticker") or "").strip()
+    alert_codes = request.GET.getlist("alert")
 
     from .models import ProcessingJob
     from .tasks import export_alerts_csv_task
@@ -151,7 +153,13 @@ def alerts_export_csv(request):
         created_by=request.user,
         message="Queued alerts CSV export",
     )
-    async_result = export_alerts_csv_task.delay(job_id=job.id, date_str=date_str, scenario_id=scenario_id)
+    async_result = export_alerts_csv_task.delay(
+        job_id=job.id,
+        date_str=date_str,
+        scenario_id=scenario_id,
+        ticker=ticker,
+        alert_codes=alert_codes,
+    )
     ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
     messages.success(request, f"Export Alerts CSV lancé en background (job #{job.id}).")
     return redirect("job_detail", pk=job.id)

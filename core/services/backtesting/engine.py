@@ -151,15 +151,41 @@ _SIGNAL_STATE_PAIRS: tuple[tuple[str, str], ...] = (
     ("SPVA_BASSE", "SPVV_BASSE"),
 )
 
+# For AND conditions, non-persistent crossing signals must also be allowed to
+# accumulate over time until their opposite signal invalidates them. Example:
+# A1 on day T, then C1 on day T+X => A1 AND C1 becomes true on T+X if B1 did not
+# occur in-between. We keep this memory separate from the persistent AF/SP*
+# states so that single-signal strategies keep their historical event semantics.
+_AND_LATCH_STATE_PAIRS: tuple[tuple[str, str], ...] = (
+    ("A1", "B1"),
+    ("C1", "D1"),
+    ("E1", "F1"),
+    ("G1", "H1"),
+    ("AF", "BF"),
+    ("SPA", "SPV"),
+    ("SPVA", "SPVV"),
+    ("SPA_BASSE", "SPV_BASSE"),
+    ("SPVA_BASSE", "SPVV_BASSE"),
+)
+
+_AND_LATCH_OPPOSITE: dict[str, str] = {}
+for _pos, _neg in _AND_LATCH_STATE_PAIRS:
+    _AND_LATCH_OPPOSITE[_pos] = _neg
+    _AND_LATCH_OPPOSITE[_neg] = _pos
+
 
 def _apply_signal_state_transitions(active_states: dict[str, bool], day_alerts: set[str]) -> set[str]:
-    """Update persistent signal states from today's event alerts and return active codes.
+    """Update persistent signal states and return *effective* codes for the day.
 
-    Each signal family is modeled as a pair of opposite states. Example:
-    - AF activates AF and deactivates BF
-    - BF activates BF and deactivates AF
+    Important distinction:
+    - event signals like A1/B1/C1/... are only true on the crossing day and must stay
+      directly matchable on that day;
+    - persistent states like AF/BF, SPA/SPV, SPVA/SPVV... remain active until the
+      opposite event occurs.
 
-    The returned set contains the currently active state codes (not only today's events).
+    The returned set therefore contains the union of:
+    1) today's raw event alerts
+    2) currently active persistent states
     """
     normalized = {str(code).strip().upper() for code in (day_alerts or set()) if str(code).strip()}
     for positive_code, negative_code in _SIGNAL_STATE_PAIRS:
@@ -171,9 +197,33 @@ def _apply_signal_state_transitions(active_states: dict[str, bool], day_alerts: 
         elif neg_seen and not pos_seen:
             active_states[positive_code] = False
             active_states[negative_code] = True
-    return {code for code, is_active in active_states.items() if is_active}
+    active_now = {code for code, is_active in active_states.items() if is_active}
+    return normalized | active_now
 
 
+def _update_and_latched_states(latched_states: dict[str, bool], day_alerts: set[str]) -> set[str]:
+    normalized = {str(code).strip().upper() for code in (day_alerts or set()) if str(code).strip()}
+    for positive_code, negative_code in _AND_LATCH_STATE_PAIRS:
+        pos_seen = positive_code in normalized
+        neg_seen = negative_code in normalized
+        if pos_seen and not neg_seen:
+            latched_states[positive_code] = True
+            latched_states[negative_code] = False
+        elif neg_seen and not pos_seen:
+            latched_states[positive_code] = False
+            latched_states[negative_code] = True
+    return {code for code, is_active in latched_states.items() if is_active}
+
+
+def _match_codes_with_memory(day_alerts: set[str], latched_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
+    codes = _normalize_codes(codes)
+    if not codes:
+        return False
+    logic = _normalize_logic(logic, "AND")
+    if logic == "OR":
+        return any(code in day_alerts for code in codes)
+    effective = set(day_alerts or set()) | set(latched_alerts or set())
+    return all(code in effective for code in codes)
 
 
 def _initialize_active_signal_states(active_states: dict[str, bool], metrics_tuple: tuple | None, price_value: Any, *, slope_threshold: Any = None, slope_threshold_basse: Any = None) -> set[str]:
@@ -439,6 +489,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "entry_date": None,
                 "prev_k": None,  # previous day's K-values dict (K1,K1f,K2,K3,K4)
                 "active_signal_states": {},
+                "and_latched_states": {},
                 "daily_rows": [],
             }
 
@@ -451,6 +502,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 continue
             event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
             _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+            _update_and_latched_states(st["and_latched_states"], event_alerts)
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
                 st["prev_k"] = tdata["metrics"].get(d)
 
@@ -552,6 +604,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             day_alerts_raw = tdata["alerts"].get(d, set())
             event_alerts = {a.upper() for a in day_alerts_raw}
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
 
             # tradable status computed for NB_JOUR_OUVRES before actions
             tradable, ratio_pct, ratio_raw = _ratio_tradable(tdata["metrics"].get(d))
@@ -625,7 +678,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                         if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
                             _do_sell(f"AUTO ({target_key}: K1f cross down)")
 
-            elif sell_codes and _match_codes(day_alerts, sell_codes, st["sell_logic"]) and st["position_open"]:
+            elif sell_codes and _match_codes_with_memory(day_alerts, latched_alerts, sell_codes, st["sell_logic"]) and st["position_open"]:
                 _do_sell(f"signal {_codes_label(sell_codes, st['sell_logic'])}")
 
             # record daily row (we may update with buy action later, but keep as dict to mutate)
@@ -698,7 +751,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             day_alerts_raw = tdata["alerts"].get(d, set())
             event_alerts = {a.upper() for a in day_alerts_raw}
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
-            if not _match_codes(day_alerts, buy_codes, st["buy_logic"]):
+            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
+            if not _match_codes_with_memory(day_alerts, latched_alerts, buy_codes, st["buy_logic"]):
                 continue
 
             tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
@@ -761,7 +815,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             day_alerts_raw = tdata["alerts"].get(d, set())
             event_alerts = {a.upper() for a in day_alerts_raw}
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
-            if not _match_codes(day_alerts, buy_codes, st["buy_logic"]):
+            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
+            if not _match_codes_with_memory(day_alerts, latched_alerts, buy_codes, st["buy_logic"]):
                 continue
 
             tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
@@ -1345,6 +1400,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 "tradable_days_in_position": 0,
                 "prev_k": None,
                 "active_signal_states": {},
+                "and_latched_states": {},
             }
 
     def _ratio_tradable(_mtuple) -> tuple[bool, Decimal | None, Decimal | None]:
@@ -1360,6 +1416,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 continue
             event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
             _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+            _update_and_latched_states(st["and_latched_states"], event_alerts)
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
                 st["prev_k"] = tdata["metrics"].get(d)
 
@@ -1379,6 +1436,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
 
             event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
             tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
 
             G_today: Decimal | None = None
@@ -1430,7 +1488,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                         if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
                             _do_sell(f"AUTO ({target_key}: K1f cross down)")
 
-            elif sell_codes and _match_codes(day_alerts, sell_codes, st["sell_logic"]) and st["position_open"]:
+            elif sell_codes and _match_codes_with_memory(day_alerts, latched_alerts, sell_codes, st["sell_logic"]) and st["position_open"]:
                 _do_sell(f"signal {_codes_label(sell_codes, st['sell_logic'])}")
 
             # Keep prev_k for special sells
@@ -1452,7 +1510,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 continue
             event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
-            if not _match_codes(day_alerts, buy_codes, st["buy_logic"]):
+            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
+            if not _match_codes_with_memory(day_alerts, latched_alerts, buy_codes, st["buy_logic"]):
                 continue
             tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
             if not tradable:
@@ -1493,7 +1552,8 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 continue
             event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
-            if not _match_codes(day_alerts, buy_codes, st["buy_logic"]):
+            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
+            if not _match_codes_with_memory(day_alerts, latched_alerts, buy_codes, st["buy_logic"]):
                 continue
             tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
             if not tradable:
