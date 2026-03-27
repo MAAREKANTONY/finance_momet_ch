@@ -2163,11 +2163,26 @@ def backtest_results(request, pk: int):
     portfolio = results.get("portfolio") or {}
     port_kpi = portfolio.get("kpi") or {}
     port_daily = portfolio.get("daily") or []
-    # keep charts responsive: last 400 points is enough for UI
-    if len(port_daily) > 400:
-        port_daily_for_ui = port_daily[-400:]
-    else:
-        port_daily_for_ui = port_daily
+
+    def _downsample_series_keep_full_period(series, max_points=400):
+        if not isinstance(series, list) or len(series) <= max_points:
+            return series
+        if max_points <= 2:
+            return [series[0], series[-1]] if series else []
+        last_idx = len(series) - 1
+        selected = []
+        seen = set()
+        for i in range(max_points):
+            idx = round(i * last_idx / (max_points - 1))
+            if idx not in seen:
+                selected.append(series[idx])
+                seen.add(idx)
+        if selected[-1] is not series[-1]:
+            selected[-1] = series[-1]
+        return selected
+
+    # keep charts responsive without hiding the start of the backtest period
+    port_daily_for_ui = _downsample_series_keep_full_period(port_daily, max_points=400)
 
     # Truncate very large series for UI rendering (default: last 200 days)
     show_all = request.GET.get("all") == "1"
