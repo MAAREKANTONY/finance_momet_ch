@@ -168,7 +168,13 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
 
 
 def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_all: bool = False, job: ProcessingJob | None = None) -> dict:
-    """Compute DailyMetric + Alert for a given scenario and subset of symbols."""
+    """Compute DailyMetric + Alert for a given scenario and subset of symbols.
+
+    Safety rule:
+    - Scenario.history_years limits the *stored/computed* business window.
+    - We still keep a technical lookback buffer before that window so indicators remain stable.
+    - This avoids recomputing 10+ years when the scenario only asks for a shorter history.
+    """
     symbols = list(symbols_qs)
 
     # Canonical signature of indicator parameters (stable across Scenario/GameScenario).
@@ -177,8 +183,6 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
 
     if needs_full:
         print(f"[compute] full recompute scenario={scenario.id} {scenario.name}")
-        Alert.objects.filter(scenario=scenario, symbol__in=symbols).delete()
-        DailyMetric.objects.filter(scenario=scenario, symbol__in=symbols).delete()
         scenario.last_full_recompute_at = timezone.now()
         scenario.save(update_fields=["last_full_recompute_at"])
 
@@ -197,32 +201,50 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
     # Kf3 needs Mf1/Xf1: n5f3 + n5f3/2, plus amp window, plus slope window (can expand but we clamp to 5000).
     lookback_kf3 = max((n5f3 + max(1, n5f3 // 2) + 5) if n5f3 else 0, (nampL3 + 5) if nampL3 else 0, (periodeL3 + 5) if periodeL3 else 0)
 
-    lookback_trading = max((n1 + n2 + 5), (n3 + n4 + 5), (n1 + 5), (n5 + k2j + 5), lookback_kf3, 20)
+    lookback_trading = max((n1 + n2 + 5), (n3 + n4 + 5), (n1 + 5), (n5 + k2j + 5), lookback_kf3, npente + 5, npente_basse + 5, 20)
     buffer_days = lookback_trading * 2 + 10
+    history_years = max(1, int(getattr(scenario, 'history_years', 2) or 2))
+    approx_business_window_days = int(history_years * 366)
 
     computed_rows = 0
     for sym in symbols:
         _job_checkpoint(job)
         try:
+            sym_last_bar_date = DailyBar.objects.filter(symbol=sym).aggregate(m=Max("date"))["m"]
+            if not sym_last_bar_date:
+                continue
+
+            business_start = sym_last_bar_date - timedelta(days=approx_business_window_days)
+            technical_start = business_start - timedelta(days=buffer_days)
+
+            # Always prune rows older than the technical window.
+            # This keeps enough history for stable indicators while respecting history_years.
+            Alert.objects.filter(symbol=sym, scenario=scenario, date__lt=technical_start).delete()
+            DailyMetric.objects.filter(symbol=sym, scenario=scenario, date__lt=technical_start).delete()
+
             if needs_full:
-                # Fast full recompute: compute in-memory and bulk_create.
-                bars = DailyBar.objects.filter(symbol=sym).order_by("date").only("date", "open", "high", "low", "close")
+                # Full recompute is scoped to the technical window only.
+                Alert.objects.filter(scenario=scenario, symbol=sym).delete()
+                DailyMetric.objects.filter(scenario=scenario, symbol=sym).delete()
+                bars = (
+                    DailyBar.objects.filter(symbol=sym, date__gte=technical_start)
+                    .order_by("date")
+                    .only("date", "open", "high", "low", "close")
+                )
                 m_written, a_written = compute_full_for_symbol_scenario(symbol=sym, scenario=scenario, bars=bars)
                 computed_rows += m_written
                 continue
 
-            # Incremental recompute (legacy behavior): delete a recent window and recompute per day.
+            # Incremental recompute: only rebuild the recent technical tail, never the whole history.
             last_date = DailyMetric.objects.filter(symbol=sym, scenario=scenario).aggregate(m=Max("date"))["m"]
             if last_date:
-                start = last_date - timedelta(days=buffer_days)
+                start = max(last_date - timedelta(days=buffer_days), technical_start)
                 Alert.objects.filter(symbol=sym, scenario=scenario, date__gte=start).delete()
                 DailyMetric.objects.filter(symbol=sym, scenario=scenario, date__gte=start).delete()
             else:
-                start = None
+                start = technical_start
 
-            bars_qs = DailyBar.objects.filter(symbol=sym).order_by("date")
-            if start:
-                bars_qs = bars_qs.filter(date__gte=start)
+            bars_qs = DailyBar.objects.filter(symbol=sym, date__gte=start).order_by("date")
 
             _i = 0
             for d in bars_qs.values_list("date", flat=True):
