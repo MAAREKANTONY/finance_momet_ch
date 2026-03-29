@@ -57,6 +57,14 @@ from .forms import (
 from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
+from .services.derived_data import (
+    backtest_impactful_changes,
+    game_impactful_changes,
+    purge_backtest_derived_data,
+    purge_game_derived_data,
+    purge_scenario_derived_data,
+    scenario_impactful_changes,
+)
 
 try:
     # Celery is optional in dev; we keep the import defensive so the web container can boot.
@@ -453,7 +461,12 @@ def symbol_scenarios_edit(request, pk: int):
             # Always keep default scenario linked if it exists
             if default_scenario and default_scenario not in selected:
                 selected.append(default_scenario)
+            old_scenario_ids = set(symbol.scenarios.values_list("id", flat=True))
             symbol.scenarios.set(selected)
+            new_scenario_ids = set(symbol.scenarios.values_list("id", flat=True))
+            if new_scenario_ids != old_scenario_ids:
+                for sc in Scenario.objects.filter(id__in=(old_scenario_ids | new_scenario_ids)):
+                    purge_scenario_derived_data(sc, reset_backtests=True)
             messages.success(request, "Scénarios mis à jour.")
             JobLog.objects.create(job="symbol_scenarios", level="INFO", message=f"Updated scenarios for {symbol}")
             return redirect("symbols_page")
@@ -999,17 +1012,27 @@ def study_edit(request, pk: int):
 
         if ok:
             meta_form.save()
-            scenario_form.save()
+            old_symbol_ids = set(scenario.symbols.values_list("id", flat=True))
+            scenario_impact = scenario_impactful_changes(instance=scenario, cleaned_data=scenario_form.cleaned_data, old_symbol_ids=old_symbol_ids)
+            scenario = scenario_form.save()
+            if scenario_impact:
+                purge_scenario_derived_data(scenario, reset_backtests=True)
             if alert_form:
                 alert_form.save()
             if backtest_form:
+                backtest_impact = backtest_impactful_changes(instance=backtest, cleaned_data=backtest_form.cleaned_data)
                 bt_obj: Backtest = backtest_form.save(commit=False)
                 bt_obj.scenario = scenario
                 bt_obj.save()
                 backtest_form.save_m2m() if hasattr(backtest_form, "save_m2m") else None
                 _refresh_backtest_universe_snapshot(bt_obj)
+                if backtest_impact:
+                    purge_backtest_derived_data(bt_obj)
 
-            messages.success(request, "Study mise à jour.")
+            if scenario_impact:
+                messages.success(request, "Study mise à jour. Données calculées du scénario/backtest invalidées et nettoyées (safe).")
+            else:
+                messages.success(request, "Study mise à jour.")
             return redirect("study_edit", pk=study.pk)
     else:
         meta_form = StudyMetaForm(instance=study, prefix="study")
@@ -1091,7 +1114,8 @@ def study_apply_universe(request, pk: int):
         return redirect("study_edit", pk=pk)
     universe = get_object_or_404(Universe, pk=int(universe_id))
     _apply_universe_to_scenario(scenario, universe, mode=mode)
-    messages.success(request, f"Univers '{universe.name}' appliqué ({mode}).")
+    purge_scenario_derived_data(scenario, reset_backtests=True)
+    messages.success(request, f"Univers '{universe.name}' appliqué ({mode}). Données calculées invalidées et nettoyées (safe).")
     return redirect("study_edit", pk=pk)
 
 
@@ -1176,8 +1200,14 @@ def scenario_edit(request, pk: int):
     if request.method == "POST":
         form = ScenarioForm(request.POST, instance=scenario)
         if form.is_valid():
-            form.save()
-            messages.success(request, "Scénario mis à jour.")
+            old_symbol_ids = set(scenario.symbols.values_list("id", flat=True))
+            impactful = scenario_impactful_changes(instance=scenario, cleaned_data=form.cleaned_data, old_symbol_ids=old_symbol_ids)
+            saved = form.save()
+            if impactful:
+                purge_scenario_derived_data(saved, reset_backtests=True)
+                messages.success(request, "Scénario mis à jour. Données calculées invalidées et nettoyées (safe).")
+            else:
+                messages.success(request, "Scénario mis à jour.")
             return redirect("scenarios_page")
     else:
         form = ScenarioForm(instance=scenario)
@@ -2000,28 +2030,20 @@ def backtest_update(request, pk: int):
     if request.method == "POST":
         form = BacktestForm(request.POST, instance=bt)
         if form.is_valid():
+            impactful = backtest_impactful_changes(instance=bt, cleaned_data=form.cleaned_data)
             bt = form.save(commit=False)
-            # Reset computed results (they are now stale)
-            bt.results = {}
-            bt.status = Backtest.Status.PENDING
-            bt.error_message = ""
             bt.save()
 
-            # Clear persisted portfolio aggregates (they will be recomputed at next run)
-            try:
-                bt.portfolio_daily.all().delete()
-            except Exception:
-                pass
-            try:
-                if hasattr(bt, "portfolio_kpi") and bt.portfolio_kpi:
-                    bt.portfolio_kpi.delete()
-            except Exception:
-                pass
+            if impactful:
+                purge_backtest_derived_data(bt)
 
             # Refresh universe snapshot (scenario may have changed)
             _refresh_backtest_universe_snapshot(bt)
 
-            messages.success(request, "Backtest mis à jour. Les résultats précédents ont été réinitialisés (relance Fetch/Compute/Run).")
+            if impactful:
+                messages.success(request, "Backtest mis à jour. Les données calculées précédentes ont été invalidées et nettoyées (safe).")
+            else:
+                messages.success(request, "Backtest mis à jour.")
             return redirect("backtest_detail", pk=pk)
     else:
         form = BacktestForm(instance=bt)
@@ -3245,8 +3267,13 @@ def game_scenario_edit(request: HttpRequest, pk: int):
     if request.method == "POST":
         form = GameScenarioForm(request.POST, instance=obj)
         if form.is_valid():
-            form.save()
-            messages.success(request, "Scénario de Jeu mis à jour.")
+            impactful = game_impactful_changes(instance=obj, cleaned_data=form.cleaned_data)
+            obj = form.save()
+            if impactful:
+                purge_game_derived_data(obj)
+                messages.success(request, "Scénario de Jeu mis à jour. Les données calculées précédentes ont été invalidées et nettoyées (safe).")
+            else:
+                messages.success(request, "Scénario de Jeu mis à jour.")
             return redirect("game_scenario_detail", pk=obj.pk)
     else:
         form = GameScenarioForm(instance=obj)
