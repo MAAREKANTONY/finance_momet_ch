@@ -76,6 +76,10 @@
     <div class="muted" style="margin-top:8px;">Courbe globale des gains / pertes (PnL global = Equity - Investi).</div>
   </div>
   <div style="margin-top:18px;">
+    <canvas id="portfolioReturnChart" height="100"></canvas>
+    <div class="muted" style="margin-top:8px;">Performance globale du portefeuille (%) = (Equity / Capital total) - 1.</div>
+  </div>
+  <div style="margin-top:18px;">
     <canvas id="portfolioNglobalChart" height="100"></canvas>
     <div class="muted" style="margin-top:8px;">Moyenne globale des rendements sur Nglobal jours (prix d'étude).</div>
   </div>
@@ -390,6 +394,25 @@
         responsive: true,
         spanGaps: true,
         scales: { y: { type: "linear", title: { display: true, text: "Gain / Perte" } } }
+      }
+    });
+  }
+
+  const retCanvas = document.getElementById("portfolioReturnChart");
+  if (retCanvas && portRows && portRows.length) {
+    const labels = portRows.map(r => r.date);
+    const perf = portRows.map(r => {
+      const v = toNumber(r.portfolio_return_global);
+      return v === null ? null : (v * 100);
+    });
+    const ctx = retCanvas.getContext("2d");
+    new Chart(ctx, {
+      type: "line",
+      data: { labels, datasets: [{ label: "Performance portefeuille (%)", data: perf }] },
+      options: {
+        responsive: true,
+        spanGaps: true,
+        scales: { y: { type: "linear", title: { display: true, text: "%" } } }
       }
     });
   }

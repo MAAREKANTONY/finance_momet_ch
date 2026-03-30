@@ -555,6 +555,9 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
 
         equity = global_cash_val + cash_allocated + positions_value + bank_total
         pnl_global = equity - invested
+        portfolio_return_global = None
+        if capital_total and capital_total != 0:
+            portfolio_return_global = (equity - capital_total) / capital_total
 
         avg_global_vals: list[Decimal] = []
         for _tk, _tdata in data_by_ticker.items():
@@ -582,6 +585,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "equity": str(equity),
                 "invested": str(invested),
                 "pnl_global": str(pnl_global),
+                "portfolio_return_global": None if portfolio_return_global is None else str(portfolio_return_global),
                 "avg_global_nglobal": None if avg_global_nglobal is None else str(avg_global_nglobal),
                 "drawdown": str(dd),
             }

@@ -2435,7 +2435,7 @@ def _build_backtest_workbook_full(bt):
         ws_p.append([k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
+    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
@@ -2448,6 +2448,7 @@ def _build_backtest_workbook_full(bt):
             _to_float(r.get("cash_allocated")),
             _to_float(r.get("positions_value")),
             _to_float(r.get("pnl_global")),
+            _pct_ratio_to_percent(r.get("portfolio_return_global")),
             _pct_ratio_to_percent(r.get("avg_global_nglobal")),
             _pct_ratio_to_percent(r.get("drawdown")),
         ])
@@ -2832,7 +2833,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ws_p.append([k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
+    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
@@ -2845,6 +2846,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
             _to_float(r.get("cash_allocated")),
             _to_float(r.get("positions_value")),
             _to_float(r.get("pnl_global")),
+            _pct_ratio_to_percent(r.get("portfolio_return_global")),
             _pct_ratio_to_percent(r.get("avg_global_nglobal")),
             _pct_ratio_to_percent(r.get("drawdown")),
         ])
@@ -2968,19 +2970,23 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
                 buf.seek(0)
                 return buf
 
-            def _plot_portfolio_bytes(x_dates, equity, dd_pct):
-                """Portfolio image with equity curve + drawdown."""
+            def _plot_portfolio_bytes(x_dates, equity, perf_pct, dd_pct):
+                """Portfolio image with equity + return % + drawdown."""
                 buf = BytesIO()
-                fig, axes = plt.subplots(2, 1, figsize=(10.5, 5.4), sharex=True)
+                fig, axes = plt.subplots(3, 1, figsize=(10.5, 7.2), sharex=True)
                 axes[0].plot(x_dates, equity)
                 axes[0].set_title("Portfolio – Equity")
                 axes[0].set_ylabel("Equity")
 
-                axes[1].plot(x_dates, dd_pct)
-                axes[1].set_title("Portfolio – Drawdown (%)")
+                axes[1].plot(x_dates, perf_pct)
+                axes[1].set_title("Portfolio – Performance (%)")
                 axes[1].set_ylabel("%")
-                axes[1].set_xlabel("Date")
-                _format_date_axis(axes[1])
+
+                axes[2].plot(x_dates, dd_pct)
+                axes[2].set_title("Portfolio – Drawdown (%)")
+                axes[2].set_ylabel("%")
+                axes[2].set_xlabel("Date")
+                _format_date_axis(axes[2])
 
                 fig.tight_layout()
                 fig.savefig(buf, format="png", dpi=140)
@@ -2993,8 +2999,9 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
             if port_daily:
                 x_dates = _parse_dates([r.get("date") for r in port_daily])
                 equity = [_to_float(r.get("equity")) for r in port_daily]
+                perf_pct = [_pct_ratio_to_percent(r.get("portfolio_return_global")) for r in port_daily]
                 dd_pct = [_pct_ratio_to_percent(r.get("drawdown")) for r in port_daily]
-                img = XLImage(_plot_portfolio_bytes(x_dates, equity, dd_pct))
+                img = XLImage(_plot_portfolio_bytes(x_dates, equity, perf_pct, dd_pct))
                 ws_c.add_image(img, f"A{anchor_row}")
                 anchor_row += 26
             for (t, ln, strat) in selected:
