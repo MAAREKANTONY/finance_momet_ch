@@ -132,6 +132,7 @@
   const SIGNAL_CHOICES = {{ signal_choices_json|safe }};
   const SPECIAL_SELL = "AUTO_K1F_UPPER_DOWN_B1F";
   const LOGIC_CHOICES = [["AND", "ET"], ["OR", "OU"]];
+  const GM_FILTER_CHOICES = [["IGNORE", "Ignorer"], ["GM_POS", "GM positif"], ["GM_NEG", "GM négatif"], ["GM_NEU", "GM neutre"], ["GM_POS_OR_NEU", "GM positif ou neutre"], ["GM_NEG_OR_NEU", "GM négatif ou neutre"]];
   const body = document.getElementById("signal-lines-body");
   const hidden = document.getElementById("id_signal_lines");
   const addBtn = document.getElementById("add-line");
@@ -154,6 +155,37 @@
     const arr = normalizeCodes(codes);
     if (!arr.length) return "—";
     return arr.join(normalizeLogic(logic, "AND") === "OR" ? " OU " : " ET ");
+  }
+  function normalizeGmFilter(value) {
+    const code = String(value || 'IGNORE').toUpperCase();
+    return GM_FILTER_CHOICES.some(([k]) => k === code) ? code : 'IGNORE';
+  }
+  function gmFilterLabel(value) {
+    const code = normalizeGmFilter(value);
+    return (GM_FILTER_CHOICES.find(([k]) => k === code) || [code, code])[1];
+  }
+  function makeGmFilterSelect(value, role) {
+    const current = normalizeGmFilter(value);
+    const sel = document.createElement('select');
+    sel.setAttribute('data-role', role);
+    sel.style.minWidth = '190px';
+    GM_FILTER_CHOICES.forEach(([code, label]) => {
+      const opt = document.createElement('option');
+      opt.value = code;
+      opt.textContent = label;
+      if (code === current) opt.selected = true;
+      sel.appendChild(opt);
+    });
+    return sel;
+  }
+  function composeConditionSummary(codes, logic, gmFilter, gmOperator) {
+    const base = joinCodes(codes, logic);
+    const gm = normalizeGmFilter(gmFilter);
+    if (gm === 'IGNORE') return base;
+    const gmText = gmFilterLabel(gm);
+    if (base === '—') return gmText;
+    const op = normalizeLogic(gmOperator, 'AND') === 'OR' ? ' OU ' : ' ET ';
+    return `(${base})${op}${gmText}`;
   }
   function makeCheckboxList(values, role) {
     const selected = new Set(normalizeCodes(values));
@@ -239,9 +271,13 @@
       const mode = tr.querySelector('[data-role="mode"]')?.value || 'standard';
       const buy = selectedValues(tr.querySelector('[data-role="buy"]'));
       const buyLogic = selectedLogic(tr.querySelector('[data-role="buy_logic"]'), 'AND');
+      const buyGmFilter = tr.querySelector('[data-role="buy_gm_filter"]')?.value || 'IGNORE';
+      const buyGmOperator = selectedLogic(tr.querySelector('[data-role="buy_gm_operator"]'), 'AND');
       const sell = mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]'));
       const sellLogic = selectedLogic(tr.querySelector('[data-role="sell_logic"]'), 'OR');
-      parts.push(`L${i+1}: BUY(${logicLabel(buyLogic)})=${joinCodes(buy, buyLogic)} | SELL=${mode === 'special_k1f' ? 'AUTO(K1f)' : `(${logicLabel(sellLogic)})=${joinCodes(sell, sellLogic)}`}`);
+      const sellGmFilter = tr.querySelector('[data-role="sell_gm_filter"]')?.value || 'IGNORE';
+      const sellGmOperator = selectedLogic(tr.querySelector('[data-role="sell_gm_operator"]'), 'AND');
+      parts.push(`L${i+1}: BUY=${composeConditionSummary(buy, buyLogic, buyGmFilter, buyGmOperator)} | SELL=${mode === 'special_k1f' ? 'AUTO(K1f)' : composeConditionSummary(sell, sellLogic, sellGmFilter, sellGmOperator)}`);
     });
     summary.textContent = parts.join('  •  ');
   }
@@ -269,8 +305,16 @@
     buyWrap.style.gap = '8px';
     const buyLogicSel = makeLogicRadios(item.buy_logic, 'AND', 'buy_logic', idx);
     const buySel = makeCheckboxList(item.buy || [], 'buy');
+    const buyGmWrap = document.createElement('div');
+    buyGmWrap.style.display = 'flex';
+    buyGmWrap.style.alignItems = 'center';
+    buyGmWrap.style.gap = '8px';
+    buyGmWrap.style.flexWrap = 'wrap';
+    buyGmWrap.appendChild(makeGmFilterSelect(item.buy_gm_filter, 'buy_gm_filter'));
+    buyGmWrap.appendChild(makeLogicRadios(item.buy_gm_operator, 'AND', 'buy_gm_operator', idx));
     buyWrap.appendChild(buyLogicSel);
     buyWrap.appendChild(buySel);
+    buyWrap.appendChild(buyGmWrap);
     tr.children[2].appendChild(buyWrap);
     const sellWrap = document.createElement('div');
     sellWrap.style.display = 'flex';
@@ -278,8 +322,16 @@
     sellWrap.style.gap = '8px';
     const sellLogicSel = makeLogicRadios(item.sell_logic, 'OR', 'sell_logic', idx);
     const sellSel = makeCheckboxList((normalizeCodes(item.sell)[0] || '') === SPECIAL_SELL ? [] : (item.sell || []), 'sell');
+    const sellGmWrap = document.createElement('div');
+    sellGmWrap.style.display = 'flex';
+    sellGmWrap.style.alignItems = 'center';
+    sellGmWrap.style.gap = '8px';
+    sellGmWrap.style.flexWrap = 'wrap';
+    sellGmWrap.appendChild(makeGmFilterSelect(item.sell_gm_filter, 'sell_gm_filter'));
+    sellGmWrap.appendChild(makeLogicRadios(item.sell_gm_operator, 'AND', 'sell_gm_operator', idx));
     sellWrap.appendChild(sellLogicSel);
     sellWrap.appendChild(sellSel);
+    sellWrap.appendChild(sellGmWrap);
     tr.children[3].appendChild(sellWrap);
     const del = document.createElement('button');
     del.type = 'button';
@@ -293,7 +345,7 @@
       toggleLogicGroup(sellLogicSel, special);
     }
     modeSel.addEventListener('change', () => { applyMode(); serialize(); });
-    [buySel, sellSel, buyLogicSel, sellLogicSel].forEach((container) => container.addEventListener('change', serialize));
+    [buySel, sellSel, buyLogicSel, sellLogicSel, buyGmWrap, sellGmWrap].forEach((container) => container.addEventListener('change', serialize));
     body.appendChild(tr);
     applyMode();
   }
@@ -307,20 +359,24 @@
       const mode = tr.querySelector('[data-role="mode"]')?.value || 'standard';
       const buy = selectedValues(tr.querySelector('[data-role="buy"]'));
       const buyLogic = selectedLogic(tr.querySelector('[data-role="buy_logic"]'), 'AND');
+      const buyGmFilter = tr.querySelector('[data-role="buy_gm_filter"]')?.value || 'IGNORE';
+      const buyGmOperator = selectedLogic(tr.querySelector('[data-role="buy_gm_operator"]'), 'AND');
       const sell = mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]'));
       const sellLogic = selectedLogic(tr.querySelector('[data-role="sell_logic"]'), 'OR');
-      if (buy.length || sell.length) out.push({mode, buy, sell, buy_logic: buyLogic, sell_logic: sellLogic});
+      const sellGmFilter = tr.querySelector('[data-role="sell_gm_filter"]')?.value || 'IGNORE';
+      const sellGmOperator = selectedLogic(tr.querySelector('[data-role="sell_gm_operator"]'), 'AND');
+      if (buy.length || sell.length || buyGmFilter !== 'IGNORE' || sellGmFilter !== 'IGNORE') out.push({mode, buy, sell, buy_logic: buyLogic, sell_logic: sellLogic, buy_gm_filter: buyGmFilter, buy_gm_operator: buyGmOperator, sell_gm_filter: sellGmFilter, sell_gm_operator: sellGmOperator});
     });
     hidden.value = JSON.stringify(out);
     updateSummary();
   }
   let initial = [];
   try { initial = JSON.parse(hidden.value || '[]'); } catch(e) { initial = []; }
-  if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR'}];
+  if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND'}];
   initial.forEach((it, idx) => addRow(idx, it));
   renumber();
   serialize();
-  addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', buy:[], sell:[], buy_logic:'AND', sell_logic:'OR'}); renumber(); serialize(); });
+  addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', buy:[], sell:[], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND'}); renumber(); serialize(); });
   form?.addEventListener('submit', serialize);
 })();
 </script>

@@ -25,6 +25,17 @@ BACKTEST_SIGNAL_CHOICES = [
     ("GM_NEU", "GM_NEU (momentum global neutre)"),
 ]
 
+GLOBAL_REGIME_FILTER_CHOICES = [
+    ("IGNORE", "Ignorer"),
+    ("GM_POS", "GM positif"),
+    ("GM_NEG", "GM négatif"),
+    ("GM_NEU", "GM neutre"),
+    ("GM_POS_OR_NEU", "GM positif ou neutre"),
+    ("GM_NEG_OR_NEU", "GM négatif ou neutre"),
+]
+
+GLOBAL_REGIME_FILTER_CODES = {code for code, _label in GLOBAL_REGIME_FILTER_CHOICES}
+
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
 
 
@@ -55,6 +66,11 @@ def _normalize_logic(value, default):
     return logic if logic in {"AND", "OR"} else default
 
 
+def _normalize_global_regime_filter(value):
+    code = str(value or "IGNORE").strip().upper()
+    return code if code in GLOBAL_REGIME_FILTER_CODES else "IGNORE"
+
+
 def _clean_signal_lines_json(value):
     if value in (None, ""):
         return []
@@ -73,8 +89,12 @@ def _clean_signal_lines_json(value):
             "sell": sell,
             "buy_logic": _normalize_logic(item.get("buy_logic"), "AND"),
             "sell_logic": _normalize_logic(item.get("sell_logic"), "OR"),
+            "buy_gm_filter": _normalize_global_regime_filter(item.get("buy_gm_filter")),
+            "buy_gm_operator": _normalize_logic(item.get("buy_gm_operator"), "AND"),
+            "sell_gm_filter": _normalize_global_regime_filter(item.get("sell_gm_filter")),
+            "sell_gm_operator": _normalize_logic(item.get("sell_gm_operator"), "AND"),
         }
-        if buy or sell:
+        if buy or sell or payload["buy_gm_filter"] != "IGNORE" or payload["sell_gm_filter"] != "IGNORE":
             cleaned.append(payload)
     return cleaned
 class AlertDefinitionForm(forms.ModelForm):
