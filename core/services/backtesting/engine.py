@@ -424,8 +424,6 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
         return BacktestEngineResult(results={"error": "No usable tickers with data in range."}, logs=logs)
 
     nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
-    for _ticker, _tdata in data_by_ticker.items():
-        _tdata["avg_nglobal_by_date"] = _build_avg_global_nglobal_series(_tdata.get("metrics", {}), nglobal)
     global_momentum_values_by_date = _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
     global_momentum_regime_by_date = _build_global_momentum_regime_from_values(global_momentum_values_by_date)
 
