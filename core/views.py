@@ -2263,7 +2263,26 @@ def backtest_results(request, pk: int):
             raw_final = l.get("final") or {}
             final_row = _augment_row(dict(raw_final))
             raw_daily = l.get("daily") or []
-            played = any(str((r or {}).get("action") or "").upper() in {"BUY", "SELL", "FORCED_SELL"} for r in raw_daily)
+
+            # A line is considered "played" as soon as there is evidence that at least one
+            # trade lifecycle happened or that an explicit action was emitted in the daily rows.
+            # We intentionally do not rely only on exact action equality because stored actions
+            # may contain combined labels such as SELL+BUY or BUY+FORCED_SELL.
+            played = False
+            for r in raw_daily:
+                action_tokens = {tok.strip().upper() for tok in str((r or {}).get("action") or "").split("+") if tok.strip()}
+                if action_tokens.intersection({"BUY", "SELL", "FORCED_SELL"}):
+                    played = True
+                    break
+
+            # Safety net: older / partially migrated results may not expose the expected daily
+            # action labels although final trade counters are present.
+            if not played:
+                try:
+                    played = int(final_row.get("N") or 0) > 0
+                except Exception:
+                    played = False
+
             if not played:
                 continue
 
