@@ -2223,16 +2223,65 @@ def backtest_results(request, pk: int):
         daily = daily[-limit:]
 
 
+    def _codes_to_label(v):
+        if isinstance(v, (list, tuple)):
+            return " + ".join(str(x) for x in v if str(x).strip())
+        if v is None:
+            return ""
+        return str(v)
+
     # For dropdowns in UI
     ticker_options = []
+    global_line_options = {}
+    global_line_rows = []
+    try:
+        global_line_index = int(request.GET.get("global_line", str(line_index or 1)))
+    except ValueError:
+        global_line_index = int(line_index or 1)
+
     for tk, te in tickers_map.items():
         for l in (te.get("lines") or []):
+            li = int(l.get("line_index") or 0)
+            buy_label = _codes_to_label(l.get("buy"))
+            sell_label = _codes_to_label(l.get("sell"))
             ticker_options.append({
                 "ticker": tk,
-                "line_index": l.get("line_index"),
-                "buy": l.get("buy"),
-                "sell": l.get("sell"),
+                "line_index": li,
+                "buy": buy_label,
+                "sell": sell_label,
             })
+            if li not in global_line_options:
+                global_line_options[li] = {
+                    "line_index": li,
+                    "buy": buy_label,
+                    "sell": sell_label,
+                }
+
+            if li != global_line_index:
+                continue
+
+            raw_final = l.get("final") or {}
+            final_row = _augment_row(dict(raw_final))
+            raw_daily = l.get("daily") or []
+            played = any(str((r or {}).get("action") or "").upper() in {"BUY", "SELL", "FORCED_SELL"} for r in raw_daily)
+            if not played:
+                continue
+
+            global_line_rows.append({
+                "ticker": tk,
+                "buy": buy_label,
+                "sell": sell_label,
+                "BT": final_row.get("BT"),
+                "BMD": final_row.get("BMD"),
+                "RATIO_IN_POSITION": final_row.get("RATIO_IN_POSITION"),
+                "RATIO_NOT_IN_POSITION": final_row.get("RATIO_NOT_IN_POSITION"),
+                "TRADABLE_DAYS": final_row.get("TRADABLE_DAYS"),
+                "TRADABLE_DAYS_IN_POSITION": final_row.get("TRADABLE_DAYS_IN_POSITION_CLOSED"),
+                "TRADABLE_DAYS_NOT_IN_POSITION": final_row.get("TRADABLE_DAYS_NOT_IN_POSITION"),
+            })
+
+    global_line_options = [global_line_options[k] for k in sorted(global_line_options.keys())]
+    global_line_rows.sort(key=lambda r: (str(r.get("ticker") or "")))
 
     return render(
         request,
@@ -2252,6 +2301,9 @@ def backtest_results(request, pk: int):
             "is_truncated": is_truncated,
             "total_daily_count": total_daily_count,
             "ticker_options": ticker_options,
+            "global_line_index": global_line_index,
+            "global_line_options": global_line_options,
+            "global_line_rows": global_line_rows,
             "portfolio_kpi": port_kpi,
             "portfolio_daily": port_daily_for_ui,
             "portfolio_daily_json": json.dumps(port_daily_for_ui),

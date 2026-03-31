@@ -87,6 +87,62 @@
 </details>
 {% endif %}
 
+<details class="card acc" open data-acc-key="global-played-tickers">
+<summary class="acc-summary"><span class="acc-title">Actions jouées — synthèse globale</span></summary>
+<div class="acc-body">
+  <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
+    <label for="globalLineSelect">Ligne achat / vente</label>
+    <select id="globalLineSelect">
+      {% for opt in global_line_options %}
+        <option value="{{ opt.line_index }}" {% if opt.line_index == global_line_index %}selected{% endif %}>
+          L{{ opt.line_index }} (BUY {{ opt.buy }} / SELL {{ opt.sell }})
+        </option>
+      {% endfor %}
+    </select>
+    <div class="muted">Affiche uniquement les actions réellement jouées pour la ligne sélectionnée.</div>
+  </div>
+
+  <div style="overflow:auto; max-height:420px; border:1px solid var(--border-color, #ddd); border-radius:8px;">
+    <table>
+      <thead>
+        <tr>
+          <th>Action</th>
+          <th>Conditions d'achat</th>
+          <th>Conditions de vente</th>
+          <th>BT</th>
+          <th>BMD</th>
+          <th>Ratio_in_position</th>
+          <th>Ratio_not_in_position</th>
+          <th>tradable_days</th>
+          <th>tradable_days_in_position</th>
+          <th>tradable_days_not_in_position</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in global_line_rows %}
+        <tr>
+          <td>{{ r.ticker }}</td>
+          <td>{{ r.buy }}</td>
+          <td>{{ r.sell }}</td>
+          <td>{{ r.BT|pct:3 }}</td>
+          <td>{{ r.BMD|pct:4 }}</td>
+          <td>{{ r.RATIO_IN_POSITION|num:2 }}%</td>
+          <td>{{ r.RATIO_NOT_IN_POSITION|num:2 }}%</td>
+          <td>{{ r.TRADABLE_DAYS }}</td>
+          <td>{{ r.TRADABLE_DAYS_IN_POSITION }}</td>
+          <td>{{ r.TRADABLE_DAYS_NOT_IN_POSITION }}</td>
+        </tr>
+        {% empty %}
+        <tr>
+          <td colspan="10" class="muted">Aucune action jouée pour cette ligne sur la période.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+</details>
+
 <details class="card acc" open data-acc-key="selection">
 <summary class="acc-summary"><span class="acc-title">Sélection</span></summary>
 <div class="acc-body">
@@ -350,6 +406,15 @@
     url.searchParams.delete("all");
     window.location.href = url.toString();
   });
+
+  const globalLineSelect = document.getElementById("globalLineSelect");
+  if (globalLineSelect) {
+    globalLineSelect.addEventListener("change", (e) => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("global_line", e.target.value);
+      window.location.href = url.toString();
+    });
+  }
 
   // Portfolio chart (equity + drawdown)
   const pCanvas = document.getElementById("portfolioChart");
