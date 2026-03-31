@@ -20,6 +20,9 @@ BACKTEST_SIGNAL_CHOICES = [
     ("SPv_basse", "SPv_basse (SUM_SLOPE_BASSE croise le seuil de pente basse vers le bas)"),
     ("SPVa_basse", "SPVa_basse (SLOPE_VRAI_BASSE croise le seuil de pente basse vers le haut)"),
     ("SPVv_basse", "SPVv_basse (SLOPE_VRAI_BASSE croise le seuil de pente basse vers le bas)"),
+    ("GM_POS", "GM_POS (momentum global positif)"),
+    ("GM_NEG", "GM_NEG (momentum global négatif)"),
+    ("GM_NEU", "GM_NEU (momentum global neutre)"),
 ]
 
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study

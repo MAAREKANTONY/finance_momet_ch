@@ -14,6 +14,7 @@ from .models import ProcessingJob
 from .exports import build_scenario_workbook_write_only
 from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
+from .services.global_momentum import build_global_momentum_regime_by_date, GLOBAL_MOMENTUM_CODES
 from .services.calculations_fast import compute_full_for_symbol_scenario
 
 from django.utils import timezone
@@ -259,9 +260,66 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
             print(f"[compute] error {sym} {scenario}: {e}")
             continue
 
+    try:
+        _enrich_alerts_with_global_momentum(scenario=scenario, start_date=None)
+    except Exception:
+        pass
+
     Scenario.objects.filter(id=scenario.id).update(last_computed_config_hash=cur_hash)
     return {"symbols": len(symbols), "rows": computed_rows, "full": bool(needs_full)}
 
+
+
+
+def _enrich_alerts_with_global_momentum(*, scenario: Scenario, start_date=None) -> int:
+    """Append the current global momentum regime code to existing alert rows.
+
+    Safe/additive behavior:
+    - does not create standalone alert rows when no local alert exists
+    - only enriches rows already produced by per-ticker alert calculations
+    - removes stale GM_* codes before re-appending the current regime code
+    """
+    dm_qs = DailyMetric.objects.filter(scenario=scenario).order_by("symbol_id", "date")
+    if start_date is not None:
+        dm_qs = dm_qs.filter(date__gte=start_date)
+    rows = list(dm_qs.values("symbol_id", "date", "P"))
+    if not rows:
+        return 0
+
+    metrics_by_ticker: dict[int, dict] = {}
+    for row in rows:
+        metrics_by_ticker.setdefault(row["symbol_id"], {})[row["date"]] = row.get("P")
+
+    nglobal = int(getattr(scenario, "nglobal", 20) or 20)
+    regime_by_date = build_global_momentum_regime_by_date(metrics_by_ticker, nglobal=nglobal)
+    if not regime_by_date:
+        return 0
+
+    alerts_qs = Alert.objects.filter(scenario=scenario)
+    if start_date is not None:
+        alerts_qs = alerts_qs.filter(date__gte=start_date)
+
+    updated = 0
+    batch = []
+    for obj in alerts_qs.only("id", "date", "alerts"):
+        regime = regime_by_date.get(obj.date)
+        if not regime:
+            continue
+        codes = [c.strip() for c in str(obj.alerts or '').split(',') if c.strip()]
+        codes = [c for c in codes if c not in GLOBAL_MOMENTUM_CODES]
+        if regime not in codes:
+            codes.append(regime)
+        new_alerts = ','.join(codes)
+        if new_alerts != (obj.alerts or ''):
+            obj.alerts = new_alerts
+            batch.append(obj)
+            updated += 1
+            if len(batch) >= 2000:
+                Alert.objects.bulk_update(batch, ["alerts"], batch_size=2000)
+                batch = []
+    if batch:
+        Alert.objects.bulk_update(batch, ["alerts"], batch_size=2000)
+    return updated
 
 def _indicator_params_from_scenario_like(obj) -> dict:
     """Canonical dict of parameters that affect indicator computations.

@@ -28,6 +28,10 @@ from typing import Any
 from django.db import transaction
 
 from core.models import Alert, Backtest, DailyBar, DailyMetric, Symbol
+from core.services.global_momentum import (
+    compute_global_momentum_values_by_date,
+    regime_for_value,
+)
 
 # Pseudo signal used by UI to activate the special sell rule.
 # IMPORTANT: additive only; legacy backtests ignore it unless explicitly chosen.
@@ -263,30 +267,33 @@ def _codes_label(codes: list[str], logic: str = "AND") -> str:
     return " & ".join(norm) if norm else ""
 
 
-def _build_avg_global_nglobal_series(metrics_by_date: dict[date, tuple[Any, ...]], nglobal: int) -> dict[date, Decimal | None]:
-    """Per-date rolling mean of daily study-price returns over Nglobal days."""
-    from collections import deque
 
-    out: dict[date, Decimal | None] = {}
-    nglobal = int(nglobal or 0)
-    if nglobal <= 0:
-        return out
+def _build_global_momentum_values_from_ticker_data(data_by_ticker: dict[str, dict[str, Any]], nglobal: int) -> dict[date, Decimal | None]:
+    metrics_by_ticker: dict[str, dict[date, tuple[Any, ...]]] = {}
+    for ticker, tdata in (data_by_ticker or {}).items():
+        metrics = tdata.get("metrics") or {}
+        if metrics:
+            metrics_by_ticker[ticker] = metrics
+    return compute_global_momentum_values_by_date(
+        metrics_by_ticker,
+        nglobal=int(nglobal or 0),
+        p_getter=lambda mt: _metric_val(mt, _M_P),
+    )
 
-    prev_p: Decimal | None = None
-    returns = deque(maxlen=nglobal)
-    for d in sorted(metrics_by_date.keys()):
-        p_val = _to_dec(_metric_val(metrics_by_date.get(d), _M_P))
-        if p_val is None:
-            out[d] = None
-            continue
-        if prev_p is not None and prev_p != 0:
-            returns.append((p_val - prev_p) / prev_p)
-        prev_p = p_val
-        out[d] = (sum(returns) / Decimal(nglobal)) if len(returns) >= nglobal else None
+
+def _build_global_momentum_regime_from_values(
+    values_by_date: dict[date, Decimal | None],
+) -> dict[date, str]:
+    out: dict[date, str] = {}
+    for d, v in (values_by_date or {}).items():
+        regime = regime_for_value(v)
+        if regime:
+            out[d] = regime
     return out
 
 
 def run_backtest(backtest: Backtest) -> BacktestEngineResult:
+
     """
     Feature 4:
     - Adds global capital constraint (CP) and daily selection of new allocations by highest ratio_p.
@@ -419,6 +426,8 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
     for _ticker, _tdata in data_by_ticker.items():
         _tdata["avg_nglobal_by_date"] = _build_avg_global_nglobal_series(_tdata.get("metrics", {}), nglobal)
+    global_momentum_values_by_date = _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
+    global_momentum_regime_by_date = _build_global_momentum_regime_from_values(global_momentum_values_by_date)
 
     dates_sorted = sorted(all_dates)
     if not dates_sorted:
@@ -501,6 +510,9 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             if not tdata or d not in tdata.get("price_by_date", {}):
                 continue
             event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
+            gm_code = global_momentum_regime_by_date.get(d)
+            if gm_code:
+                event_alerts.add(gm_code)
             _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             _update_and_latched_states(st["and_latched_states"], event_alerts)
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
@@ -559,13 +571,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
         if capital_total and capital_total != 0:
             portfolio_return_global = (equity - capital_total) / capital_total
 
-        avg_global_vals: list[Decimal] = []
-        for _tk, _tdata in data_by_ticker.items():
-            _v = (_tdata.get("avg_nglobal_by_date") or {}).get(d)
-            _v = _to_dec(_v)
-            if _v is not None:
-                avg_global_vals.append(_v)
-        avg_global_nglobal = (sum(avg_global_vals) / Decimal(len(avg_global_vals))) if avg_global_vals else None
+        avg_global_nglobal = _to_dec((global_momentum_values_by_date or {}).get(d))
 
         if peak_equity is None or equity > peak_equity:
             peak_equity = equity
@@ -1346,7 +1352,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             all_dates.add(d)
             price_by_date[d] = b.get("close")
 
-        metrics: dict[date, tuple[Any, Any, Any, Any, Any, Any, Any]] = {
+        metrics: dict[date, tuple[Any, Any, Any, Any, Any, Any, Any, Any]] = {
             m["date"]: (
                 m.get("ratio_P"),
                 m.get("K1"),
@@ -1355,13 +1361,14 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 m.get("K2"),
                 m.get("K3"),
                 m.get("K4"),
+                m.get("P"),
             )
             for m in DailyMetric.objects.filter(
                 symbol=sym,
                 scenario_id=backtest.scenario_id,
                 date__gte=fetch_start_d,
                 date__lte=end_d,
-            ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4")
+            ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4", "P")
         }
         alerts = {
             a["date"]: _alerts_set(a["alerts"])
@@ -1373,6 +1380,10 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
 
     if not data_by_ticker:
         return {}
+
+    nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
+    global_momentum_values_by_date = _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
+    global_momentum_regime_by_date = _build_global_momentum_regime_from_values(global_momentum_values_by_date)
 
     dates_sorted = sorted(all_dates)
     warmup_dates = [d for d in dates_sorted if (start_d is not None and d < start_d)]
@@ -1419,6 +1430,9 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             if not tdata or d not in tdata.get("price_by_date", {}):
                 continue
             event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
+            gm_code = global_momentum_regime_by_date.get(d)
+            if gm_code:
+                event_alerts.add(gm_code)
             _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             _update_and_latched_states(st["and_latched_states"], event_alerts)
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
@@ -1439,6 +1453,9 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 continue
 
             event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            gm_code = global_momentum_regime_by_date.get(d)
+            if gm_code:
+                event_alerts.add(gm_code)
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
             tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
@@ -1513,6 +1530,9 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             if not buy_codes:
                 continue
             event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            gm_code = global_momentum_regime_by_date.get(d)
+            if gm_code:
+                event_alerts.add(gm_code)
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
             if not _match_codes_with_memory(day_alerts, latched_alerts, buy_codes, st["buy_logic"]):
@@ -1555,6 +1575,9 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
             if not buy_codes:
                 continue
             event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            gm_code = global_momentum_regime_by_date.get(d)
+            if gm_code:
+                event_alerts.add(gm_code)
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
             if not _match_codes_with_memory(day_alerts, latched_alerts, buy_codes, st["buy_logic"]):
