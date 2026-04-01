@@ -2263,8 +2263,22 @@ def backtest_results(request, pk: int):
 
             raw_final = l.get("final") or {}
             final_row = _augment_row(dict(raw_final))
-            raw_daily = l.get("daily") or []
-            played = any(str((r or {}).get("action") or "").upper() in {"BUY", "SELL", "FORCED_SELL"} for r in raw_daily)
+            try:
+                from .services.backtesting.results_offload import load_daily_from_line
+                raw_daily = load_daily_from_line(l or {})
+            except Exception:
+                raw_daily = (l or {}).get("daily") or []
+
+            played = any(
+                str((r or {}).get("action") or "").upper() in {"BUY", "SELL", "FORCED_SELL"}
+                for r in raw_daily
+            )
+            if not played:
+                try:
+                    n_trades = int((raw_final or {}).get("N") or 0)
+                except Exception:
+                    n_trades = 0
+                played = n_trades > 0
             if not played:
                 continue
 

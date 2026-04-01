@@ -1,0 +1,6 @@
+V7.0.55
+
+- Fix backtest results "actions jouées" table when daily line data is offloaded to disk.
+- Uses results_offload.load_daily_from_line() in backtest_results global line aggregation.
+- Adds safe fallback on final["N"] > 0 when daily actions are unavailable.
+- No business-engine change; UI/result aggregation fix only.
