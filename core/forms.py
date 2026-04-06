@@ -229,6 +229,13 @@ class ScenarioForm(forms.ModelForm):
 
         self.fields["symbols"].label_from_instance = _label
         selected_symbols = list(self.instance.symbols.all()) if self.instance.pk else []
+        if not selected_symbols:
+            initial_symbols = self.initial.get("symbols") if hasattr(self, "initial") else None
+            if initial_symbols:
+                try:
+                    selected_symbols = list(initial_symbols)
+                except TypeError:
+                    selected_symbols = [initial_symbols]
         if selected_symbols:
             self.fields["symbols"].initial = selected_symbols
         _configure_symbol_picker(self.fields["symbols"], selected_symbols)
@@ -273,6 +280,13 @@ class UniverseForm(forms.ModelForm):
 
             self.fields["symbols"].label_from_instance = _label
             selected_symbols = list(self.instance.symbols.all()) if self.instance.pk else []
+            if not selected_symbols:
+                initial_symbols = self.initial.get("symbols") if hasattr(self, "initial") else None
+                if initial_symbols:
+                    try:
+                        selected_symbols = list(initial_symbols)
+                    except TypeError:
+                        selected_symbols = [initial_symbols]
             if selected_symbols:
                 self.fields["symbols"].initial = selected_symbols
             _configure_symbol_picker(self.fields["symbols"], selected_symbols)

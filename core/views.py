@@ -1263,10 +1263,24 @@ def study_recompute_now(request, pk: int):
     return redirect("study_edit", pk=pk)
 
 
+def _scenario_form_context(*, form, mode: str, has_other_default: bool, scenario=None):
+    universes = list(Universe.objects.filter(active=True).order_by("name"))
+    exchange_qs = Symbol.objects.filter(active=True).exclude(exchange__isnull=True).exclude(exchange="").values_list("exchange", flat=True).distinct().order_by("exchange")
+    sector_qs = Symbol.objects.filter(active=True).exclude(sector__isnull=True).exclude(sector="").values_list("sector", flat=True).distinct().order_by("sector")
+    return {
+        "form": form,
+        "mode": mode,
+        "scenario": scenario,
+        "has_other_default": has_other_default,
+        "universes": universes,
+        "exchanges": list(exchange_qs),
+        "sectors": list(sector_qs),
+    }
+
+
 @login_required
 def scenario_create(request):
     has_other_default = Scenario.objects.filter(is_default=True).exists()
-    universes = list(Universe.objects.filter(active=True).order_by("name"))
     if request.method == "POST":
         form = ScenarioForm(request.POST)
         if form.is_valid():
@@ -1275,23 +1289,13 @@ def scenario_create(request):
             return redirect("scenarios_page")
     else:
         form = ScenarioForm()
-    return render(
-        request,
-        "scenario_form.html",
-        {
-            "form": form,
-            "mode": "create",
-            "has_other_default": has_other_default,
-            "universes": universes,
-        },
-    )
+    return render(request, "scenario_form.html", _scenario_form_context(form=form, mode="create", has_other_default=has_other_default))
 
 
 @login_required
 def scenario_edit(request, pk: int):
     scenario = get_object_or_404(Scenario, pk=pk)
     has_other_default = Scenario.objects.filter(is_default=True).exclude(pk=scenario.pk).exists()
-    universes = list(Universe.objects.filter(active=True).order_by("name"))
     if request.method == "POST":
         form = ScenarioForm(request.POST, instance=scenario)
         if form.is_valid():
@@ -1306,17 +1310,7 @@ def scenario_edit(request, pk: int):
             return redirect("scenarios_page")
     else:
         form = ScenarioForm(instance=scenario)
-    return render(
-        request,
-        "scenario_form.html",
-        {
-            "form": form,
-            "mode": "edit",
-            "scenario": scenario,
-            "has_other_default": has_other_default,
-            "universes": universes,
-        },
-    )
+    return render(request, "scenario_form.html", _scenario_form_context(form=form, mode="edit", has_other_default=has_other_default, scenario=scenario))
 
 
 @login_required
@@ -1365,19 +1359,9 @@ def scenario_duplicate(request, pk: int):
         }
         form = ScenarioForm(initial=initial)
 
-    universes = list(Universe.objects.filter(active=True).order_by("name"))
-
-    return render(
-        request,
-        "scenario_form.html",
-        {
-            "form": form,
-            "mode": "duplicate",
-            "source_scenario": source,
-            "has_other_default": has_other_default,
-            "universes": universes,
-        },
-    )
+    context = _scenario_form_context(form=form, mode="duplicate", has_other_default=has_other_default)
+    context["source_scenario"] = source
+    return render(request, "scenario_form.html", context)
 
 
 def scenario_delete(request, pk: int):

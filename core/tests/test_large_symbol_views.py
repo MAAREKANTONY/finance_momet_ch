@@ -157,3 +157,39 @@ class LargeSymbolFormViewTests(TestCase):
         body = response.content.decode()
         self.assertIn("Ajouter tous les résultats", body)
         self.assertIn("Recherche dans la sélection", body)
+
+    def test_scenario_form_renders_bulk_selection_ui(self):
+        Universe.objects.create(name="US Market", active=True)
+        response = self.client.get(reverse("scenario_create"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Ajouter tous les résultats", body)
+        self.assertIn("Appliquer un univers existant", body)
+        self.assertIn("Recherche dans la sélection", body)
+
+    def test_scenario_duplicate_preloads_existing_symbols_in_hidden_picker_state(self):
+        scenario = Scenario.objects.create(
+            name="Base Scenario",
+            active=True,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=5,
+            n2=3,
+            npente=100,
+            slope_threshold=0.1,
+            npente_basse=20,
+            slope_threshold_basse=0.02,
+            nglobal=20,
+            history_years=2,
+        )
+        selected = list(Symbol.objects.order_by("id")[:3])
+        scenario.symbols.set(selected)
+        response = self.client.get(reverse("scenario_duplicate", args=[scenario.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        for sym in selected:
+            self.assertIn(sym.ticker, body)
+        self.assertIn('server-selected-bootstrap', body)
