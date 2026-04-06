@@ -3294,7 +3294,7 @@ def symbol_search(request: HttpRequest) -> JsonResponse:
     """Lightweight search endpoint used by the two-column symbol picker."""
     q = (request.GET.get('q') or '').strip()
     limit = int(request.GET.get('limit') or 50)
-    limit = max(1, min(limit, 200))
+    limit = max(1, min(limit, 1000))
     exclude_raw = (request.GET.get('exclude') or '').strip()
     exclude_ids = []
     if exclude_raw:
@@ -3308,19 +3308,41 @@ def symbol_search(request: HttpRequest) -> JsonResponse:
         qs = qs.exclude(id__in=exclude_ids)
 
     if q:
-        # If user pastes multiple tickers, take first token for search endpoint.
-        token = q.split(',')[0].strip()
-        qs = qs.filter(
-            Q(ticker__icontains=token)
-            | Q(name__icontains=token)
-            | Q(exchange__icontains=token)
-            | Q(sector__icontains=token)
-            | Q(country__icontains=token)
-        )
+        tokens = [tok.strip().upper() for tok in q.replace(';', ',').split(',') if tok.strip()]
+        if len(tokens) >= 2:
+            exact_qs = qs.filter(ticker__in=tokens).only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker')
+            found = list(exact_qs[:limit])
+            found_tickers = {str(s.ticker).upper() for s in found}
+            remaining = [tok for tok in tokens if tok not in found_tickers]
+            if remaining and len(found) < limit:
+                token = remaining[0]
+                extra_qs = qs.exclude(id__in=[s.id for s in found]).filter(
+                    Q(ticker__icontains=token)
+                    | Q(name__icontains=token)
+                    | Q(exchange__icontains=token)
+                    | Q(sector__icontains=token)
+                    | Q(country__icontains=token)
+                ).only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker')[: max(0, limit - len(found))]
+                qs = found + list(extra_qs)
+            else:
+                qs = found
+        else:
+            token = q.strip()
+            qs = qs.filter(
+                Q(ticker__icontains=token)
+                | Q(name__icontains=token)
+                | Q(exchange__icontains=token)
+                | Q(sector__icontains=token)
+                | Q(country__icontains=token)
+            ).only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker')[:limit]
     else:
-        qs = qs.order_by('ticker')
+        qs = []
 
-    qs = qs.only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker')[:limit]
+    if hasattr(qs, 'only'):
+        qs = qs.only('id', 'ticker', 'name', 'exchange', 'sector', 'country')
+        if not getattr(qs.query, 'is_sliced', False):
+            qs = qs.order_by('ticker')
+        qs = qs[:limit]
     data = [
         {
             'id': s.id,

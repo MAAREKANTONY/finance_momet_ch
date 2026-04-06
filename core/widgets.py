@@ -22,7 +22,11 @@ class SymbolPickerWidget(forms.Widget):
         super().__init__(base)
 
     def value_from_datadict(self, data, files, name):
-        # Single hidden input carrying a CSV list of selected IDs.
+        # Hidden input carries a CSV list of selected IDs.
+        if hasattr(data, 'getlist'):
+            raw_list = data.getlist(name)
+            if len(raw_list) > 1:
+                return [str(x).strip() for x in raw_list if str(x).strip()]
         raw = data.get(name) if hasattr(data, "get") else None
         if raw in (None, ""):
             return []

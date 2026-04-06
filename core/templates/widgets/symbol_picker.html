@@ -5,13 +5,9 @@ Context:
 - widget.attrs.data_search_url : URL to fetch symbols (returns JSON list)
 {% endcomment %}
 
-<div class="symbol-picker-root" data-search-url="{{ widget.attrs.data_search_url|default:'' }}">
+<div class="symbol-picker-root" data-search-url="{{ widget.attrs.data_search_url|default:'' }}" data-selected-json="{{ widget.attrs.data_selected_json|default:'[]'|escape }}">
   <div style="display:none">
-    <select name="{{ widget.name }}" id="id_{{ widget.name }}" multiple>
-      {% for v in widget.value %}
-        <option value="{{ v }}" selected></option>
-      {% endfor %}
-    </select>
+    <input type="hidden" name="{{ widget.name }}" id="id_{{ widget.name }}" value="{% if widget.value %}{{ widget.value|join:"," }}{% endif %}">
   </div>
 
   <div class="grid-2" style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start;">
@@ -55,7 +51,7 @@ Context:
   const addAllBtn = root.querySelector('.sp-add-all');
   const clearAllBtn = root.querySelector('.sp-clear-all');
   const clearSearchBtn = root.querySelector('.sp-clear-search');
-  const selectEl = root.querySelector('select[multiple]');
+  const hiddenInputEl = root.querySelector('input[type="hidden"]');
 
   // Initial selected list provided by form
   let selected = [];
@@ -76,16 +72,10 @@ Context:
     return s;
   }
 
-  function syncHiddenSelect(){
-    // Rebuild <select> options with selected ids (labels not needed for submission)
-    selectEl.innerHTML = '';
-    selected.forEach(x => {
-      const opt = document.createElement('option');
-      opt.value = String(x.id);
-      opt.selected = true;
-      opt.textContent = x.ticker || x.name || String(x.id);
-      selectEl.appendChild(opt);
-    });
+  function syncHiddenValue(){
+    if (hiddenInputEl) {
+      hiddenInputEl.value = selected.map(x => String(x.id)).join(',');
+    }
     countEl.textContent = `(${selected.length})`;
   }
 
@@ -113,7 +103,7 @@ Context:
         btn.textContent = 'Retirer';
         btn.addEventListener('click', () => {
           selected = selected.filter(y => String(y.id) !== String(x.id));
-          syncHiddenSelect();
+          syncHiddenValue();
           renderSelected();
           // Refresh available list if a search is active
           if ((searchEl.value || '').trim().length > 0) doSearch(searchEl.value.trim());
@@ -127,7 +117,7 @@ Context:
   function renderAvailable(results){
     availableEl.innerHTML = '';
     if (!results || results.length === 0){
-      availableEl.innerHTML = '<div class="muted" style="padding:6px;">Aucun résultat.</div>';
+      availableEl.innerHTML = '<div class="muted" style="padding:6px;">Aucun résultat. Tape un ticker, un nom, un secteur, ou colle une liste comme AAPL,MSFT,NVDA.</div>';
       return;
     }
     const selSet = selectedIdsSet();
@@ -154,7 +144,7 @@ Context:
         btn.textContent = 'Ajouter';
         btn.addEventListener('click', () => {
           selected.push(x);
-          syncHiddenSelect();
+          syncHiddenValue();
           renderSelected();
           btn.disabled = true;
           btn.textContent = 'Ajouté';
@@ -172,7 +162,7 @@ Context:
     const isList = tokens.length >= 2 || (tokens.length === 1 && tokens[0].length >= 2 && q.includes(','));
     const params = new URLSearchParams();
     params.set('q', q);
-    params.set('limit', '50');
+    params.set('limit', isList ? '500' : '50');
     params.set('exclude', Array.from(selectedIdsSet()).join(','));
     const url = searchUrl ? `${searchUrl}?${params.toString()}` : `/symbols/search/?${params.toString()}`;
 
@@ -193,7 +183,7 @@ Context:
     (lastResults || []).forEach(x => {
       if (!selSet.has(String(x.id))) selected.push(x);
     });
-    syncHiddenSelect();
+    syncHiddenValue();
     renderSelected();
     // refresh available so buttons show "Ajouté"
     renderAvailable(lastResults);
@@ -201,7 +191,7 @@ Context:
 
   clearAllBtn.addEventListener('click', () => {
     selected = [];
-    syncHiddenSelect();
+    syncHiddenValue();
     renderSelected();
     // refresh available
     if ((searchEl.value || '').trim().length > 0) doSearch(searchEl.value.trim());
@@ -238,7 +228,7 @@ Context:
   if (ds){
     try{ selected = JSON.parse(ds); }catch(e){}
   }
-  syncHiddenSelect();
+  syncHiddenValue();
   renderSelected();
 })();
 </script>

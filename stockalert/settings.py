@@ -1,4 +1,5 @@
 import os
+import sys
 from pathlib import Path
 
 from celery.schedules import crontab
@@ -77,16 +78,30 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "stockalert.wsgi.application"
 
-DATABASES = {
-    "default": {
-        "ENGINE": "django.db.backends.postgresql",
-        "NAME": os.getenv("POSTGRES_DB", "stockalert"),
-        "USER": os.getenv("POSTGRES_USER", "stockalert"),
-        "PASSWORD": os.getenv("POSTGRES_PASSWORD", "stockalert"),
-        "HOST": os.getenv("POSTGRES_HOST", "db"),
-        "PORT": os.getenv("POSTGRES_PORT", "5432"),
+TESTING = any(arg in sys.argv for arg in ["test", "pytest"])
+USE_SQLITE_FOR_TESTS = os.getenv("DJANGO_TEST_USE_SQLITE", "1") == "1"
+
+if TESTING and USE_SQLITE_FOR_TESTS:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": BASE_DIR / "test_db.sqlite3",
+        }
     }
-}
+else:
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.postgresql",
+            "NAME": os.getenv("POSTGRES_DB", "stockalert"),
+            "USER": os.getenv("POSTGRES_USER", "stockalert"),
+            "PASSWORD": os.getenv("POSTGRES_PASSWORD", "stockalert"),
+            "HOST": os.getenv("POSTGRES_HOST", "db"),
+            "PORT": os.getenv("POSTGRES_PORT", "5432"),
+        }
+    }
+
+if TESTING and USE_SQLITE_FOR_TESTS:
+    MIGRATION_MODULES = {"core": None}
 
 AUTH_PASSWORD_VALIDATORS = [
     {"NAME": "django.contrib.auth.password_validation.UserAttributeSimilarityValidator"},
