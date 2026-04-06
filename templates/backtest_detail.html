@@ -183,10 +183,10 @@
     {% if bt.universe_snapshot %}
       <div class="card" style="max-height:420px; overflow:auto;">
         <table class="table">
-          <thead><tr><th>Ticker</th><th>Exchange</th></tr></thead>
+          <thead><tr><th>Ticker</th><th>Exchange</th><th>Secteur</th></tr></thead>
           <tbody>
             {% for s in bt.universe_snapshot %}
-              <tr><td>{{ s.ticker }}</td><td>{{ s.exchange }}</td></tr>
+              <tr><td>{{ s.ticker }}</td><td>{{ s.exchange }}</td><td>{{ s.sector|default:"" }}</td></tr>
             {% endfor %}
           </tbody>
         </table>

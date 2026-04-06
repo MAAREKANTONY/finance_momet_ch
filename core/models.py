@@ -14,6 +14,7 @@ class Symbol(models.Model):
     instrument_type = models.CharField(max_length=64, blank=True, default="")
     country = models.CharField(max_length=64, blank=True, default="")
     currency = models.CharField(max_length=16, blank=True, default="")
+    sector = models.CharField(max_length=120, blank=True, default="")
     active = models.BooleanField(default=True)
 
     class Meta:

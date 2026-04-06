@@ -23,6 +23,7 @@
       <input type="hidden" name="instrument_type" id="f_instrument_type">
       <input type="hidden" name="country" id="f_country">
       <input type="hidden" name="currency" id="f_currency">
+      <input type="hidden" name="sector" id="f_sector">
     </form>
   </div>
 
@@ -39,13 +40,14 @@
 <div class="card">
   <h3>Liste</h3>
   <table>
-    <thead><tr><th>Ticker</th><th>Exchange</th><th>Nom</th><th>Type</th><th>Actif</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Ticker</th><th>Exchange</th><th>Nom</th><th>Secteur</th><th>Type</th><th>Actif</th><th>Actions</th></tr></thead>
     <tbody>
       {% for s in symbols %}
         <tr>
           <td><strong>{{ s.ticker }}</strong></td>
           <td>{{ s.exchange }}</td>
           <td class="muted">{{ s.name }}</td>
+          <td>{{ s.sector|default:"" }}</td>
           <td>{{ s.instrument_type }}</td>
           <td>{% if s.active %}✅{% else %}—{% endif %}</td>
           <td>
@@ -61,7 +63,7 @@
           </td>
         </tr>
       {% empty %}
-        <tr><td colspan="6" class="muted">Aucun ticker</td></tr>
+        <tr><td colspan="7" class="muted">Aucun ticker</td></tr>
       {% endfor %}
     </tbody>
   </table>
@@ -88,8 +90,8 @@ async function doSearch(q){
     return;
   }
   results.innerHTML = items.map((it) => {
-    const line1 = `<strong>${esc(it.symbol)}</strong> ${it.exchange ? `<span class="pill">${esc(it.exchange)}</span>` : ""} ${it.instrument_type ? `<span class="pill">${esc(it.instrument_type)}</span>` : ""}`;
-    const line2 = `${esc(it.name || "")}`;
+    const line1 = `<strong>${esc(it.symbol)}</strong> ${it.exchange ? `<span class="pill">${esc(it.exchange)}</span>` : ""} ${it.instrument_type ? `<span class="pill">${esc(it.instrument_type)}</span>` : ""} ${it.sector ? `<span class="pill">${esc(it.sector)}</span>` : ""}`;
+    const line2 = `${esc(it.name || "")}${it.country ? ` — ${esc(it.country)}` : ""}`;
     return `<div class="card" style="padding:10px; border-radius:10px; margin-top:8px;">
       <div>${line1}</div>
       <div class="muted">${line2}</div>
@@ -105,6 +107,7 @@ function addSymbol(it){
   document.getElementById("f_instrument_type").value = it.instrument_type || "";
   document.getElementById("f_country").value = it.country || "";
   document.getElementById("f_currency").value = it.currency || "";
+  document.getElementById("f_sector").value = it.sector || "";
   document.getElementById("addFromSearch").submit();
 }
 

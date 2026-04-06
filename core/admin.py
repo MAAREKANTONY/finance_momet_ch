@@ -16,9 +16,9 @@ from .models import (
 
 @admin.register(Symbol)
 class SymbolAdmin(admin.ModelAdmin):
-    list_display = ("ticker", "exchange", "name", "instrument_type", "active")
-    list_filter = ("active", "exchange", "instrument_type")
-    search_fields = ("ticker", "name", "exchange")
+    list_display = ("ticker", "exchange", "name", "sector", "instrument_type", "active")
+    list_filter = ("active", "exchange", "instrument_type", "sector")
+    search_fields = ("ticker", "name", "exchange", "sector")
 
 @admin.register(Scenario)
 class ScenarioAdmin(admin.ModelAdmin):

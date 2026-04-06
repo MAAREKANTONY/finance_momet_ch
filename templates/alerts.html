@@ -13,10 +13,10 @@
 
       <div>
         <label class="muted">Action (ticker)</label><br/>
-        <input type="text" name="ticker" list="tickersList" placeholder="TSLA" value="{{ selected_ticker }}">
+        <input type="text" name="ticker" list="tickersList" placeholder="TSLA / Technology" value="{{ selected_ticker }}">
         <datalist id="tickersList">
           {% for s in symbols %}
-            <option value="{{ s.ticker }}"></option>
+            <option value="{{ s.ticker }}" label="{{ s.ticker }}{% if s.exchange %} — {{ s.exchange }}{% endif %}{% if s.sector %} — {{ s.sector }}{% endif %}"></option>
           {% endfor %}
         </datalist>
       </div>

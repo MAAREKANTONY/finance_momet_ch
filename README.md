@@ -342,3 +342,39 @@ TWELVEDATA_MAX_RETRIES=3
 
 This keeps a safety margin below a 377 calls/minute plan and allows large full
 fetches to span multiple minutes without hard failures.
+
+
+## Accès base PostgreSQL
+
+### Option 1 — Adminer embarqué dans Docker
+
+Un service **Adminer** est inclus dans `docker-compose.yml` et `docker-compose.prod.yml`.
+
+- URL locale: `http://localhost:8081`
+- System: `PostgreSQL`
+- Server: `db`
+- Username: valeur de `POSTGRES_USER`
+- Password: valeur de `POSTGRES_PASSWORD`
+- Database: valeur de `POSTGRES_DB`
+
+Sur un serveur distant, expose le port `8081` seulement si nécessaire et idéalement derrière un accès restreint ou un tunnel SSH.
+
+### Option 2 — DBeaver
+
+Depuis la machine hôte, connecte-toi avec:
+
+- Host: `127.0.0.1`
+- Port: `5432` si le port PostgreSQL est publié, sinon utilise un tunnel SSH
+- Database: valeur de `POSTGRES_DB`
+- User: valeur de `POSTGRES_USER`
+- Password: valeur de `POSTGRES_PASSWORD`
+
+Si PostgreSQL n'est pas exposé publiquement dans Docker Compose, la méthode recommandée est un tunnel SSH, par exemple:
+
+`ssh -L 55432:127.0.0.1:5432 user@server`
+
+Puis dans DBeaver:
+
+- Host: `127.0.0.1`
+- Port: `55432`
+

@@ -4,3 +4,9 @@ V7.0.55
 - Uses results_offload.load_daily_from_line() in backtest_results global line aggregation.
 - Adds safe fallback on final["N"] > 0 when daily actions are unavailable.
 - No business-engine change; UI/result aggregation fix only.
+
+V7.0.56
+- add Symbol.sector field (optional string)
+- expose sector in tickers UI, alerts filter labels, universe/scenario/study pickers and backtest universe snapshot
+- symbol import supports optional sector column
+- add Adminer service for PostgreSQL access in docker-compose

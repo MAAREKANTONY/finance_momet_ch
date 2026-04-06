@@ -18,7 +18,7 @@ Context:
     <div class="card" style="padding: 10px;">
       <div style="display:flex; gap:8px; align-items:center; margin-bottom:8px;">
         <strong>Disponibles</strong>
-        <input type="text" class="sp-search" placeholder="Rechercher (ticker, nom)…" style="flex:1; min-width:120px;">
+        <input type="text" class="sp-search" placeholder="Rechercher (ticker, nom, secteur, exchange)…" style="flex:1; min-width:120px;">
       </div>
       <div class="muted" style="margin-bottom:8px;">
         Astuce: tu peux coller une liste (AAPL, MSFT, NVDA) et appuyer Entrée.
@@ -104,7 +104,7 @@ Context:
         row.style.borderBottom = '1px solid #eee';
 
         const label = document.createElement('div');
-        label.innerHTML = `<strong>${escapeHtml(x.ticker || '')}</strong> <span class="muted">${escapeHtml(x.name || '')}</span>`;
+        label.innerHTML = `<strong>${escapeHtml(x.ticker || '')}</strong> <span class="muted">${escapeHtml(x.name || '')}${x.exchange ? ' — ' + escapeHtml(x.exchange) : ''}${x.sector ? ' — ' + escapeHtml(x.sector) : ''}</span>`;
         row.appendChild(label);
 
         const btn = document.createElement('button');
@@ -141,7 +141,7 @@ Context:
       row.style.borderBottom='1px solid #eee';
 
       const label = document.createElement('div');
-      label.innerHTML = `<strong>${escapeHtml(x.ticker || '')}</strong> <span class="muted">${escapeHtml(x.name || '')}</span>`;
+      label.innerHTML = `<strong>${escapeHtml(x.ticker || '')}</strong> <span class="muted">${escapeHtml(x.name || '')}${x.exchange ? ' — ' + escapeHtml(x.exchange) : ''}${x.sector ? ' — ' + escapeHtml(x.sector) : ''}</span>`;
       row.appendChild(label);
 
       const btn = document.createElement('button');

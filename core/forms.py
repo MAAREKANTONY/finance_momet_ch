@@ -197,7 +197,12 @@ class ScenarioForm(forms.ModelForm):
         # Make the option label searchable (ticker + exchange + name)
         def _label(sym: Symbol) -> str:
             base = f"{sym.ticker}{(':'+sym.exchange) if sym.exchange else ''}"
-            return f"{base} — {sym.name}" if sym.name else base
+            extras = []
+            if sym.name:
+                extras.append(sym.name)
+            if getattr(sym, "sector", ""):
+                extras.append(f"Secteur: {sym.sector}")
+            return f"{base} — {' | '.join(extras)}" if extras else base
 
         self.fields["symbols"].label_from_instance = _label
         if self.instance.pk:
@@ -236,7 +241,12 @@ class UniverseForm(forms.ModelForm):
 
             def _label(sym: Symbol) -> str:
                 base = f"{sym.ticker}{(':'+sym.exchange) if sym.exchange else ''}"
-                return f"{base} — {sym.name}" if sym.name else base
+                extras = []
+                if sym.name:
+                    extras.append(sym.name)
+                if getattr(sym, "sector", ""):
+                    extras.append(f"Secteur: {sym.sector}")
+                return f"{base} — {' | '.join(extras)}" if extras else base
 
             self.fields["symbols"].label_from_instance = _label
 
@@ -383,6 +393,17 @@ class StudyScenarioForm(forms.ModelForm):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
+
+        def _label(sym: Symbol) -> str:
+            base = f"{sym.ticker}{(':'+sym.exchange) if sym.exchange else ''}"
+            extras = []
+            if sym.name:
+                extras.append(sym.name)
+            if getattr(sym, "sector", ""):
+                extras.append(f"Secteur: {sym.sector}")
+            return f"{base} — {' | '.join(extras)}" if extras else base
+
+        self.fields["symbols"].label_from_instance = _label
         if self.instance.pk:
             self.fields["symbols"].initial = self.instance.symbols.all()
 
@@ -402,7 +423,7 @@ class SymbolManualForm(forms.ModelForm):
 
     class Meta:
         model = Symbol
-        fields = ["ticker", "exchange", "name", "instrument_type", "country", "currency", "active", "scenarios"]
+        fields = ["ticker", "exchange", "name", "instrument_type", "country", "currency", "sector", "active", "scenarios"]
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

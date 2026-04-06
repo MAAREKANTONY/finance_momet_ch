@@ -85,9 +85,9 @@ def _refresh_backtest_universe_snapshot(bt: Backtest) -> None:
     symbols = (
         bt.scenario.symbols.all()
         .order_by("ticker", "exchange")
-        .values_list("ticker", "exchange")
+        .values_list("ticker", "exchange", "sector")
     )
-    bt.universe_snapshot = [{"ticker": t, "exchange": e} for t, e in symbols]
+    bt.universe_snapshot = [{"ticker": t, "exchange": e, "sector": s} for t, e, s in symbols]
     bt.save(update_fields=["universe_snapshot", "updated_at"])
 
 
@@ -386,6 +386,7 @@ def symbol_add(request):
     instrument_type = (request.POST.get("instrument_type") or "").strip()
     country = (request.POST.get("country") or "").strip()
     currency = (request.POST.get("currency") or "").strip()
+    sector = (request.POST.get("sector") or "").strip()
 
     default_scenario = Scenario.objects.filter(is_default=True, active=True).first()
 
@@ -398,6 +399,7 @@ def symbol_add(request):
                 "instrument_type": instrument_type,
                 "country": country,
                 "currency": currency,
+                "sector": sector,
                 "active": True,
             },
         )
@@ -407,6 +409,7 @@ def symbol_add(request):
                 instrument_type=instrument_type or obj.instrument_type,
                 country=country or obj.country,
                 currency=currency or obj.currency,
+                sector=sector or obj.sector,
                 active=True,
             )
 
@@ -520,6 +523,7 @@ def _iter_symbol_rows_from_csv(file_obj) -> Iterable[dict]:
         "ticker", "code", "ticker code", "ticker_code",
         "exchange", "market", "ticker market", "ticker_market",
         "scenario", "scenarios", "scenario list", "scenario_list",
+        "sector",
     }
     looks_like_header = any(any(k in cell for k in header_keywords) for cell in norm)
 
@@ -583,7 +587,7 @@ def _iter_symbol_rows_from_xlsx(file_obj) -> Iterable[dict]:
 
     first_norm = [str(h).strip().lower() if h is not None else "" for h in first]
     header_keywords = (
-        "ticker", "code", "exchange", "market", "scenario"
+        "ticker", "code", "exchange", "market", "scenario", "sector"
     )
     looks_like_header = any(any(k in cell for k in header_keywords) for cell in first_norm)
 
@@ -658,6 +662,7 @@ def symbols_import(request):
                 ticker = _get(row, "ticker code", "ticker", "code", "ticker_code")
                 market = _get(row, "ticker market", "market", "exchange", "ticker_market")
                 scen_list = _get(row, "scenario list", "scenarios", "scenario", "scenario_list")
+                sector = _get(row, "sector", "industry", "business sector")
 
                 if not ticker:
                     skipped += 1
@@ -667,15 +672,21 @@ def symbols_import(request):
                     sym, was_created = Symbol.objects.get_or_create(
                         ticker=ticker,
                         exchange=market,
-                        defaults={"active": True},
+                        defaults={"active": True, "sector": sector},
                     )
                     if was_created:
                         created += 1
                     else:
                         updated += 1
+                        updated_fields = []
                         if not sym.active:
                             sym.active = True
-                            sym.save(update_fields=["active"])
+                            updated_fields.append("active")
+                        if sector and sector != sym.sector:
+                            sym.sector = sector
+                            updated_fields.append("sector")
+                        if updated_fields:
+                            sym.save(update_fields=updated_fields)
 
                     selected_scenarios: list[Scenario] = []
                     if default_scenario:
@@ -2426,17 +2437,18 @@ def _build_backtest_workbook_full(bt):
 
     # --- Universe (snapshot) ---
     ws_u = wb.create_sheet("Universe")
-    ws_u.append(["Ticker", "Exchange"])
+    ws_u.append(["Ticker", "Exchange", "Sector"])
     ws_u["A1"].font = Font(bold=True)
     ws_u["B1"].font = Font(bold=True)
+    ws_u["C1"].font = Font(bold=True)
 
     uni = bt.universe_snapshot or []
     if isinstance(uni, list):
         for item in uni:
             if isinstance(item, dict):
-                ws_u.append([item.get("ticker", ""), item.get("exchange", "")])
+                ws_u.append([item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
             else:
-                ws_u.append([str(item), ""]) 
+                ws_u.append([str(item), "", ""]) 
     _auto_width(ws_u)
 
     # --- Summary ---
@@ -2782,14 +2794,15 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
 
     # -------- Universe --------
     ws_u = wb.create_sheet("Universe")
-    ws_u.append(["Ticker", "Exchange"])
+    ws_u.append(["Ticker", "Exchange", "Sector"])
     ws_u["A1"].font = Font(bold=True)
     ws_u["B1"].font = Font(bold=True)
+    ws_u["C1"].font = Font(bold=True)
     uni = bt.universe_snapshot or []
     if isinstance(uni, list):
         for item in uni:
             if isinstance(item, dict):
-                ws_u.append([item.get("ticker", ""), item.get("exchange", "")])
+                ws_u.append([item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
             else:
                 ws_u.append([str(item), ""])
     _auto_width(ws_u)
@@ -3295,12 +3308,28 @@ def symbol_search(request: HttpRequest) -> JsonResponse:
     if q:
         # If user pastes multiple tickers, take first token for search endpoint.
         token = q.split(',')[0].strip()
-        qs = qs.filter(Q(ticker__icontains=token) | Q(name__icontains=token))
+        qs = qs.filter(
+            Q(ticker__icontains=token)
+            | Q(name__icontains=token)
+            | Q(exchange__icontains=token)
+            | Q(sector__icontains=token)
+            | Q(country__icontains=token)
+        )
     else:
         qs = qs.order_by('ticker')
 
-    qs = qs.only('id', 'ticker', 'name').order_by('ticker')[:limit]
-    data = [{'id': s.id, 'ticker': s.ticker, 'name': s.name} for s in qs]
+    qs = qs.only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker')[:limit]
+    data = [
+        {
+            'id': s.id,
+            'ticker': s.ticker,
+            'name': s.name,
+            'exchange': s.exchange,
+            'sector': s.sector,
+            'country': s.country,
+        }
+        for s in qs
+    ]
     return JsonResponse(data, safe=False)
 
 # --- Game Scenarios (Scénario de Jeu) ---
