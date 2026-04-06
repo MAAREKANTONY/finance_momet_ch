@@ -11,6 +11,7 @@ urlpatterns = [
 
 
     path("symbols/search/", views.symbol_search, name="symbol_search"),
+    path("symbols/filter-preview/", views.symbol_filter_preview, name="symbol_filter_preview"),
 
     path("alerts/", views.alerts_table, name="alerts_table"),
     path("alerts/export.csv", views.alerts_export_csv, name="alerts_export_csv"),

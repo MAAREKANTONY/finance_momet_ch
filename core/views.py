@@ -763,6 +763,64 @@ def universes_page(request):
     return render(request, "universes_list.html", {"universes": universes})
 
 
+
+
+def _symbol_queryset_from_filters(*, active_only: bool = True, q: str = "", exchange: str = "", sector: str = ""):
+    qs = Symbol.objects.all()
+    if active_only:
+        qs = qs.filter(active=True)
+    q = (q or "").strip()
+    exchange = (exchange or "").strip()
+    sector = (sector or "").strip()
+    if exchange:
+        qs = qs.filter(exchange=exchange)
+    if sector:
+        qs = qs.filter(sector=sector)
+    if q:
+        qs = qs.filter(
+            Q(ticker__icontains=q)
+            | Q(name__icontains=q)
+            | Q(exchange__icontains=q)
+            | Q(sector__icontains=q)
+            | Q(country__icontains=q)
+        )
+    return qs
+
+
+def _serialize_symbol_items(symbols):
+    return [
+        {
+            "id": s.id,
+            "ticker": s.ticker,
+            "name": s.name or "",
+            "exchange": s.exchange or "",
+            "sector": s.sector or "",
+            "country": s.country or "",
+        }
+        for s in symbols
+    ]
+
+
+def _universe_form_context(*, form, mode: str, universe=None):
+    selected_symbols = []
+    if getattr(form, 'is_bound', False):
+        raw_ids = (form.data.get('symbols') or '').strip()
+        ids = [int(part) for part in raw_ids.split(',') if part.strip().isdigit()]
+        if ids:
+            selected_symbols = list(Symbol.objects.filter(id__in=ids).only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker', 'exchange'))
+    elif universe is not None and getattr(universe, 'pk', None):
+        selected_symbols = list(universe.symbols.only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker', 'exchange'))
+    exchanges = list(Symbol.objects.filter(active=True).exclude(exchange='').order_by('exchange').values_list('exchange', flat=True).distinct())
+    sectors = list(Symbol.objects.filter(active=True).exclude(sector='').order_by('sector').values_list('sector', flat=True).distinct())
+    return {
+        'form': form,
+        'mode': mode,
+        'universe': universe,
+        'selected_symbols_json': json.dumps(_serialize_symbol_items(selected_symbols)),
+        'exchanges': exchanges,
+        'sectors': sectors,
+    }
+
 @login_required
 def universe_create(request):
     if request.method == "POST":
@@ -777,7 +835,7 @@ def universe_create(request):
             return redirect("universes_page")
     else:
         form = UniverseForm()
-    return render(request, "universe_form.html", {"form": form, "mode": "create"})
+    return render(request, "universe_form.html", _universe_form_context(form=form, mode="create"))
 
 
 @login_required
@@ -791,7 +849,7 @@ def universe_edit(request, pk: int):
             return redirect("universes_page")
     else:
         form = UniverseForm(instance=universe)
-    return render(request, "universe_form.html", {"form": form, "mode": "edit", "universe": universe})
+    return render(request, "universe_form.html", _universe_form_context(form=form, mode="edit", universe=universe))
 
 
 @login_required
@@ -817,6 +875,29 @@ def universe_symbols_json(request, pk: int):
     ids = [s.id for s in symbols]
     items = [{"id": s.id, "ticker": s.ticker, "name": s.name, "exchange": s.exchange, "sector": s.sector, "country": s.country} for s in symbols]
     return JsonResponse({"universe_id": universe.id, "ids": ids, "symbols": items})
+
+
+@login_required
+def symbol_filter_preview(request: HttpRequest) -> JsonResponse:
+    q = (request.GET.get("q") or "").strip()
+    exchange = (request.GET.get("exchange") or "").strip()
+    sector = (request.GET.get("sector") or "").strip()
+    limit = int(request.GET.get("limit") or 200)
+    limit = max(1, min(limit, 500))
+    include_all = str(request.GET.get("include_all") or "0").strip() in {"1", "true", "yes"}
+
+    qs = _symbol_queryset_from_filters(q=q, exchange=exchange, sector=sector).only("id", "ticker", "name", "exchange", "sector", "country").order_by("ticker", "exchange")
+    total_count = qs.count()
+    if include_all:
+        symbols = list(qs)
+    else:
+        symbols = list(qs[:limit])
+    return JsonResponse({
+        "total_count": total_count,
+        "preview_count": len(symbols),
+        "filters": {"q": q, "exchange": exchange, "sector": sector},
+        "symbols": _serialize_symbol_items(symbols),
+    })
 
 
 # ---------------------------

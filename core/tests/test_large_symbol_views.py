@@ -132,3 +132,28 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertEqual(response.status_code, 302)
         study.refresh_from_db()
         self.assertEqual(study.scenario.symbols.count(), Symbol.objects.count())
+
+
+    def test_symbol_filter_preview_returns_total_and_preview(self):
+        response = self.client.get(reverse("symbol_filter_preview"), {"exchange": "NASDAQ", "sector": "Technology", "limit": 25})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        expected_total = Symbol.objects.filter(active=True, exchange="NASDAQ", sector="Technology").count()
+        self.assertEqual(payload["total_count"], expected_total)
+        self.assertLessEqual(payload["preview_count"], 25)
+        self.assertEqual(len(payload["symbols"]), payload["preview_count"])
+
+    def test_symbol_filter_preview_include_all_returns_full_population(self):
+        response = self.client.get(reverse("symbol_filter_preview"), {"exchange": "NYSE", "include_all": "1"})
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        expected_total = Symbol.objects.filter(active=True, exchange="NYSE").count()
+        self.assertEqual(payload["total_count"], expected_total)
+        self.assertEqual(len(payload["symbols"]), expected_total)
+
+    def test_universe_form_renders_new_bulk_selection_ui(self):
+        response = self.client.get(reverse("universe_create"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Ajouter tous les résultats", body)
+        self.assertIn("Recherche dans la sélection", body)
