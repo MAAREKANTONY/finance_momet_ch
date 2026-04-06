@@ -5,14 +5,8 @@ Context:
 - widget.attrs.data_search_url : URL to fetch symbols (returns JSON list)
 {% endcomment %}
 
-<div class="symbol-picker-root" data-search-url="{{ widget.attrs.data_search_url|default:'' }}">
-  <div style="display:none">
-    <select name="{{ widget.name }}" id="id_{{ widget.name }}" multiple>
-      {% for v in widget.value %}
-        <option value="{{ v }}" selected></option>
-      {% endfor %}
-    </select>
-  </div>
+<div class="symbol-picker-root" data-search-url="{{ widget.attrs.data_search_url|default:'' }}" data-selected-json="{{ widget.attrs.data_selected_json|default:'[]'|escape }}">
+  <input type="hidden" name="{{ widget.name }}" id="id_{{ widget.name }}" value="{% if widget.value %}{{ widget.value|join:',' }}{% endif %}">
 
   <div class="grid-2" style="display:grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: start;">
     <div class="card" style="padding: 10px;">
@@ -55,7 +49,7 @@ Context:
   const addAllBtn = root.querySelector('.sp-add-all');
   const clearAllBtn = root.querySelector('.sp-clear-all');
   const clearSearchBtn = root.querySelector('.sp-clear-search');
-  const selectEl = root.querySelector('select[multiple]');
+  const hiddenInput = root.querySelector('input[type="hidden"]');
 
   // Initial selected list provided by form
   let selected = [];
@@ -77,15 +71,7 @@ Context:
   }
 
   function syncHiddenSelect(){
-    // Rebuild <select> options with selected ids (labels not needed for submission)
-    selectEl.innerHTML = '';
-    selected.forEach(x => {
-      const opt = document.createElement('option');
-      opt.value = String(x.id);
-      opt.selected = true;
-      opt.textContent = x.ticker || x.name || String(x.id);
-      selectEl.appendChild(opt);
-    });
+    if (hiddenInput) hiddenInput.value = selected.map(x => String(x.id)).join(',');
     countEl.textContent = `(${selected.length})`;
   }
 
@@ -122,6 +108,14 @@ Context:
 
         selectedEl.appendChild(row);
       });
+  }
+
+  function setSelectedItems(items){
+    selected = Array.isArray(items) ? items.slice() : [];
+    root.setAttribute('data-selected-json', JSON.stringify(selected));
+    syncHiddenSelect();
+    renderSelected();
+    if ((searchEl.value || '').trim().length > 0) doSearch(searchEl.value.trim());
   }
 
   function renderAvailable(results){
@@ -238,6 +232,7 @@ Context:
   if (ds){
     try{ selected = JSON.parse(ds); }catch(e){}
   }
+  root.symbolPickerSetSelected = setSelectedItems;
   syncHiddenSelect();
   renderSelected();
 })();

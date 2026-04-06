@@ -37,6 +37,7 @@ GLOBAL_REGIME_FILTER_CHOICES = [
 GLOBAL_REGIME_FILTER_CODES = {code for code, _label in GLOBAL_REGIME_FILTER_CHOICES}
 
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
+from .widgets import SymbolPickerWidget
 
 
 
@@ -156,11 +157,33 @@ class AlertDefinitionForm(forms.ModelForm):
             self.save_m2m()
         return obj
 
+
+
+def _symbol_picker_payload(symbols):
+    return json.dumps([
+        {
+            "id": s.id,
+            "ticker": s.ticker,
+            "name": s.name or "",
+            "exchange": s.exchange or "",
+            "sector": getattr(s, "sector", "") or "",
+            "country": getattr(s, "country", "") or "",
+        }
+        for s in symbols
+    ])
+
+
+def _configure_symbol_picker(field, selected_symbols):
+    field.widget = SymbolPickerWidget(attrs={
+        "data_search_url": "/symbols/search/",
+        "data_selected_json": _symbol_picker_payload(selected_symbols),
+    })
+
 class ScenarioForm(forms.ModelForm):
     symbols = forms.ModelMultipleChoiceField(
         queryset=Symbol.objects.none(),
         required=False,
-        widget=forms.SelectMultiple(attrs={"size": 20, "style": "width:100%;"}),
+        widget=SymbolPickerWidget(),
         help_text="Tickers associés à ce scénario (en plus du scénario par défaut si activé).",
     )
 
@@ -205,8 +228,10 @@ class ScenarioForm(forms.ModelForm):
             return f"{base} — {' | '.join(extras)}" if extras else base
 
         self.fields["symbols"].label_from_instance = _label
-        if self.instance.pk:
-            self.fields["symbols"].initial = self.instance.symbols.all()
+        selected_symbols = list(self.instance.symbols.all()) if self.instance.pk else []
+        if selected_symbols:
+            self.fields["symbols"].initial = selected_symbols
+        _configure_symbol_picker(self.fields["symbols"], selected_symbols)
 
 
 class UniverseForm(forms.ModelForm):
@@ -236,8 +261,6 @@ class UniverseForm(forms.ModelForm):
         if "symbols" in self.fields:
             self.fields["symbols"].required = False
             self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
-            self.fields["symbols"].widget.attrs.setdefault("size", 20)
-            self.fields["symbols"].widget.attrs.setdefault("style", "width:100%;")
 
             def _label(sym: Symbol) -> str:
                 base = f"{sym.ticker}{(':'+sym.exchange) if sym.exchange else ''}"
@@ -249,6 +272,10 @@ class UniverseForm(forms.ModelForm):
                 return f"{base} — {' | '.join(extras)}" if extras else base
 
             self.fields["symbols"].label_from_instance = _label
+            selected_symbols = list(self.instance.symbols.all()) if self.instance.pk else []
+            if selected_symbols:
+                self.fields["symbols"].initial = selected_symbols
+            _configure_symbol_picker(self.fields["symbols"], selected_symbols)
 
 
 class StudyCreateForm(forms.Form):
@@ -363,7 +390,7 @@ class StudyScenarioForm(forms.ModelForm):
     symbols = forms.ModelMultipleChoiceField(
         queryset=Symbol.objects.none(),
         required=False,
-        widget=forms.SelectMultiple(attrs={"size": 12, "style": "width:100%;"}),
+        widget=SymbolPickerWidget(),
         label="Tickers",
         help_text="Tickers associés à cette Study.",
     )
@@ -404,8 +431,10 @@ class StudyScenarioForm(forms.ModelForm):
             return f"{base} — {' | '.join(extras)}" if extras else base
 
         self.fields["symbols"].label_from_instance = _label
-        if self.instance.pk:
-            self.fields["symbols"].initial = self.instance.symbols.all()
+        selected_symbols = list(self.instance.symbols.all()) if self.instance.pk else []
+        if selected_symbols:
+            self.fields["symbols"].initial = selected_symbols
+        _configure_symbol_picker(self.fields["symbols"], selected_symbols)
 
 
 class EmailRecipientForm(forms.ModelForm):
@@ -417,7 +446,7 @@ class SymbolManualForm(forms.ModelForm):
     scenarios = forms.ModelMultipleChoiceField(
         queryset=Scenario.objects.none(),
         required=False,
-        widget=forms.SelectMultiple(attrs={"size": 12, "style": "width:100%;"}),
+        widget=SymbolPickerWidget(),
         help_text="Scénarios associés à ce ticker (le scénario par défaut sera ajouté automatiquement).",
     )
 
@@ -448,7 +477,7 @@ class SymbolScenariosForm(forms.Form):
     scenarios = forms.ModelMultipleChoiceField(
         queryset=Scenario.objects.filter(active=True),
         required=False,
-        widget=forms.SelectMultiple(attrs={"size": 12, "style": "width:100%;"}),
+        widget=SymbolPickerWidget(),
         label="Scénarios",
     )
 

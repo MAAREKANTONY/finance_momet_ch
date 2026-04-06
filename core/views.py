@@ -813,8 +813,10 @@ def universe_symbols_json(request, pk: int):
     (works for both create & edit forms, without requiring the Scenario to exist yet).
     """
     universe = get_object_or_404(Universe, pk=pk)
-    ids = list(universe.symbols.values_list("id", flat=True))
-    return JsonResponse({"universe_id": universe.id, "ids": ids})
+    symbols = list(universe.symbols.only("id", "ticker", "name", "exchange", "sector", "country").order_by("ticker"))
+    ids = [s.id for s in symbols]
+    items = [{"id": s.id, "ticker": s.ticker, "name": s.name, "exchange": s.exchange, "sector": s.sector, "country": s.country} for s in symbols]
+    return JsonResponse({"universe_id": universe.id, "ids": ids, "symbols": items})
 
 
 # ---------------------------

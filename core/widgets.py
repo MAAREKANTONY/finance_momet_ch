@@ -22,14 +22,16 @@ class SymbolPickerWidget(forms.Widget):
         super().__init__(base)
 
     def value_from_datadict(self, data, files, name):
-        # We use a hidden <select multiple name="..."> so Django will pass a list.
-        # But some browsers may submit a single string; normalize to list.
-        v = data.getlist(name) if hasattr(data, "getlist") else data.get(name)
-        if v is None:
+        # Single hidden input carrying a CSV list of selected IDs.
+        raw = data.get(name) if hasattr(data, "get") else None
+        if raw in (None, ""):
             return []
-        if isinstance(v, str):
-            return [x for x in v.split(",") if x.strip()]
-        return v
+        if isinstance(raw, str):
+            return [x.strip() for x in raw.split(",") if x.strip()]
+        try:
+            return [str(x).strip() for x in raw if str(x).strip()]
+        except TypeError:
+            return []
 
     def format_value(self, value: Any):
         if value is None:
