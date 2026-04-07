@@ -193,3 +193,36 @@ class LargeSymbolFormViewTests(TestCase):
         for sym in selected:
             self.assertIn(sym.ticker, body)
         self.assertIn('server-selected-bootstrap', body)
+
+
+class SymbolCsvSubmissionRegressionTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.symbols = [Symbol.objects.create(ticker=f"TK{i}", exchange="NASDAQ", active=True) for i in range(1,4)]
+
+    def test_universe_create_accepts_csv_symbols_once(self):
+        resp = self.client.post("/universes/new/", {
+            "name": "U CSV",
+            "description": "",
+            "active": "on",
+            "symbols": ",".join(str(s.id) for s in self.symbols),
+        }, follow=True)
+        self.assertNotContains(resp, "n’est pas une valeur correcte", status_code=200)
+        u = Universe.objects.get(name="U CSV")
+        self.assertEqual(set(u.symbols.values_list("id", flat=True)), {s.id for s in self.symbols})
+
+    def test_scenario_create_accepts_csv_symbols_once(self):
+        payload = {
+            "name": "S CSV",
+            "description": "",
+            "is_default": "",
+            "a": 1, "b": 1, "c": 1, "d": 1, "e": "0.01",
+            "n1": 20, "n2": 50, "npente": 100, "slope_threshold": "0",
+            "npente_basse": 20, "slope_threshold_basse": "0",
+            "nglobal": 20, "history_years": 10, "active": "on",
+            "symbols": ",".join(str(s.id) for s in self.symbols),
+        }
+        resp = self.client.post("/scenarios/new/", payload, follow=True)
+        self.assertNotContains(resp, "n’est pas une valeur correcte", status_code=200)
+        scenario = Scenario.objects.get(name="S CSV")
+        self.assertEqual(set(scenario.symbols.values_list("id", flat=True)), {s.id for s in self.symbols})
