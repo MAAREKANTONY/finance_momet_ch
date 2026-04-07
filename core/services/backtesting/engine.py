@@ -359,6 +359,100 @@ def _build_global_momentum_values_from_ticker_data(data_by_ticker: dict[str, dic
     )
 
 
+
+
+def _preload_backtest_ticker_data(*, symbols: list[Symbol], scenario_id: int, fetch_start_d, end_d, include_compact_extras: bool = True) -> tuple[dict[str, dict[str, Any]], set[date]]:
+    """Bulk-preload bars / metrics / alerts for a set of symbols.
+
+    This avoids 3*N queryset loops when a scenario/backtest contains thousands of
+    tickers. Returned structure intentionally matches the legacy per-ticker shape
+    so downstream engine logic stays unchanged.
+    """
+    data_by_ticker: dict[str, dict[str, Any]] = {}
+    all_dates: set[date] = set()
+    if not symbols:
+        return data_by_ticker, all_dates
+
+    symbol_ids = [s.id for s in symbols]
+    ticker_by_symbol_id = {s.id: s.ticker for s in symbols}
+
+    for s in symbols:
+        data_by_ticker[s.ticker] = {
+            "symbol_id": s.id,
+            "price_by_date": {},
+            "metrics": {},
+            "alerts": {},
+        }
+
+    bars_rows = DailyBar.objects.filter(
+        symbol_id__in=symbol_ids,
+        date__gte=fetch_start_d,
+        date__lte=end_d,
+    ).order_by("symbol_id", "date").values("symbol_id", "date", "close")
+    for row in bars_rows:
+        ticker = ticker_by_symbol_id.get(row["symbol_id"])
+        if not ticker:
+            continue
+        d = row["date"]
+        data_by_ticker[ticker]["price_by_date"][d] = row.get("close")
+        all_dates.add(d)
+
+    metric_fields = ["symbol_id", "date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4", "P"]
+    if include_compact_extras:
+        metric_fields.extend(["Kf2bis", "sum_slope", "slope_vrai", "sum_slope_basse", "slope_vrai_basse"])
+    metrics_rows = DailyMetric.objects.filter(
+        symbol_id__in=symbol_ids,
+        scenario_id=scenario_id,
+        date__gte=fetch_start_d,
+        date__lte=end_d,
+    ).order_by("symbol_id", "date").values(*metric_fields)
+    for row in metrics_rows:
+        ticker = ticker_by_symbol_id.get(row["symbol_id"])
+        if not ticker:
+            continue
+        if include_compact_extras:
+            payload = (
+                row.get("ratio_P"),
+                row.get("K1"),
+                row.get("K1f"),
+                row.get("K2f"),
+                row.get("K2"),
+                row.get("K3"),
+                row.get("K4"),
+                row.get("P"),
+                row.get("Kf2bis"),
+                row.get("sum_slope"),
+                row.get("slope_vrai"),
+                row.get("sum_slope_basse"),
+                row.get("slope_vrai_basse"),
+            )
+        else:
+            payload = (
+                row.get("ratio_P"),
+                row.get("K1"),
+                row.get("K1f"),
+                row.get("K2f"),
+                row.get("K2"),
+                row.get("K3"),
+                row.get("K4"),
+                row.get("P"),
+            )
+        data_by_ticker[ticker]["metrics"][row["date"]] = payload
+
+    alerts_rows = Alert.objects.filter(
+        symbol_id__in=symbol_ids,
+        scenario_id=scenario_id,
+        date__gte=fetch_start_d,
+        date__lte=end_d,
+    ).order_by("symbol_id", "date").values("symbol_id", "date", "alerts")
+    for row in alerts_rows:
+        ticker = ticker_by_symbol_id.get(row["symbol_id"])
+        if not ticker:
+            continue
+        data_by_ticker[ticker]["alerts"][row["date"]] = _alerts_set(row["alerts"])
+
+    data_by_ticker = {ticker: payload for ticker, payload in data_by_ticker.items() if payload["price_by_date"]}
+    return data_by_ticker, all_dates
 def _build_global_momentum_regime_from_values(
     values_by_date: dict[date, Decimal | None],
 ) -> dict[date, str]:
@@ -423,80 +517,23 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     warmup_days = int(getattr(backtest, "warmup_days", 0) or 0)
     fetch_start_d = (start_d - timedelta(days=warmup_days)) if (start_d and warmup_days > 0) else start_d
 
-    # NOTE (performance/memory):
-    # For large universes (e.g. 500+ tickers over ~10y daily), fully materializing
-    # per-day objects (Decimal + nested dicts) can blow up RAM and trigger OOM kills
-    # in Celery workers.
-    #
-    # To keep results identical while reducing memory:
-    # - store close/metric values in compact tuples (raw values) instead of nested dicts
-    # - convert to Decimal only when the value is actually used
-    data_by_ticker: dict[str, dict[str, Any]] = {}
-    all_dates: set = set()
+    # NOTE (performance/memory): for large universes we bulk-preload bars / metrics /
+    # alerts in 3 queries instead of doing 3 queries per ticker. The in-memory
+    # structure remains backward compatible with the legacy engine logic.
+    missing_tickers = [ticker for ticker in tickers if ticker not in sym_by_ticker]
+    for ticker in missing_tickers:
+        logs.append(f"Ticker {ticker} not found/active; skipped.")
 
+    data_by_ticker, all_dates = _preload_backtest_ticker_data(
+        symbols=list(sym_by_ticker.values()),
+        scenario_id=backtest.scenario_id,
+        fetch_start_d=fetch_start_d,
+        end_d=end_d,
+        include_compact_extras=True,
+    )
     for ticker in tickers:
-        sym = sym_by_ticker.get(ticker)
-        if not sym:
-            logs.append(f"Ticker {ticker} not found/active; skipped.")
-            continue
-
-        bars_qs = (
-            DailyBar.objects.filter(symbol=sym, date__gte=fetch_start_d, date__lte=end_d)
-            .order_by("date")
-            .values("date", "close")
-        )
-        # Materialize once (we still need to collect all dates for the engine),
-        # but keep values compact (avoid Decimal objects in memory).
-        bars = list(bars_qs)
-        if not bars:
+        if ticker in sym_by_ticker and ticker not in data_by_ticker:
             logs.append(f"No DailyBar data for {ticker} in range; skipped.")
-            continue
-
-        # Store close as raw (typically Decimal from ORM) to avoid huge Decimal object
-        # graphs in Python. We convert with Decimal(str(v)) only when used.
-        price_by_date: dict[date, Any] = {}
-        for b in bars:
-            d = b["date"]
-            all_dates.add(d)
-            price_by_date[d] = b.get("close")
-
-        # Metrics: store as compact tuples indexed by date to reduce memory.
-        # Tuple layout: (ratio_P, K1, K1f, K2f, K2, K3, K4, P, Kf2bis, sum_slope, slope_vrai, sum_slope_basse, slope_vrai_basse)
-        metrics: dict[date, tuple[Any, ...]] = {
-            m["date"]: (
-                m.get("ratio_P"),
-                m.get("K1"),
-                m.get("K1f"),
-                m.get("K2f"),
-                m.get("K2"),
-                m.get("K3"),
-                m.get("K4"),
-                m.get("P"),
-                m.get("Kf2bis"),
-                m.get("sum_slope"),
-                m.get("slope_vrai"),
-                m.get("sum_slope_basse"),
-                m.get("slope_vrai_basse"),
-            )
-            for m in DailyMetric.objects.filter(
-                symbol=sym,
-                scenario_id=backtest.scenario_id,
-                date__gte=fetch_start_d,
-                date__lte=end_d,
-            ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4", "P", "Kf2bis", "sum_slope", "slope_vrai", "sum_slope_basse", "slope_vrai_basse")
-        }
-        alerts = {
-            a["date"]: _alerts_set(a["alerts"])
-            for a in Alert.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=fetch_start_d, date__lte=end_d)
-            .values("date", "alerts")
-        }
-
-        data_by_ticker[ticker] = {
-            "symbol_id": sym.id,
-            "price_by_date": price_by_date,
-            "metrics": metrics,
-            "alerts": alerts,
-        }
 
     if not data_by_ticker:
         return BacktestEngineResult(results={"error": "No usable tickers with data in range."}, logs=logs)
@@ -1427,53 +1464,13 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
     warmup_days = int(getattr(backtest, "warmup_days", 0) or 0)
     fetch_start_d = (start_d - timedelta(days=warmup_days)) if (start_d and warmup_days > 0) else start_d
 
-    data_by_ticker: dict[str, dict[str, Any]] = {}
-    all_dates: set[date] = set()
-
-    for ticker in tickers:
-        sym = sym_by_ticker.get(ticker)
-        if not sym:
-            continue
-
-        bars = list(
-            DailyBar.objects.filter(symbol=sym, date__gte=fetch_start_d, date__lte=end_d)
-            .order_by("date")
-            .values("date", "close")
-        )
-        if not bars:
-            continue
-
-        price_by_date: dict[date, Any] = {}
-        for b in bars:
-            d = b["date"]
-            all_dates.add(d)
-            price_by_date[d] = b.get("close")
-
-        metrics: dict[date, tuple[Any, Any, Any, Any, Any, Any, Any, Any]] = {
-            m["date"]: (
-                m.get("ratio_P"),
-                m.get("K1"),
-                m.get("K1f"),
-                m.get("K2f"),
-                m.get("K2"),
-                m.get("K3"),
-                m.get("K4"),
-                m.get("P"),
-            )
-            for m in DailyMetric.objects.filter(
-                symbol=sym,
-                scenario_id=backtest.scenario_id,
-                date__gte=fetch_start_d,
-                date__lte=end_d,
-            ).values("date", "ratio_P", "K1", "K1f", "K2f", "K2", "K3", "K4", "P")
-        }
-        alerts = {
-            a["date"]: _alerts_set(a["alerts"])
-            for a in Alert.objects.filter(symbol=sym, scenario_id=backtest.scenario_id, date__gte=fetch_start_d, date__lte=end_d)
-            .values("date", "alerts")
-        }
-
-        data_by_ticker[ticker] = {"price_by_date": price_by_date, "metrics": metrics, "alerts": alerts}
+    data_by_ticker, all_dates = _preload_backtest_ticker_data(
+        symbols=list(sym_by_ticker.values()),
+        scenario_id=backtest.scenario_id,
+        fetch_start_d=fetch_start_d,
+        end_d=end_d,
+        include_compact_extras=False,
+    )
 
     if not data_by_ticker:
         return {}

@@ -28,35 +28,30 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     n1 = int(scenario.n1); n2 = int(scenario.n2)
 
     prior_P_for_M = list(prior_metrics.values_list("P", flat=True)[:n1])
-    if len(prior_P_for_M) < n1:
-        metric, _ = DailyMetric.objects.update_or_create(symbol=symbol, scenario=scenario, date=trading_date, defaults={"P": P})
-        return metric, None
+    M = X = M1 = X1 = T = Q = S = K1 = K2 = K3 = K4 = None
+    if len(prior_P_for_M) >= n1:
+        M = max(prior_P_for_M)
+        X = min(prior_P_for_M)
 
-    M = max(prior_P_for_M)
-    X = min(prior_P_for_M)
+        need_prior_m = max(0, n2 - 1)
+        prior_M = list(DailyMetric.objects.filter(symbol=symbol, scenario=scenario, date__lt=trading_date, M__isnull=False).order_by("-date").values_list("M", flat=True)[:need_prior_m])
+        prior_X = list(DailyMetric.objects.filter(symbol=symbol, scenario=scenario, date__lt=trading_date, X__isnull=False).order_by("-date").values_list("X", flat=True)[:need_prior_m])
 
-    prior_M = list(DailyMetric.objects.filter(symbol=symbol, scenario=scenario, date__lt=trading_date, M__isnull=False).order_by("-date").values_list("M", flat=True)[:n2])
-    prior_X = list(DailyMetric.objects.filter(symbol=symbol, scenario=scenario, date__lt=trading_date, X__isnull=False).order_by("-date").values_list("X", flat=True)[:n2])
+        m_window = [M] + prior_M
+        x_window = [X] + prior_X
+        if len(m_window) >= n2 and len(x_window) >= n2:
+            M1 = sum(m_window) / Decimal(len(m_window))
+            X1 = sum(x_window) / Decimal(len(x_window))
 
-    if len(prior_M) < n2 or len(prior_X) < n2:
-        metric, _ = DailyMetric.objects.update_or_create(symbol=symbol, scenario=scenario, date=trading_date, defaults={"P": P, "M": M, "X": X})
-        return metric, None
+            if e != 0:
+                T = (M1 - X1) / e
+                Q = M1 - T
+                S = M1 + T
 
-    M1 = sum(prior_M) / Decimal(len(prior_M))
-    X1 = sum(prior_X) / Decimal(len(prior_X))
-
-    if e == 0:
-        metric, _ = DailyMetric.objects.update_or_create(symbol=symbol, scenario=scenario, date=trading_date, defaults={"P": P, "M": M, "M1": M1, "X": X, "X1": X1})
-        return metric, None
-
-    T = (M1 - X1) / e
-    Q = M1 - T
-    S = M1 + T
-
-    K1 = P - M1
-    K2 = P - X1
-    K3 = P - Q
-    K4 = P - S
+                K1 = P - M1
+                K2 = P - X1
+                K3 = P - Q
+                K4 = P - S
 
     # SUM_SLOPE on study price P
     npente = int(getattr(scenario, "npente", 100) or 100)
@@ -88,7 +83,7 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
         prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:n2])
         prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
         p_series = prior_Ps + [D(P)]
-        if len(p_series) >= (n2 + 1):
+        if len(p_series) >= (n2 + 1) and M1 is not None and T is not None:
             vals_n2 = []
             for i in range(1, len(p_series[-(n2 + 1):])):
                 p0 = D(p_series[-(n2 + 1):][i - 1])
