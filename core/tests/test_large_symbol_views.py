@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from core.models import Scenario, Study, Symbol, Universe
+from core.models import Backtest, Scenario, Study, Symbol, Universe
 
 
 class LargeSymbolFormViewTests(TestCase):
@@ -229,3 +229,90 @@ class SymbolCsvSubmissionRegressionTests(TestCase):
         self.assertNotContains(resp, "n’est pas une valeur correcte", status_code=200)
         scenario = Scenario.objects.get(name="S CSV")
         self.assertEqual(set(scenario.symbols.values_list("id", flat=True)), {s.id for s in self.symbols})
+
+
+
+class BacktestResultsRenderTests(TestCase):
+    def setUp(self):
+        self.client = Client()
+        self.user = get_user_model().objects.create_user(username="btuser", password="secret123")
+        self.client.force_login(self.user)
+        self.symbol = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)
+        self.scenario = Scenario.objects.create(
+            name="Scenario Backtest View",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+
+    def test_backtest_results_renders_portfolio_kpis_and_legend_terms(self):
+        bt = Backtest.objects.create(
+            name="BT View",
+            scenario=self.scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            results={
+                "tickers": {
+                    self.symbol.ticker: {
+                        "lines": [{
+                            "line_index": 1,
+                            "buy": ["A1"],
+                            "sell": ["B1"],
+                            "allocated": "100",
+                            "daily": [],
+                            "final": {
+                                "N": 1,
+                                "S_G_N": "0.5",
+                                "BT": "0.5",
+                                "PNL_AMOUNT": "50",
+                                "FINAL_EQUITY": "150",
+                                "AVG_TRADE_AMOUNT": "50",
+                                "TOTAL_GAIN_AMOUNT": "50",
+                                "TOTAL_LOSS_AMOUNT": "0",
+                                "PROFIT_FACTOR_AMOUNT": None,
+                                "WIN_TRADES": 1,
+                                "LOSS_TRADES": 0,
+                                "WIN_RATE_AMOUNT": "100",
+                                "MAX_GAIN_AMOUNT": "50",
+                                "MAX_LOSS_AMOUNT": None,
+                                "NB_JOUR_OUVRES": 3,
+                                "BUY_DAYS_CLOSED": 2,
+                                "BMJ": "0.1",
+                                "BMD": "0.2",
+                            },
+                        }]
+                    }
+                },
+                "portfolio": {
+                    "kpi": {
+                        "TOTAL_PNL_AMOUNT": "50",
+                        "FINAL_EQUITY": "1050",
+                        "TOTAL_GAIN_AMOUNT": "50",
+                        "TOTAL_LOSS_AMOUNT": "0",
+                        "AVG_TRADE_AMOUNT": "50",
+                        "PROFIT_FACTOR_AMOUNT": None,
+                        "MAX_GAIN_AMOUNT": "50",
+                        "MAX_LOSS_AMOUNT": None,
+                        "TOTAL_TRADES": 1,
+                        "WIN_RATE_AMOUNT": "100",
+                        "max_drawdown_amount": "0",
+                    },
+                    "daily": [],
+                },
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Synthèse portefeuille globale", body)
+        self.assertIn("P&amp;L total", body)
+        self.assertIn("1050", body)
+        self.assertIn("TOTAL_PNL_AMOUNT", body)
+        self.assertIn("max_drawdown_amount", body)
