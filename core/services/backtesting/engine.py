@@ -602,6 +602,13 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "shares": 0,
                 "trade_count": 0,
                 "sum_g": Decimal("0"),
+                "pnl_amount_total": Decimal("0"),
+                "total_gain_amount": Decimal("0"),
+                "total_loss_amount": Decimal("0"),
+                "win_trades": 0,
+                "loss_trades": 0,
+                "max_gain_amount": None,
+                "max_loss_amount": None,
                 # Legacy counters historically shown as NB_JOUR_OUVRES / BUY_DAYS_CLOSED.
                 # They were poorly named in the UI. In V5.2.30 we introduce clearer names
                 # and ratios for the UI while keeping the underlying behaviour unchanged
@@ -641,6 +648,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     invested_total = Decimal("0")  # dynamic invested capital for CP infinite
     peak_equity: Decimal | None = None
     max_drawdown: Decimal = Decimal("0")
+    max_drawdown_amount: Decimal = Decimal("0")
 
     def _snapshot_portfolio(d: date):
         """Compute end-of-day portfolio snapshot.
@@ -648,7 +656,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
         Portfolio is the aggregation of all allocated (ticker,line) cash + market value,
         plus remaining global cash when CP is limited.
         """
-        nonlocal peak_equity, max_drawdown, invested_total
+        nonlocal peak_equity, max_drawdown, max_drawdown_amount, invested_total
 
         # update last prices for tickers that have a bar today
         for tk, tdata in data_by_ticker.items():
@@ -695,8 +703,13 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
         dd = Decimal("0")
         if peak_equity and peak_equity != 0:
             dd = (equity - peak_equity) / peak_equity
+        dd_amount = Decimal("0")
+        if peak_equity is not None and equity < peak_equity:
+            dd_amount = peak_equity - equity
         if dd < max_drawdown:
             max_drawdown = dd
+        if dd_amount > max_drawdown_amount:
+            max_drawdown_amount = dd_amount
 
         portfolio_daily.append(
             {
@@ -742,10 +755,11 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 st["nb_jours_ouvres"] += 1
 
             G_today = None
+            pnl_amount_today = None
             forced_close = False
 
             def _do_sell(reason: str):
-                nonlocal G_today
+                nonlocal G_today, pnl_amount_today
                 if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
                     return
                 proceeds = Decimal(st["shares"]) * close_d
@@ -759,8 +773,22 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                     # Legacy behaviour: reinvest everything (capital evolves with PnL).
                     st["cash_ticker"] = st["cash_ticker"] + proceeds
                 entry = Decimal(st["entry_price"])
+                pnl_amount_today = Decimal(st["shares"]) * (close_d - entry)
                 if entry != 0:
                     G_today = (close_d - entry) / entry
+                st["pnl_amount_total"] = Decimal(st.get("pnl_amount_total") or 0) + pnl_amount_today
+                if pnl_amount_today > 0:
+                    st["total_gain_amount"] = Decimal(st.get("total_gain_amount") or 0) + pnl_amount_today
+                    st["win_trades"] = int(st.get("win_trades") or 0) + 1
+                    current_max_gain = st.get("max_gain_amount")
+                    if current_max_gain is None or pnl_amount_today > current_max_gain:
+                        st["max_gain_amount"] = pnl_amount_today
+                elif pnl_amount_today < 0:
+                    st["total_loss_amount"] = Decimal(st.get("total_loss_amount") or 0) + pnl_amount_today
+                    st["loss_trades"] = int(st.get("loss_trades") or 0) + 1
+                    current_max_loss = st.get("max_loss_amount")
+                    if current_max_loss is None or pnl_amount_today < current_max_loss:
+                        st["max_loss_amount"] = pnl_amount_today
 
                 # Count holding days ONLY for completed (buy->sell) trades
                 if st.get("entry_date") is not None:
@@ -849,6 +877,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 "sell_gm_operator": st["sell_gm_operator"],
                 "action": "SELL" if G_today is not None else None,
                 "action_G": None if G_today is None else str(G_today),
+                "action_PNL_AMOUNT": None if pnl_amount_today is None else str(pnl_amount_today),
                 "forced_close": forced_close,
                 "allocated": st["allocated"],
                 "cash_ticker": str(st["cash_ticker"]),
@@ -1116,8 +1145,22 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 st["cash_ticker"] = st["cash_ticker"] + proceeds
             entry = Decimal(st["entry_price"])
             G_today = None
+            pnl_amount_today = Decimal(st["shares"]) * (close_d - entry)
             if entry != 0:
                 G_today = (close_d - entry) / entry
+            st["pnl_amount_total"] = Decimal(st.get("pnl_amount_total") or 0) + pnl_amount_today
+            if pnl_amount_today > 0:
+                st["total_gain_amount"] = Decimal(st.get("total_gain_amount") or 0) + pnl_amount_today
+                st["win_trades"] = int(st.get("win_trades") or 0) + 1
+                current_max_gain = st.get("max_gain_amount")
+                if current_max_gain is None or pnl_amount_today > current_max_gain:
+                    st["max_gain_amount"] = pnl_amount_today
+            elif pnl_amount_today < 0:
+                st["total_loss_amount"] = Decimal(st.get("total_loss_amount") or 0) + pnl_amount_today
+                st["loss_trades"] = int(st.get("loss_trades") or 0) + 1
+                current_max_loss = st.get("max_loss_amount")
+                if current_max_loss is None or pnl_amount_today < current_max_loss:
+                    st["max_loss_amount"] = pnl_amount_today
             st["trade_count"] += 1
             st["sum_g"] += (G_today or Decimal("0"))
             st["position_open"] = False
@@ -1139,6 +1182,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                 rows[-1]["forced_close"] = True
                 rows[-1]["action"] = "FORCED_SELL" if rows[-1].get("action") is None else f"{rows[-1].get('action')}+FORCED_SELL"
                 rows[-1]["action_G"] = None if G_today is None else str(G_today)
+                rows[-1]["action_PNL_AMOUNT"] = str(pnl_amount_today)
                 rows[-1]["shares"] = 0
                 rows[-1]["cash_ticker"] = str(st["cash_ticker"])
                 rows[-1]["bank"] = str(st.get("bank") or Decimal("0"))
@@ -1186,6 +1230,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                     "sell_gm_operator": st["sell_gm_operator"],
                     "action": "FORCED_SELL",
                     "action_G": None if G_today is None else str(G_today),
+                    "action_PNL_AMOUNT": str(pnl_amount_today),
                     "forced_close": True,
                     "allocated": st["allocated"],
                     "cash_ticker": str(st["cash_ticker"]),
@@ -1242,6 +1287,19 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
 
             BMJ = None if nb == 0 else (BT / Decimal(nb))
             BMD = None if bmd_days == 0 else (BT / Decimal(bmd_days))
+            pnl_amount_total = Decimal(st.get("pnl_amount_total") or 0)
+            total_gain_amount = Decimal(st.get("total_gain_amount") or 0)
+            total_loss_amount = Decimal(st.get("total_loss_amount") or 0)
+            win_trades = int(st.get("win_trades") or 0)
+            loss_trades = int(st.get("loss_trades") or 0)
+            total_trades_amount = win_trades + loss_trades
+            avg_trade_amount = None if total_trades_amount == 0 else (pnl_amount_total / Decimal(total_trades_amount))
+            profit_factor_amount = None
+            if total_loss_amount < 0:
+                profit_factor_amount = total_gain_amount / abs(total_loss_amount)
+            elif total_gain_amount > 0 and total_loss_amount == 0:
+                profit_factor_amount = None
+            win_rate_amount = None if total_trades_amount == 0 else ((Decimal(win_trades) / Decimal(total_trades_amount)) * Decimal("100"))
             tentry["lines"].append({
                 "line_index": li + 1,
                 "buy": st["buy_codes"],
@@ -1269,6 +1327,17 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
                     "RATIO_NOT_IN_POSITION": None if tradable_days == 0 else str((Decimal(nb) / Decimal(tradable_days)) * Decimal("100")),
                     "RATIO_IN_POSITION": None if tradable_days == 0 else str((Decimal(bmd_days) / Decimal(tradable_days)) * Decimal("100")),
                     "cash_ticker_end": str(st["cash_ticker"]),
+                    "PNL_AMOUNT": str(pnl_amount_total),
+                    "TOTAL_GAIN_AMOUNT": str(total_gain_amount),
+                    "TOTAL_LOSS_AMOUNT": str(total_loss_amount),
+                    "AVG_TRADE_AMOUNT": None if avg_trade_amount is None else str(avg_trade_amount),
+                    "PROFIT_FACTOR_AMOUNT": None if profit_factor_amount is None else str(profit_factor_amount),
+                    "MAX_GAIN_AMOUNT": None if st.get("max_gain_amount") is None else str(st.get("max_gain_amount")),
+                    "MAX_LOSS_AMOUNT": None if st.get("max_loss_amount") is None else str(st.get("max_loss_amount")),
+                    "WIN_TRADES": win_trades,
+                    "LOSS_TRADES": loss_trades,
+                    "WIN_RATE_AMOUNT": None if win_rate_amount is None else str(win_rate_amount),
+                    "FINAL_EQUITY": str(Decimal(st.get("cash_ticker") or 0) + Decimal(st.get("bank") or 0)),
                 },
                 "daily": st["daily_rows"],
             })
@@ -1391,6 +1460,62 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
         if nb_days_invested > 0:
             bmj_return = bt_return / Decimal(nb_days_invested)
 
+    portfolio_capital_base = (CP_raw if not CP_infinite else invested_total)
+    total_pnl_amount = equity_end - portfolio_capital_base
+    total_gain_amount = Decimal("0")
+    total_loss_amount = Decimal("0")
+    total_trades_amount = 0
+    win_trades_amount = 0
+    loss_trades_amount = 0
+    max_gain_amount = None
+    max_loss_amount = None
+    for _ticker, tentry in results.get("tickers", {}).items():
+        for line in (tentry.get("lines") or []):
+            final = line.get("final") or {}
+            try:
+                line_gain = Decimal(str(final.get("TOTAL_GAIN_AMOUNT") or 0))
+            except Exception:
+                line_gain = Decimal("0")
+            try:
+                line_loss = Decimal(str(final.get("TOTAL_LOSS_AMOUNT") or 0))
+            except Exception:
+                line_loss = Decimal("0")
+            try:
+                line_win = int(final.get("WIN_TRADES") or 0)
+            except Exception:
+                line_win = 0
+            try:
+                line_loss_n = int(final.get("LOSS_TRADES") or 0)
+            except Exception:
+                line_loss_n = 0
+            line_max_gain = final.get("MAX_GAIN_AMOUNT")
+            line_max_loss = final.get("MAX_LOSS_AMOUNT")
+            total_gain_amount += line_gain
+            total_loss_amount += line_loss
+            win_trades_amount += line_win
+            loss_trades_amount += line_loss_n
+            total_trades_amount += (line_win + line_loss_n)
+            if line_max_gain not in (None, ""):
+                try:
+                    d = Decimal(str(line_max_gain))
+                    if max_gain_amount is None or d > max_gain_amount:
+                        max_gain_amount = d
+                except Exception:
+                    pass
+            if line_max_loss not in (None, ""):
+                try:
+                    d = Decimal(str(line_max_loss))
+                    if max_loss_amount is None or d < max_loss_amount:
+                        max_loss_amount = d
+                except Exception:
+                    pass
+
+    avg_trade_amount = None if total_trades_amount == 0 else (total_pnl_amount / Decimal(total_trades_amount))
+    profit_factor_amount = None
+    if total_loss_amount < 0:
+        profit_factor_amount = total_gain_amount / abs(total_loss_amount)
+    win_rate_amount = None if total_trades_amount == 0 else ((Decimal(win_trades_amount) / Decimal(total_trades_amount)) * Decimal("100"))
+
     results["portfolio"] = {
         "kpi": {
             "capital_total": str(CP_raw if not CP_infinite else invested_total),
@@ -1408,6 +1533,19 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
             "NON_POSITIVE_BMD_AVG_GAIN": None if avg_bmd_non_positive is None else str(avg_bmd_non_positive),
             "NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION": None if avg_ratio_non_positive is None else str(avg_ratio_non_positive),
             "max_drawdown": str(max_drawdown),
+            "TOTAL_PNL_AMOUNT": str(total_pnl_amount),
+            "FINAL_EQUITY": str(equity_end),
+            "TOTAL_GAIN_AMOUNT": str(total_gain_amount),
+            "TOTAL_LOSS_AMOUNT": str(total_loss_amount),
+            "AVG_TRADE_AMOUNT": None if avg_trade_amount is None else str(avg_trade_amount),
+            "PROFIT_FACTOR_AMOUNT": None if profit_factor_amount is None else str(profit_factor_amount),
+            "MAX_GAIN_AMOUNT": None if max_gain_amount is None else str(max_gain_amount),
+            "MAX_LOSS_AMOUNT": None if max_loss_amount is None else str(max_loss_amount),
+            "TOTAL_TRADES": total_trades_amount,
+            "WIN_TRADES": win_trades_amount,
+            "LOSS_TRADES": loss_trades_amount,
+            "WIN_RATE_AMOUNT": None if win_rate_amount is None else str(win_rate_amount),
+            "max_drawdown_amount": str(max_drawdown_amount),
         },
         "daily": portfolio_daily,
     }
@@ -1509,6 +1647,13 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
                 "entry_date": None,
                 "trade_count": 0,
                 "sum_g": Decimal("0"),
+                "pnl_amount_total": Decimal("0"),
+                "total_gain_amount": Decimal("0"),
+                "total_loss_amount": Decimal("0"),
+                "win_trades": 0,
+                "loss_trades": 0,
+                "max_gain_amount": None,
+                "max_loss_amount": None,
                 "tradable_days": 0,
                 "tradable_days_in_position": 0,
                 "prev_k": None,

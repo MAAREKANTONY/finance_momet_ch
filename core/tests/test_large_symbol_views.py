@@ -1,4 +1,5 @@
 from django.contrib.auth import get_user_model
+from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
 
@@ -198,6 +199,8 @@ class LargeSymbolFormViewTests(TestCase):
 class SymbolCsvSubmissionRegressionTests(TestCase):
     def setUp(self):
         self.client = Client()
+        self.user = get_user_model().objects.create_user(username="tester", password="pw123456")
+        self.client.force_login(self.user)
         self.symbols = [Symbol.objects.create(ticker=f"TK{i}", exchange="NASDAQ", active=True) for i in range(1,4)]
 
     def test_universe_create_accepts_csv_symbols_once(self):

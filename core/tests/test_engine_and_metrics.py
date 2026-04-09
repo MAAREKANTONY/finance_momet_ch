@@ -14,6 +14,7 @@ from core.services.backtesting.engine import (
     _apply_signal_state_transitions,
     _match_line_with_global_filter,
     _update_and_latched_states,
+    run_backtest,
     run_backtest_kpi_only,
 )
 from core.services.calculations import compute_for_symbol_scenario
@@ -66,6 +67,60 @@ class EngineAndMetricsRegressionTests(TestCase):
             )
         DailyBar.objects.bulk_create(bars)
         return [b.date for b in bars]
+
+
+    def test_backtest_computes_pnl_amount_kpis_globally_and_per_line(self):
+        start = date(2024, 1, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "12", "15", "11"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal(v), ratio_P=Decimal("1"))
+            for i, v in enumerate(["10", "12", "15", "11"])
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1"),
+        ])
+
+        bt = Backtest.objects.create(
+            name="PnL Test",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        final = result["tickers"][self.symbol.ticker]["lines"][0]["final"]
+        portfolio = result["portfolio"]["kpi"]
+
+        self.assertEqual(Decimal(final["PNL_AMOUNT"]), Decimal("50"))
+        self.assertEqual(Decimal(final["TOTAL_GAIN_AMOUNT"]), Decimal("50"))
+        self.assertEqual(Decimal(final["TOTAL_LOSS_AMOUNT"]), Decimal("0"))
+        self.assertEqual(Decimal(final["AVG_TRADE_AMOUNT"]), Decimal("50"))
+        self.assertEqual(final["WIN_TRADES"], 1)
+        self.assertEqual(final["LOSS_TRADES"], 0)
+        self.assertEqual(Decimal(final["WIN_RATE_AMOUNT"]), Decimal("100"))
+        self.assertEqual(Decimal(final["MAX_GAIN_AMOUNT"]), Decimal("50"))
+        self.assertIsNone(final["MAX_LOSS_AMOUNT"])
+        self.assertEqual(Decimal(final["FINAL_EQUITY"]), Decimal("150"))
+
+        self.assertEqual(Decimal(portfolio["TOTAL_PNL_AMOUNT"]), Decimal("50"))
+        self.assertEqual(Decimal(portfolio["FINAL_EQUITY"]), Decimal("1050"))
+        self.assertEqual(Decimal(portfolio["TOTAL_GAIN_AMOUNT"]), Decimal("50"))
+        self.assertEqual(Decimal(portfolio["TOTAL_LOSS_AMOUNT"]), Decimal("0"))
+        self.assertEqual(Decimal(portfolio["AVG_TRADE_AMOUNT"]), Decimal("50"))
+        self.assertEqual(portfolio["TOTAL_TRADES"], 1)
+        self.assertEqual(Decimal(portfolio["WIN_RATE_AMOUNT"]), Decimal("100"))
+        self.assertEqual(Decimal(portfolio["MAX_GAIN_AMOUNT"]), Decimal("50"))
+        self.assertIsNone(portfolio["MAX_LOSS_AMOUNT"])
+        self.assertEqual(Decimal(portfolio["max_drawdown_amount"]), Decimal("0"))
 
     def test_incremental_and_full_indicator_calculations_match(self):
         dates = self._create_bars_for_symbol(self.symbol, ["10", "11", "12", "11", "13", "15", "14"])

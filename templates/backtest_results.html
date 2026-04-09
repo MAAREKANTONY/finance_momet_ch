@@ -111,6 +111,10 @@
           <th>Conditions de vente</th>
           <th>BT</th>
           <th>BMD</th>
+          <th>P&amp;L</th>
+          <th>Trade moyen</th>
+          <th>Profit factor</th>
+          <th>Win rate</th>
           <th>Ratio_in_position</th>
           <th>Ratio_not_in_position</th>
           <th>tradable_days</th>
@@ -126,6 +130,10 @@
           <td>{{ r.sell }}</td>
           <td>{{ r.BT|pct:3 }}</td>
           <td>{{ r.BMD|pct:4 }}</td>
+          <td>{{ r.PNL_AMOUNT|num:2 }}</td>
+          <td>{{ r.AVG_TRADE_AMOUNT|num:2 }}</td>
+          <td>{{ r.PROFIT_FACTOR_AMOUNT|num:3 }}</td>
+          <td>{{ r.WIN_RATE_AMOUNT|num:2 }}%</td>
           <td>{{ r.RATIO_IN_POSITION|num:2 }}%</td>
           <td>{{ r.RATIO_NOT_IN_POSITION|num:2 }}%</td>
           <td>{{ r.TRADABLE_DAYS }}</td>
@@ -134,7 +142,7 @@
         </tr>
         {% empty %}
         <tr>
-          <td colspan="10" class="muted">Aucune action jouée pour cette ligne sur la période.</td>
+          <td colspan="14" class="muted">Aucune action jouée pour cette ligne sur la période.</td>
         </tr>
         {% endfor %}
       </tbody>
@@ -229,6 +237,26 @@
       <th>BT</th><td>{{ final.BT|pct:3 }}</td>
     </tr>
     <tr>
+      <th>P&amp;L</th><td>{{ final.PNL_AMOUNT|num:2 }}</td>
+      <th>Equity finale</th><td>{{ final.FINAL_EQUITY|num:2 }}</td>
+      <th>Trade moyen</th><td>{{ final.AVG_TRADE_AMOUNT|num:2 }}</td>
+    </tr>
+    <tr>
+      <th>Total gains</th><td>{{ final.TOTAL_GAIN_AMOUNT|num:2 }}</td>
+      <th>Total pertes</th><td>{{ final.TOTAL_LOSS_AMOUNT|num:2 }}</td>
+      <th>Profit factor</th><td>{{ final.PROFIT_FACTOR_AMOUNT|num:3 }}</td>
+    </tr>
+    <tr>
+      <th>Win trades</th><td>{{ final.WIN_TRADES }}</td>
+      <th>Loss trades</th><td>{{ final.LOSS_TRADES }}</td>
+      <th>Win rate</th><td>{{ final.WIN_RATE_AMOUNT|num:2 }}%</td>
+    </tr>
+    <tr>
+      <th>Max gain</th><td>{{ final.MAX_GAIN_AMOUNT|num:2 }}</td>
+      <th>Max perte</th><td>{{ final.MAX_LOSS_AMOUNT|num:2 }}</td>
+      <th></th><td></td>
+    </tr>
+    <tr>
       <th>TRADABLE_DAYS</th><td>{{ final.TRADABLE_DAYS }}</td>
       <th>TRADABLE_DAYS_NOT_IN_POSITION</th><td>{{ final.TRADABLE_DAYS_NOT_IN_POSITION }}</td>
       <th>TRADABLE_DAYS_IN_POSITION_CLOSED</th><td>{{ final.TRADABLE_DAYS_IN_POSITION_CLOSED }}</td>
@@ -267,6 +295,7 @@
           <th>Ratio_p (%)</th>
           <th>Action</th>
           <th>G</th>
+          <th>P&amp;L montant</th>
           <th>N</th>
           <th>S_G_N</th>
           <th>BT</th>
@@ -287,6 +316,7 @@
           <td>{% if r.ratio_P_pct %}{{ r.ratio_P_pct|num:2 }}%{% endif %}</td>
           <td>{{ r.action }}</td>
           <td>{{ r.action_G|pct:3 }}</td>
+          <td>{{ r.action_PNL_AMOUNT|num:2 }}</td>
           <td>{{ r.N }}</td>
           <td>{{ r.S_G_N|pct:3 }}</td>
           <td>{{ r.BT|pct:3 }}</td>
