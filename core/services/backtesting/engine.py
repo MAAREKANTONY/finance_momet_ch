@@ -464,7 +464,7 @@ def _build_global_momentum_regime_from_values(
     return out
 
 
-def run_backtest(backtest: Backtest) -> BacktestEngineResult:
+def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
 
     """
     Feature 4:
@@ -472,6 +472,10 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     - Keeps per-(ticker,line) independent cash re-investment once allocated.
     """
     logs: list[str] = []
+
+    def _checkpoint():
+        if checkpoint is not None:
+            checkpoint()
 
     # Universe
     raw_universe = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
@@ -629,6 +633,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
     # Warmup phase: reconstruct persistent states before the real backtest period.
     # No allocation, no trades, no counters during warmup.
     for d in warmup_dates:
+        _checkpoint()
         for (ticker, li), st in state.items():
             tdata = data_by_ticker.get(ticker)
             if not tdata or d not in tdata.get("price_by_date", {}):
@@ -729,6 +734,7 @@ def run_backtest(backtest: Backtest) -> BacktestEngineResult:
 
     # Daily loop
     for d in real_dates_sorted:
+        _checkpoint()
 
         # 1) SELL phase (sell before buy)
         for (ticker, li), st in state.items():
@@ -1562,6 +1568,10 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
     """
     logs: list[str] = []
 
+    def _checkpoint():
+        if checkpoint is not None:
+            checkpoint()
+
     # Universe
     raw_universe = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
     tickers: list[str] = []
@@ -1668,6 +1678,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
     # Warmup phase: reconstruct persistent states before the real game period.
     # No allocation, no trades, no counters during warmup.
     for d in warmup_dates:
+        _checkpoint()
         for (ticker, li), st in state.items():
             tdata = data_by_ticker.get(ticker)
             if not tdata or d not in tdata.get("price_by_date", {}):
@@ -1683,6 +1694,7 @@ def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) ->
 
     # Daily loop
     for d in real_dates_sorted:
+        _checkpoint()
         # SELL phase
         for (ticker, li), st in state.items():
             tdata = data_by_ticker.get(ticker)

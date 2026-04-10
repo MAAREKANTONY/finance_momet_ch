@@ -1,0 +1,14 @@
+V7.0.67 - Jobs robustness sprint
+
+Changes:
+- Improved job cancel/kill semantics:
+  - Cancel now immediately cancels PENDING jobs and cooperatively stops RUNNING jobs.
+  - Kill now marks kill_requested/cancel_requested and uses SIGTERM + SIGKILL revoke fallback.
+  - RUNNING jobs are no longer falsely marked KILLED before the worker actually stops.
+- Added transient DB retry helpers for ProcessingJob updates.
+- Added Celery autoretry for transient DB outages on tracked job wrappers.
+- Added cooperative backtest checkpoints during engine execution.
+- Passed ProcessingJob context into game runner for better cancel/kill responsiveness.
+- Added manual cleanup command: manage.py cleanup_processing_jobs
+- Added operational doc: docs/JOBS_ROBUSTNESS.md
+- Added regression tests for cancel/kill views and cleanup command.

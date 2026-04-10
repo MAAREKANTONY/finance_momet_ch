@@ -18,12 +18,74 @@ from .services.global_momentum import build_global_momentum_regime_by_date, GLOB
 from .services.calculations_fast import compute_full_for_symbol_scenario
 
 from django.utils import timezone
+from django.db import InterfaceError, OperationalError
 import json
 import csv
 import io
 import zipfile
 from pathlib import Path
 
+import time
+
+
+TRANSIENT_DB_EXCEPTIONS = (OperationalError, InterfaceError)
+
+
+def _with_db_retries(fn, *, attempts: int | None = None):
+    """Retry short-lived database availability failures.
+
+    This is intentionally tiny and local to job tracking. It helps when Postgres is
+    restarting/recovering for a few seconds while Celery wrappers update ProcessingJob.
+    """
+    attempts = int(attempts or getattr(settings, "JOB_DB_RETRY_ATTEMPTS", 5))
+    delay = float(getattr(settings, "JOB_DB_RETRY_DELAY_SECONDS", 2))
+    backoff = float(getattr(settings, "JOB_DB_RETRY_BACKOFF_SECONDS", 2))
+    last_exc = None
+    for idx in range(max(1, attempts)):
+        try:
+            return fn()
+        except TRANSIENT_DB_EXCEPTIONS as exc:
+            last_exc = exc
+            if idx >= attempts - 1:
+                raise
+            time.sleep(max(0.0, delay + (idx * backoff)))
+    if last_exc:
+        raise last_exc
+
+
+def _job_update(job: ProcessingJob | None, **fields) -> int:
+    if job is None or not getattr(job, "id", None):
+        return 0
+    return _with_db_retries(lambda: ProcessingJob.objects.filter(id=job.id).update(**fields))
+
+
+def _job_save(job: ProcessingJob | None, *, update_fields: list[str] | tuple[str, ...]):
+    if job is None:
+        return None
+    return _with_db_retries(lambda: job.save(update_fields=list(update_fields)))
+
+
+def _job_refresh(job: ProcessingJob | None, *, fields: list[str] | tuple[str, ...] | None = None):
+    if job is None:
+        return None
+    return _with_db_retries(lambda: job.refresh_from_db(fields=list(fields) if fields else None))
+
+
+def _retryable_job(task, exc: Exception):
+    """Raise a Celery retry for transient DB outages."""
+    raise task.retry(exc=exc, countdown=int(getattr(settings, "JOB_TASK_RETRY_COUNTDOWN_SECONDS", 15)), max_retries=int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5)))
+
+
+def _append_job_message(job: ProcessingJob | None, extra: str) -> None:
+    if job is None or not getattr(job, "id", None):
+        return
+    try:
+        _job_refresh(job, fields=["message"])
+        existing = (job.message or "").rstrip()
+        job.message = (existing + ("\n" if existing else "") + str(extra)).strip()
+        _job_save(job, update_fields=["message"])
+    except Exception:
+        return
 
 class JobCancelled(Exception):
     """Raised when a ProcessingJob has cancel_requested=True."""
@@ -43,13 +105,13 @@ def _job_checkpoint(job: ProcessingJob | None, *, heartbeat: bool = True) -> Non
     if job is None:
         return
     # Refresh only the fields we need
-    job.refresh_from_db(fields=["cancel_requested", "kill_requested", "status"])
+    _job_refresh(job, fields=["cancel_requested", "kill_requested", "status"])
     if job.kill_requested:
         raise JobKilled("kill requested")
     if job.cancel_requested:
         raise JobCancelled("cancel requested")
     if heartbeat:
-        ProcessingJob.objects.filter(id=job.id).update(heartbeat_at=timezone.now())
+        _job_update(job, heartbeat_at=timezone.now())
 
 def parse_date(s: str) -> date:
     return datetime.fromisoformat(s.replace("Z","")).date()
@@ -468,7 +530,7 @@ def _noop():
     return "ok"
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
 def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_full: bool = False, backtest_id=None, user_id=None, job_id=None):
     """Tracked job wrapper around DailyBar fetching.
 
@@ -483,7 +545,7 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
             job.status = ProcessingJob.Status.RUNNING
             job.task_id = getattr(self.request, "id", "") or ""
             job.started_at = timezone.now()
-            job.save(update_fields=["status", "task_id", "started_at"])
+            _job_save(job, update_fields=["status", "task_id", "started_at"])
     if job is None:
         job = ProcessingJob.objects.create(
             job_type=ProcessingJob.JobType.FETCH_BARS,
@@ -516,29 +578,31 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
             f"outputsize={outputsize} force_full={bool(force_full)}"
         )
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return job.message
     except JobCancelled:
         job.status = ProcessingJob.Status.CANCELLED
         job.message = (job.message or "") + "\nCancelled by user."
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return "cancelled"
     except JobKilled:
         job.status = ProcessingJob.Status.KILLED
         job.message = (job.message or "") + "\nKilled by user."
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return "killed"
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
     except Exception as e:
         job.status = ProcessingJob.Status.FAILED
         job.error = str(e)
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "error", "finished_at"])
+        _job_save(job, update_fields=["status", "error", "finished_at"])
         raise
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
 def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_all=False, backtest_id=None, user_id=None, job_id=None):
     """Tracked job wrapper around metrics computation."""
     job = None
@@ -548,7 +612,7 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
             job.status = ProcessingJob.Status.RUNNING
             job.task_id = getattr(self.request, "id", "") or ""
             job.started_at = timezone.now()
-            job.save(update_fields=["status", "task_id", "started_at"])
+            _job_save(job, update_fields=["status", "task_id", "started_at"])
     if job is None:
         job = ProcessingJob.objects.create(
             job_type=ProcessingJob.JobType.COMPUTE_METRICS,
@@ -577,7 +641,7 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
                 job.status = ProcessingJob.Status.DONE
                 job.message = "No symbols linked to this scenario (nothing to compute)."
                 job.finished_at = timezone.now()
-                job.save(update_fields=["status", "message", "finished_at"])
+                _job_save(job, update_fields=["status", "message", "finished_at"])
                 return job.message
             symbols_qs = scenario_symbols_qs
             scope_note = "scenario_symbols"
@@ -594,25 +658,27 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
             f"symbols={stats.get('symbols')} rows={stats.get('rows')} full={stats.get('full')}"
         )
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return job.message
     except JobCancelled:
         job.status = ProcessingJob.Status.CANCELLED
         job.message = (job.message or "") + "\nCancelled by user."
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return "cancelled"
     except JobKilled:
         job.status = ProcessingJob.Status.KILLED
         job.message = (job.message or "") + "\nKilled by user."
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return "killed"
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
     except Exception as e:
         job.status = ProcessingJob.Status.FAILED
         job.error = str(e)
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "error", "finished_at"])
+        _job_save(job, update_fields=["status", "error", "finished_at"])
         raise
 
 
@@ -632,13 +698,13 @@ def compute_metrics_all_job_task(self, recompute_all: bool = False, user_id=None
         job.status = ProcessingJob.Status.DONE
         job.message = f"{job.message} -> {msg}"
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return msg
     except Exception as e:
         job.status = ProcessingJob.Status.FAILED
         job.error = str(e)
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "error", "finished_at"])
+        _job_save(job, update_fields=["status", "error", "finished_at"])
         raise
 
 @shared_task
@@ -825,7 +891,7 @@ def send_alert_definition_job_task(self, *, alert_definition_id: int, user_id=No
             job.task_id = getattr(self.request, "id", "") or ""
             job.started_at = timezone.now()
             job.message = f"En cours (envoi alerte {alert_definition_id})"
-            job.save(update_fields=["status", "task_id", "started_at", "message"])
+            _job_save(job, update_fields=["status", "task_id", "started_at", "message"])
 
     try:
         # Reuse the existing sending logic synchronously so we can update the job status reliably.
@@ -835,15 +901,17 @@ def send_alert_definition_job_task(self, *, alert_definition_id: int, user_id=No
             job.status = ProcessingJob.Status.DONE
             job.finished_at = timezone.now()
             job.message = f"Terminé (envoi alerte {alert_definition_id})"
-            job.save(update_fields=["status", "finished_at", "message"])
+            _job_save(job, update_fields=["status", "finished_at", "message"])
         return {"status": "ok"}
 
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
     except Exception as e:
         if job:
             job.status = ProcessingJob.Status.FAILED
             job.finished_at = timezone.now()
             job.message = f"Erreur (envoi alerte {alert_definition_id}): {e}"
-            job.save(update_fields=["status", "finished_at", "message"])
+            _job_save(job, update_fields=["status", "finished_at", "message"])
         raise
 @shared_task
 def check_and_send_scheduled_alerts_task():
@@ -967,7 +1035,7 @@ def _ensure_game_engine_scenario(game: GameScenario) -> Scenario:
     return sc
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
 def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
     """Daily end-to-end refresh (scheduled at 08:00).
 
@@ -1180,17 +1248,11 @@ def _maybe_run_scheduled_game_scenarios(now_dt):
             continue
         run_game_scenario_task.delay(gs.id)
         scheduled += 1
-    # --- Additive: GameScenarios scheduler (daily BMD table) ---
-    try:
-        results.append(_maybe_run_scheduled_game_scenarios(now))
-    except Exception as e:
-        results.append(f"games_error:{e}")
-
     return f"games_scheduled:{scheduled}"
 
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
 def run_game_scenario_job_task(self, *, game_id: int, force_fetch: bool = False, force_recompute: bool = False, user_id=None, job_id=None):
     """Tracked wrapper for GameScenario runs."""
     job = None
@@ -1201,26 +1263,43 @@ def run_game_scenario_job_task(self, *, game_id: int, force_fetch: bool = False,
             job.task_id = getattr(self.request, "id", "") or ""
             job.started_at = timezone.now()
             job.message = f"En cours (run game {game_id})"
-            job.save(update_fields=["status", "task_id", "started_at", "message"])
+            _job_save(job, update_fields=["status", "task_id", "started_at", "message"])
     try:
-        from core.services.game_scenarios.runner import run_game_scenario_now
-        run_game_scenario_now(game_id, force_fetch=force_fetch, force_recompute=force_recompute)
+        from core.services.game_scenarios.runner import run_game_scenario_now, GameJobCancelled, GameJobKilled
+        _job_checkpoint(job)
+        run_game_scenario_now(game_id, force_fetch=force_fetch, force_recompute=force_recompute, job=job)
 
         if job:
             job.status = ProcessingJob.Status.DONE
             job.finished_at = timezone.now()
             job.message = f"Terminé (run game {game_id})"
-            job.save(update_fields=["status", "finished_at", "message"])
+            _job_save(job, update_fields=["status", "finished_at", "message"])
         return {"status": "ok"}
+    except GameJobCancelled:
+        if job:
+            job.status = ProcessingJob.Status.CANCELLED
+            job.finished_at = timezone.now()
+            job.message = (job.message or "") + "\nCancelled by user."
+            _job_save(job, update_fields=["status", "finished_at", "message"])
+        return {"status": "cancelled"}
+    except GameJobKilled:
+        if job:
+            job.status = ProcessingJob.Status.KILLED
+            job.finished_at = timezone.now()
+            job.message = (job.message or "") + "\nKilled by user."
+            _job_save(job, update_fields=["status", "finished_at", "message"])
+        return {"status": "killed"}
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
     except Exception as e:
         if job:
             job.status = ProcessingJob.Status.FAILED
             job.finished_at = timezone.now()
             job.message = f"Erreur (run game {game_id}): {e}"
-            job.save(update_fields=["status", "finished_at", "message"])
+            _job_save(job, update_fields=["status", "finished_at", "message"])
         raise
 @shared_task
-def run_backtest_task(backtest_id: int):
+def run_backtest_task(backtest_id: int, job_id: int | None = None):
     # Lazy imports to avoid circular imports
     from .services.backtesting.prep import prepare_backtest_data
     from .services.backtesting.engine import run_backtest as engine_run_backtest
@@ -1239,7 +1318,8 @@ def run_backtest_task(backtest_id: int):
     Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.RUNNING, error_message="")
     try:
         prep_report = prepare_backtest_data(bt)
-        engine_result = engine_run_backtest(bt)
+        job = ProcessingJob.objects.filter(id=job_id).first() if job_id else None
+        engine_result = engine_run_backtest(bt, checkpoint=(lambda: _job_checkpoint(job)) if job_id else None)
         results = engine_result.results
 
         # --- Optional (NO-REGRESSION) Parquet storage ---
@@ -1324,7 +1404,7 @@ def run_backtest_task(backtest_id: int):
         raise
 
 
-@shared_task(bind=True)
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
 def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
     """Tracked job wrapper around run_backtest_task."""
     job = None
@@ -1334,7 +1414,7 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
             job.status = ProcessingJob.Status.RUNNING
             job.task_id = getattr(self.request, "id", "") or ""
             job.started_at = timezone.now()
-            job.save(update_fields=["status", "task_id", "started_at"])
+            _job_save(job, update_fields=["status", "task_id", "started_at"])
     if job is None:
         job = ProcessingJob.objects.create(
             job_type=ProcessingJob.JobType.RUN_BACKTEST,
@@ -1346,29 +1426,31 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
         )
     try:
         _job_checkpoint(job)
-        msg = run_backtest_task(backtest_id)
+        msg = run_backtest_task(backtest_id, job_id=job.id if job else None)
         job.status = ProcessingJob.Status.DONE
         job.message = str(msg)
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return msg
     except JobCancelled:
         job.status = ProcessingJob.Status.CANCELLED
         job.message = (job.message or "") + "\nCancelled by user (before start)."
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return "cancelled"
     except JobKilled:
         job.status = ProcessingJob.Status.KILLED
         job.message = (job.message or "") + "\nKilled by user (before start)."
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "message", "finished_at"])
+        _job_save(job, update_fields=["status", "message", "finished_at"])
         return "killed"
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
     except Exception as e:
         job.status = ProcessingJob.Status.FAILED
         job.error = str(e)
         job.finished_at = timezone.now()
-        job.save(update_fields=["status", "error", "finished_at"])
+        _job_save(job, update_fields=["status", "error", "finished_at"])
         raise
 
 

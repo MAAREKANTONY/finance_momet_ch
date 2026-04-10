@@ -2002,7 +2002,7 @@ def job_download(request, pk: int):
 def job_cancel(request, pk: int):
     """Request a cooperative cancellation for a running/pending job.
 
-    This is intentionally *safe*: tasks that support cancellation will stop at checkpoints.
+    Pending jobs are cancelled immediately in DB. Running jobs stop at checkpoints.
     """
     if request.method != "POST":
         return redirect("jobs_page")
@@ -2010,16 +2010,26 @@ def job_cancel(request, pk: int):
     if not job:
         messages.error(request, "Job introuvable.")
         return redirect("jobs_page")
-    ProcessingJob.objects.filter(id=job.id).update(cancel_requested=True)
+
+    updates = {"cancel_requested": True}
+    if job.status == ProcessingJob.Status.PENDING:
+        updates.update({
+            "status": ProcessingJob.Status.CANCELLED,
+            "finished_at": timezone.now(),
+        })
+    ProcessingJob.objects.filter(id=job.id).update(**updates)
     messages.success(request, f"Annulation demandée pour le job #{job.id}.")
     return redirect("jobs_page")
 
 
 @login_required
 def job_kill(request, pk: int):
-    """Hard kill a Celery task (best-effort) + mark as kill_requested.
+    """Best-effort hard stop for a job.
 
-    WARNING: terminate can leave partial work; we keep this as a last resort.
+    Semantics:
+    - mark kill_requested=True (and cancel_requested=True)
+    - try revoke with SIGTERM, then SIGKILL fallback
+    - only mark immediately as KILLED when the job is still PENDING
     """
     if request.method != "POST":
         return redirect("jobs_page")
@@ -2028,16 +2038,27 @@ def job_kill(request, pk: int):
         messages.error(request, "Job introuvable.")
         return redirect("jobs_page")
 
-    ProcessingJob.objects.filter(id=job.id).update(kill_requested=True, status=ProcessingJob.Status.KILLED, finished_at=timezone.now())
+    updates = {
+        "kill_requested": True,
+        "cancel_requested": True,
+    }
+    if job.status == ProcessingJob.Status.PENDING:
+        updates.update({
+            "status": ProcessingJob.Status.KILLED,
+            "finished_at": timezone.now(),
+        })
+    ProcessingJob.objects.filter(id=job.id).update(**updates)
 
-    # Best-effort revoke/terminate
     task_id = (job.task_id or "").strip()
     if task_id:
         try:
             from celery import current_app
-
-            current_app.control.revoke(task_id, terminate=True, signal="SIGKILL")
-            messages.success(request, f"Kill demandé (SIGTERM) pour le job #{job.id}.")
+            current_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+            try:
+                current_app.control.revoke(task_id, terminate=True, signal="SIGKILL")
+            except Exception:
+                pass
+            messages.success(request, f"Kill demandé pour le job #{job.id}.")
         except Exception as e:
             messages.warning(request, f"Kill demandé mais revoke a échoué: {e}")
     else:
