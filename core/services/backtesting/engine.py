@@ -1559,7 +1559,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     return BacktestEngineResult(results=results, logs=logs)
 
 
-def run_backtest_kpi_only(backtest: Backtest, *, max_days: int | None = None) -> dict[str, dict[str, Any]]:
+def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int | None = None) -> dict[str, dict[str, Any]]:
     """Compute ONLY per-ticker KPI finals (no per-day rows, no portfolio).
 
     Additive helper used by "GameScenario" to avoid huge memory usage.

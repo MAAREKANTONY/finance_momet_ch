@@ -1,0 +1,30 @@
+Creating test database for alias 'default'...
+............request path=/jobs/1/cancel/ method=POST status=302 duration_ms=2.9 rss_mib=93.8 hwm_mib=None vmsize_mib=102.5
+.request path=/jobs/1/cancel/ method=POST status=302 duration_ms=1.5 rss_mib=93.8 hwm_mib=None vmsize_mib=102.5
+.request path=/jobs/1/kill/ method=POST status=302 duration_ms=2.9 rss_mib=93.8 hwm_mib=None vmsize_mib=102.5
+.request path=/jobs/1/kill/ method=POST status=302 duration_ms=1.5 rss_mib=93.8 hwm_mib=None vmsize_mib=102.5
+.request path=/backtests/1/results/ method=GET status=200 duration_ms=14.3 rss_mib=93.8 hwm_mib=None vmsize_mib=102.5
+.request path=/scenarios/new/ method=POST status=302 duration_ms=16.0 rss_mib=93.8 hwm_mib=None vmsize_mib=102.5
+.request path=/scenarios/1/duplicate/ method=GET status=200 duration_ms=18.3 rss_mib=93.8 hwm_mib=None vmsize_mib=102.5
+.request path=/scenarios/new/ method=GET status=200 duration_ms=9.6 rss_mib=94.8 hwm_mib=None vmsize_mib=103.5
+.request path=/studies/1/edit/ method=POST status=302 duration_ms=19.4 rss_mib=94.8 hwm_mib=None vmsize_mib=103.5
+.request path=/symbols/filter-preview/ method=GET status=200 duration_ms=1.9 rss_mib=94.8 hwm_mib=None vmsize_mib=103.5
+.request path=/symbols/filter-preview/ method=GET status=200 duration_ms=1.7 rss_mib=94.8 hwm_mib=None vmsize_mib=103.5
+.request path=/symbols/search/ method=GET status=200 duration_ms=1.7 rss_mib=94.8 hwm_mib=None vmsize_mib=103.5
+.request path=/universes/new/ method=POST status=302 duration_ms=10.8 rss_mib=94.8 hwm_mib=None vmsize_mib=103.5
+.request path=/universes/new/ method=GET status=200 duration_ms=3.9 rss_mib=94.8 hwm_mib=None vmsize_mib=103.5
+.request path=/universes/1/symbols.json method=GET status=200 duration_ms=1.6 rss_mib=94.8 hwm_mib=None vmsize_mib=103.5
+.request path=/scenarios/new/ method=POST status=302 duration_ms=5.9 rss_mib=95.0 hwm_mib=None vmsize_mib=103.7
+request path=/scenarios/ method=GET status=200 duration_ms=3.8 rss_mib=95.0 hwm_mib=None vmsize_mib=103.7
+.request path=/universes/new/ method=POST status=302 duration_ms=2.7 rss_mib=95.0 hwm_mib=None vmsize_mib=103.7
+request path=/universes/ method=GET status=200 duration_ms=2.7 rss_mib=95.0 hwm_mib=None vmsize_mib=103.7
+.request path=/symbols/search/ method=GET status=200 duration_ms=1.7 rss_mib=95.0 hwm_mib=None vmsize_mib=103.7
+.request path=/universes/1/symbols.json method=GET status=200 duration_ms=1.6 rss_mib=95.0 hwm_mib=None vmsize_mib=103.7
+......
+----------------------------------------------------------------------
+Ran 36 tests in 1.989s
+
+OK
+Destroying test database for alias 'default'...
+Found 36 test(s).
+System check identified no issues (0 silenced).

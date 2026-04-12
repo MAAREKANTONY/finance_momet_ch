@@ -1,0 +1,18 @@
+V7.0.69 — Safe fix for failing unit test suite
+
+Scope
+- Minimal correction only.
+- No refactor.
+- No job lifecycle logic change beyond V7.0.68.
+
+Fix
+- Fixed NameError in core/services/backtesting/engine.py
+- run_backtest_kpi_only now accepts optional checkpoint=None, matching its internal cooperative checkpoint usage.
+
+Why this matters
+- Full core.tests suite now passes again.
+- Prevents regression in KPI-only backtest/game path.
+
+Validation
+- core.tests.test_jobs_robustness: OK
+- core.tests: OK

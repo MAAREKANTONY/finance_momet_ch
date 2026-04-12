@@ -9,6 +9,7 @@ from django.db.models import QuerySet
 from django.http import FileResponse, Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
+from django.utils import timezone
 
 from .models import ProcessingJob
 
@@ -175,7 +176,11 @@ def job_download(request: HttpRequest, pk: int) -> HttpResponse:
 @login_required
 @require_POST
 def job_cancel(request: HttpRequest, pk: int) -> HttpResponse:
-    job = ProcessingJob.objects.filter(id=pk).only("id", "status", "cancel_requested").first()
+    """Request a cooperative cancellation for a running/pending job.
+
+    Pending jobs are cancelled immediately in DB. Running jobs stop at checkpoints.
+    """
+    job = ProcessingJob.objects.filter(id=pk).only("id", "status").first()
     if not job:
         messages.error(request, "Job introuvable.")
         return redirect("jobs_page")
@@ -184,7 +189,13 @@ def job_cancel(request: HttpRequest, pk: int) -> HttpResponse:
         messages.warning(request, f"Le job #{job.id} n'est plus annulable.")
         return redirect("jobs_page")
 
-    ProcessingJob.objects.filter(id=job.id).update(cancel_requested=True)
+    updates = {"cancel_requested": True}
+    if job.status == ProcessingJob.Status.PENDING:
+        updates.update({
+            "status": ProcessingJob.Status.CANCELLED,
+            "finished_at": timezone.now(),
+        })
+    ProcessingJob.objects.filter(id=job.id).update(**updates)
     messages.success(request, f"Annulation demandée pour le job #{job.id}.")
     return redirect("jobs_page")
 
@@ -192,6 +203,13 @@ def job_cancel(request: HttpRequest, pk: int) -> HttpResponse:
 @login_required
 @require_POST
 def job_kill(request: HttpRequest, pk: int) -> HttpResponse:
+    """Best-effort hard stop for a job.
+
+    Semantics:
+    - mark kill_requested=True and cancel_requested=True
+    - try revoke with SIGTERM, then SIGKILL fallback
+    - only mark immediately as KILLED when the job is still PENDING
+    """
     job = ProcessingJob.objects.filter(id=pk).only("id", "task_id", "status").first()
     if not job:
         messages.error(request, "Job introuvable.")
@@ -201,11 +219,28 @@ def job_kill(request: HttpRequest, pk: int) -> HttpResponse:
         messages.warning(request, f"Le job #{job.id} n'est plus killable.")
         return redirect("jobs_page")
 
-    ProcessingJob.objects.filter(id=job.id).update(kill_requested=True)
+    updates = {
+        "kill_requested": True,
+        "cancel_requested": True,
+    }
+    if job.status == ProcessingJob.Status.PENDING:
+        updates.update({
+            "status": ProcessingJob.Status.KILLED,
+            "finished_at": timezone.now(),
+        })
+    ProcessingJob.objects.filter(id=job.id).update(**updates)
 
-    if job.task_id:
-        current_app.control.revoke(job.task_id, terminate=True, signal="SIGTERM")
-        messages.success(request, f"Kill demandé pour le job #{job.id}.")
+    task_id = (job.task_id or "").strip()
+    if task_id:
+        try:
+            current_app.control.revoke(task_id, terminate=True, signal="SIGTERM")
+            try:
+                current_app.control.revoke(task_id, terminate=True, signal="SIGKILL")
+            except Exception:
+                pass
+            messages.success(request, f"Kill demandé pour le job #{job.id}.")
+        except Exception as exc:
+            messages.warning(request, f"Kill demandé mais revoke a échoué: {exc}")
     else:
-        messages.warning(request, f"Le job #{job.id} n'a pas de task_id Celery à tuer.")
+        messages.warning(request, f"Kill demandé, mais aucun task_id n'est associé à ce job.")
     return redirect("jobs_page")
