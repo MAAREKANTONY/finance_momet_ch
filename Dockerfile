@@ -7,4 +7,5 @@ WORKDIR /app
 COPY requirements.txt /app/
 RUN pip install --no-cache-dir -r requirements.txt
 COPY . /app/
+RUN chmod +x /app/docker/*.sh || true
 RUN python manage.py collectstatic --noinput || true

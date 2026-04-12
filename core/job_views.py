@@ -176,10 +176,6 @@ def job_download(request: HttpRequest, pk: int) -> HttpResponse:
 @login_required
 @require_POST
 def job_cancel(request: HttpRequest, pk: int) -> HttpResponse:
-    """Request a cooperative cancellation for a running/pending job.
-
-    Pending jobs are cancelled immediately in DB. Running jobs stop at checkpoints.
-    """
     job = ProcessingJob.objects.filter(id=pk).only("id", "status").first()
     if not job:
         messages.error(request, "Job introuvable.")
@@ -203,13 +199,6 @@ def job_cancel(request: HttpRequest, pk: int) -> HttpResponse:
 @login_required
 @require_POST
 def job_kill(request: HttpRequest, pk: int) -> HttpResponse:
-    """Best-effort hard stop for a job.
-
-    Semantics:
-    - mark kill_requested=True and cancel_requested=True
-    - try revoke with SIGTERM, then SIGKILL fallback
-    - only mark immediately as KILLED when the job is still PENDING
-    """
     job = ProcessingJob.objects.filter(id=pk).only("id", "task_id", "status").first()
     if not job:
         messages.error(request, "Job introuvable.")
