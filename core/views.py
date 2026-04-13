@@ -65,6 +65,7 @@ from .services.derived_data import (
     purge_scenario_derived_data,
     scenario_impactful_changes,
 )
+from .excel_utils import append_excel_row
 
 try:
     # Celery is optional in dev; we keep the import defensive so the web container can boot.
