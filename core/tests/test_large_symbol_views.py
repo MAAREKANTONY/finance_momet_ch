@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from core.models import Backtest, Scenario, Study, Symbol, Universe
+from core.models import Backtest, ProcessingJob, Scenario, Study, Symbol, Universe
 
 
 class LargeSymbolFormViewTests(TestCase):
@@ -316,3 +316,35 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("1050", body)
         self.assertIn("TOTAL_PNL_AMOUNT", body)
         self.assertIn("max_drawdown_amount", body)
+
+    def test_backtest_debug_excel_export_queues_job(self):
+        scenario = Scenario.objects.create(
+            name="BT Debug",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        symbol = Symbol.objects.order_by('id').first()
+        bt = Backtest.objects.create(
+            name="BT", scenario=scenario, start_date="2024-01-01", end_date="2024-01-31",
+            results={
+                "meta": {"start_date": "2024-01-01", "end_date": "2024-01-31"},
+                "tickers": {
+                    symbol.ticker: {
+                        "lines": [{
+                            "line_index": 1,
+                            "buy": ["A1"],
+                            "sell": ["B1"],
+                            "daily": [{"date": "2024-01-02", "open": 10, "high": 11, "low": 9, "close": 10.5, "action": "BUY"}],
+                            "final": {"BT": 0.12, "BMD": 0.01},
+                        }]
+                    }
+                }
+            },
+        )
+
+        response = self.client.get(reverse("backtest_export_debug_excel", args=[bt.pk]), {"ticker": symbol.ticker, "line": 1})
+        self.assertEqual(response.status_code, 302)
+        job = ProcessingJob.objects.filter(backtest=bt, job_type=ProcessingJob.JobType.EXPORT_BACKTEST_DEBUG_XLSX).latest('id')
+        self.assertEqual(job.status, ProcessingJob.Status.PENDING)

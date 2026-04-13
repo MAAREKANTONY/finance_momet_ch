@@ -97,6 +97,7 @@ urlpatterns = [
     path("backtests/<int:pk>/run/", views.backtest_run, name="backtest_run"),
     path("backtests/<int:pk>/results/", views.backtest_results, name="backtest_results"),
     path("backtests/<int:pk>/export_debug.csv", views.backtest_export_debug_csv, name="backtest_export_debug_csv"),
+    path("backtests/<int:pk>/export_debug.xlsx", views.backtest_export_debug_excel, name="backtest_export_debug_excel"),
     path("backtests/<int:pk>/export.xlsx", views.backtest_export_excel, name="backtest_export_excel"),
     path("backtests/<int:pk>/export_compact.xlsx", views.backtest_export_excel_compact, name="backtest_export_excel_compact"),
     path("backtests/<int:pk>/export_details.zip", views.backtest_export_details, name="backtest_export_details"),

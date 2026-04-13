@@ -2430,6 +2430,34 @@ def backtest_results(request, pk: int):
 
 
 @login_required
+def backtest_export_debug_excel(request, pk: int):
+    """Async export debug Excel for one (ticker, line) from Backtest.results."""
+    bt = get_object_or_404(Backtest, pk=pk)
+    ticker = (request.GET.get("ticker") or "").strip()
+    line = (request.GET.get("line") or "").strip()
+
+    from .models import ProcessingJob
+    from .tasks import export_backtest_debug_excel_task
+
+    job = ProcessingJob.objects.create(
+        job_type=ProcessingJob.JobType.EXPORT_BACKTEST_DEBUG_XLSX,
+        status=ProcessingJob.Status.PENDING,
+        backtest=bt,
+        created_by=request.user,
+        message=f"Queued debug Excel export for backtest {pk}",
+    )
+    async_result = export_backtest_debug_excel_task.delay(
+        job_id=job.id,
+        backtest_id=bt.id,
+        ticker=ticker,
+        line=line,
+    )
+    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
+    messages.success(request, f"Export Debug Excel lancé en background (job #{job.id}).")
+    return redirect("job_detail", pk=job.id)
+
+
+@login_required
 def backtest_export_debug_csv(request, pk: int):
     """Async export debug CSV for one (ticker, line) from Backtest.results."""
     bt = get_object_or_404(Backtest, pk=pk)

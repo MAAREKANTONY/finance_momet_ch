@@ -1774,6 +1774,28 @@ def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str 
 
 
 @shared_task(bind=True)
+def export_backtest_debug_excel_task(self, *, job_id: int, backtest_id: int, ticker: str = '', line: str = ''):
+    from .models import Backtest
+    from .backtest_debug import build_backtest_debug_workbook
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        job.task_id = getattr(self.request, 'id', '') or ''
+        job.status = ProcessingJob.Status.RUNNING
+        job.started_at = timezone.now()
+        job.save(update_fields=['task_id', 'status', 'started_at'])
+    try:
+        bt = Backtest.objects.select_related('scenario').get(id=backtest_id)
+        wb, output_name = build_backtest_debug_workbook(bt, ticker=ticker, line=line)
+        path = _job_export_path(job_id, output_name)
+        wb.save(path)
+        return _finalize_job_file(job, path, output_name, f'Exported backtest debug Excel for {ticker or "auto"}')
+    except Exception as exc:
+        _fail_job(job, exc)
+        raise
+
+
+@shared_task(bind=True)
 def export_backtest_debug_csv_task(self, *, job_id: int, backtest_id: int, ticker: str = '', line: str = ''):
     from .models import Backtest
 
