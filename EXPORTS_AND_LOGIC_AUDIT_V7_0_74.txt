@@ -1,0 +1,25 @@
+Audit synthétique V7.0.74
+
+1. Problème export XLS identifié
+Le crash "Cannot convert ['SPA', 'SPVA'] to Excel" provient de cellules alimentées avec des listes Python brutes.
+openpyxl n'accepte pas list/dict comme valeur de cellule.
+
+2. Correctif
+Un helper centralisé normalise les valeurs avant append dans les worksheets.
+
+3. Debug CSV vide
+Le code CSV lisait directement selected_line['daily'].
+Or certaines lignes ont les données quotidiennes offloadées.
+La tâche réutilise désormais get_backtest_debug_payload(...), qui recharge correctement les daily rows.
+
+4. Audit logique achat/vente
+Fonctions clés:
+- _match_codes(...)
+- _match_codes_with_memory(...)
+- _match_line_with_global_filter(...)
+
+Constat:
+- OR = any(code in day_alerts)
+- AND = all(code in (day_alerts union latched_alerts))
+- GM filter appliqué ensuite avec AND/OR selon buy_gm_operator / sell_gm_operator
+- Games: utilisent aussi le même moteur, donc même sémantique
