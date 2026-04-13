@@ -599,6 +599,7 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
         job.error = str(e)
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
         raise
 
 
@@ -679,6 +680,7 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
         job.error = str(e)
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
         raise
 
 
@@ -705,6 +707,7 @@ def compute_metrics_all_job_task(self, recompute_all: bool = False, user_id=None
         job.error = str(e)
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
         raise
 
 @shared_task
@@ -1437,12 +1440,14 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
         job.message = (job.message or "") + "\nCancelled by user (before start)."
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "message", "finished_at"])
+        sync_related_state_for_terminal_job(job)
         return "cancelled"
     except JobKilled:
         job.status = ProcessingJob.Status.KILLED
         job.message = (job.message or "") + "\nKilled by user (before start)."
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "message", "finished_at"])
+        sync_related_state_for_terminal_job(job)
         return "killed"
     except TRANSIENT_DB_EXCEPTIONS as e:
         _retryable_job(self, e)
@@ -1451,6 +1456,7 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
         job.error = str(e)
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
         raise
 
 
@@ -1496,6 +1502,10 @@ def cleanup_stale_processing_jobs_task() -> dict:
             finished_at=now,
             error="Auto-marked as FAILED (stale job cleanup).",
         )
+        job.status = ProcessingJob.Status.FAILED
+        job.finished_at = now
+        job.error = "Auto-marked as FAILED (stale job cleanup)."
+        sync_related_state_for_terminal_job(job)
         updated += 1
 
     return {"updated": updated, "heartbeat_minutes": hb_min, "started_minutes": started_min, "pending_minutes": pending_min}

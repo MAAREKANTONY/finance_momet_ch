@@ -1,0 +1,6 @@
+V7.0.72 — Backtest/job state consolidation
+
+- Fix: when a RUN_BACKTEST ProcessingJob is cancelled or killed before start, the linked Backtest no longer stays stuck in PENDING.
+- Centralized helper: core/job_status_sync.py keeps Backtest.status aligned with terminal job states.
+- Applied from /jobs cancel/kill views, tracked backtest wrapper terminal handlers, and stale job cleanup.
+- Tests: added regression checks to ensure pending cancelled/killed backtest jobs move the Backtest out of PENDING.

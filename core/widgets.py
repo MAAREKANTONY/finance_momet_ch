@@ -1,44 +1,9 @@
 from __future__ import annotations
 
-from typing import Any, Optional
+import json
+from typing import Any, Iterable, Optional
 
 from django import forms
-
-
-def normalize_picker_values(raw_values: Any) -> list[str]:
-    """Normalize picker payloads into a flat list of string IDs.
-
-    Accepts either:
-    - a single CSV string: ``"1,2,3"``
-    - repeated field values: ``["1", "2", "3"]``
-    - mixed legacy/new payloads: ``["1,2,3", "1", "2", "3"]``
-
-    Returns a de-duplicated list preserving the first-seen order.
-    """
-    if raw_values in (None, ""):
-        return []
-
-    if isinstance(raw_values, str):
-        candidates = [raw_values]
-    else:
-        try:
-            candidates = list(raw_values)
-        except TypeError:
-            candidates = [raw_values]
-
-    cleaned: list[str] = []
-    seen: set[str] = set()
-    for candidate in candidates:
-        if candidate in (None, ""):
-            continue
-        parts = str(candidate).split(",")
-        for part in parts:
-            value = part.strip()
-            if not value or value in seen:
-                continue
-            seen.add(value)
-            cleaned.append(value)
-    return cleaned
 
 
 class SymbolPickerWidget(forms.Widget):
@@ -57,11 +22,20 @@ class SymbolPickerWidget(forms.Widget):
         super().__init__(base)
 
     def value_from_datadict(self, data, files, name):
-        # Accept both the new CSV hidden input and legacy repeated field submissions.
-        if hasattr(data, "getlist"):
-            return normalize_picker_values(data.getlist(name))
+        # Hidden input carries a CSV list of selected IDs.
+        if hasattr(data, 'getlist'):
+            raw_list = data.getlist(name)
+            if len(raw_list) > 1:
+                return [str(x).strip() for x in raw_list if str(x).strip()]
         raw = data.get(name) if hasattr(data, "get") else None
-        return normalize_picker_values(raw)
+        if raw in (None, ""):
+            return []
+        if isinstance(raw, str):
+            return [x.strip() for x in raw.split(",") if x.strip()]
+        try:
+            return [str(x).strip() for x in raw if str(x).strip()]
+        except TypeError:
+            return []
 
     def format_value(self, value: Any):
         if value is None:

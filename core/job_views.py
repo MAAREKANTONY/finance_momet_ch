@@ -11,6 +11,7 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 from django.utils import timezone
 
+from .job_status_sync import sync_related_state_for_terminal_job
 from .models import ProcessingJob
 
 _ALLOWED_JOB_STATUSES = {
@@ -176,7 +177,7 @@ def job_download(request: HttpRequest, pk: int) -> HttpResponse:
 @login_required
 @require_POST
 def job_cancel(request: HttpRequest, pk: int) -> HttpResponse:
-    job = ProcessingJob.objects.filter(id=pk).only("id", "status").first()
+    job = ProcessingJob.objects.filter(id=pk).only("id", "status", "backtest_id", "message", "error").first()
     if not job:
         messages.error(request, "Job introuvable.")
         return redirect("jobs_page")
@@ -192,6 +193,10 @@ def job_cancel(request: HttpRequest, pk: int) -> HttpResponse:
             "finished_at": timezone.now(),
         })
     ProcessingJob.objects.filter(id=job.id).update(**updates)
+    if job.status == ProcessingJob.Status.PENDING:
+        for field, value in updates.items():
+            setattr(job, field, value)
+        sync_related_state_for_terminal_job(job)
     messages.success(request, f"Annulation demandée pour le job #{job.id}.")
     return redirect("jobs_page")
 
@@ -199,7 +204,7 @@ def job_cancel(request: HttpRequest, pk: int) -> HttpResponse:
 @login_required
 @require_POST
 def job_kill(request: HttpRequest, pk: int) -> HttpResponse:
-    job = ProcessingJob.objects.filter(id=pk).only("id", "task_id", "status").first()
+    job = ProcessingJob.objects.filter(id=pk).only("id", "task_id", "status", "backtest_id", "message", "error").first()
     if not job:
         messages.error(request, "Job introuvable.")
         return redirect("jobs_page")
@@ -218,6 +223,10 @@ def job_kill(request: HttpRequest, pk: int) -> HttpResponse:
             "finished_at": timezone.now(),
         })
     ProcessingJob.objects.filter(id=job.id).update(**updates)
+    if job.status == ProcessingJob.Status.PENDING:
+        for field, value in updates.items():
+            setattr(job, field, value)
+        sync_related_state_for_terminal_job(job)
 
     task_id = (job.task_id or "").strip()
     if task_id:
