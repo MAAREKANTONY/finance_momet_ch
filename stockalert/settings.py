@@ -9,7 +9,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # Application version (shown in UI footer)
 # NOTE: can be overridden via environment variable APP_VERSION
-APP_VERSION = os.getenv("APP_VERSION", "V7.0.70")
+APP_VERSION = os.getenv("APP_VERSION", "V7.0.71")
 
 # Load .env if present (does not override real env vars by default)
 load_dotenv(BASE_DIR / ".env", override=False)

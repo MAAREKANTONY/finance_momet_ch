@@ -1,0 +1,28 @@
+V7.0.71 — Symbol picker regression fix
+
+Scope
+- Fix regression when editing/saving universes with selected tickers
+- Make symbol picker tolerant to mixed legacy/new POST payloads
+- Keep fix centralized in widget helper so every form using the widget benefits
+
+Root cause
+- Some pages could submit both:
+  - a CSV string of symbol ids from the refactored picker
+  - repeated symbol values from the legacy field/bootstrap state
+- Django then received values like:
+  ["1,2,3", "1", "2", "3"]
+  and rejected the CSV element as an invalid choice
+
+Fix
+- Added normalize_picker_values() in core/widgets.py
+- SymbolPickerWidget.value_from_datadict() now flattens CSV + repeated values, trims them, preserves order, and de-duplicates
+- This applies everywhere the widget is used:
+  - UniverseForm
+  - ScenarioForm
+  - StudyScenarioForm
+  - any future form reusing SymbolPickerWidget
+
+Tests
+- Added regression tests for mixed legacy/new submissions
+- Added explicit universe edit regression coverage
+- core.tests suite green
