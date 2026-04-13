@@ -67,6 +67,15 @@ from .services.derived_data import (
 )
 from .excel_utils import append_excel_row
 
+
+def _codes_to_label(value):
+    """Render BUY/SELL code containers as readable labels for UI/exports."""
+    if isinstance(value, (list, tuple, set)):
+        return " + ".join(str(x) for x in value if str(x).strip())
+    if value is None:
+        return ""
+    return str(value)
+
 try:
     # Celery is optional in dev; we keep the import defensive so the web container can boot.
     from .tasks import fetch_daily_bars_task
@@ -2323,13 +2332,6 @@ def backtest_results(request, pk: int):
     if is_truncated:
         daily = daily[-limit:]
 
-
-    def _codes_to_label(v):
-        if isinstance(v, (list, tuple)):
-            return " + ".join(str(x) for x in v if str(x).strip())
-        if v is None:
-            return ""
-        return str(v)
 
     # For dropdowns in UI
     ticker_options = []
