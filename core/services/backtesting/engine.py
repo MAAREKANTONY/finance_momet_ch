@@ -241,6 +241,18 @@ def _update_and_latched_states(latched_states: dict[str, bool], day_alerts: set[
     return {code for code, is_active in latched_states.items() if is_active}
 
 
+
+
+def _reset_trade_signal_memory(state_row: dict[str, Any]) -> None:
+    """Clear persisted signal memory after an executed trade.
+
+    This prevents an opposite-side trade from reusing stale AND/persistent states
+    from the previous cycle and immediately re-triggering on the same day or the
+    following days without a fresh signal sequence.
+    """
+    state_row["active_signal_states"] = {}
+    state_row["and_latched_states"] = {}
+
 def _match_codes_with_memory(day_alerts: set[str], latched_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
     codes = _normalize_codes(codes)
     if not codes:
@@ -816,6 +828,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 st["entry_date"] = None
                 st["trade_count"] += 1
                 st["sum_g"] += (G_today or Decimal("0"))
+                _reset_trade_signal_memory(st)
                 st["position_open"] = False
                 st["entry_price"] = None
                 st["shares"] = 0
@@ -1027,6 +1040,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             st["position_open"] = True
             st["entry_price"] = str(close_d)
             st["entry_date"] = d
+            _reset_trade_signal_memory(st)
 
             logs.append(f"{ticker}[L{li+1}] BUY signal {_compose_condition_label(buy_codes, st['buy_logic'], st['buy_gm_filter'], st['buy_gm_operator'])} on {d} close={close_d} shares={shares} cash_left={st['cash_ticker']}")
 
@@ -1178,9 +1192,6 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 current_max_loss = st.get("max_loss_amount")
                 if current_max_loss is None or pnl_amount_today < current_max_loss:
                     st["max_loss_amount"] = pnl_amount_today
-            st["trade_count"] += 1
-            st["sum_g"] += (G_today or Decimal("0"))
-            st["position_open"] = False
             st["entry_price"] = None
             # Count holding days for forced-close completed trade
             if st.get("entry_date") is not None:
@@ -1744,6 +1755,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     G_today = (close_d - entry) / entry
                 st["trade_count"] += 1
                 st["sum_g"] += (G_today or Decimal("0"))
+                _reset_trade_signal_memory(st)
                 st["position_open"] = False
                 st["entry_price"] = None
                 st["shares"] = 0
@@ -1864,6 +1876,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             st["position_open"] = True
             st["entry_price"] = str(close_d)
             st["entry_date"] = d
+            _reset_trade_signal_memory(st)
 
         # End-of-day counters
         for (ticker, li), st in state.items():

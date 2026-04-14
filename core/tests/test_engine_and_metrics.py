@@ -279,6 +279,45 @@ class EngineAndMetricsRegressionTests(TestCase):
             )
         )
 
+
+    def test_run_backtest_clears_signal_memory_after_sell_preventing_same_day_rebuy(self):
+        start = date(2024, 1, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "10", "10", "10"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(4)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=1), alerts="C1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1"),
+        ])
+
+        bt = Backtest.objects.create(
+            name="Memory Reset Test",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1", "C1"], "buy_logic": "AND", "sell": ["B1"], "sell_logic": "OR"}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertEqual(daily[2]["action"], "SELL")
+        self.assertNotIn("BUY", {row.get("action") for row in daily[2:]})
+        self.assertEqual(Decimal(line["final"]["cash_ticker_end"]), Decimal("100"))
+        self.assertEqual(Decimal(line["final"]["FINAL_EQUITY"]), Decimal("100"))
+
     def test_run_backtest_kpi_only_keeps_query_count_low_for_many_tickers(self):
         symbols = [self.symbol]
         for i in range(1, 26):
