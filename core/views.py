@@ -65,16 +65,6 @@ from .services.derived_data import (
     purge_scenario_derived_data,
     scenario_impactful_changes,
 )
-from .excel_utils import append_excel_row
-
-
-def _codes_to_label(value):
-    """Render BUY/SELL code containers as readable labels for UI/exports."""
-    if isinstance(value, (list, tuple, set)):
-        return " + ".join(str(x) for x in value if str(x).strip())
-    if value is None:
-        return ""
-    return str(value)
 
 try:
     # Celery is optional in dev; we keep the import defensive so the web container can boot.
@@ -2333,6 +2323,13 @@ def backtest_results(request, pk: int):
         daily = daily[-limit:]
 
 
+    def _codes_to_label(v):
+        if isinstance(v, (list, tuple)):
+            return " + ".join(str(x) for x in v if str(x).strip())
+        if v is None:
+            return ""
+        return str(v)
+
     # For dropdowns in UI
     ticker_options = []
     global_line_options = {}
@@ -2555,7 +2552,7 @@ def _build_backtest_workbook_full(bt):
         ("engine_version", meta.get("engine_version", "")),
     ]
     for k, v in settings_rows:
-        append_excel_row(ws, [k, v])
+        ws.append([k, v])
     _auto_width(ws)
 
     # --- Universe (snapshot) ---
@@ -2569,9 +2566,9 @@ def _build_backtest_workbook_full(bt):
     if isinstance(uni, list):
         for item in uni:
             if isinstance(item, dict):
-                append_excel_row(ws_u, [item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
+                ws_u.append([item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
             else:
-                append_excel_row(ws_u, [str(item), "", ""])
+                ws_u.append([str(item), "", ""]) 
     _auto_width(ws_u)
 
     # --- Summary ---
@@ -2599,11 +2596,11 @@ def _build_backtest_workbook_full(bt):
         tentry = tickers_map.get(ticker) or {}
         for line in (tentry or {}).get("lines") or []:
             fin = line.get("final") or {}
-            append_excel_row(ws_s, [
+            ws_s.append([
                 ticker,
                 line.get("line_index"),
-                _codes_to_label(line.get("buy")),
-                _codes_to_label(line.get("sell")),
+                line.get("buy"),
+                line.get("sell"),
                 "Oui" if line.get("allocated") else "Non",
                 fin.get("N"),
                 _pct_ratio_to_percent(fin.get("S_G_N")),
@@ -2637,12 +2634,12 @@ def _build_backtest_workbook_full(bt):
         ws_p.append([k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    append_excel_row(ws_pd, ["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
+    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
     for r in port_daily:
-        append_excel_row(ws_pd, [
+        ws_pd.append([
             r.get("date"),
             _to_float(r.get("equity")),
             _to_float(r.get("invested")),
@@ -2721,7 +2718,7 @@ def _build_backtest_workbook_full(bt):
                 close_px = _to_float(r.get("price_close"))
                 shares = _to_float(r.get("shares")) or 0
                 in_pos = shares > 0
-                append_excel_row(ws_d, [
+                ws_d.append([
                     r.get("date"),
                     close_px,
                     close_px if in_pos else None,
@@ -2912,7 +2909,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ("engine_version", meta.get("engine_version", "")),
     ]
     for k, v in rows:
-        append_excel_row(ws, [k, v])
+        ws.append([k, v])
     _auto_width(ws)
 
     # -------- Universe --------
@@ -2925,9 +2922,9 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
     if isinstance(uni, list):
         for item in uni:
             if isinstance(item, dict):
-                append_excel_row(ws_u, [item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
+                ws_u.append([item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
             else:
-                append_excel_row(ws_u, [str(item), "", ""])
+                ws_u.append([str(item), ""])
     _auto_width(ws_u)
 
     # -------- Summary --------
@@ -2952,11 +2949,11 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         for strat in lines:
             sidx = int(strat.get("line_index", 0) or 0) or 1
             fin = strat.get("final") or {}
-            append_excel_row(ws_s, [
+            ws_s.append([
                 ticker,
                 sidx,
-                _codes_to_label(strat.get("buy")),
-                _codes_to_label(strat.get("sell")),
+                strat.get("buy"),
+                strat.get("sell"),
                 "Oui" if strat.get("allocated") else "Non",
                 fin.get("N"),
                 _pct(fin.get("S_G_N")),
@@ -3007,8 +3004,8 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
     # stable ordering
     daily_rows.sort(key=lambda x: (x.get("date") or "", x.get("ticker") or "", x.get("line") or 0))
     for r in daily_rows:
-        append_excel_row(ws_d, [
-            r["date"], r["ticker"], r["line"], _codes_to_label(r["buy"]), _codes_to_label(r["sell"]),
+        ws_d.append([
+            r["date"], r["ticker"], r["line"], r["buy"], r["sell"],
             r["close"], r["ratio_p_pct"], "Oui" if r["tradable"] else "Non",
             r["alerts"], r["action"], r["G_pct"], r["N"], r["S_G_N_pct"], r["BT_pct"],
             r["NB_JOUR_OUVRES"], r["BMJ_pct"], r.get("BMD_pct"), r.get("BUY_DAYS_CLOSED"), r["cash"], r["shares"],
@@ -3036,12 +3033,12 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ws_p.append([k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    append_excel_row(ws_pd, ["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
+    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
     for r in port_daily:
-        append_excel_row(ws_pd, [
+        ws_pd.append([
             r.get("date"),
             _to_float(r.get("equity")),
             _to_float(r.get("invested")),

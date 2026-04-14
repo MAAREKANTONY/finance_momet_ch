@@ -98,19 +98,30 @@ def _metric_val(mtuple: tuple | None, idx: int) -> Any:
 def _normalize_codes(value: Any) -> list[str]:
     if value in (None, ""):
         return []
+
+    def _append_token(out: list[str], raw: Any) -> None:
+        if raw in (None, ""):
+            return
+        text = str(raw).strip()
+        if not text:
+            return
+        parts = [part.strip().upper() for part in text.split(",")] if "," in text else [text.upper()]
+        for code in parts:
+            if code and code not in out:
+                out.append(code)
+
     if isinstance(value, str):
-        code = value.strip().upper()
-        return [code] if code else []
-    if isinstance(value, (list, tuple)):
+        out: list[str] = []
+        _append_token(out, value)
+        return out
+    if isinstance(value, (list, tuple, set)):
         out: list[str] = []
         for item in value:
-            if item in (None, ""):
-                continue
-            code = str(item).strip().upper()
-            if code:
-                out.append(code)
+            _append_token(out, item)
         return out
-    return [str(value).strip().upper()] if str(value).strip() else []
+    out: list[str] = []
+    _append_token(out, value)
+    return out
 
 
 def _normalize_logic(value: Any, default: str) -> str:

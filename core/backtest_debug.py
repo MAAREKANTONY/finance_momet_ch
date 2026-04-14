@@ -3,7 +3,6 @@ from __future__ import annotations
 from typing import Any, Iterable
 from openpyxl import Workbook
 
-from .excel_utils import append_excel_row, normalize_excel_cell
 from .models import Backtest
 
 
@@ -136,7 +135,7 @@ def _ordered_columns(rows: Iterable[dict[str, Any]]) -> list[str]:
 
 
 def _append_kv(ws, key: str, value: Any) -> None:
-    append_excel_row(ws, [key, normalize_excel_cell(value)])
+    ws.append([key, '' if value is None else str(value)])
 
 
 def build_backtest_debug_workbook(bt: Backtest, ticker: str = '', line: str | int | None = None):
@@ -148,15 +147,15 @@ def build_backtest_debug_workbook(bt: Backtest, ticker: str = '', line: str | in
     daily = payload['daily'] or []
     columns = _ordered_columns(daily)
     if columns:
-        append_excel_row(ws_data, columns)
+        ws_data.append(columns)
         for row in daily:
-            append_excel_row(ws_data, [row.get(c, '') for c in columns])
+            ws_data.append([row.get(c, '') for c in columns])
     else:
-        append_excel_row(ws_data, ['info'])
-        append_excel_row(ws_data, ['Aucune ligne quotidienne disponible'])
+        ws_data.append(['info'])
+        ws_data.append(['Aucune ligne quotidienne disponible'])
 
     ws_formulas = wb.create_sheet('FORMULAS')
-    append_excel_row(ws_formulas, ['Section', 'Valeur'])
+    ws_formulas.append(['Section', 'Valeur'])
     _append_kv(ws_formulas, 'Backtest ID', bt.id)
     _append_kv(ws_formulas, 'Backtest name', bt.name)
     _append_kv(ws_formulas, 'Scenario', getattr(bt.scenario, 'name', ''))
@@ -175,8 +174,8 @@ def build_backtest_debug_workbook(bt: Backtest, ticker: str = '', line: str | in
     _append_kv(ws_formulas, 'Close positions at end', bt.close_positions_at_end)
 
     scenario = bt.scenario
-    append_excel_row(ws_formulas, [])
-    append_excel_row(ws_formulas, ['Scenario parameter', 'Value'])
+    ws_formulas.append([])
+    ws_formulas.append(['Scenario parameter', 'Value'])
     for field in [
         'a', 'b', 'c', 'd', 'e', 'vc', 'fl', 'n1', 'n2', 'n3', 'n4', 'n5', 'k2j', 'cr',
         'n5f3', 'crf3', 'npente', 'nglobal', 'slope_threshold', 'npente_basse', 'slope_threshold_basse',
@@ -184,15 +183,15 @@ def build_backtest_debug_workbook(bt: Backtest, ticker: str = '', line: str | in
         if hasattr(scenario, field):
             _append_kv(ws_formulas, field, getattr(scenario, field))
 
-    append_excel_row(ws_formulas, [])
-    append_excel_row(ws_formulas, ['Formula', 'Meaning', 'Theory', 'Excel hint'])
+    ws_formulas.append([])
+    ws_formulas.append(['Formula', 'Meaning', 'Theory', 'Excel hint'])
     for row in FORMULA_ROWS:
-        append_excel_row(ws_formulas, list(row))
+        ws_formulas.append(list(row))
 
     ws_final = wb.create_sheet('FINAL')
-    append_excel_row(ws_final, ['Metric', 'Value'])
+    ws_final.append(['Metric', 'Value'])
     for k, v in payload['final'].items():
-        append_excel_row(ws_final, [k, v])
+        ws_final.append([k, v])
 
     for ws in [ws_data, ws_formulas, ws_final]:
         for column_cells in ws.columns:

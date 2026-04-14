@@ -252,6 +252,33 @@ class EngineAndMetricsRegressionTests(TestCase):
             )
         )
 
+
+    def test_normalize_codes_accepts_legacy_csv_for_sell_or_logic(self):
+        self.assertTrue(
+            _match_line_with_global_filter(
+                day_alerts={"SPVV_BASSE"},
+                latched_alerts=set(),
+                codes="SPV,SPVV,SPV_BASSE,SPVV_BASSE",
+                logic="OR",
+                gm_code="GM_POS",
+                gm_filter="IGNORE",
+                gm_operator="AND",
+            )
+        )
+
+    def test_normalize_codes_accepts_mixed_list_with_csv_and_deduplicates(self):
+        self.assertTrue(
+            _match_line_with_global_filter(
+                day_alerts={"SPVA"},
+                latched_alerts={"SPA"},
+                codes=["SPA, SPVA", "SPVA"],
+                logic="AND",
+                gm_code="GM_POS",
+                gm_filter="IGNORE",
+                gm_operator="AND",
+            )
+        )
+
     def test_run_backtest_kpi_only_keeps_query_count_low_for_many_tickers(self):
         symbols = [self.symbol]
         for i in range(1, 26):

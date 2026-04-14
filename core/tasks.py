@@ -18,8 +18,6 @@ from .services.global_momentum import build_global_momentum_regime_by_date, GLOB
 from .services.calculations_fast import compute_full_for_symbol_scenario
 
 from django.utils import timezone
-
-from .excel_utils import append_excel_row, normalize_excel_mapping_row
 from django.db import InterfaceError, OperationalError
 import json
 import csv
@@ -1477,7 +1475,6 @@ def cleanup_stale_processing_jobs_task() -> dict:
     from django.db.models import Q
     from django.utils import timezone
 
-
     hb_min = int(getattr(dj_settings, "JOB_STALE_HEARTBEAT_MINUTES", 15))
     started_min = int(getattr(dj_settings, "JOB_STALE_STARTED_MINUTES", 30))
     pending_min = int(getattr(dj_settings, "JOB_STALE_PENDING_MINUTES", 60))
@@ -1532,7 +1529,6 @@ def export_scenario_xlsx_task(
 
     from pathlib import Path
     from django.utils import timezone
-
     from .models import Scenario, Symbol
 
     job = ProcessingJob.objects.filter(id=job_id).first()
@@ -1727,7 +1723,7 @@ def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str 
         wb = Workbook()
         ws_bars = wb.active
         ws_bars.title = 'Bars'
-        append_excel_row(ws_bars, ['ticker', 'exchange', 'date', 'open', 'high', 'low', 'close', 'volume'])
+        ws_bars.append(['ticker', 'exchange', 'date', 'open', 'high', 'low', 'close', 'volume'])
 
         symbols_qs = Symbol.objects.filter(active=True)
         if ticker:
@@ -1742,10 +1738,10 @@ def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str 
         if date_to:
             bars = bars.filter(date__lte=date_to)
         for b in bars.iterator(chunk_size=2000):
-            append_excel_row(ws_bars, [b.symbol.ticker, b.symbol.exchange, b.date.isoformat(), b.open, b.high, b.low, b.close, b.volume])
+            ws_bars.append([b.symbol.ticker, b.symbol.exchange, b.date.isoformat(), b.open, b.high, b.low, b.close, b.volume])
 
         ws_metrics = wb.create_sheet('Metrics')
-        append_excel_row(ws_metrics, ['scenario_id', 'scenario_name', 'ticker', 'date', 'P', 'M', 'M1', 'X', 'X1', 'T', 'Q', 'S', 'K1', 'Kf', 'K2', 'K3', 'K4', 'sum_slope', 'slope_vrai', 'sum_slope_basse', 'slope_vrai_basse', 'ratio_P'])
+        ws_metrics.append(['scenario_id', 'scenario_name', 'ticker', 'date', 'P', 'M', 'M1', 'X', 'X1', 'T', 'Q', 'S', 'K1', 'Kf', 'K2', 'K3', 'K4', 'sum_slope', 'slope_vrai', 'sum_slope_basse', 'slope_vrai_basse', 'ratio_P'])
         metrics = DailyMetric.objects.select_related('scenario', 'symbol').filter(symbol_id__in=symbol_ids).order_by('scenario__name', 'symbol__ticker', 'date')
         if scenario_id:
             metrics = metrics.filter(scenario_id=scenario_id)
@@ -1754,10 +1750,10 @@ def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str 
         if date_to:
             metrics = metrics.filter(date__lte=date_to)
         for m in metrics.iterator(chunk_size=2000):
-            append_excel_row(ws_metrics, [m.scenario_id, m.scenario.name if m.scenario_id else '', m.symbol.ticker if m.symbol_id else '', m.date.isoformat(), m.P, m.M, m.M1, m.X, m.X1, m.T, m.Q, m.S, m.K1, getattr(m, 'Kf2bis', None), m.K2, m.K3, m.K4, m.sum_slope, m.slope_vrai, m.sum_slope_basse, m.slope_vrai_basse, m.ratio_P])
+            ws_metrics.append([m.scenario_id, m.scenario.name if m.scenario_id else '', m.symbol.ticker if m.symbol_id else '', m.date.isoformat(), m.P, m.M, m.M1, m.X, m.X1, m.T, m.Q, m.S, m.K1, getattr(m, 'Kf2bis', None), m.K2, m.K3, m.K4, m.sum_slope, m.slope_vrai, m.sum_slope_basse, m.slope_vrai_basse, m.ratio_P])
 
         ws_alerts = wb.create_sheet('Alerts')
-        append_excel_row(ws_alerts, ['scenario_id', 'scenario_name', 'ticker', 'exchange', 'date', 'alerts'])
+        ws_alerts.append(['scenario_id', 'scenario_name', 'ticker', 'exchange', 'date', 'alerts'])
         alerts = Alert.objects.select_related('scenario', 'symbol').filter(symbol_id__in=symbol_ids).order_by('-date', 'scenario__name', 'symbol__ticker')
         if scenario_id:
             alerts = alerts.filter(scenario_id=scenario_id)
@@ -1810,20 +1806,34 @@ def export_backtest_debug_csv_task(self, *, job_id: int, backtest_id: int, ticke
         job.started_at = timezone.now()
         job.save(update_fields=['task_id', 'status', 'started_at'])
     try:
-        bt = Backtest.objects.select_related('scenario').get(id=backtest_id)
-        from .backtest_debug import get_backtest_debug_payload
-
-        payload = get_backtest_debug_payload(bt, ticker=ticker, line=line)
-        daily = payload.get('daily') or []
-        output_name = f"backtest_{backtest_id}_{payload.get('ticker')}_debug.csv"
+        bt = Backtest.objects.get(id=backtest_id)
+        results = bt.results or {}
+        tickers_map = results.get('tickers') or {}
+        if not ticker:
+            ticker = next(iter(tickers_map.keys()), '')
+        if not ticker or ticker not in tickers_map:
+            raise ValueError('Ticker introuvable dans les résultats du backtest.')
+        lines = (tickers_map.get(ticker) or {}).get('lines') or []
+        if line != '':
+            try:
+                line_idx = int(line)
+                selected = [ln for ln in lines if int(ln.get('line_index') or -1) == line_idx]
+            except Exception:
+                selected = []
+        else:
+            selected = lines[:1]
+        if not selected:
+            raise ValueError('Ligne introuvable dans les résultats du backtest.')
+        daily = selected[0].get('daily') or []
+        output_name = f'backtest_{backtest_id}_{ticker}_debug.csv'
         path = _job_export_path(job_id, output_name)
         fieldnames = sorted({k for row in daily for k in row.keys()})
         with path.open('w', newline='', encoding='utf-8') as f:
             w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
             for row in daily:
-                w.writerow({k: append_value for k, append_value in ((key, normalize_excel_mapping_row(row, [key])[0]) for key in fieldnames)})
-        return _finalize_job_file(job, path, output_name, f"Exported backtest debug CSV for {payload.get('ticker')}")
+                w.writerow(row)
+        return _finalize_job_file(job, path, output_name, f'Exported backtest debug CSV for {ticker}')
     except Exception as exc:
         _fail_job(job, exc)
         raise
@@ -1891,7 +1901,7 @@ def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
         wb = Workbook()
         ws = wb.active
         ws.title = 'Game'
-        append_excel_row(ws, ['Field', 'Value'])
+        ws.append(['Field', 'Value'])
         for key, value in [
             ('id', game.id),
             ('name', game.name),
@@ -1906,13 +1916,13 @@ def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
             ('last_run_at', game.last_run_at.isoformat() if game.last_run_at else ''),
             ('last_run_status', game.last_run_status or ''),
         ]:
-            append_excel_row(ws, [key, value])
+            ws.append([key, value])
         ws2 = wb.create_sheet('TodayResults')
         rows = game.today_results or []
         headers = sorted({k for row in rows for k in row.keys()}) if rows else ['ticker', 'best_bmd', 'ok']
-        append_excel_row(ws2, headers)
+        ws2.append(headers)
         for row in rows:
-            append_excel_row(ws2, normalize_excel_mapping_row(row, headers))
+            ws2.append([row.get(h) for h in headers])
         output_name = f'game_scenario_{game_scenario_id}.xlsx'
         path = _job_export_path(job_id, output_name)
         wb.save(path)
