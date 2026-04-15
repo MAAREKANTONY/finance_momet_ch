@@ -10,7 +10,7 @@ from django.test import Client, TestCase
 from django.urls import reverse
 from django.utils import timezone
 
-from core.models import Backtest, ProcessingJob, Scenario
+from core.models import Backtest, GameScenario, ProcessingJob, Scenario
 
 
 class JobControlViewTests(TestCase):
@@ -184,6 +184,53 @@ class JobCheckpointPulseTests(TestCase):
 
 
 
+
+
+
+class JobStatusSyncGameScenarioTests(TestCase):
+    def test_sync_related_state_marks_game_scenario_failed_from_terminal_job(self):
+        game = GameScenario.objects.create(name="Game Sync")
+        game.last_run_status = "running"
+        game.last_run_message = ""
+        game.save(update_fields=["last_run_status", "last_run_message"])
+
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.FAILED,
+            game_scenario=game,
+            message="Erreur (run game 1): boom",
+        )
+
+        from core.job_status_sync import sync_related_state_for_terminal_job
+
+        sync_related_state_for_terminal_job(job)
+
+        game.refresh_from_db()
+        self.assertEqual(game.last_run_status, "failed")
+        self.assertIn("boom", game.last_run_message)
+
+    def test_recover_jobs_syncs_game_scenario_for_stale_running_job(self):
+        game = GameScenario.objects.create(name="Game Recover")
+        game.last_run_status = "running"
+        game.save(update_fields=["last_run_status"])
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.RUNNING,
+            game_scenario=game,
+            started_at=timezone.now() - timedelta(minutes=200),
+            heartbeat_at=timezone.now() - timedelta(minutes=180),
+        )
+
+        from core import tasks as core_tasks
+
+        result = core_tasks.cleanup_stale_processing_jobs_task()
+
+        job.refresh_from_db()
+        game.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertEqual(game.last_run_status, "failed")
+        self.assertIn("Recovered stale running job", game.last_run_message)
+        self.assertGreaterEqual(result["synced_terminal"], 1)
 
 class CleanupStaleProcessingJobsTaskTests(TestCase):
     def test_cleanup_task_marks_requested_pending_cancelled_via_recovery_engine(self):

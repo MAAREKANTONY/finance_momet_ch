@@ -1273,6 +1273,7 @@ def run_game_scenario_job_task(self, *, game_id: int, force_fetch: bool = False,
             job.finished_at = timezone.now()
             job.message = f"Erreur (run game {game_id}): {e}"
             _job_save(job, update_fields=["status", "finished_at", "message"])
+            sync_related_state_for_terminal_job(job)
         raise
 def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=None):
     # Lazy imports to avoid circular imports

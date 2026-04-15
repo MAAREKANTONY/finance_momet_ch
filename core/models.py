@@ -832,6 +832,13 @@ class ProcessingJob(models.Model):
         on_delete=models.SET_NULL,
         related_name="jobs",
     )
+    game_scenario = models.ForeignKey(
+        "GameScenario",
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="jobs",
+    )
     created_by = models.ForeignKey(
         django_settings.AUTH_USER_MODEL,
         null=True,
@@ -867,6 +874,7 @@ class ProcessingJob(models.Model):
             models.Index(fields=["job_type", "created_at"]),
             models.Index(fields=["backtest", "created_at"]),
             models.Index(fields=["scenario", "created_at"]),
+            models.Index(fields=["game_scenario", "created_at"]),
             models.Index(fields=["status", "heartbeat_at"]),
             models.Index(fields=["status", "worker_hostname"]),
         ]

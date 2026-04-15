@@ -3687,6 +3687,7 @@ def game_scenario_launch(request: HttpRequest, pk: int):
             task=run_game_scenario_job_task,
             job_type=ProcessingJob.JobType.RUN_GAME,
             created_by=request.user if request.user.is_authenticated else None,
+            game_scenario=obj,
             message="En attente d'exécution (GameScenario)",
             task_kwargs={
                 "game_id": obj.id,
@@ -4002,6 +4003,7 @@ def trigger_page(request: HttpRequest):
                             task=run_game_scenario_job_task,
                             job_type=ProcessingJob.JobType.RUN_GAME,
                             created_by=request.user if request.user.is_authenticated else None,
+                            game_scenario=GameScenario.objects.get(id=int(game_id)),
                             message="En attente d'exécution (run game)" + (" force recompute" if force_recompute else ""),
                             task_kwargs={
                                 "game_id": int(game_id),

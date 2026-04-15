@@ -132,7 +132,7 @@ def sync_terminal_jobs(*, queryset: QuerySet[ProcessingJob] | None = None, limit
     if limit:
         qs = qs.order_by("-id")[:limit]
     count = 0
-    for job in qs.only("id", "status", "backtest_id", "message", "error"):
+    for job in qs.only("id", "status", "backtest_id", "game_scenario_id", "message", "error"):
         sync_related_state_for_terminal_job(job)
         count += 1
     return count
@@ -162,7 +162,7 @@ def recover_jobs(
     now = timezone.now()
     for job in qs.only(
         "id", "job_type", "status", "task_id", "created_at", "started_at", "heartbeat_at",
-        "cancel_requested", "kill_requested", "message", "error", "backtest_id",
+        "cancel_requested", "kill_requested", "message", "error", "backtest_id", "game_scenario_id",
     ):
         decision = decide_recovery(job, now=now)
         if not decision:

@@ -40,6 +40,7 @@ def launch_processing_job(
     created_by=None,
     backtest=None,
     scenario=None,
+    game_scenario=None,
     message: str = "En attente d'exécution",
 ) -> JobLaunchOutcome:
     """Create a tracked ProcessingJob then enqueue its Celery task after DB commit.
@@ -57,6 +58,7 @@ def launch_processing_job(
         status=ProcessingJob.Status.PENDING,
         backtest=backtest,
         scenario=scenario,
+        game_scenario=game_scenario,
         created_by=created_by,
         message=message,
     )
