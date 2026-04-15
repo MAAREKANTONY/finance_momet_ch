@@ -1,0 +1,54 @@
+V7.0.84 — corrective review: jobs + exports stabilization
+
+Goal
+- Stop all feature work and fix regressions affecting async jobs and exports.
+
+Detailed review findings
+1) CSV details export regression
+- Root cause: helper `_arrow_table_to_csv_safe` was mistakenly decorated with `@login_required`.
+- Impact: Django treated the Arrow table as a request object and crashed with:
+  AttributeError: 'pyarrow.lib.Table' object has no attribute 'user'
+
+2) XLS backtest export crash
+- Root cause: openpyxl cannot write Python lists/dicts directly to cells.
+- Example seen in prod logs:
+  ValueError: Cannot convert ['SPA', 'SPVA'] to Excel
+- Impact: full/compact/debug workbook exports could fail when BUY/SELL or daily fields contain lists.
+
+3) Jobs regression on backtests
+- Root cause A: `run_backtest_task` referenced `self.request` although it is not a bound Celery task.
+- Root cause B: `sync_related_state_for_terminal_job` was called from `core.tasks` without being imported.
+- Impact: async backtests could fail immediately and leave ProcessingJob / Backtest states inconsistent.
+
+Corrections implemented
+- Removed `@login_required` from `_arrow_table_to_csv_safe`.
+- Added `core/excel_utils.py` with:
+  - `excel_safe_value`
+  - `append_excel_row`
+- Hardened workbook generation to serialize list/dict/set values before writing to Excel.
+- Patched backtest exports:
+  - `_build_backtest_workbook_full`
+  - `_build_backtest_workbook_compact`
+  - `build_backtest_debug_workbook`
+- Hardened scenario workbook writer for nested export values.
+- Converted `run_backtest_task` into a plain internal function with explicit `task_request` parameter.
+- Updated `run_backtest_job_task` to pass `self.request` explicitly.
+- Imported `sync_related_state_for_terminal_job` in `core.tasks`.
+
+Tests added / strengthened
+- Regression test: `_arrow_table_to_csv_safe` remains a plain helper.
+- Regression test: full backtest workbook serializes list values instead of crashing.
+- Regression test: debug workbook serializes nested daily/final values.
+- Regression test: `run_backtest_task` accepts a task request without `self` NameError.
+
+Deployment
+- No migration.
+- Rebuild and restart containers.
+
+Recommended validation after deploy
+1) Re-run `/backtests/<id>/export_details.zip?format=csv`
+2) Re-run `/backtests/<id>/export.xlsx`
+3) Re-run compact backtest Excel export
+4) Re-run debug Excel export
+5) Launch a new async backtest and confirm the job reaches DONE/FAILED cleanly
+6) Check `/jobs` page and the linked Backtest status after success/failure

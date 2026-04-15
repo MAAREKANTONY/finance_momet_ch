@@ -10,6 +10,7 @@ from typing import Iterable
 
 from openpyxl import Workbook
 
+from .excel_utils import append_excel_row
 from .models import DailyBar, DailyMetric, Scenario, Symbol, Alert
 
 
@@ -97,9 +98,9 @@ def build_scenario_workbook_write_only(
         title = (sym.ticker or "")[:28] or f"SYM_{sym.id}"
         ws = wb.create_sheet(title=title)
 
-        ws.append([f"Scenario: {scenario.name}"])
-        ws.append([f"Description: {scenario.description}"])
-        ws.append([
+        append_excel_row(ws, [f"Scenario: {scenario.name}"])
+        append_excel_row(ws, [f"Description: {scenario.description}"])
+        append_excel_row(ws, [
             f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
             f"| N1={scenario.n1} N2={scenario.n2} "
             f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil={getattr(scenario,'slope_threshold',None)} "
@@ -143,14 +144,14 @@ def build_scenario_workbook_write_only(
             "K4",
             "alerts",
         ]
-        ws.append(header)
+        append_excel_row(ws, header)
 
         def f(x):
             return float(x) if x is not None else None
 
         for b in bars.iterator(chunk_size=5000):
             m = metrics_by_date.get(b.date)
-            ws.append([
+            append_excel_row(ws, [
                 b.date.isoformat(),
                 f(b.open),
                 f(b.high),

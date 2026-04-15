@@ -17,6 +17,7 @@ from .services.calculations import compute_for_symbol_scenario
 from .services.global_momentum import build_global_momentum_regime_by_date, GLOBAL_MOMENTUM_CODES
 from .services.calculations_fast import compute_full_for_symbol_scenario
 from .job_tracking import JobCancelled, JobCheckpointPulse, JobKilled, job_checkpoint, mark_job_running
+from .job_status_sync import sync_related_state_for_terminal_job
 
 from django.utils import timezone
 from django.db import InterfaceError, OperationalError
@@ -1264,8 +1265,7 @@ def run_game_scenario_job_task(self, *, game_id: int, force_fetch: bool = False,
             job.message = f"Erreur (run game {game_id}): {e}"
             _job_save(job, update_fields=["status", "finished_at", "message"])
         raise
-@shared_task
-def run_backtest_task(backtest_id: int, job_id: int | None = None):
+def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=None):
     # Lazy imports to avoid circular imports
     from .services.backtesting.prep import prepare_backtest_data
     from .services.backtesting.engine import run_backtest as engine_run_backtest
@@ -1285,7 +1285,7 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None):
     try:
         prep_report = prepare_backtest_data(bt)
         job = ProcessingJob.objects.filter(id=job_id).first() if job_id else None
-        engine_result = engine_run_backtest(bt, checkpoint=(lambda: job_checkpoint(job, checkpoint="run_backtest:engine", task_request=self.request)) if job_id else None)
+        engine_result = engine_run_backtest(bt, checkpoint=(lambda: job_checkpoint(job, checkpoint="run_backtest:engine", task_request=task_request)) if job_id else None)
         results = engine_result.results
 
         # --- Optional (NO-REGRESSION) Parquet storage ---
@@ -1388,7 +1388,7 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
         mark_job_running(job, task_request=self.request, message="started")
     try:
         job_checkpoint(job, task_request=self.request)
-        msg = run_backtest_task(backtest_id, job_id=job.id if job else None)
+        msg = run_backtest_task(backtest_id, job_id=job.id if job else None, task_request=self.request)
         job.status = ProcessingJob.Status.DONE
         job.message = str(msg)
         job.finished_at = timezone.now()

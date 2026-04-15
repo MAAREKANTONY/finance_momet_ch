@@ -233,3 +233,26 @@ class RecoverJobsCommandTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.RUNNING)
         self.assertIn("Dry-run only", out.getvalue())
+
+
+from unittest.mock import patch
+from types import SimpleNamespace
+
+from core import tasks as core_tasks
+
+
+class RunBacktestTaskRegressionTests(TestCase):
+    def test_run_backtest_task_accepts_task_request_without_self_nameerror(self):
+        scenario = Scenario.objects.create(name="Scenario Backtest")
+        bt = Backtest.objects.create(name="BT Backtest", scenario=scenario)
+
+        fake_prep = SimpleNamespace(did_fetch_bars=False, did_compute_metrics=False, notes=[])
+        fake_result = SimpleNamespace(results={"tickers": {}, "portfolio": {"daily": [], "kpi": {}}})
+
+        with patch("core.services.backtesting.prep.prepare_backtest_data", return_value=fake_prep), \
+             patch("core.services.backtesting.engine.run_backtest", return_value=fake_result), \
+             patch("core.models.BacktestPortfolioDaily.objects.filter"), \
+             patch("core.models.BacktestPortfolioKPI.objects.update_or_create"):
+            msg = core_tasks.run_backtest_task(bt.id, task_request=SimpleNamespace(id="task-1", hostname="celery@test"))
+
+        self.assertEqual(msg, "ok")

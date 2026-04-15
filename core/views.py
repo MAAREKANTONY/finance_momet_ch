@@ -57,6 +57,7 @@ from .forms import (
 from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
+from .excel_utils import append_excel_row
 from .services.derived_data import (
     backtest_impactful_changes,
     game_impactful_changes,
@@ -2596,7 +2597,7 @@ def _build_backtest_workbook_full(bt):
         tentry = tickers_map.get(ticker) or {}
         for line in (tentry or {}).get("lines") or []:
             fin = line.get("final") or {}
-            ws_s.append([
+            append_excel_row(ws_s, [
                 ticker,
                 line.get("line_index"),
                 line.get("buy"),
@@ -2949,7 +2950,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         for strat in lines:
             sidx = int(strat.get("line_index", 0) or 0) or 1
             fin = strat.get("final") or {}
-            ws_s.append([
+            append_excel_row(ws_s, [
                 ticker,
                 sidx,
                 strat.get("buy"),
@@ -3304,8 +3305,6 @@ def _resolve_backtest_parquet_dir(bt: Backtest) -> Path:
     scenario_segment = _safe_fs_segment(scenario_name) if scenario_name else str(bt.scenario_id or "scenario")
     return Path(base_dir) / "backtests" / str(bt.id) / scenario_segment
 
-
-@login_required
 
 def _arrow_table_to_csv_safe(table):
     """Convert Arrow table to CSV-writable by stringifying nested types (list/struct/map).
