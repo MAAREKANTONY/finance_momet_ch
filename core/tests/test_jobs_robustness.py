@@ -183,6 +183,60 @@ class JobCheckpointPulseTests(TestCase):
         self.assertEqual(job.last_checkpoint, "compute:start")
 
 
+
+
+class CleanupStaleProcessingJobsTaskTests(TestCase):
+    def test_cleanup_task_marks_requested_pending_cancelled_via_recovery_engine(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            cancel_requested=True,
+        )
+
+        result = core_tasks.cleanup_stale_processing_jobs_task()
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.CANCELLED)
+        self.assertEqual(result["cancelled"], 1)
+        self.assertEqual(result["updated"], 1)
+
+    def test_cleanup_task_marks_requested_pending_killed_via_recovery_engine(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            kill_requested=True,
+            cancel_requested=True,
+        )
+
+        result = core_tasks.cleanup_stale_processing_jobs_task()
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.KILLED)
+        self.assertEqual(result["killed"], 1)
+        self.assertEqual(result["updated"], 1)
+
+    def test_cleanup_task_syncs_backtest_state_for_stale_running_job(self):
+        bt = Backtest.objects.create(name="BT stale cleanup", scenario=Scenario.objects.create(name="Scenario cleanup"))
+        bt.status = Backtest.Status.RUNNING
+        bt.save(update_fields=["status"])
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_BACKTEST,
+            status=ProcessingJob.Status.RUNNING,
+            backtest=bt,
+            started_at=timezone.now() - timedelta(minutes=200),
+            heartbeat_at=timezone.now() - timedelta(minutes=180),
+        )
+
+        result = core_tasks.cleanup_stale_processing_jobs_task()
+
+        job.refresh_from_db()
+        bt.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertEqual(bt.status, Backtest.Status.FAILED)
+        self.assertEqual(result["failed"], 1)
+        self.assertGreaterEqual(result["synced_terminal"], 1)
+
+
 class RecoverJobsCommandTests(TestCase):
     def _make_backtest(self):
         scenario = Scenario.objects.create(name="Scenario Recover")

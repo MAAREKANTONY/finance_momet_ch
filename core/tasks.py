@@ -18,6 +18,7 @@ from .services.global_momentum import build_global_momentum_regime_by_date, GLOB
 from .services.calculations_fast import compute_full_for_symbol_scenario
 from .job_tracking import JobCancelled, JobCheckpointPulse, JobKilled, job_checkpoint, mark_job_running
 from .job_status_sync import sync_related_state_for_terminal_job
+from .excel_utils import append_excel_row
 
 from django.utils import timezone
 from django.db import InterfaceError, OperationalError
@@ -1429,53 +1430,39 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
 
 @shared_task
 def cleanup_stale_processing_jobs_task() -> dict:
-    """Mark stale / zombie ProcessingJob rows as FAILED to keep /jobs and admin usable.
+    """Wrapper around the canonical recovery engine used by recover_jobs.
 
-    This is defensive: if a worker is killed, redeployed, or crashes, the DB row can stay RUNNING/PENDING forever.
-
-    Rules (conservative):
-    - RUNNING with heartbeat older than JOB_STALE_HEARTBEAT_MINUTES => FAILED
-    - RUNNING with no heartbeat and started_at older than JOB_STALE_STARTED_MINUTES => FAILED
-    - PENDING older than JOB_STALE_PENDING_MINUTES => FAILED (likely never picked up)
+    Keeping a single decision engine prevents divergence between manual recovery and
+    scheduled cleanup (FAILED vs CANCELLED vs KILLED, pending handling, and related-state sync).
     """
     from django.conf import settings as dj_settings
-    from django.db.models import Q
-    from django.utils import timezone
+
+    from .job_recovery import recover_jobs
 
     hb_min = int(getattr(dj_settings, "JOB_STALE_HEARTBEAT_MINUTES", 15))
     started_min = int(getattr(dj_settings, "JOB_STALE_STARTED_MINUTES", 30))
     pending_min = int(getattr(dj_settings, "JOB_STALE_PENDING_MINUTES", 60))
 
-    now = timezone.now()
-    from datetime import timedelta
-
-    hb_cutoff = now - timedelta(minutes=hb_min)
-    started_cutoff = now - timedelta(minutes=started_min)
-    pending_cutoff = now - timedelta(minutes=pending_min)
-
-    # RUNNING stale by heartbeat
-    q_running_hb = Q(status=ProcessingJob.Status.RUNNING) & Q(heartbeat_at__isnull=False) & Q(heartbeat_at__lt=hb_cutoff)
-    # RUNNING stale by started_at without heartbeat
-    q_running_nohb = Q(status=ProcessingJob.Status.RUNNING) & Q(heartbeat_at__isnull=True) & Q(started_at__isnull=False) & Q(started_at__lt=started_cutoff)
-    # PENDING too old
-    q_pending_old = Q(status=ProcessingJob.Status.PENDING) & Q(created_at__lt=pending_cutoff)
-
-    stale_qs = ProcessingJob.objects.filter(q_running_hb | q_running_nohb | q_pending_old)
-
-    updated = 0
-    for job in stale_qs.only("id", "status"):
-        ProcessingJob.objects.filter(id=job.id).update(
-            status=ProcessingJob.Status.FAILED,
-            finished_at=now,
-            error="Auto-marked as FAILED (stale job cleanup).",
-        )
-        job.status = ProcessingJob.Status.FAILED
-        job.finished_at = now
-        job.error = "Auto-marked as FAILED (stale job cleanup)."
-        sync_related_state_for_terminal_job(job)
-        updated += 1
-
-    return {"updated": updated, "heartbeat_minutes": hb_min, "started_minutes": started_min, "pending_minutes": pending_min}
+    _decisions, stats = recover_jobs(
+        running_heartbeat_minutes=hb_min,
+        running_started_minutes=started_min,
+        pending_minutes=pending_min,
+        include_pending=True,
+        include_requested_pending=True,
+        dry_run=False,
+        sync_recent_terminal=True,
+    )
+    return {
+        "matched": stats.matched,
+        "updated": stats.updated,
+        "failed": stats.failed,
+        "cancelled": stats.cancelled,
+        "killed": stats.killed,
+        "synced_terminal": stats.synced_terminal,
+        "heartbeat_minutes": hb_min,
+        "started_minutes": started_min,
+        "pending_minutes": pending_min,
+    }
 
 
 @shared_task(bind=True)
@@ -1801,6 +1788,24 @@ def export_backtest_debug_csv_task(self, *, job_id: int, backtest_id: int, ticke
         raise
 
 
+
+
+@shared_task(bind=True)
+def export_backtest_details_zip_task(self, *, job_id: int, backtest_id: int, fmt: str = "parquet"):
+    from .views import _build_backtest_details_zip
+
+    job = ProcessingJob.objects.filter(id=job_id).first()
+    if job:
+        mark_job_running(job, task_request=self.request)
+    try:
+        bt = Backtest.objects.get(id=backtest_id)
+        path, output_name = _build_backtest_details_zip(bt, fmt=fmt)
+        return _finalize_job_file(job, path, output_name, f'Exported backtest details {fmt.upper()} ZIP for #{backtest_id}')
+    except Exception as exc:
+        _fail_job(job, exc)
+        raise
+
+
 @shared_task(bind=True)
 def export_backtest_excel_task(self, *, job_id: int, backtest_id: int):
     from .models import Backtest
@@ -1870,13 +1875,32 @@ def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
         ]:
             append_excel_row(ws, [key, value])
         ws2 = wb.create_sheet('TodayResults')
-        rows = game.today_results or []
-        headers = sorted({k for row in rows for k in row.keys()}) if rows else ['ticker', 'best_bmd', 'ok']
+        raw_rows = game.today_results
+        if isinstance(raw_rows, list):
+            rows = raw_rows
+        elif isinstance(raw_rows, dict):
+            rows = [raw_rows]
+        elif raw_rows in (None, ''):
+            rows = []
+        else:
+            rows = [{'value': raw_rows}]
+
+        dict_rows = [row for row in rows if isinstance(row, dict)]
+        if dict_rows:
+            headers = sorted({k for row in dict_rows for k in row.keys()})
+        elif rows:
+            headers = ['value']
+            rows = [{'value': row} for row in rows]
+        else:
+            headers = ['ticker', 'best_bmd', 'ok']
         append_excel_row(ws2, headers)
         pulse = JobCheckpointPulse(job, every_n=500, every_seconds=10, task_request=self.request, base_label='export_game_scenario_xlsx')
         for idx, row in enumerate(rows, start=1):
             pulse.hit(checkpoint=f'row {idx}')
-            append_excel_row(ws2, [row.get(h) for h in headers])
+            if isinstance(row, dict):
+                append_excel_row(ws2, [row.get(h) for h in headers])
+            else:
+                append_excel_row(ws2, [row])
         output_name = f'game_scenario_{game_scenario_id}.xlsx'
         path = _job_export_path(job_id, output_name)
         wb.save(path)

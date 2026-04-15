@@ -1,0 +1,31 @@
+V7.0.89 — Sprint P1.2-bis (exports regressions hotfix)
+
+Scope
+- Fix real regressions reported after V7.0.88 on XLSX exports.
+- Move backtest details ZIP exports (Parquet / CSV) to async tracked jobs.
+
+Changes
+1) GameScenario XLSX export
+- Fixed missing import/use of append_excel_row in core/tasks.py.
+
+2) Backtest XLSX Compact / Full serialization
+- Replaced remaining direct ws.append(...) calls in compact/full workbook builders with append_excel_row(...).
+- This fixes list/dict/set serialization issues such as: Cannot convert ['AF'] to Excel.
+
+3) Backtest details ZIP exports
+- Added async tracked export task export_backtest_details_zip_task.
+- backtest_export_details view now queues a ProcessingJob instead of generating the ZIP synchronously.
+- Added helper _validate_backtest_details_export_available(...) for cheap preflight checks.
+- Added helper _build_backtest_details_zip(...) reused by the async task.
+- Added ProcessingJob job type EXPORT_BACKTEST_DETAILS_ZIP.
+
+4) Regression tests
+- Added compact workbook regression test ensuring BUY/SELL list cells are serialized safely.
+
+Recommended validation
+- python tools/run_quality_gate.py
+- Manual exports:
+  * Backtest > Exporter Détails (Parquet ZIP)
+  * Backtest > Exporter Détails (CSV ZIP)
+  * Backtest > Exporter XLSX Compact
+  * GameScenario > Export XLSX

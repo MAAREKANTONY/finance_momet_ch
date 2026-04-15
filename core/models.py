@@ -801,6 +801,7 @@ class ProcessingJob(models.Model):
         EXPORT_BACKTEST_XLSX = "EXPORT_BACKTEST_XLSX", "Export Backtest XLSX"
         EXPORT_BACKTEST_XLSX_COMPACT = "EXPORT_BACKTEST_XLSX_COMPACT", "Export Backtest XLSX Compact"
         EXPORT_GAME_SCENARIO_XLSX = "EXPORT_GAME_SCENARIO_XLSX", "Export Game Scenario XLSX"
+        EXPORT_BACKTEST_DETAILS_ZIP = "EXPORT_BACKTEST_DETAILS_ZIP", "Export Backtest Details ZIP"
 
     class Status(models.TextChoices):
         PENDING = "PENDING", "Pending"

@@ -37,6 +37,10 @@ def main() -> int:
                 ("Architecture audit unit tests", [python, "-m", "unittest", "core.tests.test_architecture_audit"]),
                 ("Job launch tests", [python, "manage.py", "test", "core.tests.test_job_launch", "--verbosity", "2"]),
                 (
+                    "Recovery robustness tests",
+                    [python, "manage.py", "test", "core.tests.test_jobs_robustness", "--verbosity", "2"],
+                ),
+                (
                     "Export regression tests",
                     [python, "manage.py", "test", "core.tests.test_exports_regressions", "--verbosity", "2"],
                 ),

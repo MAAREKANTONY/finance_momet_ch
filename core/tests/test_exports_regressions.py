@@ -1,4 +1,4 @@
-from django.test import SimpleTestCase
+from django.test import SimpleTestCase, TestCase
 
 from core.views import _arrow_table_to_csv_safe
 
@@ -44,6 +44,17 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         }
         return SimpleNamespace(id=1, name="BT", description="", scenario=scenario, scenario_id=1, start_date=None, end_date=None, capital_total=0, capital_per_ticker=0, ratio_threshold=0, close_positions_at_end=False, status="DONE", universe_snapshot=[], results=results, capital_mode="fixed", include_all_tickers=False, warmup_days=0)
 
+    def test_build_backtest_workbook_compact_serializes_list_cells(self):
+        bt = self._make_backtest_stub()
+        from core.views import _build_backtest_workbook_compact
+        wb, _ = _build_backtest_workbook_compact(bt)
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            loaded = load_workbook(tmp.name, read_only=True)
+            rows = list(loaded["Summary"].iter_rows(values_only=True))
+        self.assertEqual(rows[1][2], '["SPA", "SPVA"]')
+        self.assertEqual(rows[1][3], '["SVA"]')
+
     def test_build_backtest_workbook_full_serializes_list_cells(self):
         bt = self._make_backtest_stub()
         wb, _ = _build_backtest_workbook_full(bt)
@@ -75,3 +86,22 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             loaded = load_workbook(tmp.name, read_only=True)
             rows = list(loaded["DATA"].iter_rows(values_only=True))
         self.assertIn('["BUY", "SELL"]', rows[1])
+
+
+
+class GameScenarioExportRegressionTests(TestCase):
+    def test_export_game_scenario_xlsx_handles_dict_today_results(self):
+        from unittest.mock import patch
+        from core.models import GameScenario, ProcessingJob
+        from core.tasks import export_game_scenario_xlsx_task
+
+        game = GameScenario.objects.create(name='G1', today_results={'ticker': 'AF', 'ok': True})
+        job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.EXPORT_GAME_SCENARIO_XLSX, status=ProcessingJob.Status.PENDING)
+
+        with patch('core.tasks._job_export_path', return_value='/tmp/game_scenario_test.xlsx'):
+            result = export_game_scenario_xlsx_task.run(job_id=job.id, game_scenario_id=game.id)
+
+        self.assertEqual(result, '/tmp/game_scenario_test.xlsx')
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.DONE)
+        self.assertEqual(job.output_file, '/tmp/game_scenario_test.xlsx')

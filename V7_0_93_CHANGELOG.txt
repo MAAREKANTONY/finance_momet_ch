@@ -1,0 +1,4 @@
+V7.0.93 - Sprint P1.2-sexies
+
+- Fix export regression test for GameScenario XLSX to match actual task contract.
+- Assert returned output path and persisted ProcessingJob state instead of expecting a human-readable message.

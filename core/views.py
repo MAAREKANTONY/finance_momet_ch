@@ -2620,7 +2620,7 @@ def _build_backtest_workbook_full(bt):
 
     # --- Universe (snapshot) ---
     ws_u = wb.create_sheet("Universe")
-    ws_u.append(["Ticker", "Exchange", "Sector"])
+    append_excel_row(ws_u, ["Ticker", "Exchange", "Sector"])
     ws_u["A1"].font = Font(bold=True)
     ws_u["B1"].font = Font(bold=True)
     ws_u["C1"].font = Font(bold=True)
@@ -2629,14 +2629,14 @@ def _build_backtest_workbook_full(bt):
     if isinstance(uni, list):
         for item in uni:
             if isinstance(item, dict):
-                ws_u.append([item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
+                append_excel_row(ws_u, [item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
             else:
-                ws_u.append([str(item), "", ""]) 
+                append_excel_row(ws_u, [str(item), "", ""]) 
     _auto_width(ws_u)
 
     # --- Summary ---
     ws_s = wb.create_sheet("Summary")
-    ws_s.append([
+    append_excel_row(ws_s, [
         "Ticker",
         "Line #",
         "BUY",
@@ -2682,7 +2682,7 @@ def _build_backtest_workbook_full(bt):
     port_daily = portfolio.get("daily") or []
 
     ws_p = wb.create_sheet("Portfolio")
-    ws_p.append(["Clé", "Valeur"])
+    append_excel_row(ws_p, ["Clé", "Valeur"])
     ws_p["A1"].font = Font(bold=True)
     ws_p["B1"].font = Font(bold=True)
     for k, v in [
@@ -2694,15 +2694,15 @@ def _build_backtest_workbook_full(bt):
         ("NB_days", port_kpi.get("NB_DAYS")),
         ("max_drawdown", _pct_ratio_to_percent(port_kpi.get("max_drawdown"))),
     ]:
-        ws_p.append([k, v])
+        append_excel_row(ws_p, [k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
+    append_excel_row(ws_pd, ["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
     for r in port_daily:
-        ws_pd.append([
+        append_excel_row(ws_pd, [
             r.get("date"),
             _to_float(r.get("equity")),
             _to_float(r.get("invested")),
@@ -2747,7 +2747,7 @@ def _build_backtest_workbook_full(bt):
             ws_name = f"{ticker}_L{li}"[:31]
             ws_d = wb.create_sheet(ws_name)
 
-            ws_d.append([
+            append_excel_row(ws_d, [
                 "Date",
                 "Close",
                 "Prix_vert",
@@ -2781,7 +2781,7 @@ def _build_backtest_workbook_full(bt):
                 close_px = _to_float(r.get("price_close"))
                 shares = _to_float(r.get("shares")) or 0
                 in_pos = shares > 0
-                ws_d.append([
+                append_excel_row(ws_d, [
                     r.get("date"),
                     close_px,
                     close_px if in_pos else None,
@@ -2937,6 +2937,9 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         f = _to_float(x)
         return None if f is None else f * 100.0
 
+    def _pct_ratio_to_percent(x):
+        return _pct(x)
+
     def _auto_width(ws, max_col=30):
         for col in range(1, min(ws.max_column, max_col) + 1):
             letter = get_column_letter(col)
@@ -2977,7 +2980,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
 
     # -------- Universe --------
     ws_u = wb.create_sheet("Universe")
-    ws_u.append(["Ticker", "Exchange", "Sector"])
+    append_excel_row(ws_u, ["Ticker", "Exchange", "Sector"])
     ws_u["A1"].font = Font(bold=True)
     ws_u["B1"].font = Font(bold=True)
     ws_u["C1"].font = Font(bold=True)
@@ -2985,14 +2988,14 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
     if isinstance(uni, list):
         for item in uni:
             if isinstance(item, dict):
-                ws_u.append([item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
+                append_excel_row(ws_u, [item.get("ticker", ""), item.get("exchange", ""), item.get("sector", "")])
             else:
-                ws_u.append([str(item), ""])
+                append_excel_row(ws_u, [str(item), "", ""])
     _auto_width(ws_u)
 
     # -------- Summary --------
     ws_s = wb.create_sheet("Summary")
-    ws_s.append([
+    append_excel_row(ws_s, [
         "Ticker", "Line #", "BUY", "SELL", "Allocated",
         "N", "S_G_N (%)", "BT (%)", "NB_JOUR_OUVRES", "BMJ (%)", "BMD (%)", "BUY_DAYS_CLOSED", "Cash end",
     ])
@@ -3059,7 +3062,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         "G (%)", "N", "S_G_N (%)", "BT (%)",
         "NB_JOUR_OUVRES", "BMJ (%)", "BMD (%)", "BUY_DAYS_CLOSED", "Cash", "Shares",
     ]
-    ws_d.append(header)
+    append_excel_row(ws_d, header)
     ws_d.freeze_panes = "A2"
     for cell in ws_d[1]:
         cell.font = Font(bold=True)
@@ -3067,7 +3070,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
     # stable ordering
     daily_rows.sort(key=lambda x: (x.get("date") or "", x.get("ticker") or "", x.get("line") or 0))
     for r in daily_rows:
-        ws_d.append([
+        append_excel_row(ws_d, [
             r["date"], r["ticker"], r["line"], r["buy"], r["sell"],
             r["close"], r["ratio_p_pct"], "Oui" if r["tradable"] else "Non",
             r["alerts"], r["action"], r["G_pct"], r["N"], r["S_G_N_pct"], r["BT_pct"],
@@ -3081,7 +3084,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
     port_daily = portfolio.get("daily") or []
 
     ws_p = wb.create_sheet("Portfolio")
-    ws_p.append(["Clé", "Valeur"])
+    append_excel_row(ws_p, ["Clé", "Valeur"])
     ws_p["A1"].font = Font(bold=True)
     ws_p["B1"].font = Font(bold=True)
     for k, v in [
@@ -3093,15 +3096,15 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ("NB_days", port_kpi.get("NB_DAYS")),
         ("max_drawdown", _pct_ratio_to_percent(port_kpi.get("max_drawdown"))),
     ]:
-        ws_p.append([k, v])
+        append_excel_row(ws_p, [k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    ws_pd.append(["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
+    append_excel_row(ws_pd, ["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
     for r in port_daily:
-        ws_pd.append([
+        append_excel_row(ws_pd, [
             r.get("date"),
             _to_float(r.get("equity")),
             _to_float(r.get("invested")),
@@ -3415,72 +3418,84 @@ def _write_arrow_csv_file(table, output_path: Path):
     pacsv.write_csv(safe_table, str(output_path))
 
 
-@login_required
-def backtest_export_details(request, pk: int):
-    """Export backtest daily series as a ZIP of Parquet files (or CSV).
+def _validate_backtest_details_export_available(bt: Backtest) -> None:
+    parquet_dir = _resolve_backtest_parquet_dir(bt)
+    if not parquet_dir.exists() or not parquet_dir.is_dir():
+        raise FileNotFoundError(
+            "Export détails indisponible : fichiers Parquet non trouvés. "
+            "Relance le backtest avec ENABLE_PARQUET_STORAGE=1 (et un volume /data persistant)."
+        )
+    parquet_files = sorted([p for p in parquet_dir.glob("*.parquet") if p.is_file()])
+    if not parquet_files:
+        raise FileNotFoundError(
+            "Export détails indisponible : aucun fichier Parquet dans le dossier de ce backtest."
+        )
 
-    This is an additive export and does not modify the legacy Excel exports.
-    """
-    bt = get_object_or_404(Backtest, pk=pk)
 
-    fmt = (request.GET.get("format") or "parquet").strip().lower()
+def _build_backtest_details_zip(bt: Backtest, *, fmt: str = "parquet") -> tuple[Path, str]:
+    """Build a ZIP export of backtest details from stored parquet daily files."""
+    fmt = (fmt or "parquet").strip().lower()
     if fmt not in {"parquet", "csv"}:
         fmt = "parquet"
 
-    # For safety: details export is only meaningful when Parquet storage exists.
     parquet_dir = _resolve_backtest_parquet_dir(bt)
-    if not parquet_dir.exists() or not parquet_dir.is_dir():
-        messages.error(
-            request,
-            "Export détails indisponible : fichiers Parquet non trouvés. "
-            "Relance le backtest avec ENABLE_PARQUET_STORAGE=1 (et un volume /data persistant).",
-        )
-        return redirect("backtest_detail", pk=bt.id)
-
-    # Collect parquet files
+    _validate_backtest_details_export_available(bt)
     parquet_files = sorted([p for p in parquet_dir.glob("*.parquet") if p.is_file()])
-    if not parquet_files:
-        messages.error(
-            request,
-            "Export détails indisponible : aucun fichier Parquet dans le dossier de ce backtest.",
-        )
-        return redirect("backtest_detail", pk=bt.id)
 
-    # Create ZIP on disk to avoid memory blowups
     tmp = tempfile.NamedTemporaryFile(prefix=f"backtest_{bt.id}_details_", suffix=".zip", delete=False)
     tmp_path = Path(tmp.name)
     tmp.close()
 
-    try:
-        with pyzip.ZipFile(tmp_path, "w", compression=pyzip.ZIP_DEFLATED) as zf:
-            if fmt == "parquet":
+    with pyzip.ZipFile(tmp_path, "w", compression=pyzip.ZIP_DEFLATED) as zf:
+        if fmt == "parquet":
+            for fp in parquet_files:
+                zf.write(fp, arcname=fp.name)
+        else:
+            try:
+                import pyarrow.parquet as pq  # type: ignore
+            except Exception as exc:
+                raise RuntimeError(f"pyarrow requis pour l'export CSV: {exc}") from exc
+
+            with tempfile.TemporaryDirectory(prefix=f"backtest_{bt.id}_csv_") as csv_tmp_dir:
+                csv_tmp_dir_path = Path(csv_tmp_dir)
                 for fp in parquet_files:
-                    zf.write(fp, arcname=fp.name)
-            else:
-                # CSV export requires pyarrow to read parquet (optional dependency)
-                try:
-                    import pyarrow.parquet as pq  # type: ignore
-                except Exception as e:
-                    messages.error(request, f"pyarrow requis pour l'export CSV: {e}")
-                    return redirect("backtest_detail", pk=bt.id)
+                    table = pq.read_table(fp)
+                    csv_path = csv_tmp_dir_path / fp.with_suffix(".csv").name
+                    _write_arrow_csv_file(table, csv_path)
+                    zf.write(csv_path, arcname=csv_path.name)
 
-                with tempfile.TemporaryDirectory(prefix=f"backtest_{bt.id}_csv_") as csv_tmp_dir:
-                    csv_tmp_dir_path = Path(csv_tmp_dir)
-                    for fp in parquet_files:
-                        table = pq.read_table(fp)
-                        csv_path = csv_tmp_dir_path / fp.with_suffix(".csv").name
-                        _write_arrow_csv_file(table, csv_path)
-                        zf.write(csv_path, arcname=csv_path.name)
+    return tmp_path, f"backtest_{bt.id}_details_{fmt}.zip"
 
-        tmp_f = open(tmp_path, "rb")
-        filename = f"backtest_{bt.id}_details_{fmt}.zip"
-        resp = FileResponse(tmp_f, as_attachment=True, filename=filename, content_type="application/zip")
-        return resp
-    finally:
-        # FileResponse will keep the file handle open for streaming.
-        # We keep the temp file on disk; OS cleanup can be handled by a cron, or you can
-        # switch to a managed temp dir in Vultr if needed.
-        pass
+
+@login_required
+def backtest_export_details(request, pk: int):
+    """Queue backtest daily series ZIP export (Parquet or CSV)."""
+    bt = get_object_or_404(Backtest, pk=pk)
+    fmt = (request.GET.get("format") or "parquet").strip().lower()
+    if fmt not in {"parquet", "csv"}:
+        fmt = "parquet"
+
+    try:
+        _validate_backtest_details_export_available(bt)
+    except Exception as exc:
+        messages.error(request, str(exc))
+        return redirect("backtest_detail", pk=bt.id)
+
+    from .tasks import export_backtest_details_zip_task
+
+    launch = launch_processing_job(
+        task=export_backtest_details_zip_task,
+        job_type=ProcessingJob.JobType.EXPORT_BACKTEST_DETAILS_ZIP,
+        backtest=bt,
+        created_by=request.user,
+        message=f"Queued backtest details {fmt.upper()} ZIP export for backtest {pk}",
+        task_kwargs={"backtest_id": bt.id, "fmt": fmt},
+    )
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export détails impossible: {launch.dispatch_error}")
+        return redirect("backtest_detail", pk=bt.id)
+    messages.success(request, f"Export détails {fmt.upper()} lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 @login_required
