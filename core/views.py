@@ -3229,6 +3229,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
 
 
 
+@login_required
 def backtest_export_excel(request, pk: int):
     """Async export full backtest results to Excel (robust for large results)."""
     bt = get_object_or_404(Backtest, pk=pk)
@@ -3330,6 +3331,17 @@ def _arrow_table_to_csv_safe(table):
         names.append(name)
     return pa.table(cols, names=names)
 
+
+def _write_arrow_csv_file(table, output_path: Path):
+    """Write one Arrow table to CSV on disk after normalizing unsupported nested columns."""
+    import pyarrow.csv as pacsv  # type: ignore
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    safe_table = _arrow_table_to_csv_safe(table)
+    pacsv.write_csv(safe_table, str(output_path))
+
+
+@login_required
 def backtest_export_details(request, pk: int):
     """Export backtest daily series as a ZIP of Parquet files (or CSV).
 
@@ -3374,18 +3386,17 @@ def backtest_export_details(request, pk: int):
                 # CSV export requires pyarrow to read parquet (optional dependency)
                 try:
                     import pyarrow.parquet as pq  # type: ignore
-                    import pyarrow.csv as pacsv  # type: ignore
                 except Exception as e:
                     messages.error(request, f"pyarrow requis pour l'export CSV: {e}")
                     return redirect("backtest_detail", pk=bt.id)
 
-                for fp in parquet_files:
-                    table = pq.read_table(fp)
-                    table = _arrow_table_to_csv_safe(table)
-                    buf = BytesIO()
-                    pacsv.write_csv(table, buf)
-                    buf.seek(0)
-                    zf.writestr(fp.with_suffix(".csv").name, buf.getvalue())
+                with tempfile.TemporaryDirectory(prefix=f"backtest_{bt.id}_csv_") as csv_tmp_dir:
+                    csv_tmp_dir_path = Path(csv_tmp_dir)
+                    for fp in parquet_files:
+                        table = pq.read_table(fp)
+                        csv_path = csv_tmp_dir_path / fp.with_suffix(".csv").name
+                        _write_arrow_csv_file(table, csv_path)
+                        zf.write(csv_path, arcname=csv_path.name)
 
         tmp_f = open(tmp_path, "rb")
         filename = f"backtest_{bt.id}_details_{fmt}.zip"
@@ -3405,6 +3416,13 @@ def indicators_help(request):
     This page is intentionally static (documentation only) to avoid any risk of breaking business rules.
     """
     return render(request, "help_indicators.html")
+
+
+@login_required
+def exports_help(request):
+    """Static documentation page describing each export and common failure modes."""
+    return render(request, "help_exports.html")
+
 
 @require_GET
 @login_required

@@ -1635,7 +1635,7 @@ def export_alerts_csv_task(self, *, job_id: int, date_str: str = '', scenario_id
 @shared_task(bind=True)
 def export_all_scenarios_zip_task(self, *, job_id: int, ticker: str = '', exchange: str = '', date_from: str = '', date_to: str = ''):
     from .models import Scenario, Symbol
-    from .views import _build_scenario_workbook
+    from .exports import build_scenario_workbook_write_only
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
@@ -1654,7 +1654,7 @@ def export_all_scenarios_zip_task(self, *, job_id: int, ticker: str = '', exchan
         with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
             for idx, scenario in enumerate(scenarios, start=1):
                 pulse.hit(checkpoint=f'scenario {idx}/{len(scenarios)} #{scenario.id} {scenario.name}', force=True)
-                wb = _build_scenario_workbook(scenario, symbols_qs, date_from=date_from, date_to=date_to)
+                wb = build_scenario_workbook_write_only(scenario=scenario, symbols_qs=symbols_qs, date_from=date_from, date_to=date_to)
                 buf = io.BytesIO()
                 wb.save(buf)
                 safe_scn = ''.join(ch if ch.isalnum() or ch in '._-' else '_' for ch in scenario.name)
@@ -1674,8 +1674,8 @@ def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str 
     if job:
         mark_job_running(job, task_request=self.request)
     try:
-        wb = Workbook()
-        ws_bars = wb.active
+        wb = Workbook(write_only=True)
+        ws_bars = wb.create_sheet('Bars')
         ws_bars.title = 'Bars'
         ws_bars.append(['ticker', 'exchange', 'date', 'open', 'high', 'low', 'close', 'volume'])
 
@@ -1843,9 +1843,8 @@ def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
         mark_job_running(job, task_request=self.request)
     try:
         game = GameScenario.objects.get(id=game_scenario_id)
-        wb = Workbook()
-        ws = wb.active
-        ws.title = 'Game'
+        wb = Workbook(write_only=True)
+        ws = wb.create_sheet('Game')
         ws.append(['Field', 'Value'])
         for key, value in [
             ('id', game.id),

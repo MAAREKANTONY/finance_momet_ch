@@ -104,4 +104,5 @@ urlpatterns = [
 
     # Helper / documentation
     path("help/indicators/", views.indicators_help, name="indicators_help"),
+    path("help/exports/", views.exports_help, name="exports_help"),
 ]
