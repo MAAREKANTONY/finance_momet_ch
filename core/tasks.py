@@ -16,7 +16,7 @@ from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
 from .services.global_momentum import build_global_momentum_regime_by_date, GLOBAL_MOMENTUM_CODES
 from .services.calculations_fast import compute_full_for_symbol_scenario
-from .job_tracking import JobCancelled, JobKilled, job_checkpoint, mark_job_running
+from .job_tracking import JobCancelled, JobCheckpointPulse, JobKilled, job_checkpoint, mark_job_running
 
 from django.utils import timezone
 from django.db import InterfaceError, OperationalError
@@ -124,9 +124,11 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
 
     today = timezone.now().date()
 
-    for sym in symbols:
+    pulse = JobCheckpointPulse(job, every_n=1, every_seconds=20, task_request=task_request, base_label="fetch_bars")
+
+    for idx, sym in enumerate(symbols, start=1):
         # Cooperative cancel/kill + heartbeat
-        job_checkpoint(job, task_request=task_request)
+        pulse.hit(checkpoint=f"symbol {idx}/{len(symbols)} {sym.ticker}", force=True)
         exchange = sym.exchange or getattr(settings, "DEFAULT_EXCHANGE", "")
         try:
             # Delta fetch by default: if we already have bars, only request dates after the last stored bar.
@@ -194,6 +196,8 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
             DailyBar.objects.bulk_create(new_bars, ignore_conflicts=True, batch_size=2000)
             bars_written += len(new_bars)
 
+        pulse.hit(checkpoint=f"symbol {idx}/{len(symbols)} {sym.ticker} bars={len(values_sorted)} written={bars_written}")
+
         # Update change_* for the latest bar (cheap and keeps UI consistent).
         last_two = list(DailyBar.objects.filter(symbol=sym).order_by("-date")[:2])
         if len(last_two) >= 2 and last_two[1].close:
@@ -245,8 +249,9 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
     approx_business_window_days = int(history_years * 366)
 
     computed_rows = 0
-    for sym in symbols:
-        job_checkpoint(job, task_request=task_request)
+    pulse_symbols = JobCheckpointPulse(job, every_n=1, every_seconds=20, task_request=task_request, base_label=f"compute_metrics:scenario#{scenario.id}")
+    for sym_idx, sym in enumerate(symbols, start=1):
+        pulse_symbols.hit(checkpoint=f"symbol {sym_idx}/{len(symbols)} {sym.ticker}", force=True)
         try:
             sym_last_bar_date = DailyBar.objects.filter(symbol=sym).aggregate(m=Max("date"))["m"]
             if not sym_last_bar_date:
@@ -271,6 +276,7 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
                 )
                 m_written, a_written = compute_full_for_symbol_scenario(symbol=sym, scenario=scenario, bars=bars)
                 computed_rows += m_written
+                pulse_symbols.hit(checkpoint=f"symbol {sym_idx}/{len(symbols)} {sym.ticker} full metrics={m_written} alerts={a_written}", force=True)
                 continue
 
             # Incremental recompute: only rebuild the recent technical tail, never the whole history.
@@ -284,21 +290,23 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
 
             bars_qs = DailyBar.objects.filter(symbol=sym, date__gte=start).order_by("date")
 
-            _i = 0
-            for d in bars_qs.values_list("date", flat=True):
-                # Throttled checkpoints to avoid DB chatter on large histories.
-                # Still responsive enough for manual cancels.
-                _i += 1
-                if job is not None and (_i % 200 == 0):
-                    job_checkpoint(job, task_request=task_request)
+            dates = bars_qs.values_list("date", flat=True)
+            pulse_dates = JobCheckpointPulse(job, every_n=200, every_seconds=15, task_request=task_request, base_label=f"compute_metrics:scenario#{scenario.id}:{sym.ticker}")
+            last_d = None
+            for i, d in enumerate(dates, start=1):
+                pulse_dates.hit(checkpoint=f"date {d.isoformat()} step={i}")
                 compute_for_symbol_scenario(sym, scenario, d)
                 computed_rows += 1
+                last_d = d
+            pulse_symbols.hit(checkpoint=f"symbol {sym_idx}/{len(symbols)} {sym.ticker} last={last_d.isoformat() if last_d else '-'} rows={computed_rows}", force=True)
         except Exception as e:
             print(f"[compute] error {sym} {scenario}: {e}")
             continue
 
     try:
+        pulse_symbols.hit(checkpoint="global_momentum:start", force=True)
         _enrich_alerts_with_global_momentum(scenario=scenario, start_date=None)
+        pulse_symbols.hit(checkpoint="global_momentum:done", force=True)
     except Exception:
         pass
 
@@ -484,7 +492,7 @@ def fetch_daily_bars_task():
     return f"ok outputsize={outputsize} symbols={stats.get('symbols')} bars={stats.get('bars')}"
 
 @shared_task
-def compute_metrics_task(recompute_all: bool = False):
+def compute_metrics_task(recompute_all: bool = False, *, job: ProcessingJob | None = None, task_request=None):
     """Compute metrics and alerts.
 
     Default behavior is **incremental** (recompute the recent window + new days).
@@ -495,7 +503,8 @@ def compute_metrics_task(recompute_all: bool = False):
     scenarios = Scenario.objects.filter(active=True).all()
 
     for scenario in scenarios:
-        _compute_metrics_for_scenario(symbols_qs=symbols, scenario=scenario, recompute_all=recompute_all)
+        job_checkpoint(job, checkpoint=f"compute_metrics_task:scenario#{scenario.id}", task_request=task_request) if job else None
+        _compute_metrics_for_scenario(symbols_qs=symbols, scenario=scenario, recompute_all=recompute_all, job=job, task_request=task_request)
 
     return "ok"
 
@@ -662,7 +671,7 @@ def compute_metrics_all_job_task(self, recompute_all: bool = False, user_id=None
     )
     mark_job_running(job, task_request=self.request, message=f"compute_all recompute_all={bool(recompute_all)}")
     try:
-        msg = compute_metrics_task(bool(recompute_all))
+        msg = compute_metrics_task(bool(recompute_all), job=job, task_request=self.request)
         job.status = ProcessingJob.Status.DONE
         job.message = f"{job.message} -> {msg}"
         job.finished_at = timezone.now()
@@ -1224,7 +1233,7 @@ def run_game_scenario_job_task(self, *, game_id: int, force_fetch: bool = False,
     try:
         from core.services.game_scenarios.runner import run_game_scenario_now, GameJobCancelled, GameJobKilled
         job_checkpoint(job, task_request=self.request)
-        run_game_scenario_now(game_id, force_fetch=force_fetch, force_recompute=force_recompute, job=job)
+        run_game_scenario_now(game_id, force_fetch=force_fetch, force_recompute=force_recompute, job=job, task_request=self.request)
 
         if job:
             job.status = ProcessingJob.Status.DONE
@@ -1603,10 +1612,12 @@ def export_alerts_csv_task(self, *, job_id: int, date_str: str = '', scenario_id
 
         output_name = 'alerts_export.csv'
         path = _job_export_path(job_id, output_name)
+        pulse = JobCheckpointPulse(job, every_n=1000, every_seconds=10, task_request=self.request, base_label='export_alerts_csv')
         with path.open('w', newline='', encoding='utf-8') as f:
             w = csv.writer(f)
             w.writerow(['date', 'scenario_id', 'scenario_name', 'ticker', 'exchange', 'alerts'])
-            for row in qs.iterator(chunk_size=2000):
+            for idx, row in enumerate(qs.iterator(chunk_size=2000), start=1):
+                pulse.hit(checkpoint=f'row {idx}')
                 w.writerow([
                     row.date.isoformat() if row.date else '',
                     row.scenario_id or '',
@@ -1639,8 +1650,10 @@ def export_all_scenarios_zip_task(self, *, job_id: int, ticker: str = '', exchan
 
         output_name = 'all_scenarios_export.zip'
         path = _job_export_path(job_id, output_name)
+        pulse = JobCheckpointPulse(job, every_n=1, every_seconds=10, task_request=self.request, base_label='export_all_scenarios_zip')
         with zipfile.ZipFile(path, 'w', compression=zipfile.ZIP_DEFLATED) as zf:
-            for scenario in scenarios:
+            for idx, scenario in enumerate(scenarios, start=1):
+                pulse.hit(checkpoint=f'scenario {idx}/{len(scenarios)} #{scenario.id} {scenario.name}', force=True)
                 wb = _build_scenario_workbook(scenario, symbols_qs, date_from=date_from, date_to=date_to)
                 buf = io.BytesIO()
                 wb.save(buf)
@@ -1673,12 +1686,14 @@ def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str 
             symbols_qs = symbols_qs.filter(exchange=exchange)
         symbol_ids = list(symbols_qs.values_list('id', flat=True))
 
+        pulse = JobCheckpointPulse(job, every_n=1000, every_seconds=10, task_request=self.request, base_label='export_data_xlsx')
         bars = DailyBar.objects.filter(symbol_id__in=symbol_ids).select_related('symbol').order_by('symbol__ticker', 'date')
         if date_from:
             bars = bars.filter(date__gte=date_from)
         if date_to:
             bars = bars.filter(date__lte=date_to)
-        for b in bars.iterator(chunk_size=2000):
+        for idx, b in enumerate(bars.iterator(chunk_size=2000), start=1):
+            pulse.hit(checkpoint=f'bars row {idx}')
             ws_bars.append([b.symbol.ticker, b.symbol.exchange, b.date.isoformat(), b.open, b.high, b.low, b.close, b.volume])
 
         ws_metrics = wb.create_sheet('Metrics')
@@ -1690,7 +1705,8 @@ def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str 
             metrics = metrics.filter(date__gte=date_from)
         if date_to:
             metrics = metrics.filter(date__lte=date_to)
-        for m in metrics.iterator(chunk_size=2000):
+        for idx, m in enumerate(metrics.iterator(chunk_size=2000), start=1):
+            pulse.hit(checkpoint=f'metrics row {idx}')
             ws_metrics.append([m.scenario_id, m.scenario.name if m.scenario_id else '', m.symbol.ticker if m.symbol_id else '', m.date.isoformat(), m.P, m.M, m.M1, m.X, m.X1, m.T, m.Q, m.S, m.K1, getattr(m, 'Kf2bis', None), m.K2, m.K3, m.K4, m.sum_slope, m.slope_vrai, m.sum_slope_basse, m.slope_vrai_basse, m.ratio_P])
 
         ws_alerts = wb.create_sheet('Alerts')
@@ -1702,7 +1718,8 @@ def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str 
             alerts = alerts.filter(date__gte=date_from)
         if date_to:
             alerts = alerts.filter(date__lte=date_to)
-        for a in alerts.iterator(chunk_size=2000):
+        for idx, a in enumerate(alerts.iterator(chunk_size=2000), start=1):
+            pulse.hit(checkpoint=f'alerts row {idx}')
             ws_alerts.append([a.scenario_id, a.scenario.name if a.scenario_id else '', a.symbol.ticker if a.symbol_id else '', a.symbol.exchange if a.symbol_id else '', a.date.isoformat(), a.alerts or ''])
 
         output_name = 'data_export.xlsx'
@@ -1763,10 +1780,12 @@ def export_backtest_debug_csv_task(self, *, job_id: int, backtest_id: int, ticke
         output_name = f'backtest_{backtest_id}_{ticker}_debug.csv'
         path = _job_export_path(job_id, output_name)
         fieldnames = sorted({k for row in daily for k in row.keys()})
+        pulse = JobCheckpointPulse(job, every_n=500, every_seconds=10, task_request=self.request, base_label='export_backtest_debug_csv')
         with path.open('w', newline='', encoding='utf-8') as f:
             w = csv.DictWriter(f, fieldnames=fieldnames)
             w.writeheader()
-            for row in daily:
+            for idx, row in enumerate(daily, start=1):
+                pulse.hit(checkpoint=f'row {idx}')
                 w.writerow(row)
         return _finalize_job_file(job, path, output_name, f'Exported backtest debug CSV for {ticker}')
     except Exception as exc:
@@ -1847,7 +1866,9 @@ def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
         rows = game.today_results or []
         headers = sorted({k for row in rows for k in row.keys()}) if rows else ['ticker', 'best_bmd', 'ok']
         ws2.append(headers)
-        for row in rows:
+        pulse = JobCheckpointPulse(job, every_n=500, every_seconds=10, task_request=self.request, base_label='export_game_scenario_xlsx')
+        for idx, row in enumerate(rows, start=1):
+            pulse.hit(checkpoint=f'row {idx}')
             ws2.append([row.get(h) for h in headers])
         output_name = f'game_scenario_{game_scenario_id}.xlsx'
         path = _job_export_path(job_id, output_name)

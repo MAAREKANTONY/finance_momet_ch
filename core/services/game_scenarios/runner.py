@@ -6,17 +6,13 @@ from decimal import Decimal
 from django.db import transaction
 from django.utils import timezone
 
+from core.job_tracking import JobCancelled, JobCheckpointPulse, JobKilled
 from core.models import Backtest, DailyBar, DailyMetric, GameScenario, Scenario, Symbol, ProcessingJob
 from core.services.backtesting.engine import run_backtest_kpi_only
 from core.services.metrics_depth import check_metrics_depth
 
 
 def _compute_avg_slope_for_ticker(*, scenario_id: int, symbol_id: int, end_d: date) -> str | None:
-    """Return the latest persisted SUM_SLOPE metric for one ticker/game scenario.
-
-    SUM_SLOPE is computed from the scenario study price P and persisted in DailyMetric.
-    Stored as raw ratio (0.1 = 10%).
-    """
     dm = (
         DailyMetric.objects.filter(
             scenario_id=scenario_id,
@@ -34,7 +30,6 @@ def _compute_avg_slope_for_ticker(*, scenario_id: int, symbol_id: int, end_d: da
 
 
 def _sync_engine_scenario(game: GameScenario) -> Scenario:
-    """Create or update the internal Scenario used to persist metrics/alerts."""
     sc = game.engine_scenario
     if sc is None:
         sc = Scenario(
@@ -44,7 +39,6 @@ def _sync_engine_scenario(game: GameScenario) -> Scenario:
             is_default=False,
         )
 
-    # Copy scenario parameters (NO silent math change)
     for f in [
         "a", "b", "c", "d", "e",
         "n1", "n2",
@@ -52,7 +46,6 @@ def _sync_engine_scenario(game: GameScenario) -> Scenario:
     ]:
         setattr(sc, f, getattr(game, f))
 
-    # Keep name updated for readability
     sc.name = f"[GAME] {game.name}"
     sc.description = f"Auto-generated scenario for GameScenario #{game.id}"
     sc.active = False
@@ -65,30 +58,8 @@ def _sync_engine_scenario(game: GameScenario) -> Scenario:
     return sc
 
 
-class GameJobCancelled(Exception):
-    pass
-
-
-class GameJobKilled(Exception):
-    pass
-
-
-def _job_checkpoint(job: ProcessingJob | None) -> None:
-    """Cooperative cancellation + heartbeat for Game runs."""
-    if job is None:
-        return
-    try:
-        job.refresh_from_db(fields=["cancel_requested", "kill_requested", "status"])
-        if job.kill_requested:
-            raise GameJobKilled("kill requested")
-        if job.cancel_requested:
-            raise GameJobCancelled("cancel requested")
-        ProcessingJob.objects.filter(id=job.id).update(heartbeat_at=timezone.now())
-    except (GameJobCancelled, GameJobKilled):
-        raise
-    except Exception:
-        # If the checkpoint failed for any other reason, do not block the run.
-        return
+GameJobCancelled = JobCancelled
+GameJobKilled = JobKilled
 
 
 def run_game_scenario_now(
@@ -98,18 +69,11 @@ def run_game_scenario_now(
     force_recompute: bool = False,
     skip_metrics: bool = False,
     job: ProcessingJob | None = None,
+    task_request=None,
 ) -> dict:
-    """Run a game scenario end-to-end.
-
-    Steps:
-    - Ensure engine scenario exists (for metrics/alerts persistence)
-    - Ensure latest bars exist (fetch if needed)
-    - Compute metrics+alerts (incremental unless forced)
-    - Run KPI-only backtest and store today's snapshot
-    """
     game = GameScenario.objects.get(id=game_id)
-
-    _job_checkpoint(job)
+    phase_pulse = JobCheckpointPulse(job, every_n=1, every_seconds=15, task_request=task_request, base_label=f"run_game:{game_id}")
+    phase_pulse.hit(checkpoint="start", force=True)
 
     if not game.active:
         game.last_run_at = timezone.now()
@@ -124,28 +88,28 @@ def run_game_scenario_now(
     game.save(update_fields=["last_run_at", "last_run_status", "last_run_message"])
 
     scenario = _sync_engine_scenario(game)
+    phase_pulse.hit(checkpoint="scenario_synced", force=True)
 
     symbols = Symbol.objects.filter(active=True).order_by("ticker")
     symbol_map = dict(symbols.values_list("ticker", "id"))
 
-    _job_checkpoint(job)
-
-    # 1) Fetch bars (if necessary)
     from core.tasks import _fetch_daily_bars_for_symbols, _compute_metrics_for_scenario
 
     warmup_days = int(getattr(game, "warmup_days", 0) or 0)
-
-    # Outputsize heuristic: study window + warmup + buffer
     outputsize = min(5000, int(game.study_days or 1000) + warmup_days + 400)
-    _fetch_daily_bars_for_symbols(symbol_qs=symbols, outputsize=outputsize, force_full=bool(force_fetch), job=job)
+    _fetch_daily_bars_for_symbols(
+        symbol_qs=symbols,
+        outputsize=outputsize,
+        force_full=bool(force_fetch),
+        job=job,
+        task_request=task_request,
+    )
+    phase_pulse.hit(checkpoint="bars_ready", force=True)
 
-    # 2) Determine date window
     end_d = DailyBar.objects.order_by("-date").values_list("date", flat=True).first() or date.today()
-    # generous calendar buffer to collect enough market days
     start_d = end_d - timedelta(days=int(game.study_days or 1000) * 3 + 45)
     required_start_d = start_d - timedelta(days=warmup_days) if warmup_days > 0 else start_d
 
-    # 3) Metrics depth check => auto full recompute when study_days increased
     symbol_ids = list(symbols.values_list("id", flat=True))
     depth = check_metrics_depth(
         scenario_id=scenario.id,
@@ -155,16 +119,18 @@ def run_game_scenario_now(
     )
     auto_force = depth.needs_full_recompute()
     do_full = bool(force_recompute) or bool(auto_force)
+    phase_pulse.hit(checkpoint="depth_checked", force=True)
 
-    _job_checkpoint(job)
-
-    # 4) Compute metrics/alerts
-    # Optimization: allow callers (e.g. daily refresh job) to refresh metrics separately
-    # and skip this step when depth is sufficient.
     if (not skip_metrics) or bool(do_full):
-        _compute_metrics_for_scenario(symbols_qs=symbols, scenario=scenario, recompute_all=bool(do_full), job=job)
+        _compute_metrics_for_scenario(
+            symbols_qs=symbols,
+            scenario=scenario,
+            recompute_all=bool(do_full),
+            job=job,
+            task_request=task_request,
+        )
+    phase_pulse.hit(checkpoint="metrics_ready", force=True)
 
-    # 5) Build an in-memory Backtest config for KPI-only computation
     tickers = list(symbols.values_list("ticker", flat=True))
     bt = Backtest(
         scenario=scenario,
@@ -183,14 +149,9 @@ def run_game_scenario_now(
     )
 
     out = run_backtest_kpi_only(bt, max_days=int(game.study_days or 1000))
+    phase_pulse.hit(checkpoint="kpi_computed", force=True)
 
-    _job_checkpoint(job)
-
-    # 6) Build today's snapshot
     rows = []
-    # NOTE: BMD returned by the engine is a *ratio* (0.01 == 1%).
-    # UX choice: in the Game UI, the BMD threshold is entered as a *percent* value
-    # (e.g. 0.3 means 0.3%). We therefore convert it to a ratio for the comparison.
     thr_pct = game.tradability_threshold
     try:
         thr_ratio = Decimal(str(thr_pct)) / Decimal("100")
@@ -206,10 +167,12 @@ def run_game_scenario_now(
         presence_threshold_pct = None
     npente = int(game.npente or 100)
 
-    for ticker, tentry in out.items():
-        best = tentry.get("best_bmd")  # ratio (string/Decimal/None)
+    row_pulse = JobCheckpointPulse(job, every_n=100, every_seconds=10, task_request=task_request, base_label=f"run_game:{game_id}:today_results")
+    total_out = len(out)
+    for idx, (ticker, tentry) in enumerate(out.items(), start=1):
+        row_pulse.hit(checkpoint=f"ticker {idx}/{total_out} {ticker}")
+        best = tentry.get("best_bmd")
 
-        # Extract the KPI counters from the line that produced the best BMD.
         best_final: dict = {}
         try:
             best_dec = None if best is None else Decimal(str(best))
@@ -297,4 +260,5 @@ def run_game_scenario_now(
         game.last_run_message = msg
         game.save(update_fields=["today_results", "last_run_at", "last_run_status", "last_run_message"])
 
+    phase_pulse.hit(checkpoint="done", force=True)
     return {"status": "ok", "date": str(end_d), "count": len(rows)}

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import time
 
 from django.utils import timezone
 
@@ -96,3 +97,55 @@ def job_checkpoint(
             job.last_checkpoint = updates["last_checkpoint"]
         if "worker_hostname" in updates:
             job.worker_hostname = updates["worker_hostname"]
+
+
+class JobCheckpointPulse:
+    """Throttle cooperative checkpoints by iterations and elapsed seconds.
+
+    Goal:
+    - keep cancel/kill reactive enough for long loops
+    - avoid hammering PostgreSQL with a heartbeat on every row
+    """
+
+    def __init__(
+        self,
+        job: ProcessingJob | None,
+        *,
+        every_n: int = 100,
+        every_seconds: float = 15.0,
+        task_request: Any | None = None,
+        base_label: str = "",
+    ) -> None:
+        self.job = job
+        self.every_n = max(1, int(every_n or 1))
+        self.every_seconds = max(0.0, float(every_seconds or 0.0))
+        self.task_request = task_request
+        self.base_label = (base_label or "").strip()
+        self._count = 0
+        self._last_ts = 0.0
+
+    def hit(self, *, checkpoint: str | None = None, force: bool = False, heartbeat: bool = True) -> bool:
+        if self.job is None or not getattr(self.job, "id", None):
+            return False
+        self._count += 1
+        now_ts = time.monotonic()
+        should_emit = bool(force)
+        if not should_emit and self.every_n > 0 and (self._count % self.every_n == 0):
+            should_emit = True
+        if not should_emit and self.every_seconds > 0 and (self._last_ts == 0.0 or (now_ts - self._last_ts) >= self.every_seconds):
+            should_emit = True
+        if not should_emit:
+            return False
+        label = (checkpoint or "").strip()
+        if self.base_label and label:
+            label = f"{self.base_label}:{label}"
+        elif self.base_label:
+            label = self.base_label
+        job_checkpoint(
+            self.job,
+            checkpoint=label or None,
+            task_request=self.task_request,
+            heartbeat=heartbeat,
+        )
+        self._last_ts = now_ts
+        return True

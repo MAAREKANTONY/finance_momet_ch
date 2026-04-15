@@ -99,7 +99,7 @@ class CleanupProcessingJobsCommandTests(TestCase):
         self.assertEqual(job.status, ProcessingJob.Status.FAILED)
         self.assertIn("Updated jobs: 1", out.getvalue())
 
-from core.job_tracking import JobCancelled, JobKilled, job_checkpoint, mark_job_running
+from core.job_tracking import JobCancelled, JobCheckpointPulse, JobKilled, job_checkpoint, mark_job_running
 
 
 class JobTrackingHelperTests(TestCase):
@@ -153,3 +153,31 @@ class JobTrackingHelperTests(TestCase):
         )
         with self.assertRaises(JobKilled):
             job_checkpoint(job_kill, checkpoint="loop")
+
+
+class JobCheckpointPulseTests(TestCase):
+    def test_pulse_triggers_on_counter_threshold(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.EXPORT_DATA_XLSX,
+            status=ProcessingJob.Status.RUNNING,
+        )
+        pulse = JobCheckpointPulse(job, every_n=3, every_seconds=3600, base_label="export")
+
+        self.assertFalse(pulse.hit(checkpoint="row1"))
+        self.assertFalse(pulse.hit(checkpoint="row2"))
+        self.assertTrue(pulse.hit(checkpoint="row3"))
+
+        job.refresh_from_db()
+        self.assertEqual(job.last_checkpoint, "export:row3")
+        self.assertIsNotNone(job.heartbeat_at)
+
+    def test_pulse_force_triggers_immediately(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.RUNNING,
+        )
+        pulse = JobCheckpointPulse(job, every_n=999, every_seconds=3600, base_label="compute")
+
+        self.assertTrue(pulse.hit(checkpoint="start", force=True))
+        job.refresh_from_db()
+        self.assertEqual(job.last_checkpoint, "compute:start")
