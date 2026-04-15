@@ -45,6 +45,8 @@ def _base_jobs_queryset() -> QuerySet[ProcessingJob]:
             "cancel_requested",
             "kill_requested",
             "heartbeat_at",
+            "last_checkpoint",
+            "worker_hostname",
             "created_at",
             "started_at",
             "finished_at",

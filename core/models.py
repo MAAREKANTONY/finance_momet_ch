@@ -850,8 +850,10 @@ class ProcessingJob(models.Model):
     cancel_requested = models.BooleanField(default=False)
     kill_requested = models.BooleanField(default=False)
 
-    # Heartbeat for detecting stuck/zombie jobs
+    # Heartbeat + visibility metadata for detecting stuck/zombie jobs
     heartbeat_at = models.DateTimeField(null=True, blank=True)
+    last_checkpoint = models.CharField(max_length=255, blank=True, default="")
+    worker_hostname = models.CharField(max_length=255, blank=True, default="")
 
     created_at = models.DateTimeField(auto_now_add=True)
     started_at = models.DateTimeField(null=True, blank=True)
@@ -865,6 +867,7 @@ class ProcessingJob(models.Model):
             models.Index(fields=["backtest", "created_at"]),
             models.Index(fields=["scenario", "created_at"]),
             models.Index(fields=["status", "heartbeat_at"]),
+            models.Index(fields=["status", "worker_hostname"]),
         ]
 
     def __str__(self) -> str:

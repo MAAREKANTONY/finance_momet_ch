@@ -98,3 +98,58 @@ class CleanupProcessingJobsCommandTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.FAILED)
         self.assertIn("Updated jobs: 1", out.getvalue())
+
+from core.job_tracking import JobCancelled, JobKilled, job_checkpoint, mark_job_running
+
+
+class JobTrackingHelperTests(TestCase):
+    def test_mark_job_running_stamps_worker_and_checkpoint(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+        )
+
+        class Req:
+            id = "task-123"
+            hostname = "celery@worker-1"
+
+        mark_job_running(job, task_request=Req(), message="boot")
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.RUNNING)
+        self.assertEqual(job.task_id, "task-123")
+        self.assertEqual(job.worker_hostname, "celery@worker-1")
+        self.assertEqual(job.last_checkpoint, "boot")
+        self.assertIsNotNone(job.heartbeat_at)
+        self.assertIsNotNone(job.started_at)
+
+    def test_job_checkpoint_updates_metadata(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_BACKTEST,
+            status=ProcessingJob.Status.RUNNING,
+        )
+
+        class Req:
+            hostname = "celery@worker-2"
+
+        job_checkpoint(job, checkpoint="phase:metrics", task_request=Req())
+        job.refresh_from_db()
+        self.assertEqual(job.last_checkpoint, "phase:metrics")
+        self.assertEqual(job.worker_hostname, "celery@worker-2")
+        self.assertIsNotNone(job.heartbeat_at)
+
+    def test_job_checkpoint_raises_when_cancel_or_kill_requested(self):
+        job_cancel = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.RUNNING,
+            cancel_requested=True,
+        )
+        with self.assertRaises(JobCancelled):
+            job_checkpoint(job_cancel, checkpoint="loop")
+
+        job_kill = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.RUNNING,
+            kill_requested=True,
+        )
+        with self.assertRaises(JobKilled):
+            job_checkpoint(job_kill, checkpoint="loop")

@@ -16,6 +16,7 @@ from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
 from .services.global_momentum import build_global_momentum_regime_by_date, GLOBAL_MOMENTUM_CODES
 from .services.calculations_fast import compute_full_for_symbol_scenario
+from .job_tracking import JobCancelled, JobKilled, job_checkpoint, mark_job_running
 
 from django.utils import timezone
 from django.db import InterfaceError, OperationalError
@@ -87,32 +88,6 @@ def _append_job_message(job: ProcessingJob | None, extra: str) -> None:
     except Exception:
         return
 
-class JobCancelled(Exception):
-    """Raised when a ProcessingJob has cancel_requested=True."""
-
-
-class JobKilled(Exception):
-    """Raised when a ProcessingJob has kill_requested=True."""
-
-
-def _job_checkpoint(job: ProcessingJob | None, *, heartbeat: bool = True) -> None:
-    """Cooperative cancellation + heartbeat.
-
-    - Refresh flags from DB
-    - Update heartbeat_at periodically (cheap single-row update)
-    - Raise JobCancelled/JobKilled when requested
-    """
-    if job is None:
-        return
-    # Refresh only the fields we need
-    _job_refresh(job, fields=["cancel_requested", "kill_requested", "status"])
-    if job.kill_requested:
-        raise JobKilled("kill requested")
-    if job.cancel_requested:
-        raise JobCancelled("cancel requested")
-    if heartbeat:
-        _job_update(job, heartbeat_at=timezone.now())
-
 def parse_date(s: str) -> date:
     return datetime.fromisoformat(s.replace("Z","")).date()
 
@@ -138,7 +113,7 @@ def _parse_int_or_none(x):
     except Exception:
         return None
 
-def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: bool = False, job: ProcessingJob | None = None) -> dict:
+def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: bool = False, job: ProcessingJob | None = None, task_request=None) -> dict:
     """Fetch/update daily bars for a queryset of Symbol.
 
     Returns basic stats: {"symbols":..., "bars":...}.
@@ -151,7 +126,7 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
 
     for sym in symbols:
         # Cooperative cancel/kill + heartbeat
-        _job_checkpoint(job)
+        job_checkpoint(job, task_request=task_request)
         exchange = sym.exchange or getattr(settings, "DEFAULT_EXCHANGE", "")
         try:
             # Delta fetch by default: if we already have bars, only request dates after the last stored bar.
@@ -230,7 +205,7 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
     return {"symbols": len(symbols), "bars": bars_written, "force_full": bool(force_full)}
 
 
-def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_all: bool = False, job: ProcessingJob | None = None) -> dict:
+def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_all: bool = False, job: ProcessingJob | None = None, task_request=None) -> dict:
     """Compute DailyMetric + Alert for a given scenario and subset of symbols.
 
     Safety rule:
@@ -271,7 +246,7 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
 
     computed_rows = 0
     for sym in symbols:
-        _job_checkpoint(job)
+        job_checkpoint(job, task_request=task_request)
         try:
             sym_last_bar_date = DailyBar.objects.filter(symbol=sym).aggregate(m=Max("date"))["m"]
             if not sym_last_bar_date:
@@ -315,7 +290,7 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
                 # Still responsive enough for manual cancels.
                 _i += 1
                 if job is not None and (_i % 200 == 0):
-                    _job_checkpoint(job)
+                    job_checkpoint(job, task_request=task_request)
                 compute_for_symbol_scenario(sym, scenario, d)
                 computed_rows += 1
         except Exception as e:
@@ -469,7 +444,7 @@ def _clone_metrics_and_alerts(
     ]
 
     for sym in symbols:
-        _job_checkpoint(job, heartbeat=False)
+        job_checkpoint(job, heartbeat=False)
 
         # Delete the target window first (keep behavior aligned with incremental compute).
         if start_date is not None:
@@ -542,23 +517,19 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
     if job_id:
         job = ProcessingJob.objects.filter(id=job_id).first()
         if job:
-            job.status = ProcessingJob.Status.RUNNING
-            job.task_id = getattr(self.request, "id", "") or ""
-            job.started_at = timezone.now()
-            _job_save(job, update_fields=["status", "task_id", "started_at"])
+            mark_job_running(job, task_request=self.request)
     if job is None:
         job = ProcessingJob.objects.create(
             job_type=ProcessingJob.JobType.FETCH_BARS,
-            status=ProcessingJob.Status.RUNNING,
-            task_id=getattr(self.request, "id", "") or "",
+            status=ProcessingJob.Status.PENDING,
             backtest_id=backtest_id,
             scenario_id=scenario_id,
             created_by_id=user_id,
-            started_at=timezone.now(),
         )
+        mark_job_running(job, task_request=self.request, message="started")
     try:
         # Initial checkpoint + heartbeat
-        _job_checkpoint(job)
+        job_checkpoint(job, task_request=self.request)
         if symbol_ids:
             symbol_qs = Symbol.objects.filter(id__in=list(symbol_ids))
         else:
@@ -571,7 +542,7 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
             years = Scenario.objects.filter(active=True).order_by("-history_years").values_list("history_years", flat=True).first() or 2
         outputsize = desired_outputsize_years(int(years))
 
-        stats = _fetch_daily_bars_for_symbols(symbol_qs=symbol_qs, outputsize=outputsize, force_full=bool(force_full), job=job)
+        stats = _fetch_daily_bars_for_symbols(symbol_qs=symbol_qs, outputsize=outputsize, force_full=bool(force_full), job=job, task_request=self.request)
         job.status = ProcessingJob.Status.DONE
         job.message = (
             f"Fetched bars: symbols={stats.get('symbols')} bars={stats.get('bars')} "
@@ -610,22 +581,18 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
     if job_id:
         job = ProcessingJob.objects.filter(id=job_id).first()
         if job:
-            job.status = ProcessingJob.Status.RUNNING
-            job.task_id = getattr(self.request, "id", "") or ""
-            job.started_at = timezone.now()
-            _job_save(job, update_fields=["status", "task_id", "started_at"])
+            mark_job_running(job, task_request=self.request)
     if job is None:
         job = ProcessingJob.objects.create(
             job_type=ProcessingJob.JobType.COMPUTE_METRICS,
-            status=ProcessingJob.Status.RUNNING,
-            task_id=getattr(self.request, "id", "") or "",
+            status=ProcessingJob.Status.PENDING,
             backtest_id=backtest_id,
             scenario_id=scenario_id,
             created_by_id=user_id,
-            started_at=timezone.now(),
         )
+        mark_job_running(job, task_request=self.request, message="started")
     try:
-        _job_checkpoint(job)
+        job_checkpoint(job, task_request=self.request)
         scenario = Scenario.objects.get(id=scenario_id)
         # Scoping rules (no regression for legacy flows):
         # - If explicit symbol_ids are provided (e.g., from a Backtest universe snapshot), compute only those.
@@ -652,6 +619,7 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
             scenario=scenario,
             recompute_all=bool(recompute_all),
             job=job,
+            task_request=self.request,
         )
         job.status = ProcessingJob.Status.DONE
         job.message = (
@@ -689,12 +657,10 @@ def compute_metrics_all_job_task(self, recompute_all: bool = False, user_id=None
     """Tracked job wrapper for a full compute across all active scenarios."""
     job = ProcessingJob.objects.create(
         job_type=ProcessingJob.JobType.COMPUTE_METRICS,
-        status=ProcessingJob.Status.RUNNING,
-        task_id=getattr(self.request, "id", "") or "",
+        status=ProcessingJob.Status.PENDING,
         created_by_id=user_id,
-        started_at=timezone.now(),
-        message=f"compute_all recompute_all={bool(recompute_all)}",
     )
+    mark_job_running(job, task_request=self.request, message=f"compute_all recompute_all={bool(recompute_all)}")
     try:
         msg = compute_metrics_task(bool(recompute_all))
         job.status = ProcessingJob.Status.DONE
@@ -890,11 +856,7 @@ def send_alert_definition_job_task(self, *, alert_definition_id: int, user_id=No
     if job_id:
         job = ProcessingJob.objects.filter(id=job_id).first()
         if job:
-            job.status = ProcessingJob.Status.RUNNING
-            job.task_id = getattr(self.request, "id", "") or ""
-            job.started_at = timezone.now()
-            job.message = f"En cours (envoi alerte {alert_definition_id})"
-            _job_save(job, update_fields=["status", "task_id", "started_at", "message"])
+            mark_job_running(job, task_request=self.request, message=f"En cours (envoi alerte {alert_definition_id})")
 
     try:
         # Reuse the existing sending logic synchronously so we can update the job status reliably.
@@ -1058,9 +1020,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
         job = ProcessingJob.objects.create(
             job_type=ProcessingJob.JobType.COMPUTE_METRICS,
             status=ProcessingJob.Status.PENDING,
-            task_id=getattr(self.request, "id", "") or "",
             created_by_id=user_id,
-            message="Daily system refresh (scheduled)",
         )
 
     # --- Anti-overlap lock (daily) ---
@@ -1080,9 +1040,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
         job.save(update_fields=["status", "started_at", "finished_at", "message"])
         return "locked_skip"
 
-    job.status = ProcessingJob.Status.RUNNING
-    job.started_at = timezone.now()
-    job.save(update_fields=["status", "started_at"])
+    mark_job_running(job, task_request=self.request, message="Daily system refresh (scheduled)")
 
     try:
         # 1) Fetch bars for ALL active symbols
@@ -1096,7 +1054,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
 
         job.message = f"Step1/3 Fetch DailyBars (delta) outputsize={outputsize}"
         job.save(update_fields=["message"])
-        _fetch_daily_bars_for_symbols(symbol_qs=symbols, outputsize=outputsize, force_full=False, job=job)
+        _fetch_daily_bars_for_symbols(symbol_qs=symbols, outputsize=outputsize, force_full=False, job=job, task_request=self.request)
 
         # 2) Compute metrics for ALL active scenarios + ALL active games' engine scenarios.
         #    Optimization: canonical signature (hash of indicator parameters) => compute once per signature,
@@ -1127,7 +1085,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
 
         done_groups = 0
         for sig, group_targets in groups.items():
-            _job_checkpoint(job)
+            job_checkpoint(job, task_request=self.request)
             done_groups += 1
 
             # Pick primary scenario for real computation
@@ -1147,14 +1105,14 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
             job.save(update_fields=["message"])
 
             # Compute once (incremental)
-            _compute_metrics_for_scenario(symbols_qs=union_symbols, scenario=primary, recompute_all=False, job=job)
+            _compute_metrics_for_scenario(symbols_qs=union_symbols, scenario=primary, recompute_all=False, job=job, task_request=self.request)
 
             # Ensure primary keeps its signature hash set
             Scenario.objects.filter(id=primary.id).update(last_computed_config_hash=sig)
 
             # Clone to the other scenarios in this group
             for t in group_targets[1:]:
-                _job_checkpoint(job, heartbeat=False)
+                job_checkpoint(job, heartbeat=False)
                 to_sc = t["scenario"]
                 to_syms = t["symbols"]
                 buffer_days = _buffer_days_for_scenario(primary)
@@ -1186,7 +1144,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
         total_g = len(games)
         done_g = 0
         for gs in games:
-            _job_checkpoint(job)
+            job_checkpoint(job, task_request=self.request)
             job.message = f"Step3/3 Run game={gs.id} ({done_g+1}/{total_g})"
             job.save(update_fields=["message"])
             try:
@@ -1262,14 +1220,10 @@ def run_game_scenario_job_task(self, *, game_id: int, force_fetch: bool = False,
     if job_id:
         job = ProcessingJob.objects.filter(id=job_id).first()
         if job:
-            job.status = ProcessingJob.Status.RUNNING
-            job.task_id = getattr(self.request, "id", "") or ""
-            job.started_at = timezone.now()
-            job.message = f"En cours (run game {game_id})"
-            _job_save(job, update_fields=["status", "task_id", "started_at", "message"])
+            mark_job_running(job, task_request=self.request, message=f"En cours (run game {game_id})")
     try:
         from core.services.game_scenarios.runner import run_game_scenario_now, GameJobCancelled, GameJobKilled
-        _job_checkpoint(job)
+        job_checkpoint(job, task_request=self.request)
         run_game_scenario_now(game_id, force_fetch=force_fetch, force_recompute=force_recompute, job=job)
 
         if job:
@@ -1322,7 +1276,7 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None):
     try:
         prep_report = prepare_backtest_data(bt)
         job = ProcessingJob.objects.filter(id=job_id).first() if job_id else None
-        engine_result = engine_run_backtest(bt, checkpoint=(lambda: _job_checkpoint(job)) if job_id else None)
+        engine_result = engine_run_backtest(bt, checkpoint=(lambda: job_checkpoint(job, checkpoint="run_backtest:engine", task_request=self.request)) if job_id else None)
         results = engine_result.results
 
         # --- Optional (NO-REGRESSION) Parquet storage ---
@@ -1414,21 +1368,17 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
     if job_id:
         job = ProcessingJob.objects.filter(id=job_id).first()
         if job:
-            job.status = ProcessingJob.Status.RUNNING
-            job.task_id = getattr(self.request, "id", "") or ""
-            job.started_at = timezone.now()
-            _job_save(job, update_fields=["status", "task_id", "started_at"])
+            mark_job_running(job, task_request=self.request)
     if job is None:
         job = ProcessingJob.objects.create(
             job_type=ProcessingJob.JobType.RUN_BACKTEST,
-            status=ProcessingJob.Status.RUNNING,
-            task_id=getattr(self.request, "id", "") or "",
+            status=ProcessingJob.Status.PENDING,
             backtest_id=backtest_id,
             created_by_id=user_id,
-            started_at=timezone.now(),
         )
+        mark_job_running(job, task_request=self.request, message="started")
     try:
-        _job_checkpoint(job)
+        job_checkpoint(job, task_request=self.request)
         msg = run_backtest_task(backtest_id, job_id=job.id if job else None)
         job.status = ProcessingJob.Status.DONE
         job.message = str(msg)
@@ -1533,14 +1483,14 @@ def export_scenario_xlsx_task(
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
-        job.task_id = getattr(self.request, "id", "") or ""
-        job.status = ProcessingJob.Status.RUNNING
-        job.started_at = timezone.now()
-        job.message = (
-            f"Export XLSX scenario_id={scenario_id} ticker={ticker or '*'} exchange={exchange or '*'} "
-            f"from={date_from or '-'} to={date_to or '-'}"
+        mark_job_running(
+            job,
+            task_request=self.request,
+            message=(
+                f"Export XLSX scenario_id={scenario_id} ticker={ticker or '*'} exchange={exchange or '*'} "
+                f"from={date_from or '-'} to={date_to or '-'}"
+            ),
         )
-        job.save(update_fields=["task_id", "status", "started_at", "message"])
 
     try:
         scenario = Scenario.objects.get(id=scenario_id)
@@ -1633,10 +1583,7 @@ def export_alerts_csv_task(self, *, job_id: int, date_str: str = '', scenario_id
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
-        job.task_id = getattr(self.request, 'id', '') or ''
-        job.status = ProcessingJob.Status.RUNNING
-        job.started_at = timezone.now()
-        job.save(update_fields=['task_id', 'status', 'started_at'])
+        mark_job_running(job, task_request=self.request)
     try:
         qs = Alert.objects.select_related('symbol', 'scenario').all().order_by('-date', 'scenario__name', 'symbol__ticker')
         if date_str:
@@ -1681,10 +1628,7 @@ def export_all_scenarios_zip_task(self, *, job_id: int, ticker: str = '', exchan
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
-        job.task_id = getattr(self.request, 'id', '') or ''
-        job.status = ProcessingJob.Status.RUNNING
-        job.started_at = timezone.now()
-        job.save(update_fields=['task_id', 'status', 'started_at'])
+        mark_job_running(job, task_request=self.request)
     try:
         scenarios = list(Scenario.objects.all().order_by('name', 'id'))
         symbols_qs = Symbol.objects.filter(active=True)
@@ -1715,10 +1659,7 @@ def export_data_xlsx_task(self, *, job_id: int, ticker: str = '', exchange: str 
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
-        job.task_id = getattr(self.request, 'id', '') or ''
-        job.status = ProcessingJob.Status.RUNNING
-        job.started_at = timezone.now()
-        job.save(update_fields=['task_id', 'status', 'started_at'])
+        mark_job_running(job, task_request=self.request)
     try:
         wb = Workbook()
         ws_bars = wb.active
@@ -1780,10 +1721,7 @@ def export_backtest_debug_excel_task(self, *, job_id: int, backtest_id: int, tic
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
-        job.task_id = getattr(self.request, 'id', '') or ''
-        job.status = ProcessingJob.Status.RUNNING
-        job.started_at = timezone.now()
-        job.save(update_fields=['task_id', 'status', 'started_at'])
+        mark_job_running(job, task_request=self.request)
     try:
         bt = Backtest.objects.select_related('scenario').get(id=backtest_id)
         wb, output_name = build_backtest_debug_workbook(bt, ticker=ticker, line=line)
@@ -1801,10 +1739,7 @@ def export_backtest_debug_csv_task(self, *, job_id: int, backtest_id: int, ticke
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
-        job.task_id = getattr(self.request, 'id', '') or ''
-        job.status = ProcessingJob.Status.RUNNING
-        job.started_at = timezone.now()
-        job.save(update_fields=['task_id', 'status', 'started_at'])
+        mark_job_running(job, task_request=self.request)
     try:
         bt = Backtest.objects.get(id=backtest_id)
         results = bt.results or {}
@@ -1846,10 +1781,7 @@ def export_backtest_excel_task(self, *, job_id: int, backtest_id: int):
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
-        job.task_id = getattr(self.request, 'id', '') or ''
-        job.status = ProcessingJob.Status.RUNNING
-        job.started_at = timezone.now()
-        job.save(update_fields=['task_id', 'status', 'started_at'])
+        mark_job_running(job, task_request=self.request)
     try:
         bt = Backtest.objects.get(id=backtest_id)
         wb, base_name = _build_backtest_workbook_full(bt)
@@ -1869,10 +1801,7 @@ def export_backtest_excel_compact_task(self, *, job_id: int, backtest_id: int, c
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
-        job.task_id = getattr(self.request, 'id', '') or ''
-        job.status = ProcessingJob.Status.RUNNING
-        job.started_at = timezone.now()
-        job.save(update_fields=['task_id', 'status', 'started_at'])
+        mark_job_running(job, task_request=self.request)
     try:
         bt = Backtest.objects.get(id=backtest_id)
         wb, base_name = _build_backtest_workbook_compact(bt, charts=charts, chart_mode=chart_mode, chart_limit=chart_limit, chart_ticker=chart_ticker, chart_line=chart_line)
@@ -1892,10 +1821,7 @@ def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
 
     job = ProcessingJob.objects.filter(id=job_id).first()
     if job:
-        job.task_id = getattr(self.request, 'id', '') or ''
-        job.status = ProcessingJob.Status.RUNNING
-        job.started_at = timezone.now()
-        job.save(update_fields=['task_id', 'status', 'started_at'])
+        mark_job_running(job, task_request=self.request)
     try:
         game = GameScenario.objects.get(id=game_scenario_id)
         wb = Workbook()

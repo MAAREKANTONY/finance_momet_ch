@@ -12,6 +12,9 @@
       <div><b>Démarré:</b> {{ job.started_at|default:"-" }}</div>
       <div><b>Terminé:</b> {{ job.finished_at|default:"-" }}</div>
       {% if job.created_by %}<div><b>Par:</b> {{ job.created_by }}</div>{% endif %}
+      <div><b>Heartbeat:</b> {{ job.heartbeat_at|default:"-" }}</div>
+      <div><b>Last checkpoint:</b> {{ job.last_checkpoint|default:"-" }}</div>
+      <div><b>Worker:</b> {{ job.worker_hostname|default:"-" }}</div>
       {% if job.scenario %}<div><b>Scenario:</b> <a href="{% url 'scenario_edit' job.scenario.id %}">{{ job.scenario }}</a></div>{% endif %}
       {% if job.backtest %}<div><b>Backtest:</b> <a href="{% url 'backtest_detail' job.backtest.id %}">{{ job.backtest }}</a></div>{% endif %}
     </div>
