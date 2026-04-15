@@ -57,3 +57,32 @@ Relevant settings:
 ## Stale-job watchdog
 
 The existing periodic task `cleanup_stale_processing_jobs_task` remains active and marks zombie jobs as `FAILED` based on heartbeat / age thresholds.
+
+
+## Recover stale jobs (iteration 4)
+
+Preferred recovery command:
+```bash
+docker compose exec web python manage.py recover_jobs
+```
+
+Useful variants:
+```bash
+# Preview only
+docker compose exec web python manage.py recover_jobs --dry-run
+
+# Recover only explicit ids
+docker compose exec web python manage.py recover_jobs --ids 12,15
+
+# More conservative on pending jobs
+docker compose exec web python manage.py recover_jobs --no-pending
+```
+
+Recovery rules:
+- stale `RUNNING` + `kill_requested=True` => `KILLED`
+- stale `RUNNING` + `cancel_requested=True` => `CANCELLED`
+- stale `RUNNING` without stop request => `FAILED`
+- stale `PENDING` with stop request => `CANCELLED` / `KILLED`
+- stale `PENDING` without stop request => `FAILED`
+
+The command also re-syncs related business objects so a Backtest is not left stuck in `PENDING`/`RUNNING` after the job becomes terminal.

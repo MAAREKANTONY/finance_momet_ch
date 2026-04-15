@@ -181,3 +181,55 @@ class JobCheckpointPulseTests(TestCase):
         self.assertTrue(pulse.hit(checkpoint="start", force=True))
         job.refresh_from_db()
         self.assertEqual(job.last_checkpoint, "compute:start")
+
+
+class RecoverJobsCommandTests(TestCase):
+    def _make_backtest(self):
+        scenario = Scenario.objects.create(name="Scenario Recover")
+        return Backtest.objects.create(name="BT Recover", scenario=scenario)
+
+    def test_recover_jobs_marks_stale_running_failed_and_syncs_backtest(self):
+        bt = self._make_backtest()
+        bt.status = Backtest.Status.RUNNING
+        bt.save(update_fields=["status"])
+        stale_hb = timezone.now() - timedelta(minutes=120)
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_BACKTEST,
+            status=ProcessingJob.Status.RUNNING,
+            backtest=bt,
+            started_at=timezone.now() - timedelta(minutes=150),
+            heartbeat_at=stale_hb,
+        )
+        out = StringIO()
+        call_command("recover_jobs", stdout=out)
+        job.refresh_from_db()
+        bt.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertIn("Recovered stale running job", job.error)
+        self.assertEqual(bt.status, Backtest.Status.FAILED)
+
+    def test_recover_jobs_marks_requested_pending_cancelled(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            cancel_requested=True,
+        )
+        out = StringIO()
+        call_command("recover_jobs", stdout=out)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.CANCELLED)
+        self.assertIsNotNone(job.finished_at)
+        self.assertIn("cancel request", job.message)
+
+    def test_recover_jobs_dry_run_keeps_job_unchanged(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.RUNNING,
+            started_at=timezone.now() - timedelta(minutes=200),
+            heartbeat_at=timezone.now() - timedelta(minutes=180),
+        )
+        out = StringIO()
+        call_command("recover_jobs", "--dry-run", stdout=out)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.RUNNING)
+        self.assertIn("Dry-run only", out.getvalue())
