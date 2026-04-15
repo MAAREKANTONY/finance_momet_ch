@@ -107,8 +107,8 @@ def build_scenario_workbook_write_only(
             f"| SUM_SLOPE_BASSE/SLOPE_VRAI_BASSE: Npente_basse={getattr(scenario,'npente_basse',None)} seuil_basse={getattr(scenario,'slope_threshold_basse',None)} "
             f"| history_years={scenario.history_years}"
         ])
-        ws.append([f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
-        ws.append([])
+        append_excel_row(ws, [f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
+        append_excel_row(ws, [])
 
         header = [
             "date",

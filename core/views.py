@@ -58,6 +58,7 @@ from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .excel_utils import append_excel_row
+from .job_launch import dispatch_task_after_commit, launch_processing_job
 from .services.derived_data import (
     backtest_impactful_changes,
     game_impactful_changes,
@@ -157,22 +158,23 @@ def alerts_export_csv(request):
     from .models import ProcessingJob
     from .tasks import export_alerts_csv_task
 
-    job = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=export_alerts_csv_task,
         job_type=ProcessingJob.JobType.EXPORT_ALERTS_CSV,
-        status=ProcessingJob.Status.PENDING,
         created_by=request.user,
         message="Queued alerts CSV export",
+        task_kwargs={
+            "date_str": date_str,
+            "scenario_id": scenario_id,
+            "ticker": ticker,
+            "alert_codes": alert_codes,
+        },
     )
-    async_result = export_alerts_csv_task.delay(
-        job_id=job.id,
-        date_str=date_str,
-        scenario_id=scenario_id,
-        ticker=ticker,
-        alert_codes=alert_codes,
-    )
-    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
-    messages.success(request, f"Export Alerts CSV lancé en background (job #{job.id}).")
-    return redirect("job_detail", pk=job.id)
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export Alerts CSV impossible: {launch.dispatch_error}")
+    else:
+        messages.success(request, f"Export Alerts CSV lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 def _autosize(ws):
@@ -221,17 +223,17 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
         ws.title = title
         first = False
 
-        ws.append([f"Scenario: {scenario.name}"])
-        ws.append([f"Description: {scenario.description}"])
-        ws.append([
+        append_excel_row(ws, [f"Scenario: {scenario.name}"])
+        append_excel_row(ws, [f"Description: {scenario.description}"])
+        append_excel_row(ws, [
             f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
                         f"| N1={scenario.n1} N2={scenario.n2} "
             f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil={getattr(scenario,'slope_threshold',None)} "
             f"| SUM_SLOPE_BASSE/SLOPE_VRAI_BASSE: Npente_basse={getattr(scenario,'npente_basse',None)} seuil_basse={getattr(scenario,'slope_threshold_basse',None)} "
             f"| history_years={scenario.history_years}"
         ])
-        ws.append([f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
-        ws.append([])
+        append_excel_row(ws, [f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
+        append_excel_row(ws, [])
 
         header = [
             "date",
@@ -240,7 +242,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
             "P","M","M1","X","X1","T","Q","S","K1","Kf","K2","K3","K4",
             "alerts",
         ]
-        ws.append(header)
+        append_excel_row(ws, header)
         _header(ws, ws.max_row)
 
         def f(x):
@@ -248,7 +250,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
 
         for b in bars:
             m = metrics_by_date.get(b.date)
-            ws.append([
+            append_excel_row(ws, [
                 b.date.isoformat(),
                 f(b.open), f(b.high), f(b.low), f(b.close), (int(b.volume) if b.volume is not None else None), f(b.change_amount), f(b.change_pct),
                 f(m.sum_slope) if m else None,
@@ -292,24 +294,25 @@ def data_export_scenario_xlsx(request, scenario_id: int):
     from .models import ProcessingJob
     from .tasks import export_scenario_xlsx_task
 
-    job = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=export_scenario_xlsx_task,
         job_type=ProcessingJob.JobType.EXPORT_SCENARIO_XLSX,
-        status=ProcessingJob.Status.PENDING,
         scenario=scenario,
         created_by=request.user,
         message=f"Queued XLSX export for scenario {scenario_id}",
+        task_kwargs={
+            "scenario_id": scenario.id,
+            "ticker": ticker,
+            "exchange": exchange,
+            "date_from": date_from,
+            "date_to": date_to,
+        },
     )
-    async_result = export_scenario_xlsx_task.delay(
-        job_id=job.id,
-        scenario_id=scenario.id,
-        ticker=ticker,
-        exchange=exchange,
-        date_from=date_from,
-        date_to=date_to,
-    )
-    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
-    messages.success(request, f"Export XLSX lancé en background (job #{job.id}).")
-    return redirect("job_detail", pk=job.id)
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export XLSX impossible: {launch.dispatch_error}")
+    else:
+        messages.success(request, f"Export XLSX lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 @login_required
@@ -322,22 +325,23 @@ def data_export_all_scenarios_zip(request):
     from .models import ProcessingJob
     from .tasks import export_all_scenarios_zip_task
 
-    job = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=export_all_scenarios_zip_task,
         job_type=ProcessingJob.JobType.EXPORT_ALL_SCENARIOS_ZIP,
-        status=ProcessingJob.Status.PENDING,
         created_by=request.user,
         message="Queued ZIP export for all scenarios",
+        task_kwargs={
+            "ticker": ticker,
+            "exchange": exchange,
+            "date_from": date_from,
+            "date_to": date_to,
+        },
     )
-    async_result = export_all_scenarios_zip_task.delay(
-        job_id=job.id,
-        ticker=ticker,
-        exchange=exchange,
-        date_from=date_from,
-        date_to=date_to,
-    )
-    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
-    messages.success(request, f"Export ZIP lancé en background (job #{job.id}).")
-    return redirect("job_detail", pk=job.id)
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export ZIP impossible: {launch.dispatch_error}")
+    else:
+        messages.success(request, f"Export ZIP lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 @login_required
@@ -352,23 +356,24 @@ def data_export_xlsx(request):
     from .models import ProcessingJob
     from .tasks import export_data_xlsx_task
 
-    job = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=export_data_xlsx_task,
         job_type=ProcessingJob.JobType.EXPORT_DATA_XLSX,
-        status=ProcessingJob.Status.PENDING,
         created_by=request.user,
         message="Queued legacy data XLSX export",
+        task_kwargs={
+            "ticker": ticker,
+            "exchange": exchange,
+            "scenario_id": scenario_id,
+            "date_from": date_from,
+            "date_to": date_to,
+        },
     )
-    async_result = export_data_xlsx_task.delay(
-        job_id=job.id,
-        ticker=ticker,
-        exchange=exchange,
-        scenario_id=scenario_id,
-        date_from=date_from,
-        date_to=date_to,
-    )
-    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
-    messages.success(request, f"Export XLSX lancé en background (job #{job.id}).")
-    return redirect("job_detail", pk=job.id)
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export XLSX impossible: {launch.dispatch_error}")
+    else:
+        messages.success(request, f"Export XLSX lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 @login_required
@@ -1227,14 +1232,22 @@ def study_compute_now(request, pk: int):
         from core.tasks import compute_metrics_job_task
         scenario_obj = study.scenario
         symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
-        compute_metrics_job_task.delay(
-            scenario_id=scenario_obj.id,
-            symbol_ids=symbol_ids,
-            recompute_all=False,
-            backtest_id=None,
-            user_id=request.user.id if request.user.is_authenticated else None,
-            job_id=None,
+        launch = launch_processing_job(
+            task=compute_metrics_job_task,
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            scenario=scenario_obj,
+            created_by=request.user if request.user.is_authenticated else None,
+            message="En attente d'exécution (Study / scénario)",
+            task_kwargs={
+                "scenario_id": scenario_obj.id,
+                "symbol_ids": symbol_ids,
+                "recompute_all": False,
+                "backtest_id": None,
+                "user_id": request.user.id if request.user.is_authenticated else None,
+            },
         )
+        if launch.dispatch_error:
+            raise launch.dispatch_error
         messages.success(request, "Calculs demandés (Study / scénario, traitement en arrière-plan).")
     except Exception as e:
         messages.error(request, f"Erreur lancement calculs Study: {e}")
@@ -1250,14 +1263,22 @@ def study_recompute_now(request, pk: int):
         from core.tasks import compute_metrics_job_task
         scenario_obj = study.scenario
         symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
-        compute_metrics_job_task.delay(
-            scenario_id=scenario_obj.id,
-            symbol_ids=symbol_ids,
-            recompute_all=True,
-            backtest_id=None,
-            user_id=request.user.id if request.user.is_authenticated else None,
-            job_id=None,
+        launch = launch_processing_job(
+            task=compute_metrics_job_task,
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            scenario=scenario_obj,
+            created_by=request.user if request.user.is_authenticated else None,
+            message="En attente d'exécution (recompute complet Study / scénario)",
+            task_kwargs={
+                "scenario_id": scenario_obj.id,
+                "symbol_ids": symbol_ids,
+                "recompute_all": True,
+                "backtest_id": None,
+                "user_id": request.user.id if request.user.is_authenticated else None,
+            },
         )
+        if launch.dispatch_error:
+            raise launch.dispatch_error
         messages.success(request, "Recompute complet demandé (Study / scénario).")
     except Exception as e:
         messages.error(request, f"Erreur recompute complet Study: {e}")
@@ -1420,23 +1441,22 @@ def backtest_fetch_data(request, pk: int):
     from core.tasks import fetch_daily_bars_job_task
 
     # Create a PENDING job immediately so the UI can show 'en attente' even before the worker starts
-    pj = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=fetch_daily_bars_job_task,
         job_type=ProcessingJob.JobType.FETCH_BARS,
-        status=ProcessingJob.Status.PENDING,
         backtest=bt,
         scenario=bt.scenario,
         created_by=request.user if request.user.is_authenticated else None,
         message="En attente d'exécution",
+        task_kwargs={
+            "symbol_ids": symbol_ids,
+            "scenario_id": bt.scenario_id,
+            "backtest_id": bt.id,
+            "user_id": request.user.id if request.user.is_authenticated else None,
+        },
     )
-    async_res = fetch_daily_bars_job_task.delay(
-        symbol_ids=symbol_ids,
-        scenario_id=bt.scenario_id,
-        backtest_id=bt.id,
-        user_id=request.user.id if request.user.is_authenticated else None,
-        job_id=pj.id,
-    )
-    pj.task_id = getattr(async_res, 'id', '') or ''
-    pj.save(update_fields=['task_id'])
+    if launch.dispatch_error:
+        messages.error(request, f"Impossible de lancer la collecte: {launch.dispatch_error}")
 
     messages.success(request, "Collecte des données marché demandée pour ce backtest (traitement en arrière-plan).")
     return redirect("backtest_detail", pk=pk)
@@ -1468,24 +1488,23 @@ def backtest_compute_metrics(request, pk: int):
 
     from core.tasks import compute_metrics_job_task
 
-    pj = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=compute_metrics_job_task,
         job_type=ProcessingJob.JobType.COMPUTE_METRICS,
-        status=ProcessingJob.Status.PENDING,
         backtest=bt,
         scenario=bt.scenario,
         created_by=request.user if request.user.is_authenticated else None,
         message="En attente d'exécution",
+        task_kwargs={
+            "scenario_id": bt.scenario_id,
+            "symbol_ids": symbol_ids,
+            "recompute_all": False,
+            "backtest_id": bt.id,
+            "user_id": request.user.id if request.user.is_authenticated else None,
+        },
     )
-    async_res = compute_metrics_job_task.delay(
-        scenario_id=bt.scenario_id,
-        symbol_ids=symbol_ids,
-        recompute_all=False,
-        backtest_id=bt.id,
-        user_id=request.user.id if request.user.is_authenticated else None,
-        job_id=pj.id,
-    )
-    pj.task_id = getattr(async_res, 'id', '') or ''
-    pj.save(update_fields=['task_id'])
+    if launch.dispatch_error:
+        messages.error(request, f"Impossible de lancer le calcul des indicateurs: {launch.dispatch_error}")
 
     messages.success(request, "Calcul des indicateurs demandé pour ce backtest (traitement en arrière-plan).")
     return redirect("backtest_detail", pk=pk)
@@ -1590,15 +1609,25 @@ def alert_definition_send_now(request, pk: int):
     NO-REGRESSION: this only reads computed alerts from the `Alert` table.
     Actual sending is done asynchronously via Celery.
     """
-    from .tasks import send_alert_definition_now_task
-    send_alert_definition_now_task.delay(pk)
-    messages.success(request, "Envoi déclenché (via Celery).")
+    from .tasks import send_alert_definition_job_task
+    launch = launch_processing_job(
+        task=send_alert_definition_job_task,
+        job_type=ProcessingJob.JobType.SEND_EMAILS,
+        created_by=request.user if request.user.is_authenticated else None,
+        message=f"En attente d'exécution (envoi alerte {pk})",
+        task_kwargs={
+            "alert_definition_id": pk,
+            "user_id": request.user.id if request.user.is_authenticated else None,
+        },
+    )
+    if launch.dispatch_error:
+        messages.error(request, f"Impossible de déclencher l'envoi: {launch.dispatch_error}")
+    else:
+        messages.success(request, "Envoi déclenché (via Celery).")
     return redirect("alert_definitions_list")
 
 
 
-@login_required
-@require_POST
 @login_required
 @require_POST
 def run_compute_now(request):
@@ -1615,24 +1644,43 @@ def run_compute_now(request):
 
         if scenario_id.upper() == "ALL":
             from core.tasks import compute_metrics_all_job_task
-            compute_metrics_all_job_task.delay(False, user_id=request.user.id if request.user.is_authenticated else None)
+            launch = launch_processing_job(
+                task=compute_metrics_all_job_task,
+                job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+                created_by=request.user if request.user.is_authenticated else None,
+                message="En attente d'exécution (calcul tous scénarios)",
+                task_kwargs={
+                    "recompute_all": False,
+                    "user_id": request.user.id if request.user.is_authenticated else None,
+                },
+            )
+            if launch.dispatch_error:
+                raise launch.dispatch_error
             messages.success(request, "Calculs demandés (tous scénarios, traitement en arrière-plan).")
         else:
             from core.tasks import compute_metrics_job_task
-            # Scope to the selected scenario universe to avoid recomputing symbols from other scenarios.
             try:
                 scenario_obj = Scenario.objects.get(id=int(scenario_id))
                 symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
             except Exception:
                 symbol_ids = None
-            compute_metrics_job_task.delay(
-                scenario_id=int(scenario_id),
-                symbol_ids=symbol_ids,
-                recompute_all=False,
-                backtest_id=None,
-                user_id=request.user.id if request.user.is_authenticated else None,
-                job_id=None,
+                scenario_obj = None
+            launch = launch_processing_job(
+                task=compute_metrics_job_task,
+                job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+                scenario=scenario_obj,
+                created_by=request.user if request.user.is_authenticated else None,
+                message="En attente d'exécution (calcul scénario sélectionné)",
+                task_kwargs={
+                    "scenario_id": int(scenario_id),
+                    "symbol_ids": symbol_ids,
+                    "recompute_all": False,
+                    "backtest_id": None,
+                    "user_id": request.user.id if request.user.is_authenticated else None,
+                },
             )
+            if launch.dispatch_error:
+                raise launch.dispatch_error
             messages.success(request, "Calculs demandés (scénario sélectionné, traitement en arrière-plan).")
     except Exception as e:
         messages.error(request, f"Erreur lancement calculs: {e}")
@@ -1655,24 +1703,43 @@ def run_recompute_all_now(request):
 
         if scenario_id.upper() == "ALL":
             from core.tasks import compute_metrics_all_job_task
-            compute_metrics_all_job_task.delay(True, user_id=request.user.id if request.user.is_authenticated else None)
+            launch = launch_processing_job(
+                task=compute_metrics_all_job_task,
+                job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+                created_by=request.user if request.user.is_authenticated else None,
+                message="En attente d'exécution (recompute complet tous scénarios)",
+                task_kwargs={
+                    "recompute_all": True,
+                    "user_id": request.user.id if request.user.is_authenticated else None,
+                },
+            )
+            if launch.dispatch_error:
+                raise launch.dispatch_error
             messages.success(request, "Recompute complet demandé (tous scénarios).")
         else:
             from core.tasks import compute_metrics_job_task
-            # Scope to the selected scenario universe to avoid recomputing symbols from other scenarios.
             try:
                 scenario_obj = Scenario.objects.get(id=int(scenario_id))
                 symbol_ids = list(scenario_obj.symbols.values_list("id", flat=True))
             except Exception:
                 symbol_ids = None
-            compute_metrics_job_task.delay(
-                scenario_id=int(scenario_id),
-                symbol_ids=symbol_ids,
-                recompute_all=True,
-                backtest_id=None,
-                user_id=request.user.id if request.user.is_authenticated else None,
-                job_id=None,
+                scenario_obj = None
+            launch = launch_processing_job(
+                task=compute_metrics_job_task,
+                job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+                scenario=scenario_obj,
+                created_by=request.user if request.user.is_authenticated else None,
+                message="En attente d'exécution (recompute complet scénario sélectionné)",
+                task_kwargs={
+                    "scenario_id": int(scenario_id),
+                    "symbol_ids": symbol_ids,
+                    "recompute_all": True,
+                    "backtest_id": None,
+                    "user_id": request.user.id if request.user.is_authenticated else None,
+                },
             )
+            if launch.dispatch_error:
+                raise launch.dispatch_error
             messages.success(request, "Recompute complet demandé (scénario sélectionné).")
     except Exception as e:
         messages.error(request, f"Erreur recompute complet: {e}")
@@ -1707,24 +1774,23 @@ def backtest_recompute_metrics(request, pk: int):
 
     from core.tasks import compute_metrics_job_task
 
-    pj = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=compute_metrics_job_task,
         job_type=ProcessingJob.JobType.COMPUTE_METRICS,
-        status=ProcessingJob.Status.PENDING,
         backtest=bt,
         scenario=bt.scenario,
         created_by=request.user if request.user.is_authenticated else None,
         message="En attente d'exécution (recompute complet scénario)",
+        task_kwargs={
+            "scenario_id": bt.scenario_id,
+            "symbol_ids": symbol_ids,
+            "recompute_all": True,
+            "backtest_id": bt.id,
+            "user_id": request.user.id if request.user.is_authenticated else None,
+        },
     )
-    async_res = compute_metrics_job_task.delay(
-        scenario_id=bt.scenario_id,
-        symbol_ids=symbol_ids,
-        recompute_all=True,
-        backtest_id=bt.id,
-        user_id=request.user.id if request.user.is_authenticated else None,
-        job_id=pj.id,
-    )
-    pj.task_id = getattr(async_res, "id", "") or ""
-    pj.save(update_fields=["task_id"])
+    if launch.dispatch_error:
+        messages.error(request, f"Impossible de lancer le recompute complet: {launch.dispatch_error}")
 
     messages.success(request, "Recompute complet demandé pour ce backtest (scénario uniquement).")
     return redirect("backtest_detail", pk=pk)
@@ -1760,27 +1826,25 @@ def fetch_bars_now(request):
     try:
         from core.tasks import fetch_daily_bars_job_task
 
-        pj = ProcessingJob.objects.create(
+        launch = launch_processing_job(
+            task=fetch_daily_bars_job_task,
             job_type=ProcessingJob.JobType.FETCH_BARS,
-            status=ProcessingJob.Status.PENDING,
-            scenario_id=scenario_id_int,
+            scenario=Scenario.objects.filter(id=scenario_id_int).first() if scenario_id_int else None,
             created_by=request.user if request.user.is_authenticated else None,
             message=(
                 "En attente d'exécution (collecte données)"
                 if not scenario_id_int else
                 f"En attente d'exécution (collecte données scénario {scenario_id_int})"
             ),
+            task_kwargs={
+                "symbol_ids": symbol_ids,
+                "scenario_id": scenario_id_int,
+                "force_full": force_full,
+                "user_id": request.user.id if request.user.is_authenticated else None,
+            },
         )
-
-        async_res = fetch_daily_bars_job_task.delay(
-            symbol_ids=symbol_ids,
-            scenario_id=scenario_id_int,
-            force_full=force_full,
-            user_id=request.user.id if request.user.is_authenticated else None,
-            job_id=pj.id,
-        )
-        pj.task_id = getattr(async_res, "id", "") or ""
-        pj.save(update_fields=["task_id"])
+        if launch.dispatch_error:
+            raise launch.dispatch_error
 
         if scenario_id == "ALL":
             messages.success(request, "Collecte demandée pour TOUS les tickers (traitement en arrière-plan).")
@@ -2210,17 +2274,21 @@ def backtest_run(request, pk: int):
     Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.PENDING, error_message="")
     from .tasks import run_backtest_job_task
 
-    pj = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=run_backtest_job_task,
         job_type=ProcessingJob.JobType.RUN_BACKTEST,
-        status=ProcessingJob.Status.PENDING,
         backtest=bt,
         scenario=bt.scenario,
         created_by=request.user if request.user.is_authenticated else None,
         message="En attente d'exécution",
+        task_kwargs={
+            "backtest_id": bt.id,
+            "user_id": request.user.id if request.user.is_authenticated else None,
+        },
     )
-    async_res = run_backtest_job_task.delay(bt.id, user_id=request.user.id if request.user.is_authenticated else None, job_id=pj.id)
-    pj.task_id = getattr(async_res, 'id', '') or ''
-    pj.save(update_fields=['task_id'])
+    if launch.dispatch_error:
+        messages.error(request, f"Impossible de lancer le backtest: {launch.dispatch_error}")
+        return redirect("backtest_detail", pk=pk)
     messages.success(request, "Backtest lancé (traitement en arrière-plan).")
     return redirect("backtest_detail", pk=pk)
 
@@ -2440,22 +2508,19 @@ def backtest_export_debug_excel(request, pk: int):
     from .models import ProcessingJob
     from .tasks import export_backtest_debug_excel_task
 
-    job = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=export_backtest_debug_excel_task,
         job_type=ProcessingJob.JobType.EXPORT_BACKTEST_DEBUG_XLSX,
-        status=ProcessingJob.Status.PENDING,
         backtest=bt,
         created_by=request.user,
         message=f"Queued debug Excel export for backtest {pk}",
+        task_kwargs={"backtest_id": bt.id, "ticker": ticker, "line": line},
     )
-    async_result = export_backtest_debug_excel_task.delay(
-        job_id=job.id,
-        backtest_id=bt.id,
-        ticker=ticker,
-        line=line,
-    )
-    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
-    messages.success(request, f"Export Debug Excel lancé en background (job #{job.id}).")
-    return redirect("job_detail", pk=job.id)
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export Debug Excel impossible: {launch.dispatch_error}")
+    else:
+        messages.success(request, f"Export Debug Excel lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 @login_required
@@ -2468,22 +2533,19 @@ def backtest_export_debug_csv(request, pk: int):
     from .models import ProcessingJob
     from .tasks import export_backtest_debug_csv_task
 
-    job = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=export_backtest_debug_csv_task,
         job_type=ProcessingJob.JobType.EXPORT_BACKTEST_DEBUG_CSV,
-        status=ProcessingJob.Status.PENDING,
         backtest=bt,
         created_by=request.user,
         message=f"Queued debug CSV export for backtest {pk}",
+        task_kwargs={"backtest_id": bt.id, "ticker": ticker, "line": line},
     )
-    async_result = export_backtest_debug_csv_task.delay(
-        job_id=job.id,
-        backtest_id=bt.id,
-        ticker=ticker,
-        line=line,
-    )
-    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
-    messages.success(request, f"Export Debug CSV lancé en background (job #{job.id}).")
-    return redirect("job_detail", pk=job.id)
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export Debug CSV impossible: {launch.dispatch_error}")
+    else:
+        messages.success(request, f"Export Debug CSV lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 def _build_backtest_workbook_full(bt):
@@ -2532,7 +2594,7 @@ def _build_backtest_workbook_full(bt):
 
     # --- Settings ---
     ws = wb.create_sheet("Settings")
-    ws.append(["Clé", "Valeur"])
+    append_excel_row(ws, ["Clé", "Valeur"])
     ws["A1"].font = Font(bold=True)
     ws["B1"].font = Font(bold=True)
 
@@ -2553,7 +2615,7 @@ def _build_backtest_workbook_full(bt):
         ("engine_version", meta.get("engine_version", "")),
     ]
     for k, v in settings_rows:
-        ws.append([k, v])
+        append_excel_row(ws, [k, v])
     _auto_width(ws)
 
     # --- Universe (snapshot) ---
@@ -2890,7 +2952,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
 
     # -------- Settings --------
     ws = wb.create_sheet("Settings")
-    ws.append(["Clé", "Valeur"])
+    append_excel_row(ws, ["Clé", "Valeur"])
     ws["A1"].font = Font(bold=True)
     ws["B1"].font = Font(bold=True)
     meta = results.get("meta") or {}
@@ -2910,7 +2972,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ("engine_version", meta.get("engine_version", "")),
     ]
     for k, v in rows:
-        ws.append([k, v])
+        append_excel_row(ws, [k, v])
     _auto_width(ws)
 
     # -------- Universe --------
@@ -3237,17 +3299,19 @@ def backtest_export_excel(request, pk: int):
     from .models import ProcessingJob
     from .tasks import export_backtest_excel_task
 
-    job = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=export_backtest_excel_task,
         job_type=ProcessingJob.JobType.EXPORT_BACKTEST_XLSX,
-        status=ProcessingJob.Status.PENDING,
         backtest=bt,
         created_by=request.user,
         message=f"Queued backtest XLSX export for backtest {pk}",
+        task_kwargs={"backtest_id": bt.id},
     )
-    async_result = export_backtest_excel_task.delay(job_id=job.id, backtest_id=bt.id)
-    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
-    messages.success(request, f"Export Backtest XLSX lancé en background (job #{job.id}).")
-    return redirect("job_detail", pk=job.id)
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export Backtest XLSX impossible: {launch.dispatch_error}")
+    else:
+        messages.success(request, f"Export Backtest XLSX lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 @login_required
@@ -3263,22 +3327,26 @@ def backtest_export_excel_compact(request, pk: int):
     from .models import ProcessingJob
     from .tasks import export_backtest_excel_compact_task
 
-    job = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=export_backtest_excel_compact_task,
         job_type=ProcessingJob.JobType.EXPORT_BACKTEST_XLSX_COMPACT,
-        status=ProcessingJob.Status.PENDING,
         backtest=bt,
         created_by=request.user,
         message=f"Queued compact backtest XLSX export for backtest {pk}",
+        task_kwargs={
+            "backtest_id": bt.id,
+            "charts": charts,
+            "chart_mode": chart_mode,
+            "chart_limit": chart_limit,
+            "chart_ticker": chart_ticker,
+            "chart_line": chart_line,
+        },
     )
-    async_result = export_backtest_excel_compact_task.delay(
-        job_id=job.id,
-        backtest_id=bt.id,
-        charts=charts,
-        chart_mode=chart_mode,
-    )
-    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
-    messages.success(request, f"Export Backtest Compact lancé en background (job #{job.id}).")
-    return redirect("job_detail", pk=job.id)
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export Backtest Compact impossible: {launch.dispatch_error}")
+    else:
+        messages.success(request, f"Export Backtest Compact lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 def _safe_fs_segment(value: str) -> str:
@@ -3308,15 +3376,19 @@ def _resolve_backtest_parquet_dir(bt: Backtest) -> Path:
 
 def _arrow_table_to_csv_safe(table):
     """Convert Arrow table to CSV-writable by stringifying nested types (list/struct/map).
-    This is used only for the optional details CSV export to avoid pyarrow errors.
+    Return the original object unchanged when no nested Arrow columns need normalization.
     """
     try:
         import pyarrow as pa  # type: ignore
     except Exception:
         return table
 
+    if not hasattr(table, "column_names"):
+        return table
+
     cols = []
     names = []
+    transformed = False
     for name in table.column_names:
         col = table[name]
         t = col.type
@@ -3326,8 +3398,11 @@ def _arrow_table_to_csv_safe(table):
             pylist = col.to_pylist()
             strlist = [json.dumps(v, ensure_ascii=False) if v is not None else None for v in pylist]
             col = pa.array(strlist, type=pa.string())
+            transformed = True
         cols.append(col)
         names.append(name)
+    if not transformed:
+        return table
     return pa.table(cols, names=names)
 
 
@@ -3593,22 +3668,20 @@ def game_scenario_launch(request: HttpRequest, pk: int):
         force_recompute = bool(request.POST.get("force_recompute"))
 
         # Create a PENDING job immediately (same pattern as Backtests)
-        pj = ProcessingJob.objects.create(
+        launch = launch_processing_job(
+            task=run_game_scenario_job_task,
             job_type=ProcessingJob.JobType.RUN_GAME,
-            status=ProcessingJob.Status.PENDING,
             created_by=request.user if request.user.is_authenticated else None,
             message="En attente d'exécution (GameScenario)",
+            task_kwargs={
+                "game_id": obj.id,
+                "force_fetch": force_fetch,
+                "force_recompute": force_recompute,
+                "user_id": request.user.id if request.user.is_authenticated else None,
+            },
         )
-
-        async_res = run_game_scenario_job_task.delay(
-            game_id=obj.id,
-            force_fetch=force_fetch,
-            force_recompute=force_recompute,
-            user_id=request.user.id if request.user.is_authenticated else None,
-            job_id=pj.id,
-        )
-        pj.task_id = getattr(async_res, "id", "") or ""
-        pj.save(update_fields=["task_id"])
+        if launch.dispatch_error:
+            raise launch.dispatch_error
 
         if force_recompute:
             messages.success(request, "Lancement demandé (Celery) — Force Full Recompute.")
@@ -3626,16 +3699,18 @@ def game_scenario_export_xlsx(request: HttpRequest, pk: int):
     from .models import ProcessingJob
     from .tasks import export_game_scenario_xlsx_task
 
-    job = ProcessingJob.objects.create(
+    launch = launch_processing_job(
+        task=export_game_scenario_xlsx_task,
         job_type=ProcessingJob.JobType.EXPORT_GAME_SCENARIO_XLSX,
-        status=ProcessingJob.Status.PENDING,
         created_by=request.user,
         message=f"Queued GameScenario XLSX export for game {pk}",
+        task_kwargs={"game_scenario_id": obj.id},
     )
-    async_result = export_game_scenario_xlsx_task.delay(job_id=job.id, game_scenario_id=obj.id)
-    ProcessingJob.objects.filter(id=job.id).update(task_id=async_result.id)
-    messages.success(request, f"Export Game XLSX lancé en background (job #{job.id}).")
-    return redirect("job_detail", pk=job.id)
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'export Game XLSX impossible: {launch.dispatch_error}")
+    else:
+        messages.success(request, f"Export Game XLSX lancé en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 @login_required
@@ -3678,26 +3753,25 @@ def trigger_page(request: HttpRequest):
                         sc = Scenario.objects.get(id=scenario_id_int)
                         symbol_ids = list(sc.symbols.values_list("id", flat=True))
 
-                    pj = ProcessingJob.objects.create(
+                    launch = launch_processing_job(
+                        task=fetch_daily_bars_job_task,
                         job_type=ProcessingJob.JobType.FETCH_BARS,
-                        status=ProcessingJob.Status.PENDING,
-                        scenario_id=scenario_id_int,
+                        scenario=Scenario.objects.filter(id=scenario_id_int).first() if scenario_id_int else None,
                         created_by=request.user if request.user.is_authenticated else None,
                         message=(
                             "En attente d'exécution (collecte données)"
                             if not scenario_id_int else
                             f"En attente d'exécution (collecte données scénario {scenario_id_int})"
                         ),
+                        task_kwargs={
+                            "symbol_ids": symbol_ids,
+                            "scenario_id": scenario_id_int,
+                            "force_full": force_full,
+                            "user_id": user_id,
+                        },
                     )
-                    async_res = fetch_daily_bars_job_task.delay(
-                        symbol_ids=symbol_ids,
-                        scenario_id=scenario_id_int,
-                        force_full=force_full,
-                        user_id=user_id,
-                        job_id=pj.id,
-                    )
-                    pj.task_id = getattr(async_res, "id", "") or ""
-                    pj.save(update_fields=["task_id"])
+                    if launch.dispatch_error:
+                        raise launch.dispatch_error
                     messages.success(request, "Collecte demandée." + (" (force full)" if force_full else ""))
 
                 elif action in ("compute", "recompute"):
@@ -3706,7 +3780,18 @@ def trigger_page(request: HttpRequest):
                     recompute_all = (action == "recompute")
 
                     if scenario_id and scenario_id.upper() == "ALL":
-                        compute_metrics_all_job_task.delay(recompute_all, user_id=user_id)
+                        launch = launch_processing_job(
+                            task=compute_metrics_all_job_task,
+                            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message="En attente d'exécution (calcul tous scénarios)" if not recompute_all else "En attente d'exécution (recompute complet tous scénarios)",
+                            task_kwargs={
+                                "recompute_all": recompute_all,
+                                "user_id": user_id,
+                            },
+                        )
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
                         messages.success(request, "Calcul demandé (tous scénarios)." + (" (recompute all)" if recompute_all else ""))
                     elif scenario_id:
                         sc_id = int(scenario_id)
@@ -3715,27 +3800,40 @@ def trigger_page(request: HttpRequest):
                             symbol_ids = list(sc.symbols.values_list("id", flat=True))
                         except Exception:
                             symbol_ids = None
+                            sc = None
 
-                        compute_metrics_job_task.delay(
-                            scenario_id=sc_id,
-                            symbol_ids=symbol_ids,
-                            recompute_all=recompute_all,
-                            backtest_id=None,
-                            user_id=user_id,
-                            job_id=None,
+                        launch = launch_processing_job(
+                            task=compute_metrics_job_task,
+                            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+                            scenario=sc,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message="En attente d'exécution (calcul scénario)" if not recompute_all else "En attente d'exécution (recompute complet scénario)",
+                            task_kwargs={
+                                "scenario_id": sc_id,
+                                "symbol_ids": symbol_ids,
+                                "recompute_all": recompute_all,
+                                "backtest_id": None,
+                                "user_id": user_id,
+                            },
                         )
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
                         messages.success(request, "Calcul demandé (scénario)." + (" (recompute all)" if recompute_all else ""))
                     else:
                         messages.error(request, "Choisis un scénario ou 'ALL'.")
 
                 elif action == "cleanup_jobs":
                     from core.tasks import cleanup_stale_processing_jobs_task
-                    cleanup_stale_processing_jobs_task.delay()
+                    outcome = dispatch_task_after_commit(task=cleanup_stale_processing_jobs_task)
+                    if outcome.dispatch_error:
+                        raise outcome.dispatch_error
                     messages.success(request, "Nettoyage des jobs demandé.")
 
                 elif action == "run_scheduled_alerts":
                     from core.tasks import check_and_send_scheduled_alerts_task
-                    check_and_send_scheduled_alerts_task.delay()
+                    outcome = dispatch_task_after_commit(task=check_and_send_scheduled_alerts_task)
+                    if outcome.dispatch_error:
+                        raise outcome.dispatch_error
                     messages.success(request, "Vérification/envoi des alertes planifiées demandée.")
 
                 elif action == "send_alert_definition":
@@ -3744,19 +3842,18 @@ def trigger_page(request: HttpRequest):
                         messages.error(request, "Choisis une alerte (definition) à envoyer.")
                     else:
                         from core.tasks import send_alert_definition_job_task
-                        pj = ProcessingJob.objects.create(
+                        launch = launch_processing_job(
+                            task=send_alert_definition_job_task,
                             job_type=ProcessingJob.JobType.SEND_EMAILS,
-                            status=ProcessingJob.Status.PENDING,
                             created_by=request.user if request.user.is_authenticated else None,
                             message=f"En attente d'exécution (envoi alerte {alert_def_id})",
+                            task_kwargs={
+                                "alert_definition_id": int(alert_def_id),
+                                "user_id": user_id,
+                            },
                         )
-                        async_res = send_alert_definition_job_task.delay(
-                            alert_definition_id=int(alert_def_id),
-                            user_id=user_id,
-                            job_id=pj.id,
-                        )
-                        pj.task_id = getattr(async_res, "id", "") or ""
-                        pj.save(update_fields=["task_id"])
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
                         messages.success(request, "Envoi demandé pour l'alerte sélectionnée.")
 
                 # --- BACKTEST actions ---
@@ -3790,24 +3887,23 @@ def trigger_page(request: HttpRequest):
                         from core.tasks import fetch_daily_bars_job_task
                         force_full = (action == "bt_fetch_force_full")
 
-                        pj = ProcessingJob.objects.create(
+                        launch = launch_processing_job(
+                            task=fetch_daily_bars_job_task,
                             job_type=ProcessingJob.JobType.FETCH_BARS,
-                            status=ProcessingJob.Status.PENDING,
                             backtest=bt,
                             scenario=bt.scenario,
                             created_by=request.user if request.user.is_authenticated else None,
                             message="En attente d'exécution (collecte backtest)" + (" force full" if force_full else ""),
+                            task_kwargs={
+                                "symbol_ids": symbol_ids,
+                                "scenario_id": bt.scenario_id,
+                                "backtest_id": bt.id,
+                                "force_full": force_full,
+                                "user_id": user_id,
+                            },
                         )
-                        async_res = fetch_daily_bars_job_task.delay(
-                            symbol_ids=symbol_ids,
-                            scenario_id=bt.scenario_id,
-                            backtest_id=bt.id,
-                            force_full=force_full,
-                            user_id=user_id,
-                            job_id=pj.id,
-                        )
-                        pj.task_id = getattr(async_res, "id", "") or ""
-                        pj.save(update_fields=["task_id"])
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
                         messages.success(request, "Collecte demandée pour ce backtest." + (" (force full)" if force_full else ""))
 
                 elif action in ("bt_compute", "bt_recompute"):
@@ -3839,24 +3935,23 @@ def trigger_page(request: HttpRequest):
                         from core.tasks import compute_metrics_job_task
                         recompute_all = (action == "bt_recompute")
 
-                        pj = ProcessingJob.objects.create(
+                        launch = launch_processing_job(
+                            task=compute_metrics_job_task,
                             job_type=ProcessingJob.JobType.COMPUTE_METRICS,
-                            status=ProcessingJob.Status.PENDING,
                             backtest=bt,
                             scenario=bt.scenario,
                             created_by=request.user if request.user.is_authenticated else None,
                             message="En attente d'exécution (calcul métriques backtest)",
+                            task_kwargs={
+                                "scenario_id": bt.scenario_id,
+                                "symbol_ids": symbol_ids,
+                                "recompute_all": recompute_all,
+                                "backtest_id": bt.id,
+                                "user_id": user_id,
+                            },
                         )
-                        async_res = compute_metrics_job_task.delay(
-                            scenario_id=bt.scenario_id,
-                            symbol_ids=symbol_ids,
-                            recompute_all=recompute_all,
-                            backtest_id=bt.id,
-                            user_id=user_id,
-                            job_id=pj.id,
-                        )
-                        pj.task_id = getattr(async_res, "id", "") or ""
-                        pj.save(update_fields=["task_id"])
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
                         messages.success(request, "Calcul métriques demandé pour ce backtest." + (" (recompute all)" if recompute_all else ""))
 
                 elif action == "bt_run":
@@ -3865,21 +3960,20 @@ def trigger_page(request: HttpRequest):
                     else:
                         from core.tasks import run_backtest_job_task
                         bt = Backtest.objects.get(id=int(backtest_id))
-                        pj = ProcessingJob.objects.create(
+                        launch = launch_processing_job(
+                            task=run_backtest_job_task,
                             job_type=ProcessingJob.JobType.RUN_BACKTEST,
-                            status=ProcessingJob.Status.PENDING,
                             backtest=bt,
                             scenario=bt.scenario,
                             created_by=request.user if request.user.is_authenticated else None,
                             message="En attente d'exécution (run backtest)",
+                            task_kwargs={
+                                "backtest_id": bt.id,
+                                "user_id": user_id,
+                            },
                         )
-                        async_res = run_backtest_job_task.delay(
-                            backtest_id=bt.id,
-                            user_id=user_id,
-                            job_id=pj.id,
-                        )
-                        pj.task_id = getattr(async_res, "id", "") or ""
-                        pj.save(update_fields=["task_id"])
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
                         messages.success(request, "Run backtest demandé.")
 
                 # --- GAME actions ---
@@ -3889,21 +3983,20 @@ def trigger_page(request: HttpRequest):
                     else:
                         from core.tasks import run_game_scenario_job_task
                         force_recompute = (action == "game_force_recompute")
-                        pj = ProcessingJob.objects.create(
+                        launch = launch_processing_job(
+                            task=run_game_scenario_job_task,
                             job_type=ProcessingJob.JobType.RUN_GAME,
-                            status=ProcessingJob.Status.PENDING,
                             created_by=request.user if request.user.is_authenticated else None,
                             message="En attente d'exécution (run game)" + (" force recompute" if force_recompute else ""),
+                            task_kwargs={
+                                "game_id": int(game_id),
+                                "force_fetch": False,
+                                "force_recompute": force_recompute,
+                                "user_id": user_id,
+                            },
                         )
-                        async_res = run_game_scenario_job_task.delay(
-                            game_id=int(game_id),
-                            force_fetch=False,
-                            force_recompute=force_recompute,
-                            user_id=user_id,
-                            job_id=pj.id,
-                        )
-                        pj.task_id = getattr(async_res, "id", "") or ""
-                        pj.save(update_fields=["task_id"])
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
                         messages.success(request, "Run game demandé." + (" (force recompute)" if force_recompute else ""))
 
                 else:

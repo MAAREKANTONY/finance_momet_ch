@@ -663,13 +663,21 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
 
 
 @shared_task(bind=True)
-def compute_metrics_all_job_task(self, recompute_all: bool = False, user_id=None):
-    """Tracked job wrapper for a full compute across all active scenarios."""
-    job = ProcessingJob.objects.create(
-        job_type=ProcessingJob.JobType.COMPUTE_METRICS,
-        status=ProcessingJob.Status.PENDING,
-        created_by_id=user_id,
-    )
+def compute_metrics_all_job_task(self, recompute_all: bool = False, user_id=None, job_id=None):
+    """Tracked job wrapper for a full compute across all active scenarios.
+
+    When ``job_id`` is provided the caller already created the ProcessingJob row via
+    ``launch_processing_job`` and we must reuse it instead of creating a duplicate.
+    """
+    job = None
+    if job_id:
+        job = ProcessingJob.objects.filter(id=job_id).first()
+    if job is None:
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            created_by_id=user_id,
+        )
     mark_job_running(job, task_request=self.request, message=f"compute_all recompute_all={bool(recompute_all)}")
     try:
         msg = compute_metrics_task(bool(recompute_all), job=job, task_request=self.request)
@@ -1845,7 +1853,7 @@ def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
         game = GameScenario.objects.get(id=game_scenario_id)
         wb = Workbook(write_only=True)
         ws = wb.create_sheet('Game')
-        ws.append(['Field', 'Value'])
+        append_excel_row(ws, ['Field', 'Value'])
         for key, value in [
             ('id', game.id),
             ('name', game.name),
@@ -1860,15 +1868,15 @@ def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
             ('last_run_at', game.last_run_at.isoformat() if game.last_run_at else ''),
             ('last_run_status', game.last_run_status or ''),
         ]:
-            ws.append([key, value])
+            append_excel_row(ws, [key, value])
         ws2 = wb.create_sheet('TodayResults')
         rows = game.today_results or []
         headers = sorted({k for row in rows for k in row.keys()}) if rows else ['ticker', 'best_bmd', 'ok']
-        ws2.append(headers)
+        append_excel_row(ws2, headers)
         pulse = JobCheckpointPulse(job, every_n=500, every_seconds=10, task_request=self.request, base_label='export_game_scenario_xlsx')
         for idx, row in enumerate(rows, start=1):
             pulse.hit(checkpoint=f'row {idx}')
-            ws2.append([row.get(h) for h in headers])
+            append_excel_row(ws2, [row.get(h) for h in headers])
         output_name = f'game_scenario_{game_scenario_id}.xlsx'
         path = _job_export_path(job_id, output_name)
         wb.save(path)

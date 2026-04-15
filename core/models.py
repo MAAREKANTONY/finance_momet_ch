@@ -172,7 +172,7 @@ class Scenario(models.Model):
 
     class Meta:
         constraints = [
-            models.CheckConstraint(check=Q(e__gt=0), name="scenario_e_gt_0"),
+            models.CheckConstraint(condition=Q(e__gt=0), name="scenario_e_gt_0"),
             # Only one row can have is_default=True
             models.UniqueConstraint(
                 fields=["is_default"],

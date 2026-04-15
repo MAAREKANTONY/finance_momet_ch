@@ -378,3 +378,63 @@ Puis dans DBeaver:
 - Host: `127.0.0.1`
 - Port: `55432`
 
+
+
+## Quality gate (Sprint QA-1)
+
+A lightweight quality automation layer is included to speed up stabilization sprints.
+
+### What it checks
+- Python compilation sanity on `core`, `stockalert`, `tools`
+- architecture audit for direct Celery dispatch / direct `ProcessingJob` creation in `core/views.py`
+- architecture audit for direct `ws.append(...)` patterns in `core/views.py` and `core/exports.py`
+- focused regression tests for job launch and exports
+
+### How to run locally
+```bash
+python tools/run_quality_gate.py
+```
+
+Architecture audit only:
+```bash
+python tools/architecture_audit.py --format text
+```
+
+Architecture audit only (fails when violations are found):
+```bash
+python tools/run_quality_gate.py
+```
+
+Temporary opt-out (only for diagnosis on an already-broken branch):
+```bash
+python tools/run_quality_gate.py --allow-architecture-violations
+```
+
+The quality gate is now strict by default because the current baseline has zero architecture violations.
+
+
+## Validation sprint P1.2 (exports hardening)
+
+Avant de passer au sprint suivant, exécuter dans cet ordre :
+
+1. `python tools/run_quality_gate.py`
+   - attendu : succès global
+   - attendu : **0 violation d’architecture**
+   - attendu : tests `job_launch` et `exports_regressions` au vert
+
+2. Tests manuels UI
+   - depuis la page Email Settings : lancer `Compute` sur un scénario, puis `Recompute` sur le même scénario
+   - depuis une Study : lancer `Calculer maintenant`, puis `Recompute complet`
+   - depuis la page Alertes : cliquer `Envoyer` sur une alerte
+   - depuis la page Trigger : lancer successivement `compute ALL`, `compute scenario`, `cleanup_jobs`, `run_scheduled_alerts`
+
+3. Vérifications attendues
+   - chaque action crée au plus un job cohérent dans `/jobs` lorsqu'elle est trackée
+   - aucun job `PENDING` orphelin après lancement
+   - aucun crash immédiat de vue
+   - pour `cleanup_jobs` et `run_scheduled_alerts`, l'action retourne sans erreur utilisateur
+
+Critère de sortie du sprint :
+- quality gate vert
+- 0 `views_direct_delay` dans l'audit
+- tests manuels ci-dessus validés
