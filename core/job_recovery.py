@@ -35,6 +35,128 @@ class RecoveryStats:
             self.killed += 1
 
 
+
+
+@dataclass
+class AuditFinding:
+    job_id: int
+    job_type: str
+    status: str
+    severity: str
+    category: str
+    summary: str
+    stale_seconds: int = 0
+    task_id: str = ""
+    worker_hostname: str = ""
+    checkpoint: str = ""
+
+
+@dataclass
+class AuditStats:
+    audited: int = 0
+    healthy: int = 0
+    suspect: int = 0
+    critical: int = 0
+
+
+def _stale_seconds(job: ProcessingJob, now=None) -> int:
+    now = now or timezone.now()
+    age_ref = job.heartbeat_at or job.started_at or job.created_at
+    if not age_ref:
+        return 0
+    return max(0, int((now - age_ref).total_seconds()))
+
+
+def audit_job(job: ProcessingJob, *, now=None, running_heartbeat_minutes: int = 20, running_started_minutes: int = 45, pending_minutes: int = 90) -> AuditFinding | None:
+    now = now or timezone.now()
+    stale_s = _stale_seconds(job, now=now)
+    hb_limit_s = max(60, int(running_heartbeat_minutes or 20) * 60)
+    started_limit_s = max(60, int(running_started_minutes or 45) * 60)
+    pending_limit_s = max(60, int(pending_minutes or 90) * 60)
+
+    if job.status == ProcessingJob.Status.RUNNING:
+        if job.kill_requested:
+            return AuditFinding(
+                job_id=job.id, job_type=job.job_type, status=job.status, severity="critical",
+                category="running_kill_requested",
+                summary="RUNNING job still active despite kill request.",
+                stale_seconds=stale_s, task_id=job.task_id or "", worker_hostname=job.worker_hostname or "", checkpoint=job.last_checkpoint or "",
+            )
+        if job.cancel_requested:
+            return AuditFinding(
+                job_id=job.id, job_type=job.job_type, status=job.status, severity="suspect",
+                category="running_cancel_requested",
+                summary="RUNNING job still active despite cancel request.",
+                stale_seconds=stale_s, task_id=job.task_id or "", worker_hostname=job.worker_hostname or "", checkpoint=job.last_checkpoint or "",
+            )
+        if job.heartbeat_at and stale_s > hb_limit_s:
+            return AuditFinding(
+                job_id=job.id, job_type=job.job_type, status=job.status, severity="critical",
+                category="running_stale_heartbeat",
+                summary="RUNNING job heartbeat is older than the configured threshold.",
+                stale_seconds=stale_s, task_id=job.task_id or "", worker_hostname=job.worker_hostname or "", checkpoint=job.last_checkpoint or "",
+            )
+        if not job.heartbeat_at and stale_s > started_limit_s:
+            return AuditFinding(
+                job_id=job.id, job_type=job.job_type, status=job.status, severity="critical",
+                category="running_no_heartbeat",
+                summary="RUNNING job has no heartbeat and appears stale.",
+                stale_seconds=stale_s, task_id=job.task_id or "", worker_hostname=job.worker_hostname or "", checkpoint=job.last_checkpoint or "",
+            )
+        return None
+
+    if job.status == ProcessingJob.Status.PENDING:
+        if job.kill_requested:
+            return AuditFinding(
+                job_id=job.id, job_type=job.job_type, status=job.status, severity="critical",
+                category="pending_kill_requested",
+                summary="PENDING job is still queued despite kill request.",
+                stale_seconds=stale_s, task_id=job.task_id or "", worker_hostname=job.worker_hostname or "", checkpoint=job.last_checkpoint or "",
+            )
+        if job.cancel_requested:
+            return AuditFinding(
+                job_id=job.id, job_type=job.job_type, status=job.status, severity="suspect",
+                category="pending_cancel_requested",
+                summary="PENDING job is still queued despite cancel request.",
+                stale_seconds=stale_s, task_id=job.task_id or "", worker_hostname=job.worker_hostname or "", checkpoint=job.last_checkpoint or "",
+            )
+        if stale_s > pending_limit_s:
+            return AuditFinding(
+                job_id=job.id, job_type=job.job_type, status=job.status, severity="suspect",
+                category="pending_too_old",
+                summary="PENDING job is older than the configured threshold.",
+                stale_seconds=stale_s, task_id=job.task_id or "", worker_hostname=job.worker_hostname or "", checkpoint=job.last_checkpoint or "",
+            )
+    return None
+
+
+def audit_jobs(*, ids: list[int] | None = None, running_heartbeat_minutes: int = 20, running_started_minutes: int = 45, pending_minutes: int = 90, include_pending: bool = True):
+    statuses = [ProcessingJob.Status.RUNNING]
+    if include_pending:
+        statuses.append(ProcessingJob.Status.PENDING)
+    qs = ProcessingJob.objects.filter(status__in=statuses).order_by('id')
+    if ids:
+        qs = qs.filter(id__in=list(ids))
+
+    findings: list[AuditFinding] = []
+    stats = AuditStats(audited=qs.count())
+    now = timezone.now()
+    for job in qs.only('id','job_type','status','task_id','created_at','started_at','heartbeat_at','cancel_requested','kill_requested','last_checkpoint','worker_hostname'):
+        finding = audit_job(
+            job, now=now, running_heartbeat_minutes=running_heartbeat_minutes,
+            running_started_minutes=running_started_minutes, pending_minutes=pending_minutes,
+        )
+        if finding is None:
+            stats.healthy += 1
+            continue
+        findings.append(finding)
+        if finding.severity == 'critical':
+            stats.critical += 1
+        else:
+            stats.suspect += 1
+    return findings, stats
+
+
 def stale_recovery_queryset(
     *,
     running_heartbeat_minutes: int = 20,

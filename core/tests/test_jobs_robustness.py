@@ -233,3 +233,64 @@ class RecoverJobsCommandTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.RUNNING)
         self.assertIn("Dry-run only", out.getvalue())
+
+
+class AuditJobsCommandTests(TestCase):
+    def test_audit_jobs_reports_stale_running_and_old_pending(self):
+        ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.RUNNING,
+            started_at=timezone.now() - timedelta(minutes=150),
+            heartbeat_at=timezone.now() - timedelta(minutes=120),
+            worker_hostname="celery@worker-1",
+            last_checkpoint="compute:step-10",
+            task_id="task-running",
+        )
+        ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.EXPORT_DATA_XLSX,
+            status=ProcessingJob.Status.PENDING,
+            cancel_requested=True,
+            task_id="task-pending",
+        )
+        healthy = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.RUNNING,
+            started_at=timezone.now() - timedelta(minutes=10),
+            heartbeat_at=timezone.now() - timedelta(minutes=1),
+        )
+
+        out = StringIO()
+        call_command("audit_jobs", stdout=out)
+        payload = out.getvalue()
+        self.assertIn("Audit summary: audited=3 healthy=1 suspect=1 critical=1", payload)
+        self.assertIn("running_stale_heartbeat", payload)
+        self.assertIn("pending_cancel_requested", payload)
+        healthy.refresh_from_db()
+        self.assertEqual(healthy.status, ProcessingJob.Status.RUNNING)
+
+    def test_audit_jobs_json_output(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.RUNNING,
+            started_at=timezone.now() - timedelta(minutes=120),
+            heartbeat_at=timezone.now() - timedelta(minutes=90),
+            task_id="json-task",
+        )
+        out = StringIO()
+        call_command("audit_jobs", "--json", "--ids", str(job.id), stdout=out)
+        payload = out.getvalue()
+        self.assertIn('"audited": 1', payload)
+        self.assertIn('"job_id": %d' % job.id, payload)
+        self.assertIn('"severity": "critical"', payload)
+
+    def test_audit_jobs_no_pending_filters_pending_rows(self):
+        ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.EXPORT_DATA_XLSX,
+            status=ProcessingJob.Status.PENDING,
+            cancel_requested=True,
+        )
+        out = StringIO()
+        call_command("audit_jobs", "--no-pending", stdout=out)
+        payload = out.getvalue()
+        self.assertIn("audited=0", payload)
+        self.assertIn("No suspicious active jobs found.", payload)
