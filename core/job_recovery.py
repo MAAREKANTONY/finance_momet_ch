@@ -130,10 +130,64 @@ def apply_recovery(job: ProcessingJob, decision: RecoveryDecision, *, dry_run: b
             job.message = decision.reason
     else:
         suffix = decision.reason
-        job.message = ((job.message or "").rstrip() + ("\n" if (job.message or "").strip() else "") + reason)[:4000]
-        job.save(update_fields=["status", "finished_at", "error", "message"])
-        sync_related_state_for_terminal_job(job)
-        stats.bump_terminal(ProcessingJob.Status.FAILED)
+        job.message = ((job.message or "").rstrip() + ("\n" if (job.message or "").strip() else "") + suffix)[:4000]
+    job.save(update_fields=["status", "finished_at", "error", "message"])
+    sync_related_state_for_terminal_job(job)
+    return True
 
-    stats.synced_terminal = sync_terminal_jobs(limit=200)
-    return stats
+
+def sync_terminal_jobs(*, queryset: QuerySet[ProcessingJob] | None = None, limit: int | None = None) -> int:
+    qs = queryset or ProcessingJob.objects.filter(
+        status__in=[
+            ProcessingJob.Status.FAILED,
+            ProcessingJob.Status.CANCELLED,
+            ProcessingJob.Status.KILLED,
+        ]
+    )
+    if limit:
+        qs = qs.order_by("-id")[:limit]
+    count = 0
+    for job in qs.only("id", "status", "backtest_id", "game_scenario_id", "message", "error"):
+        sync_related_state_for_terminal_job(job)
+        count += 1
+    return count
+
+
+def recover_jobs(
+    *,
+    ids: list[int] | None = None,
+    running_heartbeat_minutes: int = 20,
+    running_started_minutes: int = 45,
+    pending_minutes: int = 90,
+    requested_stop_minutes: int = 3,
+    include_pending: bool = True,
+    include_requested_pending: bool = True,
+    dry_run: bool = False,
+    sync_recent_terminal: bool = True,
+) -> tuple[list[tuple[ProcessingJob, RecoveryDecision]], RecoveryStats]:
+    qs = stale_recovery_queryset(
+        running_heartbeat_minutes=running_heartbeat_minutes,
+        running_started_minutes=running_started_minutes,
+        pending_minutes=pending_minutes,
+        requested_stop_minutes=requested_stop_minutes,
+        include_pending=include_pending,
+        include_requested_pending=include_requested_pending,
+        ids=ids,
+    )
+    stats = RecoveryStats(matched=qs.count())
+    decisions: list[tuple[ProcessingJob, RecoveryDecision]] = []
+    now = timezone.now()
+    for job in qs.only(
+        "id", "job_type", "status", "task_id", "created_at", "started_at", "heartbeat_at",
+        "cancel_requested", "kill_requested", "message", "error", "backtest_id", "game_scenario_id",
+    ):
+        decision = decide_recovery(job, now=now)
+        if not decision:
+            continue
+        decisions.append((job, decision))
+        if apply_recovery(job, decision, dry_run=dry_run, now=now):
+            stats.bump_terminal(decision.status)
+
+    if sync_recent_terminal:
+        stats.synced_terminal = sync_terminal_jobs(limit=200)
+    return decisions, stats
