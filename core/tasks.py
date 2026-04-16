@@ -1443,11 +1443,13 @@ def cleanup_stale_processing_jobs_task() -> dict:
     hb_min = int(getattr(dj_settings, "JOB_STALE_HEARTBEAT_MINUTES", 15))
     started_min = int(getattr(dj_settings, "JOB_STALE_STARTED_MINUTES", 30))
     pending_min = int(getattr(dj_settings, "JOB_STALE_PENDING_MINUTES", 60))
+    requested_stop_min = int(getattr(dj_settings, "JOB_REQUESTED_STOP_STALE_MINUTES", 3))
 
     _decisions, stats = recover_jobs(
         running_heartbeat_minutes=hb_min,
         running_started_minutes=started_min,
         pending_minutes=pending_min,
+        requested_stop_minutes=requested_stop_min,
         include_pending=True,
         include_requested_pending=True,
         dry_run=False,
@@ -1463,6 +1465,7 @@ def cleanup_stale_processing_jobs_task() -> dict:
         "heartbeat_minutes": hb_min,
         "started_minutes": started_min,
         "pending_minutes": pending_min,
+        "requested_stop_minutes": requested_stop_min,
     }
 
 

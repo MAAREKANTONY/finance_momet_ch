@@ -1,9 +1,0 @@
-V7.0.61 — Universe bulk selection UX
-
-- Reworked Universe symbol selection UI for very large ticker sets.
-- New filter-based bulk operations: count/preview, add all, replace, remove.
-- Added direct paste-list operations: add, replace, remove.
-- Added current selection browser with search and pagination.
-- Kept CSV-based form submission to avoid TooManyFieldsSent regressions.
-- Added backend endpoint /symbols/filter-preview/.
-- Added regression tests for the new bulk selection backend and page rendering.

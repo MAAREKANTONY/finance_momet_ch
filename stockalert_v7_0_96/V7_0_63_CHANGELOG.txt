@@ -1,7 +1,0 @@
-V7.0.63
-- Ajout d'une vraie base de tests anti-régression sur : indicateurs, GM, alertes, backtests et games.
-- Ajout d'un test de cohérence entre calcul incrémental et full recompute des indicateurs.
-- Ajout d'un test de garde-fou de scalabilité sur run_backtest_kpi_only.
-- Optimisation safe du moteur KPI-only et du moteur backtest : préchargement bulk bars/metrics/alerts pour éviter le N+1 sur les grands univers.
-- Alignement du calcul incrémental des indicateurs avec le full recompute sur les premiers jours (M1/X1, slopes, Kf).
-- Documentation TESTING.md enrichie avec la méthodologie de run et la discipline anti-régression.

@@ -357,3 +357,37 @@ class RunBacktestTaskRegressionTests(TestCase):
             msg = core_tasks.run_backtest_task(bt.id, task_request=SimpleNamespace(id="task-1", hostname="celery@test"))
 
         self.assertEqual(msg, "ok")
+
+
+class RequestedStopRecoveryTests(TestCase):
+    def test_cleanup_task_marks_cancel_requested_running_job_cancelled_quickly(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.RUNNING,
+            cancel_requested=True,
+            started_at=timezone.now() - timedelta(minutes=10),
+            heartbeat_at=timezone.now() - timedelta(minutes=4),
+        )
+
+        result = core_tasks.cleanup_stale_processing_jobs_task()
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.CANCELLED)
+        self.assertEqual(result["cancelled"], 1)
+        self.assertEqual(result["requested_stop_minutes"], 3)
+
+    def test_cleanup_task_marks_kill_requested_running_job_killed_quickly(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.RUNNING,
+            cancel_requested=True,
+            kill_requested=True,
+            started_at=timezone.now() - timedelta(minutes=10),
+            heartbeat_at=timezone.now() - timedelta(minutes=4),
+        )
+
+        result = core_tasks.cleanup_stale_processing_jobs_task()
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.KILLED)
+        self.assertEqual(result["killed"], 1)

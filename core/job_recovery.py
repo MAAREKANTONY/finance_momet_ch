@@ -40,6 +40,7 @@ def stale_recovery_queryset(
     running_heartbeat_minutes: int = 20,
     running_started_minutes: int = 45,
     pending_minutes: int = 90,
+    requested_stop_minutes: int = 3,
     include_pending: bool = True,
     include_requested_pending: bool = True,
     ids: list[int] | None = None,
@@ -48,11 +49,25 @@ def stale_recovery_queryset(
     hb_cutoff = now - timedelta(minutes=max(1, int(running_heartbeat_minutes or 1)))
     started_cutoff = now - timedelta(minutes=max(1, int(running_started_minutes or 1)))
     pending_cutoff = now - timedelta(minutes=max(1, int(pending_minutes or 1)))
+    requested_cutoff = now - timedelta(minutes=max(1, int(requested_stop_minutes or 1)))
 
     q_running_hb = Q(status=ProcessingJob.Status.RUNNING) & Q(heartbeat_at__isnull=False) & Q(heartbeat_at__lt=hb_cutoff)
     q_running_nohb = Q(status=ProcessingJob.Status.RUNNING) & Q(heartbeat_at__isnull=True) & Q(started_at__isnull=False) & Q(started_at__lt=started_cutoff)
+    q_running_requested_hb = (
+        Q(status=ProcessingJob.Status.RUNNING)
+        & (Q(cancel_requested=True) | Q(kill_requested=True))
+        & Q(heartbeat_at__isnull=False)
+        & Q(heartbeat_at__lt=requested_cutoff)
+    )
+    q_running_requested_nohb = (
+        Q(status=ProcessingJob.Status.RUNNING)
+        & (Q(cancel_requested=True) | Q(kill_requested=True))
+        & Q(heartbeat_at__isnull=True)
+        & Q(started_at__isnull=False)
+        & Q(started_at__lt=requested_cutoff)
+    )
 
-    q = q_running_hb | q_running_nohb
+    q = q_running_hb | q_running_nohb | q_running_requested_hb | q_running_requested_nohb
     if include_pending:
         q_pending_old = Q(status=ProcessingJob.Status.PENDING) & Q(created_at__lt=pending_cutoff)
         q |= q_pending_old
@@ -144,6 +159,7 @@ def recover_jobs(
     running_heartbeat_minutes: int = 20,
     running_started_minutes: int = 45,
     pending_minutes: int = 90,
+    requested_stop_minutes: int = 3,
     include_pending: bool = True,
     include_requested_pending: bool = True,
     dry_run: bool = False,
@@ -153,6 +169,7 @@ def recover_jobs(
         running_heartbeat_minutes=running_heartbeat_minutes,
         running_started_minutes=running_started_minutes,
         pending_minutes=pending_minutes,
+        requested_stop_minutes=requested_stop_minutes,
         include_pending=include_pending,
         include_requested_pending=include_requested_pending,
         ids=ids,

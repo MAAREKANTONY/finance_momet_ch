@@ -4,10 +4,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import Client, TestCase
 
-from core.job_launch import dispatch_task_after_commit, launch_processing_job
-from core.models import Backtest, ProcessingJob, Scenario
+from core.job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
+from core.models import Backtest, GameScenario, ProcessingJob, Scenario
 
 
 class LaunchProcessingJobTests(TestCase):
@@ -90,3 +90,46 @@ class LaunchProcessingJobTests(TestCase):
 
         self.assertIsInstance(outcome.dispatch_error, RuntimeError)
         self.assertEqual(outcome.task_id, "")
+
+
+class ActiveProcessingJobLookupTests(TestCase):
+    def test_find_active_processing_job_filters_game_scenario(self):
+        game = GameScenario.objects.create(name="Game Active")
+        ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.DONE,
+            game_scenario=game,
+        )
+        expected = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.RUNNING,
+            game_scenario=game,
+        )
+
+        found = find_active_processing_job(job_type=ProcessingJob.JobType.RUN_GAME, game_scenario=game)
+
+        assert found is not None
+        self.assertEqual(found.id, expected.id)
+
+
+class GameScenarioLaunchGuardTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="game-launcher", password="secret123")
+        self.client = Client()
+        self.client.force_login(self.user)
+        self.game = GameScenario.objects.create(name="Game Guard")
+
+    def test_game_launch_blocks_when_active_job_already_exists(self):
+        ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            status=ProcessingJob.Status.RUNNING,
+            game_scenario=self.game,
+        )
+
+        response = self.client.post(f"/games/{self.game.id}/launch/")
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(
+            ProcessingJob.objects.filter(job_type=ProcessingJob.JobType.RUN_GAME, game_scenario=self.game).count(),
+            1,
+        )

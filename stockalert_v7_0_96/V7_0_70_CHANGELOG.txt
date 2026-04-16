@@ -1,7 +1,0 @@
-V7.0.70 — SAFE jobs fix + lean ZIP + Docker entrypoint fix
-
-Included:
-- fix Cancel/Kill behavior on the active /jobs routes
-- fix run_backtest_kpi_only checkpoint NameError
-- Dockerfile now chmods shell entrypoints during image build
-- lean ZIP: excludes local virtualenv/cache artifacts

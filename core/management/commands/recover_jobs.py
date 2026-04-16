@@ -13,6 +13,7 @@ class Command(BaseCommand):
         parser.add_argument("--running-heartbeat-minutes", type=int, default=20)
         parser.add_argument("--running-started-minutes", type=int, default=45)
         parser.add_argument("--pending-minutes", type=int, default=90)
+        parser.add_argument("--requested-stop-minutes", type=int, default=3)
         parser.add_argument("--no-pending", action="store_true", help="Do not recover old PENDING jobs.")
         parser.add_argument(
             "--no-requested-pending",
@@ -31,6 +32,7 @@ class Command(BaseCommand):
             running_heartbeat_minutes=int(opts.get("running_heartbeat_minutes") or 20),
             running_started_minutes=int(opts.get("running_started_minutes") or 45),
             pending_minutes=int(opts.get("pending_minutes") or 90),
+            requested_stop_minutes=int(opts.get("requested_stop_minutes") or 3),
             include_pending=not bool(opts.get("no_pending")),
             include_requested_pending=not bool(opts.get("no_requested_pending")),
             dry_run=bool(opts.get("dry_run")),

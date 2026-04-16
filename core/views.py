@@ -58,7 +58,7 @@ from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .excel_utils import append_excel_row
-from .job_launch import dispatch_task_after_commit, launch_processing_job
+from .job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
 from .services.derived_data import (
     backtest_impactful_changes,
     game_impactful_changes,
@@ -3682,6 +3682,14 @@ def game_scenario_launch(request: HttpRequest, pk: int):
         force_fetch = bool(request.POST.get("force_fetch"))
         force_recompute = bool(request.POST.get("force_recompute"))
 
+        existing = find_active_processing_job(
+            job_type=ProcessingJob.JobType.RUN_GAME,
+            game_scenario=obj,
+        )
+        if existing:
+            messages.warning(request, f"Un job Game est déjà actif pour ce scénario (job #{existing.id}, {existing.status.lower()}).")
+            return redirect("game_scenario_detail", pk=obj.pk)
+
         # Create a PENDING job immediately (same pattern as Backtests)
         launch = launch_processing_job(
             task=run_game_scenario_job_task,
@@ -3999,6 +4007,13 @@ def trigger_page(request: HttpRequest):
                     else:
                         from core.tasks import run_game_scenario_job_task
                         force_recompute = (action == "game_force_recompute")
+                        active_game_job = find_active_processing_job(
+                            job_type=ProcessingJob.JobType.RUN_GAME,
+                            game_scenario=int(game_id),
+                        )
+                        if active_game_job:
+                            messages.warning(request, f"Un job Game est déjà actif pour ce scénario (job #{active_game_job.id}, {active_game_job.status.lower()}).")
+                            return redirect("trigger_page")
                         launch = launch_processing_job(
                             task=run_game_scenario_job_task,
                             job_type=ProcessingJob.JobType.RUN_GAME,

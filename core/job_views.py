@@ -189,6 +189,10 @@ def job_cancel(request: HttpRequest, pk: int) -> HttpResponse:
         return redirect("jobs_page")
 
     updates = {"cancel_requested": True}
+    if job.status == ProcessingJob.Status.RUNNING:
+        updates.update({
+            "message": ((job.message or "").rstrip() + ("\n" if (job.message or "").strip() else "") + "Cancel requested by user.")[:4000],
+        })
     if job.status == ProcessingJob.Status.PENDING:
         updates.update({
             "status": ProcessingJob.Status.CANCELLED,
@@ -219,6 +223,10 @@ def job_kill(request: HttpRequest, pk: int) -> HttpResponse:
         "kill_requested": True,
         "cancel_requested": True,
     }
+    if job.status == ProcessingJob.Status.RUNNING:
+        updates.update({
+            "message": ((job.message or "").rstrip() + ("\n" if (job.message or "").strip() else "") + "Kill requested by user.")[:4000],
+        })
     if job.status == ProcessingJob.Status.PENDING:
         updates.update({
             "status": ProcessingJob.Status.KILLED,

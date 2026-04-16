@@ -10,6 +10,19 @@ from django.utils import timezone
 from .models import ProcessingJob
 
 
+def find_active_processing_job(*, job_type: str | None = None, game_scenario=None, backtest=None) -> ProcessingJob | None:
+    """Return the most recent active tracked job matching the provided owner filters."""
+    qs = ProcessingJob.objects.filter(status__in=[ProcessingJob.Status.PENDING, ProcessingJob.Status.RUNNING])
+    if job_type:
+        qs = qs.filter(job_type=job_type)
+    if game_scenario is not None:
+        game_id = getattr(game_scenario, "id", game_scenario)
+        qs = qs.filter(game_scenario_id=game_id)
+    if backtest is not None:
+        backtest_id = getattr(backtest, "id", backtest)
+        qs = qs.filter(backtest_id=backtest_id)
+    return qs.order_by("-id").only("id", "status", "job_type", "game_scenario_id", "backtest_id", "created_at").first()
+
 
 
 @dataclass(slots=True)
