@@ -232,6 +232,28 @@ class JobStatusSyncGameScenarioTests(TestCase):
         self.assertIn("Recovered stale running job", game.last_run_message)
         self.assertGreaterEqual(result["synced_terminal"], 1)
 
+
+
+class SchedulerConfigurationTests(TestCase):
+    def test_beat_schedule_keeps_only_tracked_heavy_pipeline(self):
+        from django.conf import settings
+
+        schedule = settings.CELERY_BEAT_SCHEDULE
+        self.assertIn("check-scheduled-alerts", schedule)
+        self.assertIn("cleanup-stale-processing-jobs", schedule)
+        self.assertIn("daily-system-refresh", schedule)
+
+        self.assertNotIn("fetch-daily-bars", schedule)
+        self.assertNotIn("compute-metrics", schedule)
+        self.assertNotIn("send-daily-alerts", schedule)
+
+        tasks = {entry["task"] for entry in schedule.values()}
+        self.assertNotIn("core.tasks.fetch_daily_bars_task", tasks)
+        self.assertNotIn("core.tasks.compute_metrics_task", tasks)
+        self.assertNotIn("core.tasks.send_daily_alerts_task", tasks)
+        self.assertIn("core.tasks.daily_system_refresh_job_task", tasks)
+
+
 class CleanupStaleProcessingJobsTaskTests(TestCase):
     def test_cleanup_task_marks_requested_pending_cancelled_via_recovery_engine(self):
         job = ProcessingJob.objects.create(

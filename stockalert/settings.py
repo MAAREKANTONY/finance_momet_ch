@@ -151,6 +151,10 @@ TWELVEDATA_RATE_LIMIT_KEY_PREFIX = os.getenv("TWELVEDATA_RATE_LIMIT_KEY_PREFIX",
 TWELVEDATA_BACKOFF_SECONDS = int(os.getenv("TWELVEDATA_BACKOFF_SECONDS", "65"))
 TWELVEDATA_MAX_RETRIES = int(os.getenv("TWELVEDATA_MAX_RETRIES", "3"))
 
+# Legacy standalone batch hours are intentionally kept only as deprecated envs
+# for backward compatibility with existing .env files. They are no longer used in
+# the scheduler because fetch/compute/send are orchestrated through a smaller set
+# of tracked jobs to avoid non-tracked tasks blocking the single worker.
 FETCH_BARS_HOUR = int(os.getenv("FETCH_BARS_HOUR", "23"))
 COMPUTE_HOUR = int(os.getenv("COMPUTE_HOUR", "23"))
 EMAIL_HOUR = int(os.getenv("EMAIL_HOUR", "23"))
@@ -159,15 +163,24 @@ EMAIL_HOUR = int(os.getenv("EMAIL_HOUR", "23"))
 DAILY_REFRESH_HOUR = int(os.getenv("DAILY_REFRESH_HOUR", "8"))
 DAILY_REFRESH_MINUTE = int(os.getenv("DAILY_REFRESH_MINUTE", "0"))
 
+# IMPORTANT: do not reintroduce legacy non-tracked periodic tasks here.
+# In production we want exactly one automatic heavy orchestration path:
+# daily_system_refresh_job_task. This prevents a background fetch/compute run from
+# silently occupying the solo worker and leaving user-triggered tracked jobs in
+# PENDING for a long time.
 CELERY_BEAT_SCHEDULE = {
     "check-scheduled-alerts": {
         "task": "core.tasks.check_and_send_scheduled_alerts_task",
         "schedule": crontab(minute=0),
     },
-    "fetch-daily-bars": {"task": "core.tasks.fetch_daily_bars_task", "schedule": crontab(hour=FETCH_BARS_HOUR, minute=5)},
-    "compute-metrics": {"task": "core.tasks.compute_metrics_task", "schedule": crontab(hour=COMPUTE_HOUR, minute=15)},
-    "send-daily-alerts": {"task": "core.tasks.send_daily_alerts_task", "schedule": crontab(hour=EMAIL_HOUR, minute=25)},
-    "daily-system-refresh": {"task": "core.tasks.daily_system_refresh_job_task", "schedule": crontab(hour=DAILY_REFRESH_HOUR, minute=DAILY_REFRESH_MINUTE)},
+    "cleanup-stale-processing-jobs": {
+        "task": "core.tasks.cleanup_stale_processing_jobs_task",
+        "schedule": crontab(minute="*/1"),
+    },
+    "daily-system-refresh": {
+        "task": "core.tasks.daily_system_refresh_job_task",
+        "schedule": crontab(hour=DAILY_REFRESH_HOUR, minute=DAILY_REFRESH_MINUTE),
+    },
 }
 
 # Cookie security (recommended in prod; keep enabled even if DEBUG=0)
