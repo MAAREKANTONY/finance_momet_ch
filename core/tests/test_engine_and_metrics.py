@@ -122,6 +122,88 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertIsNone(portfolio["MAX_LOSS_AMOUNT"])
         self.assertEqual(Decimal(portfolio["max_drawdown_amount"]), Decimal("0"))
 
+
+    def test_backtest_portfolio_counts_flat_trades_and_total_return_on_capital(self):
+        start = date(2024, 2, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "10", "10"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(3)
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+
+        bt = Backtest.objects.create(
+            name="Flat Trade Portfolio KPI",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        final = result["tickers"][self.symbol.ticker]["lines"][0]["final"]
+        portfolio = result["portfolio"]["kpi"]
+
+        self.assertEqual(final["N"], 1)
+        self.assertEqual(final["WIN_TRADES"], 0)
+        self.assertEqual(final["LOSS_TRADES"], 0)
+        self.assertEqual(final["FLAT_TRADES"], 1)
+        self.assertEqual(Decimal(final["AVG_TRADE_AMOUNT"]), Decimal("0"))
+        self.assertEqual(Decimal(final["FINAL_EQUITY"]), Decimal("100"))
+
+        self.assertEqual(portfolio["TOTAL_TRADES"], 1)
+        self.assertEqual(portfolio["WIN_TRADES"], 0)
+        self.assertEqual(portfolio["LOSS_TRADES"], 0)
+        self.assertEqual(portfolio["FLAT_TRADES"], 1)
+        self.assertEqual(Decimal(portfolio["AVG_TRADE_AMOUNT"]), Decimal("0"))
+        self.assertEqual(Decimal(portfolio["TOTAL_PNL_AMOUNT"]), Decimal("0"))
+        self.assertEqual(Decimal(portfolio["TOTAL_RETURN_ON_CAPITAL"]), Decimal("0"))
+        self.assertEqual(Decimal(portfolio["WIN_RATE_AMOUNT"]), Decimal("0"))
+
+    def test_backtest_portfolio_counts_played_ticker_once_even_with_multiple_lines(self):
+        start = date(2024, 3, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "11", "12", "13"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal(str(10 + i)), ratio_P=Decimal("1"))
+            for i in range(4)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1,C1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1,D1"),
+        ])
+
+        bt = Backtest.objects.create(
+            name="Played Ticker Count",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[
+                {"buy": ["A1"], "sell": ["B1"]},
+                {"buy": ["C1"], "sell": ["D1"]},
+            ],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        portfolio = result["portfolio"]["kpi"]
+
+        self.assertEqual(portfolio["NB_PLAYED_TICKERS"], 1)
+        self.assertEqual(portfolio["TOTAL_TRADES"], 2)
+        self.assertEqual(portfolio["FLAT_TRADES"], 0)
+
     def test_incremental_and_full_indicator_calculations_match(self):
         dates = self._create_bars_for_symbol(self.symbol, ["10", "11", "12", "11", "13", "15", "14"])
 

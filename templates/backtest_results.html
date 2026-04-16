@@ -158,8 +158,8 @@
   <table>
     <tr>
       <th>P&amp;L total</th><td>{{ portfolio_kpi.TOTAL_PNL_AMOUNT|num:2 }}</td>
+      <th>Performance totale / capital</th><td>{{ portfolio_kpi.TOTAL_RETURN_ON_CAPITAL|pct:3 }}</td>
       <th>Equity finale</th><td>{{ portfolio_kpi.FINAL_EQUITY|num:2 }}</td>
-      <th>Trades totaux</th><td>{{ portfolio_kpi.TOTAL_TRADES }}</td>
     </tr>
     <tr>
       <th>Total gains</th><td>{{ portfolio_kpi.TOTAL_GAIN_AMOUNT|num:2 }}</td>
@@ -167,14 +167,19 @@
       <th>Trade moyen</th><td>{{ portfolio_kpi.AVG_TRADE_AMOUNT|num:2 }}</td>
     </tr>
     <tr>
-      <th>Profit factor</th><td>{{ portfolio_kpi.PROFIT_FACTOR_AMOUNT|num:3 }}</td>
+      <th>Trades totaux</th><td>{{ portfolio_kpi.TOTAL_TRADES }}</td>
+      <th>Trades flat</th><td>{{ portfolio_kpi.FLAT_TRADES }}</td>
       <th>Win rate</th><td>{{ portfolio_kpi.WIN_RATE_AMOUNT|num:2 }}%</td>
+    </tr>
+    <tr>
+      <th>Profit factor</th><td>{{ portfolio_kpi.PROFIT_FACTOR_AMOUNT|num:3 }}</td>
       <th>Max drawdown montant</th><td>{{ portfolio_kpi.max_drawdown_amount|num:2 }}</td>
+      <th>Capital total</th><td>{{ bt.capital_total|num:2 }}</td>
     </tr>
     <tr>
       <th>Max gain</th><td>{{ portfolio_kpi.MAX_GAIN_AMOUNT|num:2 }}</td>
       <th>Max perte</th><td>{{ portfolio_kpi.MAX_LOSS_AMOUNT|num:2 }}</td>
-      <th>Capital total</th><td>{{ bt.capital_total|num:2 }}</td>
+      <th></th><td></td>
     </tr>
   </table>
 </div>
@@ -247,6 +252,7 @@
       <li><b>Cash</b> : cash restant pour ce ticker/ligne après achats/ventes (arrondi au nombre entier d'actions).</li>
       <li><b>Shares</b> : nombre d'actions détenues en fin de journée.</li>
       <li><b>TOTAL_PNL_AMOUNT</b> : somme des gains et pertes en montant sur l'ensemble du portefeuille.</li>
+      <li><b>TOTAL_RETURN_ON_CAPITAL</b> : rendement global du portefeuille = TOTAL_PNL_AMOUNT / capital total.</li>
       <li><b>FINAL_EQUITY</b> : capital final = capital initial + P&amp;L total.</li>
       <li><b>TOTAL_GAIN_AMOUNT</b> : somme des trades gagnants en montant.</li>
       <li><b>TOTAL_LOSS_AMOUNT</b> : somme des trades perdants en montant.</li>
@@ -255,7 +261,7 @@
       <li><b>MAX_GAIN_AMOUNT</b> : meilleur trade en montant.</li>
       <li><b>MAX_LOSS_AMOUNT</b> : pire trade en montant.</li>
       <li><b>TOTAL_TRADES</b> : nombre total de trades clôturés.</li>
-      <li><b>WIN_RATE_AMOUNT</b> : pourcentage de trades gagnants.</li>
+      <li><b>WIN_RATE_AMOUNT</b> : pourcentage de trades gagnants rapporté au nombre total de trades, y compris les trades flats.</li>
       <li><b>max_drawdown_amount</b> : drawdown maximal du portefeuille en montant.</li>
       <li><b>PNL_AMOUNT</b> : gain/perte total(e) en montant pour le ticker / la ligne sélectionnée.</li>
       <li><b>WIN_TRADES</b> : nombre de trades gagnants pour le ticker / la ligne.</li>

@@ -1320,7 +1320,8 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             total_loss_amount = Decimal(st.get("total_loss_amount") or 0)
             win_trades = int(st.get("win_trades") or 0)
             loss_trades = int(st.get("loss_trades") or 0)
-            total_trades_amount = win_trades + loss_trades
+            total_trades_amount = int(N)
+            flat_trades = max(0, total_trades_amount - win_trades - loss_trades)
             avg_trade_amount = None if total_trades_amount == 0 else (pnl_amount_total / Decimal(total_trades_amount))
             profit_factor_amount = None
             if total_loss_amount < 0:
@@ -1364,6 +1365,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                     "MAX_LOSS_AMOUNT": None if st.get("max_loss_amount") is None else str(st.get("max_loss_amount")),
                     "WIN_TRADES": win_trades,
                     "LOSS_TRADES": loss_trades,
+                    "FLAT_TRADES": flat_trades,
                     "WIN_RATE_AMOUNT": None if win_rate_amount is None else str(win_rate_amount),
                     "FINAL_EQUITY": str(Decimal(st.get("cash_ticker") or 0) + Decimal(st.get("bank") or 0)),
                 },
@@ -1399,6 +1401,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     # A ticker is considered "played" if at least one line has N > 0.
     # If several signal lines exist for the same ticker, we first average
     # the played-line metrics ticker by ticker, then aggregate globally.
+    played_ticker_count = 0
     played_ticker_ratios: list[Decimal] = []
     played_ticker_bmds: list[Decimal] = []
     positive_ticker_count = 0
@@ -1411,6 +1414,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     for _ticker, tentry in results.get("tickers", {}).items():
         ticker_ratios: list[Decimal] = []
         ticker_bmds: list[Decimal] = []
+        ticker_played = False
         for line in (tentry.get("lines") or []):
             final = line.get("final") or {}
             try:
@@ -1420,6 +1424,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             if n_trades <= 0:
                 continue
 
+            ticker_played = True
             ratio_raw = final.get("RATIO_IN_POSITION")
             if ratio_raw not in (None, ""):
                 try:
@@ -1434,9 +1439,10 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 except Exception:
                     pass
 
-        if not ticker_ratios and not ticker_bmds:
+        if not ticker_played:
             continue
 
+        played_ticker_count += 1
         ticker_avg_ratio = None
         if ticker_ratios:
             ticker_avg_ratio = sum(ticker_ratios) / Decimal(len(ticker_ratios))
@@ -1490,11 +1496,13 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
 
     portfolio_capital_base = (CP_raw if not CP_infinite else invested_total)
     total_pnl_amount = equity_end - portfolio_capital_base
+    total_return_on_capital = None if portfolio_capital_base <= 0 else (total_pnl_amount / portfolio_capital_base)
     total_gain_amount = Decimal("0")
     total_loss_amount = Decimal("0")
     total_trades_amount = 0
     win_trades_amount = 0
     loss_trades_amount = 0
+    flat_trades_amount = 0
     max_gain_amount = None
     max_loss_amount = None
     for _ticker, tentry in results.get("tickers", {}).items():
@@ -1516,13 +1524,19 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 line_loss_n = int(final.get("LOSS_TRADES") or 0)
             except Exception:
                 line_loss_n = 0
+            try:
+                line_total_trades = int(final.get("N") or 0)
+            except Exception:
+                line_total_trades = 0
+            line_flat_n = max(0, line_total_trades - line_win - line_loss_n)
             line_max_gain = final.get("MAX_GAIN_AMOUNT")
             line_max_loss = final.get("MAX_LOSS_AMOUNT")
             total_gain_amount += line_gain
             total_loss_amount += line_loss
             win_trades_amount += line_win
             loss_trades_amount += line_loss_n
-            total_trades_amount += (line_win + line_loss_n)
+            flat_trades_amount += line_flat_n
+            total_trades_amount += line_total_trades
             if line_max_gain not in (None, ""):
                 try:
                     d = Decimal(str(line_max_gain))
@@ -1553,7 +1567,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             "BMJ": None if bmj_return is None else str(bmj_return),
             "NB_DAYS": nb_days_invested,
             "AVG_RATIO_IN_POSITION_PLAYED": None if avg_ratio_in_position_played is None else str(avg_ratio_in_position_played),
-            "NB_PLAYED_TICKERS": len(played_ticker_ratios),
+            "NB_PLAYED_TICKERS": played_ticker_count,
             "POSITIVE_BMD_TICKERS": positive_ticker_count,
             "POSITIVE_BMD_AVG_GAIN": None if avg_bmd_positive is None else str(avg_bmd_positive),
             "POSITIVE_BMD_AVG_RATIO_IN_POSITION": None if avg_ratio_positive is None else str(avg_ratio_positive),
@@ -1562,6 +1576,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             "NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION": None if avg_ratio_non_positive is None else str(avg_ratio_non_positive),
             "max_drawdown": str(max_drawdown),
             "TOTAL_PNL_AMOUNT": str(total_pnl_amount),
+            "TOTAL_RETURN_ON_CAPITAL": None if total_return_on_capital is None else str(total_return_on_capital),
             "FINAL_EQUITY": str(equity_end),
             "TOTAL_GAIN_AMOUNT": str(total_gain_amount),
             "TOTAL_LOSS_AMOUNT": str(total_loss_amount),
@@ -1572,6 +1587,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             "TOTAL_TRADES": total_trades_amount,
             "WIN_TRADES": win_trades_amount,
             "LOSS_TRADES": loss_trades_amount,
+            "FLAT_TRADES": flat_trades_amount,
             "WIN_RATE_AMOUNT": None if win_rate_amount is None else str(win_rate_amount),
             "max_drawdown_amount": str(max_drawdown_amount),
         },

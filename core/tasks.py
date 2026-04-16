@@ -1,5 +1,4 @@
 from celery import shared_task
-import logging
 from decimal import Decimal
 from datetime import datetime, date
 from django.conf import settings
@@ -33,7 +32,6 @@ import time
 
 
 TRANSIENT_DB_EXCEPTIONS = (OperationalError, InterfaceError)
-logger = logging.getLogger(__name__)
 
 
 def _with_db_retries(fn, *, attempts: int | None = None):
@@ -91,26 +89,6 @@ def _append_job_message(job: ProcessingJob | None, extra: str) -> None:
         _job_save(job, update_fields=["message"])
     except Exception:
         return
-
-
-
-def _process_memory_mb() -> float | None:
-    try:
-        import resource
-
-        rss_kb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-        # Linux returns KiB, macOS returns bytes. We only deploy on Linux here but
-        # keep a defensive conversion to avoid nonsense in local development.
-        if rss_kb > 10_000_000:
-            return round(float(rss_kb) / (1024.0 * 1024.0), 2)
-        return round(float(rss_kb) / 1024.0, 2)
-    except Exception:
-        return None
-
-
-def _log_full_recompute_event(event: str, **payload) -> None:
-    kv = " ".join(f"{k}={payload[k]}" for k in sorted(payload))
-    logger.info("[full_recompute] %s %s", event, kv)
 
 def parse_date(s: str) -> date:
     return datetime.fromisoformat(s.replace("Z","")).date()
@@ -273,36 +251,9 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
     approx_business_window_days = int(history_years * 366)
 
     computed_rows = 0
-    instrumentation_enabled = bool(getattr(settings, "JOB_FULL_RECOMPUTE_INSTRUMENTATION", True))
-    log_every_symbols = max(1, int(getattr(settings, "JOB_FULL_RECOMPUTE_LOG_EVERY_N_SYMBOLS", 1)))
-    log_every_dates = max(1, int(getattr(settings, "JOB_FULL_RECOMPUTE_LOG_EVERY_N_DATES", 200)))
     pulse_symbols = JobCheckpointPulse(job, every_n=1, every_seconds=20, task_request=task_request, base_label=f"compute_metrics:scenario#{scenario.id}")
-
-    if instrumentation_enabled:
-        _log_full_recompute_event(
-            "scenario_start",
-            scenario_id=scenario.id,
-            scenario_name=scenario.name,
-            symbols=len(symbols),
-            mode=("full" if needs_full else "incremental"),
-            recompute_all=bool(recompute_all),
-            job_id=getattr(job, "id", None) or "",
-            rss_mb=_process_memory_mb(),
-        )
-
     for sym_idx, sym in enumerate(symbols, start=1):
         pulse_symbols.hit(checkpoint=f"symbol {sym_idx}/{len(symbols)} {sym.ticker}", force=True)
-        symbol_started_at = time.monotonic()
-        if instrumentation_enabled and (needs_full or sym_idx == 1 or (sym_idx % log_every_symbols) == 0):
-            _log_full_recompute_event(
-                "symbol_start",
-                scenario_id=scenario.id,
-                idx=f"{sym_idx}/{len(symbols)}",
-                ticker=sym.ticker,
-                mode=("full" if needs_full else "incremental"),
-                job_id=getattr(job, "id", None) or "",
-                rss_mb=_process_memory_mb(),
-            )
         try:
             sym_last_bar_date = DailyBar.objects.filter(symbol=sym).aggregate(m=Max("date"))["m"]
             if not sym_last_bar_date:
@@ -328,19 +279,6 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
                 m_written, a_written = compute_full_for_symbol_scenario(symbol=sym, scenario=scenario, bars=bars)
                 computed_rows += m_written
                 pulse_symbols.hit(checkpoint=f"symbol {sym_idx}/{len(symbols)} {sym.ticker} full metrics={m_written} alerts={a_written}", force=True)
-                if instrumentation_enabled:
-                    _log_full_recompute_event(
-                        "symbol_done",
-                        scenario_id=scenario.id,
-                        idx=f"{sym_idx}/{len(symbols)}",
-                        ticker=sym.ticker,
-                        mode="full",
-                        metric_rows=m_written,
-                        alert_rows=a_written,
-                        elapsed_s=round(time.monotonic() - symbol_started_at, 3),
-                        total_metric_rows=computed_rows,
-                        rss_mb=_process_memory_mb(),
-                    )
                 continue
 
             # Incremental recompute: only rebuild the recent technical tail, never the whole history.
@@ -362,32 +300,8 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
                 compute_for_symbol_scenario(sym, scenario, d)
                 computed_rows += 1
                 last_d = d
-                if instrumentation_enabled and ((i == 1) or (i % log_every_dates) == 0):
-                    _log_full_recompute_event(
-                        "date_progress",
-                        scenario_id=scenario.id,
-                        idx=f"{sym_idx}/{len(symbols)}",
-                        ticker=sym.ticker,
-                        step=i,
-                        last_date=d.isoformat(),
-                        total_metric_rows=computed_rows,
-                        rss_mb=_process_memory_mb(),
-                    )
             pulse_symbols.hit(checkpoint=f"symbol {sym_idx}/{len(symbols)} {sym.ticker} last={last_d.isoformat() if last_d else '-'} rows={computed_rows}", force=True)
-            if instrumentation_enabled:
-                _log_full_recompute_event(
-                    "symbol_done",
-                    scenario_id=scenario.id,
-                    idx=f"{sym_idx}/{len(symbols)}",
-                    ticker=sym.ticker,
-                    mode="incremental",
-                    last_date=(last_d.isoformat() if last_d else "-"),
-                    elapsed_s=round(time.monotonic() - symbol_started_at, 3),
-                    total_metric_rows=computed_rows,
-                    rss_mb=_process_memory_mb(),
-                )
         except Exception as e:
-            logger.exception("[full_recompute] symbol_error scenario_id=%s ticker=%s idx=%s/%s rss_mb=%s", scenario.id, sym.ticker, sym_idx, len(symbols), _process_memory_mb())
             print(f"[compute] error {sym} {scenario}: {e}")
             continue
 
@@ -399,17 +313,6 @@ def _compute_metrics_for_scenario(*, symbols_qs, scenario: Scenario, recompute_a
         pass
 
     Scenario.objects.filter(id=scenario.id).update(last_computed_config_hash=cur_hash)
-    if instrumentation_enabled:
-        _log_full_recompute_event(
-            "scenario_done",
-            scenario_id=scenario.id,
-            scenario_name=scenario.name,
-            symbols=len(symbols),
-            total_metric_rows=computed_rows,
-            mode=("full" if needs_full else "incremental"),
-            rss_mb=_process_memory_mb(),
-            job_id=getattr(job, "id", None) or "",
-        )
     return {"symbols": len(symbols), "rows": computed_rows, "full": bool(needs_full)}
 
 
@@ -658,7 +561,6 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
         )
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "message", "finished_at"])
-        logger.info("[fetch_daily_bars_job_task] done scenario_id=%s job_id=%s symbols=%s bars=%s force_full=%s", scenario_id, getattr(job, "id", None), stats.get('symbols'), stats.get('bars'), bool(force_full))
         return job.message
     except JobCancelled:
         job.status = ProcessingJob.Status.CANCELLED
@@ -723,7 +625,6 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
             symbols_qs = scenario_symbols_qs
             scope_note = "scenario_symbols"
 
-        logger.info("[compute_metrics_job_task] start scenario_id=%s job_id=%s recompute_all=%s symbol_ids_count=%s", scenario_id, getattr(job, "id", None), bool(recompute_all), (len(list(symbol_ids)) if symbol_ids else 0))
         stats = _compute_metrics_for_scenario(
             symbols_qs=symbols_qs,
             scenario=scenario,
@@ -738,7 +639,6 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
         )
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "message", "finished_at"])
-        logger.info("[compute_metrics_job_task] done scenario_id=%s job_id=%s symbols=%s rows=%s full=%s", scenario_id, getattr(job, "id", None), stats.get('symbols'), stats.get('rows'), stats.get('full'))
         return job.message
     except JobCancelled:
         job.status = ProcessingJob.Status.CANCELLED

@@ -1,0 +1,48 @@
+STOCKALERT — V8.0.05
+
+Objectif
+- Reprise prudente du chantier KPI Backtest, sans retoucher l'infra jobs.
+- Itération courte et ciblée sur la cohérence des KPI globaux portefeuille.
+
+Corrections principales
+1. Comptage correct des trades globaux
+- Le portefeuille utilisait WIN_TRADES + LOSS_TRADES comme TOTAL_TRADES.
+- Cela ignorait les trades flats (P&L nul), en particulier les achats suivis d'une vente forcée à plat.
+- TOTAL_TRADES s'appuie maintenant sur N (nombre réel de trades clôturés).
+
+2. Ajout du KPI FLAT_TRADES
+- Nouveau KPI global portefeuille : FLAT_TRADES.
+- Nouveau KPI par ligne/ticker : FLAT_TRADES.
+- Permet d'expliquer les cas où un trade a bien eu lieu mais n'est ni gagnant ni perdant.
+
+3. AVG_TRADE_AMOUNT et WIN_RATE_AMOUNT fiabilisés
+- AVG_TRADE_AMOUNT est désormais calculé sur le vrai nombre total de trades.
+- WIN_RATE_AMOUNT est désormais calculé sur le vrai nombre total de trades, flats inclus.
+- Exemple : 1 trade flat => TOTAL_TRADES=1, FLAT_TRADES=1, WIN_RATE_AMOUNT=0.
+
+4. NB_PLAYED_TICKERS fiabilisé
+- Le portefeuille comptait les tickers joués via la liste des ratios moyens.
+- Cela pouvait sous-estimer le nombre réel de tickers joués dans certains cas limites.
+- Le compteur s'appuie maintenant sur le fait qu'au moins une ligne du ticker a N > 0.
+- Un ticker reste compté une seule fois même s'il a plusieurs lignes actives.
+
+5. Nouveau KPI lisible dans l'UI
+- Ajout de TOTAL_RETURN_ON_CAPITAL = TOTAL_PNL_AMOUNT / capital total.
+- Ajout dans la synthèse portefeuille globale.
+
+UI
+- Synthèse portefeuille enrichie avec :
+  - Performance totale / capital
+  - Trades flat
+- Légende mise à jour pour préciser la sémantique de WIN_RATE_AMOUNT et TOTAL_RETURN_ON_CAPITAL.
+
+Tests ajoutés
+- Cas portefeuille avec trade flat : vérifie TOTAL_TRADES, FLAT_TRADES, AVG_TRADE_AMOUNT, TOTAL_RETURN_ON_CAPITAL, WIN_RATE_AMOUNT.
+- Cas 1 ticker / 2 lignes : vérifie que NB_PLAYED_TICKERS reste à 1.
+
+Validation effectuée ici
+- Compilation Python OK sur core/, stockalert/ et templates.
+
+Limite honnête
+- La suite Django complète n'a pas pu être exécutée dans cet environnement car Django n'y est pas installé.
+- Les tests ajoutés sont présents dans le zip et doivent être exécutés chez toi via le quality gate habituel.
