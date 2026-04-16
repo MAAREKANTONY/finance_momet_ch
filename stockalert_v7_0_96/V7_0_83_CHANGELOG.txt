@@ -1,0 +1,31 @@
+V7.0.83 — Audit exports + documentation
+
+Contenu
+- correction du crash sur /backtests/<id>/export_details.zip?format=csv
+  - la fonction helper _arrow_table_to_csv_safe n'est plus décorée par erreur avec @login_required
+  - le endpoint backtest_export_details est maintenant correctement protégé par @login_required
+- durcissement de l'export details CSV depuis Parquet
+  - écriture CSV via fichiers temporaires sur disque au lieu de tout garder en mémoire dans BytesIO
+- sécurisation accès export backtest Excel
+  - backtest_export_excel protégé par @login_required
+- réduction des risques mémoire sur exports lourds
+  - export_data_xlsx_task passe en Workbook(write_only=True)
+  - export_game_scenario_xlsx_task passe en Workbook(write_only=True)
+  - export_all_scenarios_zip_task utilise build_scenario_workbook_write_only au lieu de la version en mémoire complète
+- nouvelle page de documentation exports
+  - /help/exports/
+  - lien ajouté dans la navigation
+  - description des exports disponibles par page
+  - rappel des causes probables de plantage et recommandations d'usage
+- test ciblé ajouté pour éviter la régression du bug du helper décoré
+
+Audit synthétique
+- cause confirmée du plantage signalé : décorateur @login_required appliqué par erreur à un helper technique prenant un pyarrow.Table
+- causes probables restantes sur exports lourds : volume mémoire Excel, multiplication des workbooks dans ZIP multi-scénarios, conversion CSV de gros Parquet, filtres trop larges
+
+Déploiement
+- docker compose build
+- docker compose up -d
+
+Migration
+- aucune migration

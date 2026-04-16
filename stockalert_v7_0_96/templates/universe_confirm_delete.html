@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Supprimer l'univers</h2>
+<div class="card">
+  <p>Confirmer la suppression de : <strong>{{ universe.name }}</strong></p>
+  <p class="muted">Cette action est irréversible. Les Studies/Scénarios déjà créés ne seront pas modifiés.</p>
+
+  <form method="post">
+    {% csrf_token %}
+    <button class="btn danger" type="submit">Supprimer</button>
+    <a class="btn" href="{% url 'universes_page' %}">Annuler</a>
+  </form>
+</div>
+{% endblock %}

@@ -1,0 +1,6 @@
+V7_0_66 — Backtest P&L UI completion
+
+- Added visible "Synthèse portefeuille globale" block to backtest results page.
+- Added new P&L KPI definitions to "Légende & définitions".
+- Added render test to ensure portfolio KPIs and legend terms are present in HTML.
+- No engine logic change.

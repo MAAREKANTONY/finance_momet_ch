@@ -1,0 +1,13 @@
+V7.0.65 — Sprint P&L backtests
+
+Ajouts principaux
+- indicateurs de P&L en montant dans les backtests
+- synthèse globale portefeuille enrichie (P&L, profit factor, win rate, drawdown montant)
+- synthèse par ticker / ligne enrichie
+- colonne P&L montant dans les données journalières des trades SELL / FORCED_SELL
+- tests unitaires anti-régression sur le calcul P&L
+
+Détails
+- P&L par ligne calculé à partir des shares réellement achetées par le moteur
+- indicateurs globaux basés sur l'equity finale du portefeuille
+- aucun changement de logique BUY / SELL

@@ -1,0 +1,417 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>{% if mode == "create" %}Nouveau scénario{% elif mode == "duplicate" %}Dupliquer scénario{% else %}Modifier scénario{% endif %}</h2>
+
+<div class="card">
+  <form method="post" id="scenario-form">
+    {% csrf_token %}
+
+    {% for field in form %}
+      {% if field.name != "symbols" %}
+        <p>
+          {{ field.label_tag }}<br/>
+          {{ field }}
+          {% if field.help_text %}<br/><small class="muted">{{ field.help_text }}</small>{% endif %}
+          {% for error in field.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+      {% endif %}
+    {% endfor %}
+
+  <div id="server-selected-bootstrap" style="display:none;">{{ form.symbols }}</div>
+    {% for error in form.symbols.errors %}<p class="error">{{ error }}</p>{% endfor %}
+
+    <div class="card">
+      <h3>Tickers du scénario — sélection massive adaptée aux grands volumes</h3>
+      <p class="muted">L’aperçu reste limité pour rester fluide, mais les actions de masse s’appliquent à <strong>tous</strong> les résultats du filtre.</p>
+
+      {% if universes %}
+      <div class="card" style="margin: 10px 0 14px 0;">
+        <h4 style="margin-top:0;">Appliquer un univers existant</h4>
+        <div style="display:flex; gap:10px; flex-wrap: wrap; align-items: end;">
+          <div style="min-width:260px; flex:1;">
+            <label class="muted" style="display:block; margin-bottom:4px;">Univers</label>
+            <select id="universe-select" style="width:100%;">
+              <option value="">— Sélectionner un univers —</option>
+              {% for u in universes %}
+                <option value="{{ u.id }}">{{ u.name }}</option>
+              {% endfor %}
+            </select>
+          </div>
+          <div style="min-width:220px;">
+            <label class="muted" style="display:block; margin-bottom:4px;">Mode</label>
+            <select id="universe-mode" style="width:100%;">
+              <option value="add">Ajouter l’univers</option>
+              <option value="replace">Remplacer par l’univers</option>
+              <option value="remove">Retirer l’univers</option>
+            </select>
+          </div>
+          <div>
+            <button type="button" class="btn" id="universe-apply">Appliquer</button>
+          </div>
+          <div class="muted" id="universe-apply-msg" style="flex: 1; min-width: 220px;"></div>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="grid2" style="align-items:start; gap:18px;">
+        <div>
+          <h4 style="margin-top:0;">1. Filtrer un ensemble</h4>
+          <div class="grid2" style="gap:10px;">
+            <div>
+              <label>Marché / Exchange</label><br/>
+              <select id="filter-exchange" style="width:100%;">
+                <option value="">Tous</option>
+                {% for item in exchanges %}
+                  <option value="{{ item }}">{{ item }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div>
+              <label>Secteur</label><br/>
+              <select id="filter-sector" style="width:100%;">
+                <option value="">Tous</option>
+                {% for item in sectors %}
+                  <option value="{{ item }}">{{ item }}</option>
+                {% endfor %}
+              </select>
+            </div>
+          </div>
+          <div style="margin-top:10px;">
+            <label>Recherche libre</label><br/>
+            <input type="text" id="filter-q" placeholder="ticker, nom, secteur, pays…" style="width:100%;" />
+          </div>
+
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:12px;">
+            <button type="button" class="btn" id="btn-count">Compter / prévisualiser</button>
+            <button type="button" class="btn" id="btn-add-filter">Ajouter tous les résultats</button>
+            <button type="button" class="btn" id="btn-replace-filter">Remplacer par les résultats</button>
+            <button type="button" class="btn" id="btn-remove-filter">Retirer les résultats</button>
+          </div>
+
+          <div id="filter-summary" class="muted" style="margin-top:10px;"></div>
+          <div id="filter-preview" style="margin-top:10px; max-height:360px; overflow:auto; border:1px solid #ddd; border-radius:6px;"></div>
+        </div>
+
+        <div>
+          <h4 style="margin-top:0;">2. Ajouter une liste directe</h4>
+          <p class="muted">Colle une liste de tickers séparés par virgules, espaces ou retours à la ligne. Exemples : <code>AAPL,MSFT,NVDA</code> ou <code>AAPL:NASDAQ</code>.</p>
+          <textarea id="bulk-list-input" rows="7" style="width:100%;" placeholder="AAPL, MSFT, NVDA"></textarea>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; margin-top:10px;">
+            <button type="button" class="btn" id="btn-add-list">Ajouter la liste</button>
+            <button type="button" class="btn" id="btn-replace-list">Remplacer par la liste</button>
+            <button type="button" class="btn" id="btn-remove-list">Retirer la liste</button>
+          </div>
+          <div id="list-summary" class="muted" style="margin-top:10px;"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; gap:12px; align-items:end; flex-wrap:wrap;">
+        <div>
+          <h3 style="margin:0;">3. Sélection actuelle</h3>
+          <div class="muted" id="selected-summary"></div>
+        </div>
+        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">
+          <div>
+            <label>Recherche dans la sélection</label><br/>
+            <input type="text" id="selected-search" placeholder="ticker, nom, secteur…" />
+          </div>
+          <div>
+            <label>Par page</label><br/>
+            <select id="selected-page-size">
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="200">200</option>
+            </select>
+          </div>
+          <button type="button" class="btn" id="selected-clear">Vider la sélection</button>
+        </div>
+      </div>
+
+      <div id="selected-list" style="margin-top:12px; max-height:420px; overflow:auto; border:1px solid #ddd; border-radius:6px;"></div>
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-top:10px;">
+        <div class="muted" id="selected-page-info"></div>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="btn" id="selected-prev">Page précédente</button>
+          <button type="button" class="btn" id="selected-next">Page suivante</button>
+        </div>
+      </div>
+    </div>
+
+    <button class="btn" type="submit">Enregistrer</button>
+    <a class="btn" href="{% url 'scenarios_page' %}">Annuler</a>
+  </form>
+</div>
+<p class="muted">P = (a*F + b*H + c*L + d*O)/(a+b+c+d)</p>
+<p class="muted">Historique: l'app récupère environ <strong>260 * history_years</strong> jours de trading par ticker.</p>
+<p class="muted">Aide disponible sur les indicateurs actifs : P, K1..K4, Kf, SUM_SLOPE et SLOPE_VRAI.</p>
+
+<script>
+(function(){
+  const hasOtherDefault = {{ has_other_default|yesno:"true,false" }};
+  const form = document.getElementById('scenario-form');
+  if (!form) return;
+  const isDefault = document.getElementById('id_is_default');
+  if (!isDefault) return;
+  form.addEventListener('submit', function(e){
+    if (isDefault.checked && hasOtherDefault) {
+      const ok = confirm("Un scénario par défaut existe déjà. Définir celui-ci comme défaut va désactiver le précédent. Continuer ?");
+      if (!ok) {
+        e.preventDefault();
+        e.stopPropagation();
+      }
+    }
+  });
+})();
+</script>
+
+<script>
+(function(){
+  const hiddenInput = document.getElementById('id_symbols');
+  const selectedSummary = document.getElementById('selected-summary');
+  const selectedList = document.getElementById('selected-list');
+  const selectedSearch = document.getElementById('selected-search');
+  const selectedPageInfo = document.getElementById('selected-page-info');
+  const selectedPageSize = document.getElementById('selected-page-size');
+  const filterSummary = document.getElementById('filter-summary');
+  const filterPreview = document.getElementById('filter-preview');
+  const listSummary = document.getElementById('list-summary');
+  const form = document.getElementById('scenario-form');
+
+  const state = { selectedMap: new Map(), filterPreviewItems: [], filterTotalCount: 0, page: 1 };
+
+  function escapeHtml(value){
+    return String(value || '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+  }
+
+  function normalizeItem(item){
+    return {
+      id: Number(item.id),
+      ticker: String(item.ticker || '').trim(),
+      name: String(item.name || '').trim(),
+      exchange: String(item.exchange || '').trim(),
+      sector: String(item.sector || '').trim(),
+      country: String(item.country || '').trim(),
+    };
+  }
+
+  function syncHiddenInput(){
+    hiddenInput.value = Array.from(state.selectedMap.keys()).join(',');
+  }
+
+  function filteredSelectedItems(){
+    const q = (selectedSearch.value || '').trim().toLowerCase();
+    let items = Array.from(state.selectedMap.values()).sort((a,b) => `${a.ticker}|${a.exchange}|${a.name}`.localeCompare(`${b.ticker}|${b.exchange}|${b.name}`));
+    if (!q) return items;
+    return items.filter(item => [item.ticker, item.name, item.exchange, item.sector, item.country].join(' ').toLowerCase().includes(q));
+  }
+
+  function renderSelected(){
+    const items = filteredSelectedItems();
+    const pageSize = Number(selectedPageSize.value || '100');
+    const totalPages = Math.max(1, Math.ceil(items.length / pageSize));
+    if (state.page > totalPages) state.page = totalPages;
+    const start = (state.page - 1) * pageSize;
+    const pageItems = items.slice(start, start + pageSize);
+
+    selectedSummary.textContent = `${state.selectedMap.size} ticker(s) sélectionné(s). ${items.length}${items.length !== state.selectedMap.size ? ' visibles après filtre interne' : ''}.`;
+    selectedPageInfo.textContent = `Page ${state.page} / ${totalPages}`;
+
+    if (!pageItems.length){
+      selectedList.innerHTML = '<div class="muted" style="padding:10px;">Aucun ticker dans la sélection actuelle.</div>';
+      syncHiddenInput();
+      return;
+    }
+
+    selectedList.innerHTML = pageItems.map(item => `
+      <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; padding:8px 10px; border-bottom:1px solid #eee;">
+        <div>
+          <strong>${escapeHtml(item.ticker)}</strong>
+          <span class="muted">${item.exchange ? ' — ' + escapeHtml(item.exchange) : ''}${item.name ? ' — ' + escapeHtml(item.name) : ''}${item.sector ? ' — ' + escapeHtml(item.sector) : ''}</span>
+        </div>
+        <button type="button" class="btn btn-remove-one" data-id="${item.id}">Retirer</button>
+      </div>
+    `).join('');
+
+    selectedList.querySelectorAll('.btn-remove-one').forEach(btn => {
+      btn.addEventListener('click', () => {
+        state.selectedMap.delete(String(btn.dataset.id));
+        syncHiddenInput();
+        renderSelected();
+      });
+    });
+    syncHiddenInput();
+  }
+
+  function renderPreview(items, totalCount, message){
+    state.filterPreviewItems = items || [];
+    state.filterTotalCount = totalCount || 0;
+    filterSummary.textContent = message || `${totalCount} ticker(s) trouvés. Aperçu limité à ${state.filterPreviewItems.length}.`;
+    if (!state.filterPreviewItems.length){
+      filterPreview.innerHTML = '<div class="muted" style="padding:10px;">Aucun résultat.</div>';
+      return;
+    }
+    filterPreview.innerHTML = state.filterPreviewItems.map(item => `
+      <div style="padding:8px 10px; border-bottom:1px solid #eee;">
+        <strong>${escapeHtml(item.ticker)}</strong>
+        <span class="muted">${item.exchange ? ' — ' + escapeHtml(item.exchange) : ''}${item.name ? ' — ' + escapeHtml(item.name) : ''}${item.sector ? ' — ' + escapeHtml(item.sector) : ''}</span>
+      </div>
+    `).join('');
+  }
+
+  function mergeItems(items){
+    let added = 0;
+    (items || []).map(normalizeItem).forEach(item => {
+      const key = String(item.id);
+      if (!state.selectedMap.has(key)) added += 1;
+      state.selectedMap.set(key, item);
+    });
+    syncHiddenInput();
+    renderSelected();
+    return added;
+  }
+
+  function replaceItems(items){
+    state.selectedMap = new Map();
+    return mergeItems(items);
+  }
+
+  function removeItems(items){
+    let removed = 0;
+    (items || []).map(normalizeItem).forEach(item => {
+      const key = String(item.id);
+      if (state.selectedMap.delete(key)) removed += 1;
+    });
+    syncHiddenInput();
+    renderSelected();
+    return removed;
+  }
+
+  function tokenizeList(value){
+    return Array.from(new Set(String(value || '').split(/[\s,;]+/).map(x => x.trim()).filter(Boolean)));
+  }
+
+  function getFilterParams(includeAll){
+    const params = new URLSearchParams();
+    const q = (document.getElementById('filter-q').value || '').trim();
+    const exchange = (document.getElementById('filter-exchange').value || '').trim();
+    const sector = (document.getElementById('filter-sector').value || '').trim();
+    if (q) params.set('q', q);
+    if (exchange) params.set('exchange', exchange);
+    if (sector) params.set('sector', sector);
+    params.set('limit', '50');
+    if (includeAll) params.set('include_all', '1');
+    return params;
+  }
+
+  async function loadFilterPreview(includeAll){
+    const params = getFilterParams(includeAll);
+    const resp = await fetch(`/symbols/filter-preview/?${params.toString()}`, {headers: {'X-Requested-With': 'XMLHttpRequest'}});
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.json();
+  }
+
+  async function previewOnly(){
+    filterSummary.textContent = 'Chargement…';
+    const data = await loadFilterPreview(false);
+    renderPreview(data.symbols || [], data.total_count || 0, `${data.total_count || 0} ticker(s) trouvés. Aperçu affiché : ${data.preview_count || 0}.`);
+  }
+
+  async function applyFilter(action){
+    filterSummary.textContent = 'Chargement de la sélection complète…';
+    const data = await loadFilterPreview(true);
+    const items = data.symbols || [];
+    let changed = 0;
+    if (action === 'add') changed = mergeItems(items);
+    else if (action === 'replace') changed = replaceItems(items);
+    else changed = removeItems(items);
+    const verb = action === 'add' ? 'ajoutés' : (action === 'replace' ? 'retenus' : 'retirés');
+    renderPreview((data.symbols || []).slice(0, 50), data.total_count || 0, `${data.total_count || 0} ticker(s) trouvés. ${changed} ${verb}. Aperçu affiché : ${Math.min(items.length, 50)}.`);
+  }
+
+  async function resolveTokens(tokens){
+    if (!tokens.length) return [];
+    const params = new URLSearchParams();
+    params.set('q', tokens.join(','));
+    params.set('limit', String(Math.max(50, tokens.length + 10)));
+    const resp = await fetch(`/symbols/search/?${params.toString()}`, {headers: {'X-Requested-With': 'XMLHttpRequest'}});
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    return await resp.json();
+  }
+
+  async function applyList(action){
+    const tokens = tokenizeList(document.getElementById('bulk-list-input').value || '');
+    if (!tokens.length){
+      listSummary.textContent = 'Aucun ticker détecté dans la liste.';
+      return;
+    }
+    listSummary.textContent = 'Résolution des tickers…';
+    const items = await resolveTokens(tokens);
+    let changed = 0;
+    if (action === 'add') changed = mergeItems(items);
+    else if (action === 'replace') changed = replaceItems(items);
+    else changed = removeItems(items);
+    listSummary.textContent = `${items.length} ticker(s) reconnus. ${changed} modifié(s) dans la sélection.`;
+  }
+
+  async function applyUniverse(){
+    const uniSelect = document.getElementById('universe-select');
+    const uniMode = document.getElementById('universe-mode');
+    const uniMsg = document.getElementById('universe-apply-msg');
+    const universeId = uniSelect?.value;
+    if (!universeId) {
+      if (uniMsg) uniMsg.textContent = 'Choisis un univers.';
+      return;
+    }
+    const mode = uniMode?.value || 'add';
+    if (uniMsg) uniMsg.textContent = 'Chargement de l’univers…';
+    try {
+      const resp = await fetch(`/universes/${universeId}/symbols.json`, {headers: {'X-Requested-With': 'XMLHttpRequest'}});
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+      const data = await resp.json();
+      const incoming = Array.isArray(data.symbols) ? data.symbols : [];
+      let changed = 0;
+      if (mode === 'replace') changed = replaceItems(incoming);
+      else if (mode === 'remove') changed = removeItems(incoming);
+      else changed = mergeItems(incoming);
+      if (uniMsg) uniMsg.textContent = `Univers appliqué (${mode}). ${changed} ticker(s) impacté(s).`;
+    } catch (e) {
+      console.error(e);
+      if (uniMsg) uniMsg.textContent = 'Erreur lors du chargement de l’univers.';
+    }
+  }
+
+  function bootstrapSelected(){
+    const widgetRoot = document.querySelector('.symbol-picker-root');
+    if (!widgetRoot) return;
+    try {
+      const initial = JSON.parse(widgetRoot.getAttribute('data-selected-json') || '[]');
+      mergeItems(initial);
+    } catch (e) {
+      console.error(e);
+    }
+    if (widgetRoot.parentNode) widgetRoot.parentNode.style.display = 'none';
+  }
+
+  document.getElementById('btn-count').addEventListener('click', () => previewOnly().catch(err => { console.error(err); filterSummary.textContent = 'Erreur de prévisualisation.'; }));
+  document.getElementById('btn-add-filter').addEventListener('click', () => applyFilter('add').catch(err => { console.error(err); filterSummary.textContent = 'Erreur lors de l’ajout par filtre.'; }));
+  document.getElementById('btn-replace-filter').addEventListener('click', () => applyFilter('replace').catch(err => { console.error(err); filterSummary.textContent = 'Erreur lors du remplacement par filtre.'; }));
+  document.getElementById('btn-remove-filter').addEventListener('click', () => applyFilter('remove').catch(err => { console.error(err); filterSummary.textContent = 'Erreur lors du retrait par filtre.'; }));
+  document.getElementById('btn-add-list').addEventListener('click', () => applyList('add').catch(err => { console.error(err); listSummary.textContent = 'Erreur lors de l’ajout de la liste.'; }));
+  document.getElementById('btn-replace-list').addEventListener('click', () => applyList('replace').catch(err => { console.error(err); listSummary.textContent = 'Erreur lors du remplacement par liste.'; }));
+  document.getElementById('btn-remove-list').addEventListener('click', () => applyList('remove').catch(err => { console.error(err); listSummary.textContent = 'Erreur lors du retrait de la liste.'; }));
+  const universeBtn = document.getElementById('universe-apply');
+  if (universeBtn) universeBtn.addEventListener('click', applyUniverse);
+  selectedSearch.addEventListener('input', () => { state.page = 1; renderSelected(); });
+  selectedPageSize.addEventListener('change', () => { state.page = 1; renderSelected(); });
+  document.getElementById('selected-prev').addEventListener('click', () => { if (state.page > 1) { state.page -= 1; renderSelected(); } });
+  document.getElementById('selected-next').addEventListener('click', () => { state.page += 1; renderSelected(); });
+  document.getElementById('selected-clear').addEventListener('click', () => { state.selectedMap = new Map(); state.page = 1; renderSelected(); });
+  if (form) form.addEventListener('submit', syncHiddenInput);
+
+  bootstrapSelected();
+  renderSelected();
+})();
+</script>
+{% endblock %}
