@@ -4,6 +4,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
@@ -45,6 +46,56 @@ class JobLaunchOutcome:
         return self.dispatch_error is None and bool((self.job.task_id or "").strip())
 
 
+class ActiveJobConflictError(RuntimeError):
+    """Raised when a new tracked job is requested while another one is still active."""
+
+
+def _recover_stale_active_jobs() -> None:
+    """Best-effort inline recovery before rejecting a new launch.
+
+    Goal: avoid keeping the whole queue blocked by a zombie PENDING/RUNNING row
+    until the periodic cleanup task runs.
+    """
+    from .job_recovery import recover_jobs
+
+    active_ids = list(
+        ProcessingJob.objects.filter(status__in=[ProcessingJob.Status.PENDING, ProcessingJob.Status.RUNNING])
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    if not active_ids:
+        return
+    recover_jobs(
+        ids=active_ids,
+        running_heartbeat_minutes=int(getattr(settings, "JOB_STALE_HEARTBEAT_MINUTES", 2)),
+        running_started_minutes=int(getattr(settings, "JOB_STALE_STARTED_MINUTES", 3)),
+        pending_minutes=int(getattr(settings, "JOB_STALE_PENDING_MINUTES", 10)),
+        requested_stop_minutes=int(getattr(settings, "JOB_REQUESTED_STOP_STALE_MINUTES", 1)),
+        include_pending=True,
+        include_requested_pending=True,
+        dry_run=False,
+        sync_recent_terminal=True,
+    )
+
+
+def _build_conflict_outcome(*, job_type: str, message: str, created_by=None, backtest=None, scenario=None, game_scenario=None, active_job: ProcessingJob) -> JobLaunchOutcome:
+    err = ActiveJobConflictError(
+        f"Another job is already active (job #{active_job.id}, {active_job.job_type}, {active_job.status})."
+    )
+    job = ProcessingJob.objects.create(
+        job_type=job_type,
+        status=ProcessingJob.Status.FAILED,
+        backtest=backtest,
+        scenario=scenario,
+        game_scenario=game_scenario,
+        created_by=created_by,
+        message=message,
+        error=str(err),
+        finished_at=timezone.now(),
+    )
+    return JobLaunchOutcome(job=job, dispatch_error=err)
+
+
 def launch_processing_job(
     *,
     task: Any,
@@ -65,6 +116,19 @@ def launch_processing_job(
     """
     payload = dict(task_kwargs or {})
     outcome: dict[str, Any] = {}
+
+    _recover_stale_active_jobs()
+    active_job = find_active_processing_job()
+    if active_job is not None:
+        return _build_conflict_outcome(
+            job_type=job_type,
+            message=message,
+            created_by=created_by,
+            backtest=backtest,
+            scenario=scenario,
+            game_scenario=game_scenario,
+            active_job=active_job,
+        )
 
     job = ProcessingJob.objects.create(
         job_type=job_type,

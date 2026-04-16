@@ -1,12 +1,14 @@
 from __future__ import annotations
 
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
+from django.utils import timezone
 
-from core.job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
+from core.job_launch import ActiveJobConflictError, dispatch_task_after_commit, find_active_processing_job, launch_processing_job
 from core.models import Backtest, GameScenario, ProcessingJob, Scenario
 
 
@@ -133,3 +135,61 @@ class GameScenarioLaunchGuardTests(TestCase):
             ProcessingJob.objects.filter(job_type=ProcessingJob.JobType.RUN_GAME, game_scenario=self.game).count(),
             1,
         )
+
+
+class GlobalSingleActiveJobGuardTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="single-queue", password="secret123")
+        self.scenario = Scenario.objects.create(name="Scenario Single Queue")
+        self.backtest = Backtest.objects.create(name="BT Single Queue", scenario=self.scenario)
+
+    def test_launch_processing_job_blocks_when_any_active_job_exists(self):
+        active = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.RUNNING,
+            scenario=self.scenario,
+        )
+        task = Mock()
+
+        outcome = launch_processing_job(
+            task=task,
+            job_type=ProcessingJob.JobType.RUN_BACKTEST,
+            backtest=self.backtest,
+            scenario=self.scenario,
+            created_by=self.user,
+            message="En attente d'exécution",
+            task_kwargs={"backtest_id": self.backtest.id, "user_id": self.user.id},
+        )
+
+        self.assertIsInstance(outcome.dispatch_error, ActiveJobConflictError)
+        self.assertEqual(outcome.job.status, ProcessingJob.Status.FAILED)
+        self.assertIn(f"job #{active.id}", outcome.job.error)
+        task.apply_async.assert_not_called()
+
+    def test_launch_processing_job_recovers_obvious_stale_active_job_before_launching(self):
+        ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.RUNNING,
+            scenario=self.scenario,
+            started_at=timezone.now() - timedelta(minutes=10),
+            heartbeat_at=timezone.now() - timedelta(minutes=10),
+        )
+        task = Mock()
+        task.apply_async.return_value = SimpleNamespace(id="celery-task-789")
+
+        with patch("core.job_launch.transaction.on_commit", side_effect=lambda fn: fn()):
+            outcome = launch_processing_job(
+                task=task,
+                job_type=ProcessingJob.JobType.RUN_BACKTEST,
+                backtest=self.backtest,
+                scenario=self.scenario,
+                created_by=self.user,
+                message="En attente d'exécution",
+                task_kwargs={"backtest_id": self.backtest.id, "user_id": self.user.id},
+            )
+
+        self.assertIsNone(outcome.dispatch_error)
+        outcome.job.refresh_from_db()
+        self.assertEqual(outcome.job.status, ProcessingJob.Status.PENDING)
+        self.assertEqual(ProcessingJob.objects.filter(status=ProcessingJob.Status.RUNNING).count(), 0)
+

@@ -374,7 +374,7 @@ class RequestedStopRecoveryTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.CANCELLED)
         self.assertEqual(result["cancelled"], 1)
-        self.assertEqual(result["requested_stop_minutes"], 3)
+        self.assertEqual(result["requested_stop_minutes"], 1)
 
     def test_cleanup_task_marks_kill_requested_running_job_killed_quickly(self):
         job = ProcessingJob.objects.create(
@@ -391,3 +391,34 @@ class RequestedStopRecoveryTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.KILLED)
         self.assertEqual(result["killed"], 1)
+
+
+class SingleQueueRecoveryThresholdTests(TestCase):
+    def test_cleanup_task_recovers_running_job_with_old_heartbeat_quickly(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.RUNNING,
+            started_at=timezone.now() - timedelta(minutes=5),
+            heartbeat_at=timezone.now() - timedelta(minutes=3),
+        )
+
+        result = core_tasks.cleanup_stale_processing_jobs_task()
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["heartbeat_minutes"], 2)
+
+    def test_cleanup_task_recovers_pending_job_quickly(self):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_BACKTEST,
+            status=ProcessingJob.Status.PENDING,
+        )
+        ProcessingJob.objects.filter(id=job.id).update(created_at=timezone.now() - timedelta(minutes=11))
+
+        result = core_tasks.cleanup_stale_processing_jobs_task()
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertEqual(result["failed"], 1)
+        self.assertEqual(result["pending_minutes"], 10)

@@ -1356,15 +1356,15 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                     "RATIO_IN_POSITION": None if tradable_days == 0 else str((Decimal(bmd_days) / Decimal(tradable_days)) * Decimal("100")),
                     "cash_ticker_end": str(st["cash_ticker"]),
                     "PNL_AMOUNT": str(pnl_amount_total),
-                    "TOTAL_GAIN_AMOUNT": amount_stats.get("TOTAL_GAIN_AMOUNT"),
-                    "TOTAL_LOSS_AMOUNT": amount_stats.get("TOTAL_LOSS_AMOUNT"),
+                    "TOTAL_GAIN_AMOUNT": str(total_gain_amount),
+                    "TOTAL_LOSS_AMOUNT": str(total_loss_amount),
                     "AVG_TRADE_AMOUNT": None if avg_trade_amount is None else str(avg_trade_amount),
-                    "PROFIT_FACTOR_AMOUNT": amount_stats.get("PROFIT_FACTOR_AMOUNT"),
+                    "PROFIT_FACTOR_AMOUNT": None if profit_factor_amount is None else str(profit_factor_amount),
                     "MAX_GAIN_AMOUNT": None if st.get("max_gain_amount") is None else str(st.get("max_gain_amount")),
                     "MAX_LOSS_AMOUNT": None if st.get("max_loss_amount") is None else str(st.get("max_loss_amount")),
                     "WIN_TRADES": win_trades,
                     "LOSS_TRADES": loss_trades,
-                    "WIN_RATE_AMOUNT": amount_stats.get("WIN_RATE_AMOUNT"),
+                    "WIN_RATE_AMOUNT": None if win_rate_amount is None else str(win_rate_amount),
                     "FINAL_EQUITY": str(Decimal(st.get("cash_ticker") or 0) + Decimal(st.get("bank") or 0)),
                 },
                 "daily": st["daily_rows"],
@@ -1395,22 +1395,148 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             if inv > 0:
                 nb_days_invested += 1
 
-    played_stats = aggregate_played_ticker_stats(results.get("tickers", {}))
+    # Portfolio-level synthesis across played tickers only.
+    # A ticker is considered "played" if at least one line has N > 0.
+    # If several signal lines exist for the same ticker, we first average
+    # the played-line metrics ticker by ticker, then aggregate globally.
+    played_ticker_ratios: list[Decimal] = []
+    played_ticker_bmds: list[Decimal] = []
+    positive_ticker_count = 0
+    positive_ticker_bmds: list[Decimal] = []
+    positive_ticker_ratios: list[Decimal] = []
+    non_positive_ticker_count = 0
+    non_positive_ticker_bmds: list[Decimal] = []
+    non_positive_ticker_ratios: list[Decimal] = []
 
-    bt_return = compute_total_return(invested_end, equity_end)
-    bmj_return = compute_daily_average(bt_return, nb_days_invested)
+    for _ticker, tentry in results.get("tickers", {}).items():
+        ticker_ratios: list[Decimal] = []
+        ticker_bmds: list[Decimal] = []
+        for line in (tentry.get("lines") or []):
+            final = line.get("final") or {}
+            try:
+                n_trades = int(final.get("N") or 0)
+            except Exception:
+                n_trades = 0
+            if n_trades <= 0:
+                continue
+
+            ratio_raw = final.get("RATIO_IN_POSITION")
+            if ratio_raw not in (None, ""):
+                try:
+                    ticker_ratios.append(Decimal(str(ratio_raw)))
+                except Exception:
+                    pass
+
+            bmd_raw = final.get("BMD")
+            if bmd_raw not in (None, ""):
+                try:
+                    ticker_bmds.append(Decimal(str(bmd_raw)))
+                except Exception:
+                    pass
+
+        if not ticker_ratios and not ticker_bmds:
+            continue
+
+        ticker_avg_ratio = None
+        if ticker_ratios:
+            ticker_avg_ratio = sum(ticker_ratios) / Decimal(len(ticker_ratios))
+            played_ticker_ratios.append(ticker_avg_ratio)
+
+        ticker_avg_bmd = None
+        if ticker_bmds:
+            ticker_avg_bmd = sum(ticker_bmds) / Decimal(len(ticker_bmds))
+            played_ticker_bmds.append(ticker_avg_bmd)
+
+        # Split played tickers into BMD > 0 vs BMD <= 0 (or null).
+        # If BMD is missing for a played ticker, classify it in the non-positive bucket.
+        if ticker_avg_bmd is not None and ticker_avg_bmd > 0:
+            positive_ticker_count += 1
+            positive_ticker_bmds.append(ticker_avg_bmd)
+            if ticker_avg_ratio is not None:
+                positive_ticker_ratios.append(ticker_avg_ratio)
+        else:
+            non_positive_ticker_count += 1
+            if ticker_avg_bmd is not None:
+                non_positive_ticker_bmds.append(ticker_avg_bmd)
+            if ticker_avg_ratio is not None:
+                non_positive_ticker_ratios.append(ticker_avg_ratio)
+
+    avg_ratio_in_position_played = None
+    if played_ticker_ratios:
+        avg_ratio_in_position_played = sum(played_ticker_ratios) / Decimal(len(played_ticker_ratios))
+
+    avg_bmd_positive = None
+    if positive_ticker_bmds:
+        avg_bmd_positive = sum(positive_ticker_bmds) / Decimal(len(positive_ticker_bmds))
+
+    avg_ratio_positive = None
+    if positive_ticker_ratios:
+        avg_ratio_positive = sum(positive_ticker_ratios) / Decimal(len(positive_ticker_ratios))
+
+    avg_bmd_non_positive = None
+    if non_positive_ticker_bmds:
+        avg_bmd_non_positive = sum(non_positive_ticker_bmds) / Decimal(len(non_positive_ticker_bmds))
+
+    avg_ratio_non_positive = None
+    if non_positive_ticker_ratios:
+        avg_ratio_non_positive = sum(non_positive_ticker_ratios) / Decimal(len(non_positive_ticker_ratios))
+
+    bt_return = None
+    bmj_return = None
+    if invested_end > 0:
+        bt_return = (equity_end - invested_end) / invested_end
+        if nb_days_invested > 0:
+            bmj_return = bt_return / Decimal(nb_days_invested)
 
     portfolio_capital_base = (CP_raw if not CP_infinite else invested_total)
     total_pnl_amount = equity_end - portfolio_capital_base
-    amount_stats = aggregate_amount_stats_from_ticker_entries(results.get("tickers", {}))
-
-    total_gain_amount = Decimal(str(amount_stats.get("TOTAL_GAIN_AMOUNT") or 0))
-    total_loss_amount = Decimal(str(amount_stats.get("TOTAL_LOSS_AMOUNT") or 0))
-    total_trades_amount = int(amount_stats.get("TOTAL_TRADES") or 0)
-    win_trades_amount = int(amount_stats.get("WIN_TRADES") or 0)
-    loss_trades_amount = int(amount_stats.get("LOSS_TRADES") or 0)
-    max_gain_amount = amount_stats.get("MAX_GAIN_AMOUNT")
-    max_loss_amount = amount_stats.get("MAX_LOSS_AMOUNT")
+    total_gain_amount = Decimal("0")
+    total_loss_amount = Decimal("0")
+    total_trades_amount = 0
+    win_trades_amount = 0
+    loss_trades_amount = 0
+    max_gain_amount = None
+    max_loss_amount = None
+    for _ticker, tentry in results.get("tickers", {}).items():
+        for line in (tentry.get("lines") or []):
+            final = line.get("final") or {}
+            try:
+                line_gain = Decimal(str(final.get("TOTAL_GAIN_AMOUNT") or 0))
+            except Exception:
+                line_gain = Decimal("0")
+            try:
+                line_loss = Decimal(str(final.get("TOTAL_LOSS_AMOUNT") or 0))
+            except Exception:
+                line_loss = Decimal("0")
+            try:
+                line_win = int(final.get("WIN_TRADES") or 0)
+            except Exception:
+                line_win = 0
+            try:
+                line_loss_n = int(final.get("LOSS_TRADES") or 0)
+            except Exception:
+                line_loss_n = 0
+            line_max_gain = final.get("MAX_GAIN_AMOUNT")
+            line_max_loss = final.get("MAX_LOSS_AMOUNT")
+            total_gain_amount += line_gain
+            total_loss_amount += line_loss
+            win_trades_amount += line_win
+            loss_trades_amount += line_loss_n
+            total_trades_amount += (line_win + line_loss_n)
+            if line_max_gain not in (None, ""):
+                try:
+                    d = Decimal(str(line_max_gain))
+                    if max_gain_amount is None or d > max_gain_amount:
+                        max_gain_amount = d
+                except Exception:
+                    pass
+            if line_max_loss not in (None, ""):
+                try:
+                    d = Decimal(str(line_max_loss))
+                    if max_loss_amount is None or d < max_loss_amount:
+                        max_loss_amount = d
+                except Exception:
+                    pass
 
     avg_trade_amount = None if total_trades_amount == 0 else (total_pnl_amount / Decimal(total_trades_amount))
     profit_factor_amount = None
@@ -1426,27 +1552,27 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             "BT": None if bt_return is None else str(bt_return),
             "BMJ": None if bmj_return is None else str(bmj_return),
             "NB_DAYS": nb_days_invested,
-            "AVG_RATIO_IN_POSITION_PLAYED": played_stats.get("AVG_RATIO_IN_POSITION_PLAYED"),
-            "NB_PLAYED_TICKERS": played_stats.get("NB_PLAYED_TICKERS"),
-            "POSITIVE_BMD_TICKERS": played_stats.get("POSITIVE_BMD_TICKERS"),
-            "POSITIVE_BMD_AVG_GAIN": played_stats.get("POSITIVE_BMD_AVG_GAIN"),
-            "POSITIVE_BMD_AVG_RATIO_IN_POSITION": played_stats.get("POSITIVE_BMD_AVG_RATIO_IN_POSITION"),
-            "NON_POSITIVE_BMD_TICKERS": played_stats.get("NON_POSITIVE_BMD_TICKERS"),
-            "NON_POSITIVE_BMD_AVG_GAIN": played_stats.get("NON_POSITIVE_BMD_AVG_GAIN"),
-            "NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION": played_stats.get("NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION"),
+            "AVG_RATIO_IN_POSITION_PLAYED": None if avg_ratio_in_position_played is None else str(avg_ratio_in_position_played),
+            "NB_PLAYED_TICKERS": len(played_ticker_ratios),
+            "POSITIVE_BMD_TICKERS": positive_ticker_count,
+            "POSITIVE_BMD_AVG_GAIN": None if avg_bmd_positive is None else str(avg_bmd_positive),
+            "POSITIVE_BMD_AVG_RATIO_IN_POSITION": None if avg_ratio_positive is None else str(avg_ratio_positive),
+            "NON_POSITIVE_BMD_TICKERS": non_positive_ticker_count,
+            "NON_POSITIVE_BMD_AVG_GAIN": None if avg_bmd_non_positive is None else str(avg_bmd_non_positive),
+            "NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION": None if avg_ratio_non_positive is None else str(avg_ratio_non_positive),
             "max_drawdown": str(max_drawdown),
             "TOTAL_PNL_AMOUNT": str(total_pnl_amount),
             "FINAL_EQUITY": str(equity_end),
-            "TOTAL_GAIN_AMOUNT": amount_stats.get("TOTAL_GAIN_AMOUNT"),
-            "TOTAL_LOSS_AMOUNT": amount_stats.get("TOTAL_LOSS_AMOUNT"),
+            "TOTAL_GAIN_AMOUNT": str(total_gain_amount),
+            "TOTAL_LOSS_AMOUNT": str(total_loss_amount),
             "AVG_TRADE_AMOUNT": None if avg_trade_amount is None else str(avg_trade_amount),
-            "PROFIT_FACTOR_AMOUNT": amount_stats.get("PROFIT_FACTOR_AMOUNT"),
-            "MAX_GAIN_AMOUNT": amount_stats.get("MAX_GAIN_AMOUNT"),
-            "MAX_LOSS_AMOUNT": amount_stats.get("MAX_LOSS_AMOUNT"),
-            "TOTAL_TRADES": amount_stats.get("TOTAL_TRADES"),
-            "WIN_TRADES": amount_stats.get("WIN_TRADES"),
-            "LOSS_TRADES": amount_stats.get("LOSS_TRADES"),
-            "WIN_RATE_AMOUNT": amount_stats.get("WIN_RATE_AMOUNT"),
+            "PROFIT_FACTOR_AMOUNT": None if profit_factor_amount is None else str(profit_factor_amount),
+            "MAX_GAIN_AMOUNT": None if max_gain_amount is None else str(max_gain_amount),
+            "MAX_LOSS_AMOUNT": None if max_loss_amount is None else str(max_loss_amount),
+            "TOTAL_TRADES": total_trades_amount,
+            "WIN_TRADES": win_trades_amount,
+            "LOSS_TRADES": loss_trades_amount,
+            "WIN_RATE_AMOUNT": None if win_rate_amount is None else str(win_rate_amount),
             "max_drawdown_amount": str(max_drawdown_amount),
         },
         "daily": portfolio_daily,

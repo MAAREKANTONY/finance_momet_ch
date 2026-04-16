@@ -10,7 +10,6 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
 from core.models import Alert, Backtest, DailyBar, DailyMetric, GameScenario, Scenario, Symbol
-from core.kpi.common import aggregate_amount_stats_from_ticker_entries, aggregate_played_ticker_stats
 from core.services.backtesting.engine import (
     _apply_signal_state_transitions,
     _match_line_with_global_filter,
@@ -410,68 +409,3 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(row["ticker"], self.symbol.ticker)
         self.assertTrue(row["ok"], row)
         self.assertIn(row["RATIO_IN_POSITION"], {"40", "40.0"})
-        self.assertEqual(game.today_results["kpi_common"]["NB_PLAYED_TICKERS"], 1)
-
-
-class SharedKpiHelpersTests(TestCase):
-    def test_aggregate_played_ticker_stats_counts_only_played_tickers(self):
-        entries = {
-            "AAA": {
-                "lines": [
-                    {"final": {"N": 2, "RATIO_IN_POSITION": "40", "BMD": "0.10"}},
-                    {"final": {"N": 1, "RATIO_IN_POSITION": "20", "BMD": "-0.02"}},
-                ]
-            },
-            "BBB": {
-                "lines": [
-                    {"final": {"N": 0, "RATIO_IN_POSITION": "90", "BMD": "0.50"}},
-                ]
-            },
-            "CCC": {
-                "lines": [
-                    {"final": {"N": 1, "RATIO_IN_POSITION": "60", "BMD": "0.30"}},
-                ]
-            },
-        }
-
-        stats = aggregate_played_ticker_stats(entries)
-
-        self.assertEqual(stats["NB_PLAYED_TICKERS"], 2)
-        self.assertEqual(stats["POSITIVE_BMD_TICKERS"], 2)
-        self.assertEqual(stats["NON_POSITIVE_BMD_TICKERS"], 0)
-        self.assertEqual(Decimal(stats["AVG_RATIO_IN_POSITION_PLAYED"]), Decimal("45"))
-
-    def test_aggregate_amount_stats_from_ticker_entries_sums_amount_fields(self):
-        entries = {
-            "AAA": {
-                "lines": [
-                    {"final": {
-                        "TOTAL_GAIN_AMOUNT": "15",
-                        "TOTAL_LOSS_AMOUNT": "-5",
-                        "WIN_TRADES": 2,
-                        "LOSS_TRADES": 1,
-                        "MAX_GAIN_AMOUNT": "10",
-                        "MAX_LOSS_AMOUNT": "-5",
-                    }},
-                    {"final": {
-                        "TOTAL_GAIN_AMOUNT": "7",
-                        "TOTAL_LOSS_AMOUNT": "-2",
-                        "WIN_TRADES": 1,
-                        "LOSS_TRADES": 1,
-                        "MAX_GAIN_AMOUNT": "7",
-                        "MAX_LOSS_AMOUNT": "-2",
-                    }},
-                ]
-            }
-        }
-
-        stats = aggregate_amount_stats_from_ticker_entries(entries)
-
-        self.assertEqual(Decimal(stats["TOTAL_GAIN_AMOUNT"]), Decimal("22"))
-        self.assertEqual(Decimal(stats["TOTAL_LOSS_AMOUNT"]), Decimal("-7"))
-        self.assertEqual(stats["TOTAL_TRADES"], 5)
-        self.assertEqual(stats["WIN_TRADES"], 3)
-        self.assertEqual(stats["LOSS_TRADES"], 2)
-        self.assertEqual(Decimal(stats["WIN_RATE_AMOUNT"]), Decimal("60"))
-        self.assertEqual(Decimal(stats["PROFIT_FACTOR_AMOUNT"]), Decimal("22") / Decimal("7"))
-

@@ -7,7 +7,6 @@ from django.db import transaction
 from django.utils import timezone
 
 from core.job_tracking import JobCancelled, JobCheckpointPulse, JobKilled
-from core.kpi.common import aggregate_played_ticker_stats, compute_presence_ratio
 from core.models import Backtest, DailyBar, DailyMetric, GameScenario, Scenario, Symbol, ProcessingJob
 from core.services.backtesting.engine import run_backtest_kpi_only
 from core.services.metrics_depth import check_metrics_depth
@@ -197,8 +196,15 @@ def run_game_scenario_now(
 
         td = int(best_final.get("TRADABLE_DAYS") or 0) if isinstance(best_final, dict) else 0
         ip = int(best_final.get("TRADABLE_DAYS_IN_POSITION_CLOSED") or 0) if isinstance(best_final, dict) else 0
-        ratio_ip_dec = compute_presence_ratio(ip, td)
-        ratio_ip = None if ratio_ip_dec is None else str(ratio_ip_dec)
+        ratio_ip = None
+        ratio_ip_dec = None
+        if td > 0:
+            try:
+                ratio_ip_dec = (Decimal(ip) / Decimal(td)) * Decimal("100")
+                ratio_ip = str(ratio_ip_dec)
+            except Exception:
+                ratio_ip = None
+                ratio_ip_dec = None
 
         symbol_id = symbol_map.get(ticker)
         avg_slope = _compute_avg_slope_for_ticker(scenario_id=scenario.id, symbol_id=symbol_id, end_d=end_d) if symbol_id else None
@@ -238,7 +244,6 @@ def run_game_scenario_now(
         "npente": npente,
         "slope_threshold": str(game.slope_threshold),
         "presence_threshold_pct": str(game.presence_threshold_pct),
-        "kpi_common": aggregate_played_ticker_stats(out),
     }
 
     with transaction.atomic():

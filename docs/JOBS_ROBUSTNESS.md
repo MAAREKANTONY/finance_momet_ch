@@ -86,3 +86,19 @@ Recovery rules:
 - stale `PENDING` without stop request => `FAILED`
 
 The command also re-syncs related business objects so a Backtest is not left stuck in `PENDING`/`RUNNING` after the job becomes terminal.
+
+
+## Single queue mode (V8.0.03)
+
+The application now enforces a deliberately strict mode: **one single active tracked job at a time** across the whole app.
+
+Consequences:
+- if a `PENDING` or `RUNNING` tracked job already exists, every new tracked launch is rejected immediately
+- before rejecting, the launcher runs an inline stale-job recovery pass to clear obvious zombies
+- stale thresholds are intentionally short by default because long jobs must emit heartbeats frequently
+
+Default thresholds:
+- running heartbeat stale: 2 minutes
+- running without heartbeat stale: 3 minutes
+- pending stale: 10 minutes
+- requested stop stale: 1 minute
