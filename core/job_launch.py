@@ -8,7 +8,7 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
-from .models import ProcessingJob
+from .models import JobExecutionGate, ProcessingJob
 
 
 def find_active_processing_job(*, job_type: str | None = None, game_scenario=None, backtest=None) -> ProcessingJob | None:
@@ -117,46 +117,49 @@ def launch_processing_job(
     payload = dict(task_kwargs or {})
     outcome: dict[str, Any] = {}
 
-    _recover_stale_active_jobs()
-    active_job = find_active_processing_job()
-    if active_job is not None:
-        return _build_conflict_outcome(
+    with transaction.atomic():
+        JobExecutionGate.objects.select_for_update().get_or_create(id=1)
+
+        _recover_stale_active_jobs()
+        active_job = find_active_processing_job()
+        if active_job is not None:
+            return _build_conflict_outcome(
+                job_type=job_type,
+                message=message,
+                created_by=created_by,
+                backtest=backtest,
+                scenario=scenario,
+                game_scenario=game_scenario,
+                active_job=active_job,
+            )
+
+        job = ProcessingJob.objects.create(
             job_type=job_type,
-            message=message,
-            created_by=created_by,
+            status=ProcessingJob.Status.PENDING,
             backtest=backtest,
             scenario=scenario,
             game_scenario=game_scenario,
-            active_job=active_job,
+            created_by=created_by,
+            message=message,
         )
 
-    job = ProcessingJob.objects.create(
-        job_type=job_type,
-        status=ProcessingJob.Status.PENDING,
-        backtest=backtest,
-        scenario=scenario,
-        game_scenario=game_scenario,
-        created_by=created_by,
-        message=message,
-    )
+        def _enqueue() -> None:
+            try:
+                async_result = task.apply_async(kwargs={**payload, "job_id": job.id})
+            except Exception as exc:  # pragma: no cover - exercised via tests with mock side effects
+                ProcessingJob.objects.filter(id=job.id).update(
+                    status=ProcessingJob.Status.FAILED,
+                    error=f"Task dispatch failed: {exc}",
+                    finished_at=timezone.now(),
+                )
+                outcome["dispatch_error"] = exc
+                return
 
-    def _enqueue() -> None:
-        try:
-            async_result = task.apply_async(kwargs={**payload, "job_id": job.id})
-        except Exception as exc:  # pragma: no cover - exercised via tests with mock side effects
-            ProcessingJob.objects.filter(id=job.id).update(
-                status=ProcessingJob.Status.FAILED,
-                error=f"Task dispatch failed: {exc}",
-                finished_at=timezone.now(),
-            )
-            outcome["dispatch_error"] = exc
-            return
+            task_id = (getattr(async_result, "id", "") or "")[:64]
+            ProcessingJob.objects.filter(id=job.id).update(task_id=task_id)
+            outcome["task_id"] = task_id
 
-        task_id = (getattr(async_result, "id", "") or "")[:64]
-        ProcessingJob.objects.filter(id=job.id).update(task_id=task_id)
-        outcome["task_id"] = task_id
-
-    transaction.on_commit(_enqueue)
+        transaction.on_commit(_enqueue)
 
     job.refresh_from_db()
     return JobLaunchOutcome(job=job, dispatch_error=outcome.get("dispatch_error"))

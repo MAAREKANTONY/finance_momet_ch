@@ -783,6 +783,26 @@ class AlertDefinition(models.Model):
 # ---------------------------
 
 
+class JobExecutionGate(models.Model):
+    """Singleton row used to serialize tracked job launches.
+
+    With PostgreSQL in production, ``select_for_update()`` on this row gives us a
+    simple and explicit cross-process mutex. This prevents two concurrent web
+    requests from both deciding that the queue is empty and creating duplicate
+    active ``ProcessingJob`` rows.
+    """
+
+    updated_at = models.DateTimeField(auto_now=True)
+
+    @classmethod
+    def get_solo(cls):
+        obj, _ = cls.objects.get_or_create(id=1)
+        return obj
+
+    def __str__(self) -> str:
+        return f"JobExecutionGate#{self.pk or 1}"
+
+
 class ProcessingJob(models.Model):
     """Track long-running background jobs (Celery tasks)."""
 

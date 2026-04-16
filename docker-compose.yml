@@ -56,7 +56,9 @@ services:
         condition: service_started
     volumes:
       - ./data:/data
-    command: celery -A stockalert worker -l info
+    healthcheck:
+      disable: true
+    command: celery -A stockalert worker -l info --pool=solo --concurrency=1
 
   celery-beat:
     build: .

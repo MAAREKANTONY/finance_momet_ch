@@ -1,0 +1,59 @@
+V8.0.04 — Stabilisation Celery / jobs tracked
+
+Objectif unique de cette itération
+- stopper les redémarrages destructeurs du worker Celery liés au healthcheck
+- remettre en cohérence les ProcessingJob après restart worker
+- instrumenter finement les full recompute
+- renforcer la garantie « un seul job tracked à la fois »
+
+Modifications principales
+1) Docker / Celery
+- docker-compose.yml et docker-compose.prod.yml : service celery explicite en solo/concurrency=1
+- désactivation explicite du healthcheck du service celery dans le repo pour neutraliser un HEALTHCHECK hérité ou injecté côté image/deploiement
+
+2) Configuration Celery explicite
+- ajout des réglages suivants dans settings.py + .env.example :
+  - CELERY_TASK_ACKS_LATE=0
+  - CELERY_TASK_REJECT_ON_WORKER_LOST=0
+  - CELERY_WORKER_PREFETCH_MULTIPLIER=1
+  - CELERY_WORKER_CONCURRENCY=1
+  - CELERY_TASK_TRACK_STARTED=1
+  - CELERY_BROKER_CONNECTION_RETRY_ON_STARTUP=1
+- objectif : rendre le comportement du worker déterministe et éviter les « replays cachés » après perte worker
+
+3) Recovery immédiate après restart worker
+- ajout de recover_active_jobs_after_worker_restart() dans core/job_recovery.py
+- hook Celery worker_ready dans stockalert/celery.py
+- au redémarrage du worker, tout ProcessingJob encore PENDING/RUNNING est reclassé immédiatement en FAILED avec message explicite « orphan active job after Celery worker restart »
+- resynchronisation métier associée (Backtest/GameScenario)
+
+4) Garantie stricte : un seul job tracked à la fois
+- ajout du modèle JobExecutionGate (singleton DB)
+- launch_processing_job() sérialisé dans une transaction avec select_for_update() sur ce verrou
+- évite le race condition où deux requêtes web concurrentes pouvaient créer deux jobs actifs si la queue semblait vide au même instant
+
+5) Instrumentation détaillée full recompute
+- logs structurés ajoutés dans core/tasks.py pour compute_metrics_job_task / _compute_metrics_for_scenario
+- logs start/done par scénario
+- logs start/done par symbole
+- logs de progression date par date (throttlés)
+- ajout du RSS mémoire process estimé dans les logs quand disponible
+- logs d’erreur symbole plus explicites
+
+6) Version
+- APP_VERSION par défaut passée à V8.0.04
+
+Nouveaux fichiers / migrations
+- core/migrations/0037_jobexecutiongate.py
+- V8_0_04_CHANGELOG.txt
+
+Points importants / transparence
+- les logs fournis prouvent très fortement que le worker était tué suite à l’échec du inspect ping (exitCode=69 puis SIGTERM/SIGKILL → 137), pas à cause d’un simple bug Python applicatif
+- le repo livré ne montrait pas de healthcheck celery dans docker-compose, ce qui suggère fortement soit un HEALTHCHECK hérité de l’image réellement déployée, soit un compose déployé différent du zip, soit une supervision externe qui s’appuie sur inspect ping
+- cette itération neutralise le healthcheck côté repo, mais il faudra vérifier sur le serveur réel que le conteneur lancé correspond bien à cette configuration
+
+Validation locale réalisée ici
+- compilation Python OK sur core/ + stockalert/
+
+Validation non exécutée ici
+- tests Django non lancés dans cet environnement car les dépendances projet n’étaient pas installables telles quelles sur le runtime fourni (problème de build package natif côté pip)
