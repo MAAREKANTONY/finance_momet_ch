@@ -1,0 +1,61 @@
+STOCKALERT — V8.0.00
+
+Objectif du sprint
+- Ouvrir le chantier KPI Backtest + Games sans grosse refacto risquée.
+- Corriger les incohérences de synthèse portefeuille.
+- Regrouper le calcul des KPI communs Backtest / Games dans des helpers uniques.
+
+Revue de code préalable
+- La logique KPI était dupliquée entre run_backtest() et run_backtest_kpi_only().
+- Les finals par ligne étaient calculés en deux endroits avec des écarts de structure.
+- Le KPI portefeuille BT utilisait invested_end comme base finale, ce qui pouvait donner un retour incohérent ou nul quand toutes les positions étaient clôturées en fin de période.
+- NB_PLAYED_TICKERS était dérivé indirectement d'une liste de ratios, au lieu d'une source unique basée sur les trades réellement joués.
+- Le runner Games recalculait encore une partie des KPI déjà disponibles dans les finals de l'engine.
+
+Corrections apportées
+1. Mutualisation sûre des KPI
+- Ajout de _update_trade_amount_stats(...)
+- Ajout de _build_line_final_from_state(...)
+- Ajout de _aggregate_played_ticker_groups(...)
+- Ajout de _compute_portfolio_kpis(...)
+
+2. Backtest — synthèse portefeuille fiabilisée
+- Le retour portefeuille BT est maintenant calculé à partir de la vraie base de capital du portefeuille:
+  - capital_total si CP limité
+  - capital total alloué si CP infini
+- On conserve invested_end à titre informatif, mais il n'est plus utilisé comme dénominateur de BT.
+- NB_PLAYED_TICKERS est maintenant compté à partir des lignes ayant au moins un trade réel.
+
+3. Games — alignement avec Backtest
+- run_backtest_kpi_only() produit désormais des finals alignés sur ceux du backtest complet.
+- Les stats monétaires de trade sont aussi suivies dans le mode KPI-only.
+- Le runner Game réutilise directement les KPI finals partagés au lieu de recalculer partiellement certains champs.
+- Les lignes today_results embarquent maintenant aussi N, BT, BMJ, BMD, FINAL_EQUITY en plus des champs déjà présents.
+
+4. Documentation interne du modèle
+- Commentaire de BacktestPortfolioKPI clarifié pour refléter la nouvelle base de calcul de bt_return.
+
+Tests ajoutés / mis à jour
+- test_backtest_portfolio_return_uses_capital_base_after_positions_are_closed
+  Vérifie que BT reste correct même quand invested_end=0 après clôture des positions.
+- test_game_runner_updates_snapshot_and_interprets_thresholds_in_percent
+  Étendu pour vérifier la remontée de KPI communs dans today_results.
+
+Validation réalisée dans cet environnement
+- py_compile sur les fichiers modifiés: OK
+- python tools/run_quality_gate.py --skip-tests: OK
+  - compileall: OK
+  - architecture audit: OK
+
+Limite de validation locale
+- Les tests Django manage.py n'ont pas pu être exécutés dans ce conteneur car Django n'y est pas installé.
+- La livraison reste conçue pour être validée chez toi avec le quality gate complet habituel.
+
+Migration
+- Aucune migration nécessaire.
+
+Fichiers principaux modifiés
+- core/services/backtesting/engine.py
+- core/services/game_scenarios/runner.py
+- core/tests/test_engine_and_metrics.py
+- core/models.py
