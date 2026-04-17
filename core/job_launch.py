@@ -8,7 +8,12 @@ from django.conf import settings
 from django.db import transaction
 from django.utils import timezone
 
+import logging
+
+from .job_broker import broker_queue_snapshot
 from .models import ProcessingJob
+
+logger = logging.getLogger(__name__)
 
 
 def find_active_processing_job(*, job_type: str | None = None, game_scenario=None, backtest=None) -> ProcessingJob | None:
@@ -141,6 +146,15 @@ def launch_processing_job(
     )
 
     def _enqueue() -> None:
+        before_snapshot = broker_queue_snapshot(sample_limit=2)
+        logger.warning(
+            "[job-launch] enqueue start job_id=%s job_type=%s queue=%s queue_len_before=%s samples=%s",
+            job.id,
+            job_type,
+            before_snapshot.queue_name,
+            before_snapshot.length,
+            before_snapshot.samples,
+        )
         try:
             async_result = task.apply_async(kwargs={**payload, "job_id": job.id})
         except Exception as exc:  # pragma: no cover - exercised via tests with mock side effects
@@ -149,11 +163,22 @@ def launch_processing_job(
                 error=f"Task dispatch failed: {exc}",
                 finished_at=timezone.now(),
             )
+            logger.exception("[job-launch] enqueue failed job_id=%s job_type=%s", job.id, job_type)
             outcome["dispatch_error"] = exc
             return
 
         task_id = (getattr(async_result, "id", "") or "")[:64]
         ProcessingJob.objects.filter(id=job.id).update(task_id=task_id)
+        after_snapshot = broker_queue_snapshot(sample_limit=2)
+        logger.warning(
+            "[job-launch] enqueue success job_id=%s job_type=%s task_id=%s queue=%s queue_len_after=%s samples=%s",
+            job.id,
+            job_type,
+            task_id,
+            after_snapshot.queue_name,
+            after_snapshot.length,
+            after_snapshot.samples,
+        )
         outcome["task_id"] = task_id
 
     transaction.on_commit(_enqueue)

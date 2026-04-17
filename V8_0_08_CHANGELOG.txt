@@ -1,0 +1,22 @@
+V8.0.08 — Job maintenance UI
+
+Objectif
+- Ajouter des actions de maintenance simples et sûres directement sur la page /jobs pour aider à traiter les blocages sans accès shell.
+
+Contenu
+- Nouveau panneau "Maintenance jobs" sur /jobs.
+- Réservé aux admins (is_staff / is_superuser).
+- Affichage des jobs actifs suivis (PENDING / RUNNING) à côté de l'état du broker Redis.
+- Nouvelle action UI: Recover stale jobs.
+- Nouvelle action UI: Purge broker (confirmation texte PURGE requise).
+- Nouvelle action UI: Recover + purge (confirmation texte PURGE requise).
+- Aucune action Docker / système exposée dans l'interface.
+- Aucune suppression des historiques jobs en base.
+
+Sécurité / périmètre
+- POST only.
+- Confirmation forte pour les actions destructrices sur Redis.
+- Réutilisation des primitives déjà introduites (recover_jobs, purge_broker_queue).
+
+Tests
+- Ajout de tests pour les actions de maintenance côté UI.

@@ -1,0 +1,45 @@
+V8.0.07 — Hardening final jobs / broker visibility
+
+Objectif
+- Ajouter un dernier sprint SAFE de durcissement jobs avant reprise du chantier KPI.
+- Mieux voir le broker Redis pour détecter immédiatement un backlog de tâches zombies.
+- Fournir une commande opérateur propre pour inspecter / purger la queue et relancer la recovery tracked.
+
+Modifications
+1) Nouveau module core/job_broker.py
+- lecture de la longueur de queue Redis
+- échantillon des premiers messages de la queue
+- purge explicite de la queue broker
+- snapshot robuste avec gestion d'erreur
+
+2) Nouveau management command: sanitize_job_queue
+- inspection simple:
+  python manage.py sanitize_job_queue
+- purge explicite:
+  python manage.py sanitize_job_queue --purge-broker --force
+- purge + recovery tracked:
+  python manage.py sanitize_job_queue --purge-broker --force --recover
+
+3) Instrumentation supplémentaire du launch tracked
+- logs enqueue start / success / failure dans core/job_launch.py
+- longueur de queue avant/après publication de la tâche
+- échantillons des premiers messages de queue dans les logs
+
+4) Jobs page /jobs
+- affichage du statut du broker Redis
+- longueur actuelle de la queue
+- warning visuel si backlog > 5 messages
+- exemples des messages en tête de queue
+
+5) Documentation
+- docs/JOBS_ROBUSTNESS.md enrichi avec runbook broker/jobs
+
+Tests ajoutés
+- commande sanitize_job_queue en mode inspection
+- commande sanitize_job_queue en mode purge explicite
+- warning backlog visible sur /jobs
+
+Notes d'exploitation
+- Cette itération ne change pas la logique métier KPI.
+- Cette itération ne réintroduit pas de scheduling legacy.
+- But: rendre visible et opérable la divergence broker Redis / ProcessingJob.

@@ -37,7 +37,53 @@
     <button class="btn" type="submit">Filtrer</button>
     <a class="btn" href="{% url 'jobs_page' %}">Reset</a>
   </form>
-</div></div>
+</div>
+  {% if broker_snapshot %}
+    <div class="card" style="margin-top:12px; padding:12px; border:1px solid #ddd;">
+      <div><strong>Broker queue</strong> — {{ broker_snapshot.queue_name }}</div>
+      {% if broker_snapshot.error %}
+        <div class="muted" style="color:#b00; margin-top:6px;">Inspection impossible: {{ broker_snapshot.error }}</div>
+      {% else %}
+        <div class="muted" style="margin-top:6px;">Longueur actuelle: <strong>{{ broker_snapshot.length }}</strong></div>
+        <div class="muted" style="margin-top:4px;">Jobs actifs suivis — PENDING: <strong>{{ active_counts.PENDING }}</strong> · RUNNING: <strong>{{ active_counts.RUNNING }}</strong></div>
+        {% if broker_snapshot.length and broker_snapshot.length > 5 %}
+          <div class="muted" style="color:#b00; margin-top:6px;">Alerte: backlog broker détecté. Des jobs PENDING peuvent simplement attendre derrière la queue Redis.</div>
+        {% endif %}
+        {% if broker_snapshot.samples %}
+          <div class="muted" style="margin-top:8px;">Exemples en tête de queue :</div>
+          <ul style="margin:6px 0 0 18px;">
+            {% for sample in broker_snapshot.samples %}<li style="font-family:ui-monospace, monospace; font-size:12px;">{{ sample }}</li>{% endfor %}
+          </ul>
+        {% endif %}
+      {% endif %}
+    </div>
+  {% endif %}
+
+  {% if maintenance_allowed %}
+    <div class="card" style="margin-top:12px; padding:12px; border:1px solid #ddd;">
+      <div><strong>Maintenance jobs</strong></div>
+      <div class="muted" style="margin-top:6px;">Actions d'exploitation réservées aux admins. Elles n'agissent que sur les jobs suivis et la queue Redis, sans piloter Docker.</div>
+      <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; align-items:flex-end;">
+        <form method="post" action="{% url 'jobs_recover_stale' %}" style="display:inline-block;">
+          {% csrf_token %}
+          <button class="btn" type="submit">Recover stale jobs</button>
+        </form>
+        <form method="post" action="{% url 'jobs_purge_broker' %}" style="display:inline-block;">
+          {% csrf_token %}
+          <label class="muted" style="display:block; font-size:12px; margin-bottom:4px;">Confirmation PURGE</label>
+          <input type="text" name="confirm" placeholder="PURGE" style="min-width:110px;">
+          <button class="btn" type="submit" style="margin-left:6px; border-color:#b00; color:#b00;" onclick="return confirm('Vider la queue Redis ? Les messages en attente seront perdus.');">Purge broker</button>
+        </form>
+        <form method="post" action="{% url 'jobs_recover_and_purge' %}" style="display:inline-block;">
+          {% csrf_token %}
+          <label class="muted" style="display:block; font-size:12px; margin-bottom:4px;">Confirmation PURGE</label>
+          <input type="text" name="confirm" placeholder="PURGE" style="min-width:110px;">
+          <button class="btn" type="submit" style="margin-left:6px; border-color:#b00; color:#b00;" onclick="return confirm('Recover + purge ? Les jobs tracked incohérents seront reclassés et la queue Redis vidée.');">Recover + purge</button>
+        </form>
+      </div>
+    </div>
+  {% endif %}
+
 
 <table>
   <thead>
@@ -125,6 +171,7 @@
     {% endif %}
     <a class="btn" href="{% url 'jobs_page' %}?{% if query_string %}{{ query_string }}&{% endif %}cursor=0">Derniers ⟳</a>
   </div>
+</div>
 </div>
 
 {% endblock %}

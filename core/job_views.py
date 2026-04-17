@@ -5,12 +5,14 @@ from pathlib import Path
 from celery import current_app
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.db.models import QuerySet
+from django.db.models import QuerySet, Count
 from django.http import FileResponse, Http404, HttpRequest, HttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
 from django.views.decorators.http import require_POST
 from django.utils import timezone
 
+from .job_broker import broker_queue_snapshot, purge_broker_queue
+from .job_recovery import recover_jobs
 from .job_status_sync import sync_related_state_for_terminal_job
 from .models import ProcessingJob
 
@@ -24,6 +26,18 @@ _ALLOWED_JOB_STATUSES = {
 }
 _ALLOWED_PAGE_SIZES = [25, 50, 100, 200]
 _DEFAULT_PAGE_SIZE = 50
+
+
+def _job_maintenance_allowed(request: HttpRequest) -> bool:
+    return bool(request.user.is_staff or request.user.is_superuser)
+
+
+def _active_job_counts() -> dict[str, int]:
+    counts = {"PENDING": 0, "RUNNING": 0}
+    for row in ProcessingJob.objects.filter(status__in=[ProcessingJob.Status.PENDING, ProcessingJob.Status.RUNNING]).values("status").annotate(c=Count("id")):
+        if row["status"] in counts:
+            counts[row["status"]] = int(row["c"] or 0)
+    return counts
 
 
 def _base_jobs_queryset() -> QuerySet[ProcessingJob]:
@@ -111,6 +125,9 @@ def jobs_page(request: HttpRequest) -> HttpResponse:
     q.pop("show_counts", None)
     query_string = q.urlencode()
 
+    broker_snapshot = broker_queue_snapshot(sample_limit=5)
+    active_counts = _active_job_counts()
+
     return render(
         request,
         "jobs.html",
@@ -126,6 +143,9 @@ def jobs_page(request: HttpRequest) -> HttpResponse:
             "page_sizes": _ALLOWED_PAGE_SIZES,
             "has_next": has_next,
             "next_cursor": next_cursor,
+            "broker_snapshot": broker_snapshot,
+            "active_counts": active_counts,
+            "maintenance_allowed": _job_maintenance_allowed(request),
         },
     )
 
@@ -251,4 +271,66 @@ def job_kill(request: HttpRequest, pk: int) -> HttpResponse:
             messages.warning(request, f"Kill demandé mais revoke a échoué: {exc}")
     else:
         messages.warning(request, f"Kill demandé, mais aucun task_id n'est associé à ce job.")
+    return redirect("jobs_page")
+
+
+@login_required
+@require_POST
+def jobs_recover_stale(request: HttpRequest) -> HttpResponse:
+    if not _job_maintenance_allowed(request):
+        messages.error(request, "Action réservée aux administrateurs.")
+        return redirect("jobs_page")
+    dry_run = request.POST.get("dry_run") == "1"
+    decisions, stats = recover_jobs(
+        running_heartbeat_minutes=20,
+        running_started_minutes=45,
+        pending_minutes=90,
+        requested_stop_minutes=3,
+        include_pending=True,
+        include_requested_pending=True,
+        dry_run=dry_run,
+        sync_recent_terminal=True,
+    )
+    if dry_run:
+        messages.info(request, f"Analyse recovery: {stats.matched} job(s) stale détecté(s), {len(decisions)} décision(s) proposées.")
+    else:
+        messages.success(request, f"Recovery terminé: matched={stats.matched}, updated={stats.updated}, failed={stats.failed}, cancelled={stats.cancelled}, killed={stats.killed}.")
+    return redirect("jobs_page")
+
+
+@login_required
+@require_POST
+def jobs_purge_broker(request: HttpRequest) -> HttpResponse:
+    if not _job_maintenance_allowed(request):
+        messages.error(request, "Action réservée aux administrateurs.")
+        return redirect("jobs_page")
+    if request.POST.get("confirm") != "PURGE":
+        messages.error(request, "Confirmation invalide. Saisir PURGE pour vider la queue broker.")
+        return redirect("jobs_page")
+    removed = purge_broker_queue()
+    messages.success(request, f"Queue broker purgée: {removed} message(s) supprimé(s).")
+    return redirect("jobs_page")
+
+
+@login_required
+@require_POST
+def jobs_recover_and_purge(request: HttpRequest) -> HttpResponse:
+    if not _job_maintenance_allowed(request):
+        messages.error(request, "Action réservée aux administrateurs.")
+        return redirect("jobs_page")
+    if request.POST.get("confirm") != "PURGE":
+        messages.error(request, "Confirmation invalide. Saisir PURGE pour lancer recover + purge.")
+        return redirect("jobs_page")
+    removed = purge_broker_queue()
+    _decisions, stats = recover_jobs(
+        running_heartbeat_minutes=20,
+        running_started_minutes=45,
+        pending_minutes=0,
+        requested_stop_minutes=3,
+        include_pending=True,
+        include_requested_pending=True,
+        dry_run=False,
+        sync_recent_terminal=True,
+    )
+    messages.success(request, f"Recover + purge terminé: broker={removed} message(s) supprimé(s), jobs mis à jour={stats.updated}.")
     return redirect("jobs_page")

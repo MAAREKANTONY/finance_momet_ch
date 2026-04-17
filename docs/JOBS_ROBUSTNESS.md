@@ -102,3 +102,38 @@ Default thresholds:
 - running without heartbeat stale: 3 minutes
 - pending stale: 10 minutes
 - requested stop stale: 1 minute
+
+
+## Runbook rapide broker / jobs (V8.0.07)
+
+Quand un job reste `PENDING`, vérifier **aussi** le broker Redis, pas seulement la table `ProcessingJob`.
+
+### Inspection rapide
+
+```bash
+python manage.py sanitize_job_queue --sample-limit 5
+```
+
+Cette commande affiche :
+- la longueur actuelle de la queue Redis `celery`
+- quelques messages en tête de queue
+- sans rien modifier
+
+### Purge explicite du broker
+
+```bash
+python manage.py sanitize_job_queue --purge-broker --force
+```
+
+À utiliser seulement quand la queue Redis est pleine de messages zombies/obsolètes et que le worker est arrêté ou vient d'être réinstallé.
+
+### Purge + recovery tracked jobs
+
+```bash
+python manage.py sanitize_job_queue --purge-broker --force --recover
+```
+
+Cela permet de réaligner :
+- le broker Redis
+- la table `ProcessingJob`
+- les objets métier synchronisés après recovery
