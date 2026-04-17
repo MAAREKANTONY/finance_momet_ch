@@ -59,10 +59,13 @@
     </div>
   {% endif %}
 
-  {% if maintenance_allowed %}
-    <div class="card" style="margin-top:12px; padding:12px; border:1px solid #ddd;">
+      <div class="card" style="margin-top:12px; padding:12px; border:1px solid #ddd;">
       <div><strong>Maintenance jobs</strong></div>
       <div class="muted" style="margin-top:6px;">Actions d'exploitation réservées aux admins. Elles n'agissent que sur les jobs suivis et la queue Redis, sans piloter Docker.</div>
+      {% if not maintenance_allowed %}
+        <div class="muted" style="margin-top:8px; color:#666;">Vous êtes connecté avec un compte sans droits de maintenance. Les boutons sont visibles uniquement pour les admins techniques.</div>
+      {% endif %}
+      {% if maintenance_allowed %}
       <div style="display:flex; flex-wrap:wrap; gap:10px; margin-top:12px; align-items:flex-end;">
         <form method="post" action="{% url 'jobs_recover_stale' %}" style="display:inline-block;">
           {% csrf_token %}
@@ -81,9 +84,8 @@
           <button class="btn" type="submit" style="margin-left:6px; border-color:#b00; color:#b00;" onclick="return confirm('Recover + purge ? Les jobs tracked incohérents seront reclassés et la queue Redis vidée.');">Recover + purge</button>
         </form>
       </div>
+      {% endif %}
     </div>
-  {% endif %}
-
 
 <table>
   <thead>

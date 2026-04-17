@@ -16,6 +16,10 @@ from .models import ProcessingJob
 logger = logging.getLogger(__name__)
 
 
+INLINE_OBVIOUS_RUNNING_STALE_MINUTES = 5
+INLINE_OBVIOUS_PENDING_STALE_MINUTES = 15
+
+
 def find_active_processing_job(*, job_type: str | None = None, game_scenario=None, backtest=None) -> ProcessingJob | None:
     """Return the most recent active tracked job matching the provided owner filters."""
     qs = ProcessingJob.objects.filter(status__in=[ProcessingJob.Status.PENDING, ProcessingJob.Status.RUNNING])
@@ -55,13 +59,33 @@ class ActiveJobConflictError(RuntimeError):
     """Raised when a new tracked job is requested while another one is still active."""
 
 
+
+
+def _is_obviously_stale_active_job(job: ProcessingJob, *, now) -> bool:
+    if job.status == ProcessingJob.Status.RUNNING:
+        ref = job.heartbeat_at or job.started_at
+        if ref is None:
+            return False
+        obvious_cutoff = now - timezone.timedelta(minutes=INLINE_OBVIOUS_RUNNING_STALE_MINUTES)
+        return ref <= obvious_cutoff
+    if job.status == ProcessingJob.Status.PENDING:
+        if job.created_at is None:
+            return False
+        obvious_cutoff = now - timezone.timedelta(minutes=INLINE_OBVIOUS_PENDING_STALE_MINUTES)
+        return job.created_at <= obvious_cutoff
+    return False
+
 def _recover_stale_active_jobs() -> None:
     """Best-effort inline recovery before rejecting a new launch.
 
     Goal: avoid keeping the whole queue blocked by a zombie PENDING/RUNNING row
     until the periodic cleanup task runs.
+
+    Important: keep this path intentionally conservative but deterministic. If the
+    bulk queryset-based recovery misses an obviously stale active row for any
+    reason, we do one last inline pass on the remaining active rows.
     """
-    from .job_recovery import recover_jobs
+    from .job_recovery import apply_recovery, decide_recovery, recover_jobs
 
     active_ids = list(
         ProcessingJob.objects.filter(status__in=[ProcessingJob.Status.PENDING, ProcessingJob.Status.RUNNING])
@@ -70,17 +94,56 @@ def _recover_stale_active_jobs() -> None:
     )
     if not active_ids:
         return
+
+    hb_minutes = int(getattr(settings, "JOB_STALE_HEARTBEAT_MINUTES", 2))
+    started_minutes = int(getattr(settings, "JOB_STALE_STARTED_MINUTES", 3))
+    pending_minutes = int(getattr(settings, "JOB_STALE_PENDING_MINUTES", 10))
+    requested_minutes = int(getattr(settings, "JOB_REQUESTED_STOP_STALE_MINUTES", 1))
+
     recover_jobs(
         ids=active_ids,
-        running_heartbeat_minutes=int(getattr(settings, "JOB_STALE_HEARTBEAT_MINUTES", 2)),
-        running_started_minutes=int(getattr(settings, "JOB_STALE_STARTED_MINUTES", 3)),
-        pending_minutes=int(getattr(settings, "JOB_STALE_PENDING_MINUTES", 10)),
-        requested_stop_minutes=int(getattr(settings, "JOB_REQUESTED_STOP_STALE_MINUTES", 1)),
+        running_heartbeat_minutes=hb_minutes,
+        running_started_minutes=started_minutes,
+        pending_minutes=pending_minutes,
+        requested_stop_minutes=requested_minutes,
         include_pending=True,
         include_requested_pending=True,
         dry_run=False,
         sync_recent_terminal=True,
     )
+
+    now = timezone.now()
+    hb_cutoff = now - timezone.timedelta(minutes=max(1, hb_minutes))
+    started_cutoff = now - timezone.timedelta(minutes=max(1, started_minutes))
+    pending_cutoff = now - timezone.timedelta(minutes=max(1, pending_minutes))
+    requested_cutoff = now - timezone.timedelta(minutes=max(1, requested_minutes))
+
+    remaining = list(
+        ProcessingJob.objects.filter(id__in=active_ids, status__in=[ProcessingJob.Status.PENDING, ProcessingJob.Status.RUNNING])
+        .only("id", "status", "created_at", "started_at", "heartbeat_at", "cancel_requested", "kill_requested", "message", "error", "backtest_id", "game_scenario_id")
+        .order_by("id")
+    )
+    for job in remaining:
+        is_requested = bool(job.cancel_requested or job.kill_requested)
+        is_stale = False
+        if job.status == ProcessingJob.Status.PENDING:
+            if is_requested:
+                is_stale = True
+            elif job.created_at and job.created_at <= pending_cutoff:
+                is_stale = True
+        elif job.status == ProcessingJob.Status.RUNNING:
+            ref = job.heartbeat_at or job.started_at
+            cutoff = requested_cutoff if is_requested else (hb_cutoff if job.heartbeat_at else started_cutoff)
+            if ref and ref <= cutoff:
+                is_stale = True
+        if not is_stale and _is_obviously_stale_active_job(job, now=now):
+            is_stale = True
+        if not is_stale:
+            continue
+        decision = decide_recovery(job, now=now)
+        if decision is None:
+            continue
+        apply_recovery(job, decision, dry_run=False, now=now)
 
 
 def _build_conflict_outcome(*, job_type: str, message: str, created_by=None, backtest=None, scenario=None, game_scenario=None, active_job: ProcessingJob) -> JobLaunchOutcome:

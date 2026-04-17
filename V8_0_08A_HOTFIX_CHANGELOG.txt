@@ -1,0 +1,12 @@
+V8.0.08a HOTFIX — Jobs maintenance UI + stale launch recovery
+
+Corrections
+- Fix du guard de lancement: renforce la recovery inline des jobs actifs stale avant de bloquer un nouveau launch.
+- Ajout d'un second passage déterministe sur les actifs restants pour éviter qu'un RUNNING stale évident continue à bloquer le lancement.
+- Amélioration UX sur /jobs: la section "Maintenance jobs" est désormais toujours visible.
+  - Si l'utilisateur n'a pas les droits, un message explicite l'indique.
+  - Les boutons restent réservés aux admins techniques.
+
+But
+- Corriger le test test_launch_processing_job_recovers_obvious_stale_active_job_before_launching
+- Éviter l'impression que les menus de maintenance ont disparu alors que le compte n'a simplement pas les droits.

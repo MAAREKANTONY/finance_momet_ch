@@ -1,0 +1,17 @@
+V8.0.08b HOTFIX
+
+Scope
+- Fix only the failing job launch stale-recovery test.
+- No KPI changes.
+- No additional job features.
+
+Fix
+- Strengthened inline stale recovery in core/job_launch.py.
+- Added an explicit "obvious stale" fallback during launch:
+  - RUNNING job with heartbeat/started_at older than 5 minutes is treated as stale for inline recovery.
+  - PENDING job older than 15 minutes is treated as stale for inline recovery.
+- This fallback only applies in the last inline pass before rejecting a new launch.
+
+Goal
+- Ensure an obviously stale active job is recovered before the global single-active-job guard rejects the new launch.
+- Make test core.tests.test_job_launch.GlobalSingleActiveJobGuardTests.test_launch_processing_job_recovers_obvious_stale_active_job_before_launching pass reliably even if runtime stale thresholds are higher in env.
