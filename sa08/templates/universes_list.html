@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row" style="justify-content:space-between; align-items:center;">
+  <h2>Univers</h2>
+  <a class="btn" href="{% url 'universe_create' %}">+ Nouvel univers</a>
+</div>
+
+<div class="card">
+  <p class="muted">Un univers est un groupe de tickers réutilisable pour pré-remplir un scénario ou une study. Appliquer un univers <strong>copie</strong> les tickers dans la cible.</p>
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th>Nom</th>
+      <th>Visibilité</th>
+      <th>Tickers</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for u in universes %}
+      <tr>
+        <td><strong>{{ u.name }}</strong><br/><span class="muted">{{ u.description|default:"" }}</span></td>
+        <td>{% if u.is_public %}<span class="pill">Public</span>{% else %}<span class="pill">Privé</span>{% endif %}</td>
+        <td>{{ u.symbols.count }}</td>
+        <td style="white-space:nowrap;">
+          <a class="btn" href="{% url 'universe_edit' u.id %}">Éditer</a>
+          <a class="btn danger" href="{% url 'universe_delete' u.id %}">Supprimer</a>
+        </td>
+      </tr>
+    {% empty %}
+      <tr><td colspan="4" class="muted">Aucun univers.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% endblock %}

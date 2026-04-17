@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+
+{% block content %}
+<h2>Supprimer le Scénario de Jeu</h2>
+
+<p>Confirmer la suppression de: <b>{{ obj.name }}</b> ?</p>
+
+<form method="post">
+  {% csrf_token %}
+  <button class="btn danger" type="submit">Supprimer</button>
+  <a class="btn" href="{% url 'game_scenario_detail' obj.pk %}">Annuler</a>
+</form>
+
+{% endblock %}

@@ -1,0 +1,19 @@
+V7.0.73 — Backtest debug export minimal SAFE
+
+Added:
+- Async Excel debug export for one backtest ticker/line
+- New route: /backtests/<id>/export_debug.xlsx
+- New button on backtest results page: Exporter Excel debug
+- New helper: core/backtest_debug.py
+- New job type: EXPORT_BACKTEST_DEBUG_XLSX
+- Light regression test for queuing the export job
+
+Behavior:
+- DATA sheet: daily prices, indicators, signals, actions, derived tradable-day ratios
+- FORMULAS sheet: scenario/backtest parameters and theory/excel hints
+- FINAL sheet: final metrics for the selected ticker/line
+
+Safety:
+- No change to backtest engine calculations
+- No change to existing exports
+- Additive only

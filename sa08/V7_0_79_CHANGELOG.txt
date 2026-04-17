@@ -1,0 +1,48 @@
+V7.0.79 — Hardening jobs iteration 1 (visibility)
+
+Scope
+- Iteration 1 only: operational visibility for async jobs.
+- No architecture change.
+- No extra worker.
+- No heavy refactor.
+
+Added
+- ProcessingJob.last_checkpoint
+- ProcessingJob.worker_hostname
+- New helper module: core/job_tracking.py
+  - mark_job_running(...)
+  - job_checkpoint(...)
+  - extract_worker_hostname(...)
+  - JobCancelled / JobKilled exceptions centralized
+
+Behavior
+- Tracked Celery jobs now stamp:
+  - started_at
+  - heartbeat_at
+  - last_checkpoint
+  - worker_hostname
+- /jobs list now shows:
+  - worker hostname
+  - last checkpoint
+  - heartbeat
+- /jobs/<id>/ detail now shows the same visibility fields.
+
+Tasks updated
+- fetch_daily_bars_job_task
+- compute_metrics_job_task
+- compute_metrics_all_job_task
+- daily_system_refresh_job_task
+- send_alert_definition_job_task
+- run_game_scenario_job_task
+- run_backtest_job_task
+- async export tasks
+
+Migration
+- core/migrations/0035_processingjob_visibility_fields.py
+
+Tests
+- Added targeted helper tests in core/tests/test_jobs_robustness.py
+
+Notes
+- I could not run Django test suite in this container because Django is not installed here.
+- Python syntax compilation passes on the modified project files.

@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card">
+  <h2>Dashboard</h2>
+  <p>Dernière date d'alerte: <strong>{{ last_date|default:"—" }}</strong></p>
+  <div class="row">
+    <div class="card" style="flex:1; min-width: 240px;">
+      <div class="muted">Actions actives</div>
+      <div style="font-size: 28px;"><strong>{{ symbols }}</strong></div>
+      <a class="btn" href="{% url 'symbols_page' %}">Gérer les tickers</a>
+    </div>
+    <div class="card" style="flex:1; min-width: 240px;">
+      <div class="muted">Scénarios actifs</div>
+      <div style="font-size: 28px;"><strong>{{ scenarios }}</strong></div>
+      <a class="btn" href="{% url 'scenarios_page' %}">Gérer les scénarios</a>
+    </div>
+    <div class="card" style="flex:1; min-width: 240px;">
+      <div class="muted">Alertes (dernier jour)</div>
+      <div style="font-size: 28px;"><strong>{{ alerts_count }}</strong></div>
+      <a class="btn" href="{% url 'alerts_table' %}">Voir les alertes</a>
+    </div>
+  </div>
+  <p class="muted">Export Excel complet: tu peux exporter raw + calculé via la page Alertes.</p>
+</div>
+{% endblock %}

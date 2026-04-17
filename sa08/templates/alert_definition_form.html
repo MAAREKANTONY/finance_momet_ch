@@ -1,0 +1,84 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>{% if mode == "edit" %}Éditer{% else %}Créer{% endif %} une alerte</h2>
+
+<form method="post" class="card">
+  {% csrf_token %}
+  <div class="row">
+    <div style="min-width: 320px; flex:1;">
+      <label><strong>Nom</strong></label><br/>
+      {{ form.name }}
+      {% if form.name.errors %}<div class="muted">{{ form.name.errors }}</div>{% endif %}
+      <div style="height:10px;"></div>
+
+      <label><strong>Description</strong></label><br/>
+      {{ form.description }}
+    </div>
+
+    <div style="min-width: 340px;">
+      <label><strong>Actif</strong></label><br/>
+      {{ form.is_active }}
+      <div style="height:10px;"></div>
+
+      <label><strong>Horaire d'envoi</strong></label><br/>
+      <div class="row" style="align-items:end;">
+        <div>
+          <div class="muted">Heure</div>
+          {{ form.send_hour }}
+        </div>
+        <div>
+          <div class="muted">Minute</div>
+          {{ form.send_minute }}
+        </div>
+        <div>
+          <div class="muted">Timezone</div>
+          {{ form.timezone }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <hr style="margin:14px 0;"/>
+
+  <div class="row" style="align-items:flex-start;">
+    <div>
+      <label><strong>Scénarios (multi)</strong></label><br/>
+      {{ form.scenarios }}
+      <div class="muted" style="font-size:12px;">{{ form.scenarios.help_text }}</div>
+    </div>
+
+    <div>
+      <label><strong>Lignes (multi)</strong></label><br/>
+      {{ form.alert_codes_multi }}
+      <div class="muted" style="font-size:12px;">{{ form.alert_codes_multi.help_text }}</div>
+    </div>
+
+    <div>
+      <label><strong>Emails (multi)</strong></label><br/>
+      {{ form.recipients }}
+      <div class="muted" style="font-size:12px;">{{ form.recipients.help_text }}</div>
+      <div class="muted" style="font-size:12px; margin-top:8px;">
+        Les destinataires proviennent de la page <a href="{% url 'email_settings' %}">Email</a>.
+      </div>
+    </div>
+  </div>
+
+  <hr style="margin:14px 0;"/>
+
+  <div class="row" style="align-items:center;">
+    <button class="btn" type="submit">Enregistrer</button>
+    <a class="btn" href="{% url 'alert_definitions_list' %}">Annuler</a>
+  </div>
+</form>
+
+<div class="card">
+  <h3>Notes</h3>
+  <div class="muted">
+    <ul>
+      <li>Cette configuration n'affecte pas les calculs : elle filtre les lignes stockées dans <code>core.Alert</code>.</li>
+      <li>Si Scénarios ou Lignes sont vides : comportement = <strong>tous</strong>.</li>
+      <li>Si Emails est vide : l'alerte existe mais <strong>aucun envoi</strong> n'est fait.</li>
+    </ul>
+  </div>
+</div>
+{% endblock %}

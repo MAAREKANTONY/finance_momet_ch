@@ -1,0 +1,47 @@
+STOCKALERT V7.0.85 — Sprint P0.1 — Fiabilisation du lancement des jobs
+
+Objectif du sprint
+- Corriger la phase de naissance des ProcessingJob pour réduire les faux PENDING et les incohérences create + delay + save(task_id).
+
+Audit ciblé avant implémentation
+- Plusieurs vues lançaient les jobs via un pattern dispersé:
+  1) create ProcessingJob PENDING
+  2) task.delay(..., job_id=job.id)
+  3) save/update task_id
+- Ce pattern exposait le projet à:
+  - job DB créé mais task non publiée
+  - task_id jamais écrit si exception entre delay() et save()
+  - logique dupliquée dans de nombreux points d'entrée
+
+Implémentation livrée
+1. Nouveau helper centralisé: core/job_launch.py
+   - launch_processing_job(...)
+   - crée le ProcessingJob dans une transaction
+   - publie la task en on_commit()
+   - écrit task_id de façon centralisée
+   - si la publication Celery échoue synchroniquement, le job est marqué FAILED avec message explicite
+
+2. Refactor des points de lancement suivis dans core/views.py
+   - exports CSV/XLSX/ZIP
+   - fetch bars backtest / email settings / trigger page
+   - compute metrics backtest / trigger page
+   - run backtest
+   - run game scenario
+   - envoi ciblé d'alert definition
+
+3. Tests ajoutés
+   - core/tests/test_job_launch.py
+   - vérifie que apply_async n'est appelé qu'après commit
+   - vérifie qu'un échec de dispatch marque le job FAILED
+
+Ce sprint NE fait PAS encore
+- unification de recover_jobs et cleanup_stale_processing_jobs_task
+- extension de sync_related_state_for_terminal_job
+- correction des KPI de backtest
+- homogénéisation complète des exports côté sérialisation
+
+Prochaine itération recommandée
+- Sprint P0.2: unifier la recovery logic
+  - faire de recover_jobs la seule vérité
+  - transformer cleanup_stale_processing_jobs_task en wrapper léger
+  - aligner CANCELLED / KILLED / FAILED

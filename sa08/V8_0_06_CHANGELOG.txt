@@ -1,0 +1,30 @@
+V8.0.06 — Jobs cleanup / scheduler unification
+
+Objective
+- Continue cleaning job orchestration after the Celery watchdog fix.
+- Prevent legacy non-tracked periodic fetch/compute/send tasks from occupying the solo worker and leaving tracked jobs pending.
+
+Changes
+- Removed legacy standalone periodic tasks from Django settings schedule:
+  - fetch_daily_bars_task
+  - compute_metrics_task
+  - send_daily_alerts_task
+- Kept only the intended automatic schedule set:
+  - check_scheduled_alerts
+  - cleanup_stale_processing_jobs
+  - daily_system_refresh_job_task
+- Clarified comments in stockalert/celery.py and stockalert/settings.py to document the rule: one heavy automatic tracked pipeline only.
+- Added regression test to ensure legacy non-tracked heavy tasks cannot be reintroduced silently into CELERY_BEAT_SCHEDULE.
+
+Important deployment note
+- Because Celery Beat may persist an old schedule database/file, delete the existing celery beat schedule persistence file before restarting celery-beat on production.
+- Example safe sequence after deployment:
+  1) stop celery-beat
+  2) remove celerybeat-schedule if present in the app working directory / mounted volume
+  3) restart celery-beat
+
+Expected behavior after deploy
+- No more automatic fetch_daily_bars_task at the legacy FETCH_BARS_HOUR.
+- No more automatic compute_metrics_task at the legacy COMPUTE_HOUR.
+- Heavy automatic work should now come only from daily_system_refresh_job_task.
+- A user-triggered tracked recompute should no longer be unexpectedly delayed by a hidden legacy periodic fetch/compute chain.

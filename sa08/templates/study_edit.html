@@ -1,0 +1,315 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="row" style="justify-content:space-between; align-items:center;">
+  <h2>Study — {{ study.name }}</h2>
+  <div class="muted">Scenario interne #{{ study.scenario.id }}</div>
+</div>
+
+{% comment %}
+  Actions rapides
+  - Calculs (scénario de la study)
+  - Backtest (fetch / compute / run / results)
+  - Alertes (send now)
+  NOTE: actions side-effects are POST.
+{% endcomment %}
+<div class="card" style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+  <strong style="margin-right:8px;">Actions</strong>
+
+  <form method="post" action="{% url 'study_compute_now' study.id %}">
+    {% csrf_token %}
+    <button class="btn" type="submit">Compute (incr.)</button>
+  </form>
+  <form method="post" action="{% url 'study_recompute_now' study.id %}">
+    {% csrf_token %}
+    <button class="btn" type="submit">Recompute complet</button>
+  </form>
+
+  {% if backtest_form %}
+    <span style="margin:0 6px;" class="muted">|</span>
+    <form method="post" action="{% url 'backtest_fetch_data' study.backtest.id %}">
+      {% csrf_token %}
+      <button class="btn" type="submit">Backtest: Fetch data</button>
+    </form>
+    <form method="post" action="{% url 'backtest_compute_metrics' study.backtest.id %}">
+      {% csrf_token %}
+      <button class="btn" type="submit">Backtest: Compute</button>
+    </form>
+    <form method="post" action="{% url 'backtest_run' study.backtest.id %}">
+      {% csrf_token %}
+      <button class="btn" type="submit">Backtest: Run</button>
+    </form>
+    <a class="btn" href="{% url 'backtest_results' study.backtest.id %}">Voir résultats</a>
+  {% endif %}
+
+  {% if study.alert %}
+    <span style="margin:0 6px;" class="muted">|</span>
+    <form method="post" action="{% url 'alert_definition_send_now' study.alert.id %}">
+      {% csrf_token %}
+      <button class="btn" type="submit">Envoyer alertes maintenant</button>
+    </form>
+  {% endif %}
+</div>
+
+<div class="card">
+  <h3>Tickers (appliquer un univers)</h3>
+  <p class="muted">Appliquer un univers copie ses tickers dans la Study (sans modifier l'univers).</p>
+  <form method="post" action="{% url 'study_apply_universe' study.id %}">
+    {% csrf_token %}
+    <select name="universe_id">
+      <option value="">— choisir un univers —</option>
+      {% for u in universes %}
+        <option value="{{ u.id }}">{{ u.name }} ({{ u.symbols.count }})</option>
+      {% endfor %}
+    </select>
+    <select name="mode">
+      <option value="add">Ajouter</option>
+      <option value="replace">Remplacer</option>
+    </select>
+    <button class="btn" type="submit">Appliquer</button>
+  </form>
+</div>
+
+<div class="card">
+  <form method="post">
+    {% csrf_token %}
+
+    <h3>Informations study</h3>
+    {{ meta_form.non_field_errors }}
+    <div class="grid2">
+      <div>
+        <label><strong>Nom</strong></label><br/>
+        {{ meta_form.name }}
+      </div>
+      <div>
+        <label><strong>Description</strong></label><br/>
+        {{ meta_form.description }}
+      </div>
+    </div>
+
+    <hr/>
+    <h3>Paramètres indicateurs</h3>
+    {{ scenario_form.non_field_errors }}
+    <div class="grid2">
+      <div>
+        <label>a</label><br/>{{ scenario_form.a }}
+      </div>
+      <div>
+        <label>b</label><br/>{{ scenario_form.b }}
+      </div>
+      <div>
+        <label>c</label><br/>{{ scenario_form.c }}
+      </div>
+      <div>
+        <label>d</label><br/>{{ scenario_form.d }}
+      </div>
+      <div>
+        <label>e</label><br/>{{ scenario_form.e }}
+      </div>
+      <div>
+      </div>
+      <div>
+      </div>
+      <div>
+        <label>n1</label><br/>{{ scenario_form.n1 }}
+      </div>
+      <div>
+        <label>n2</label><br/>{{ scenario_form.n2 }}
+      </div>
+      <div>
+        <label>Nglobal</label><br/>{{ scenario_form.nglobal }}
+      </div>
+      <div>
+      </div>
+      <div>
+      </div>
+      <div>
+      </div>
+      <div>
+      </div>
+      <div>
+      </div>
+      <div>
+        <label>history_years</label><br/>{{ scenario_form.history_years }}
+      </div>
+    </div>
+
+    <hr/>
+    <h3>Tickers</h3>
+    <div style="margin-top:12px;">
+      {{ scenario_form.symbols }}
+    </div>
+
+    <hr/>
+    <h3>Alertes</h3>
+    {% if alert_form %}
+      {{ alert_form.non_field_errors }}
+      <div class="grid2">
+        <div>
+          <label><strong>Nom</strong></label><br/>
+          {{ alert_form.name }}
+        </div>
+        <div>
+          <label><strong>Actif</strong></label><br/>
+          {{ alert_form.is_active }}
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label><strong>Description</strong></label><br/>
+        {{ alert_form.description }}
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Lignes (codes)</strong></label><br/>
+          {{ alert_form.alert_codes_multi }}
+          <div class="muted">Laisser vide = tous les signaux.</div>
+        </div>
+        <div>
+          <label><strong>Destinataires</strong></label><br/>
+          {{ alert_form.recipients }}
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Heure d'envoi</strong></label><br/>
+          {{ alert_form.send_hour }} : {{ alert_form.send_minute }}
+        </div>
+        <div>
+          <label><strong>Timezone</strong></label><br/>
+          {{ alert_form.timezone }}
+        </div>
+      </div>
+    {% else %}
+      <p class="muted">Aucune configuration d'alertes pour cette Study.</p>
+      <button class="btn" type="submit" formaction="{% url 'study_create_alert' study.id %}" formmethod="post">
+        + Créer une configuration d'alertes
+      </button>
+    {% endif %}
+
+    <hr/>
+    <h3>Backtest</h3>
+    {% if backtest_form %}
+      {{ backtest_form.non_field_errors }}
+      <div class="grid2">
+        <div>
+          <label><strong>Nom</strong></label><br/>
+          {{ backtest_form.name }}
+        </div>
+        <div>
+          <label><strong>Inclure toutes les actions</strong></label><br/>
+          {{ backtest_form.include_all_tickers }}
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label><strong>Description</strong></label><br/>
+        {{ backtest_form.description }}
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Date début</strong></label><br/>
+          {{ backtest_form.start_date }}
+        </div>
+        <div>
+          <label><strong>Date fin</strong></label><br/>
+          {{ backtest_form.end_date }}
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Période de warmup (jours)</strong></label><br/>
+          {{ backtest_form.warmup_days }}
+          <div class="muted">Nombre de jours calendaires calculés avant la période réelle pour reconstruire les états.</div>
+        </div>
+        <div></div>
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Capital total (CP)</strong></label><br/>
+          {{ backtest_form.capital_total }}
+        </div>
+        <div>
+          <label><strong>Capital par action (CT)</strong></label><br/>
+          {{ backtest_form.capital_per_ticker }}
+        </div>
+      </div>
+      <div class="grid2" style="margin-top:12px;">
+        <div>
+          <label><strong>Seuil ratio_p (X)</strong></label><br/>
+          {{ backtest_form.ratio_threshold }}
+        </div>
+        <div>
+          <label><strong>Clôturer en fin de période</strong></label><br/>
+          {{ backtest_form.close_positions_at_end }}
+        </div>
+      </div>
+      <div style="margin-top:12px;">
+        <label><strong>Lignes de déclenchement</strong></label><br/>
+        <div class="muted">Définis les paires <code>BUY</code>/<code>SELL</code>. Utilise les cases à cocher pour sélectionner plusieurs signaux et les boutons radio pour choisir ET ou OU. Le JSON est généré automatiquement.</div>
+
+        {# Hidden JSON field submitted to Django #}
+        <textarea id="id_signal_lines" name="signal_lines" style="display:none;"></textarea>
+        {{ backtest_form.instance.signal_lines|json_script:"signalLinesData" }}
+
+        <table class="table" id="signalLinesTable" style="margin-top:10px;">
+          <thead>
+            <tr>
+              <th style="width:45%;">BUY</th>
+              <th style="width:45%;">SELL</th>
+              <th style="width:10%;"></th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+        <div style="display:flex; gap:8px; align-items:center;">
+          <button class="btn" type="button" id="addSignalLineBtn">+ Ajouter une ligne</button>
+          <button class="btn" type="button" id="resetSignalLinesBtn">Reset</button>
+          <span class="muted">Ex: BUY=Af+SPVa+SPVa_basse / SELL=Bf+SPVv+SPVv_basse</span>
+        </div>
+
+        
+      </div>
+    {% else %}
+      <p class="muted">Aucune configuration de backtest pour cette Study.</p>
+      <button class="btn" type="submit" formaction="{% url 'study_create_backtest' study.id %}" formmethod="post">
+        + Créer une configuration de backtest
+      </button>
+    {% endif %}
+
+    <hr/>
+    <button class="btn" type="submit">Enregistrer</button>
+    <a class="btn" href="{% url 'studies_page' %}">Retour</a>
+  </form>
+</div>
+
+<script>
+(function() {
+  const SIGNAL_CHOICES = [["A1","A1"],["B1","B1"],["C1","C1"],["D1","D1"],["E1","E1"],["F1","F1"],["G1","G1"],["H1","H1"],["Af","Af"],["Bf","Bf"],["SPa","SPa"],["SPv","SPv"],["SPVa","SPVa"],["SPVv","SPVv"],["SPa_basse","SPa_basse"],["SPv_basse","SPv_basse"],["SPVa_basse","SPVa_basse"],["SPVv_basse","SPVv_basse"]];
+  const LOGIC_CHOICES = [["AND", "ET"], ["OR", "OU"]];
+  const hidden = document.getElementById('id_signal_lines');
+  const tbody = document.querySelector('#signalLinesTable tbody');
+  const addBtn = document.getElementById('addSignalLineBtn');
+  const resetBtn = document.getElementById('resetSignalLinesBtn');
+  if (!hidden || !tbody || !addBtn || !resetBtn) return;
+  function normalize(v){ if(!v) return []; return Array.isArray(v) ? v.filter(Boolean) : [v]; }
+  function normalizeLogic(v, fallback){ const logic = String(v || fallback || 'AND').toUpperCase(); return logic === 'OR' ? 'OR' : 'AND'; }
+  function makeCheckboxList(values, role){ const wrap=document.createElement('div'); const selected=new Set(normalize(values)); wrap.dataset.role=role; wrap.style.display='grid'; wrap.style.gridTemplateColumns='repeat(auto-fill, minmax(160px, 1fr))'; wrap.style.gap='6px 10px'; wrap.style.maxHeight='180px'; wrap.style.overflowY='auto'; wrap.style.padding='8px'; wrap.style.border='1px solid #d0d7de'; wrap.style.borderRadius='8px'; wrap.style.background='#fff'; SIGNAL_CHOICES.forEach(([code,label])=>{ const row=document.createElement('label'); row.style.display='flex'; row.style.alignItems='center'; row.style.gap='6px'; const input=document.createElement('input'); input.type='checkbox'; input.value=code; input.checked=selected.has(code); const span=document.createElement('span'); span.textContent=label; row.append(input, span); wrap.appendChild(row); }); return wrap; }
+  function makeLogicRadios(value, fallback, role, idx){ const current=normalizeLogic(value, fallback); const wrap=document.createElement('div'); wrap.dataset.role=role; wrap.style.display='inline-flex'; wrap.style.gap='12px'; wrap.style.flexWrap='wrap'; const name=`${role}_${idx}_${Math.random().toString(36).slice(2,8)}`; LOGIC_CHOICES.forEach(([code,label])=>{ const row=document.createElement('label'); row.style.display='inline-flex'; row.style.alignItems='center'; row.style.gap='6px'; const input=document.createElement('input'); input.type='radio'; input.name=name; input.value=code; input.checked=code===current; const span=document.createElement('span'); span.textContent=label; row.append(input, span); wrap.appendChild(row); }); return wrap; }
+  function selected(container){ return Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(o=>o.value); }
+  function selectedLogic(container, fallback){ return normalizeLogic(container?.querySelector('input[type="radio"]:checked')?.value, fallback); }
+  function rowTemplate(item, idx){ const tr=document.createElement('tr'); const td1=document.createElement('td'); const td2=document.createElement('td'); const td3=document.createElement('td'); const buyWrap=document.createElement('div'); buyWrap.style.display='flex'; buyWrap.style.flexDirection='column'; buyWrap.style.gap='8px'; const buyLogic=makeLogicRadios(item?.buy_logic,'AND','buy_logic',idx); const buy=makeCheckboxList(item?.buy||[],'buy'); buyWrap.append(buyLogic,buy); const sellWrap=document.createElement('div'); sellWrap.style.display='flex'; sellWrap.style.flexDirection='column'; sellWrap.style.gap='8px'; const sellLogic=makeLogicRadios(item?.sell_logic,'OR','sell_logic',idx); const sell=makeCheckboxList(item?.sell||[],'sell'); sellWrap.append(sellLogic,sell); td1.appendChild(buyWrap); td2.appendChild(sellWrap); td3.innerHTML='<button class="btn" type="button">✕</button>'; td3.querySelector('button').onclick=()=>{tr.remove(); sync();}; [buy,sell,buyLogic,sellLogic].forEach(el=>el.addEventListener('change', sync)); tr.append(td1,td2,td3); return tr; }
+  function sync(){ const payload=Array.from(tbody.querySelectorAll('tr')).map(r=>({buy:selected(r.querySelector('[data-role="buy"]')), sell:selected(r.querySelector('[data-role="sell"]')), buy_logic:selectedLogic(r.querySelector('[data-role="buy_logic"]'),'AND'), sell_logic:selectedLogic(r.querySelector('[data-role="sell_logic"]'),'OR')})).filter(x=>x.buy.length||x.sell.length); hidden.value=JSON.stringify(payload); }
+  function render(data){ tbody.innerHTML=''; (data.length?data:[{buy:['Af'],sell:['Bf'],buy_logic:'AND',sell_logic:'OR'}]).forEach((item, idx)=>tbody.appendChild(rowTemplate(item, idx))); sync(); }
+  addBtn.onclick=()=>{ tbody.appendChild(rowTemplate({buy:[],sell:[],buy_logic:'AND',sell_logic:'OR'}, tbody.querySelectorAll('tr').length)); sync(); };
+  resetBtn.onclick=()=>render([]);
+  hidden.closest('form')?.addEventListener('submit', sync);
+  try { render(JSON.parse(document.getElementById('signalLinesData').textContent || '[]')); } catch(e) { render([]); }
+})();
+</script>
+
+<div class="card">
+  <h3>Traçabilité</h3>
+  <div class="muted">
+    {% if study.origin_scenario %}Import scénario : #{{ study.origin_scenario.id }} — {{ study.origin_scenario.name }}<br/>{% endif %}
+    {% if study.origin_universe %}Import univers : #{{ study.origin_universe.id }} — {{ study.origin_universe.name }}<br/>{% endif %}
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block content %}
+<h2>Supprimer une alerte</h2>
+
+<div class="card">
+  <p>Confirmer la suppression de l'alerte <strong>{{ obj.name }}</strong> ?</p>
+  <form method="post">
+    {% csrf_token %}
+    <button class="btn danger" type="submit">Oui, supprimer</button>
+    <a class="btn" href="{% url 'alert_definitions_list' %}">Annuler</a>
+  </form>
+</div>
+{% endblock %}
