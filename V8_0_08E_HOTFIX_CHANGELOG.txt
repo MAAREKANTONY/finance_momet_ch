@@ -1,0 +1,8 @@
+V8.0.08e hotfix
+
+- Removed inline stale recovery from core/job_launch.py.
+- launch_processing_job() now relies only on the existing active-job guard.
+- No changes to job_recovery thresholds, Celery, Redis, UI, or KPI.
+
+Validation to run:
+  sudo docker compose exec web python tools/run_quality_gate.py

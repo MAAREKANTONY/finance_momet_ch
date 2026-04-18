@@ -1,0 +1,20 @@
+V8.0.08C HOTFIX
+
+Objectif
+- Corriger le test rouge test_launch_processing_job_recovers_obvious_stale_active_job_before_launching
+- Ne toucher ni à Celery, ni à Redis, ni à l'UI, ni aux KPI
+
+Correction appliquée
+- core/job_launch.py
+  - launch_processing_job() inspecte d'abord le job actif courant.
+  - Si ce job actif est "obviously stale", il est récupéré de façon ciblée avant le guard de conflit.
+  - Ensuite seulement, un re-query DB est effectué pour décider s'il reste réellement un job actif.
+  - Le fallback de recovery global existant est conservé pour les autres cas.
+
+Effet attendu
+- Un job RUNNING/PENDING manifestement stale ne bloque plus à tort un nouveau lancement.
+- Aucun changement de comportement sur les vrais jobs encore actifs.
+
+Périmètre
+- Fichier modifié : core/job_launch.py
+- Aucun autre module métier modifié.

@@ -19,3 +19,4 @@ ENV/
 *.swp
 .DS_Store
 logs/*.log
+tmp/
