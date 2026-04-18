@@ -16,6 +16,73 @@ from .models import ProcessingJob
 logger = logging.getLogger(__name__)
 
 
+def find_active_processing_job(*, job_type: str | None = None, game_scenario=None, backtest=None) -> ProcessingJob | None:
+    """Return the most recent active tracked job matching the provided owner filters."""
+    qs = ProcessingJob.objects.filter(status__in=[ProcessingJob.Status.PENDING, ProcessingJob.Status.RUNNING])
+    if job_type:
+        qs = qs.filter(job_type=job_type)
+    if game_scenario is not None:
+        game_id = getattr(game_scenario, "id", game_scenario)
+        qs = qs.filter(game_scenario_id=game_id)
+    if backtest is not None:
+        backtest_id = getattr(backtest, "id", backtest)
+        qs = qs.filter(backtest_id=backtest_id)
+    return qs.order_by("-id").only("id", "status", "job_type", "game_scenario_id", "backtest_id", "created_at").first()
+
+
+
+@dataclass(slots=True)
+class TaskDispatchOutcome:
+    task_id: str = ""
+    dispatch_error: Exception | None = None
+
+    @property
+    def launched(self) -> bool:
+        return self.dispatch_error is None and bool((self.task_id or "").strip())
+
+
+@dataclass(slots=True)
+class JobLaunchOutcome:
+    job: ProcessingJob
+    dispatch_error: Exception | None = None
+
+    @property
+    def launched(self) -> bool:
+        return self.dispatch_error is None and bool((self.job.task_id or "").strip())
+
+
+class ActiveJobConflictError(RuntimeError):
+    """Raised when a new tracked job is requested while another one is still active."""
+
+
+def _recover_stale_active_jobs() -> None:
+    """Best-effort inline recovery before rejecting a new launch.
+
+    Goal: avoid keeping the whole queue blocked by a zombie PENDING/RUNNING row
+    until the periodic cleanup task runs.
+    """
+    from .job_recovery import recover_jobs
+
+    active_ids = list(
+        ProcessingJob.objects.filter(status__in=[ProcessingJob.Status.PENDING, ProcessingJob.Status.RUNNING])
+        .order_by("id")
+        .values_list("id", flat=True)
+    )
+    if not active_ids:
+        return
+    recover_jobs(
+        ids=active_ids,
+        running_heartbeat_minutes=int(getattr(settings, "JOB_STALE_HEARTBEAT_MINUTES", 2)),
+        running_started_minutes=int(getattr(settings, "JOB_STALE_STARTED_MINUTES", 3)),
+        pending_minutes=int(getattr(settings, "JOB_STALE_PENDING_MINUTES", 10)),
+        requested_stop_minutes=int(getattr(settings, "JOB_REQUESTED_STOP_STALE_MINUTES", 1)),
+        include_pending=True,
+        include_requested_pending=True,
+        dry_run=False,
+        sync_recent_terminal=True,
+    )
+
+
 def _build_conflict_outcome(*, job_type: str, message: str, created_by=None, backtest=None, scenario=None, game_scenario=None, active_job: ProcessingJob) -> JobLaunchOutcome:
     err = ActiveJobConflictError(
         f"Another job is already active (job #{active_job.id}, {active_job.job_type}, {active_job.status})."
@@ -55,23 +122,8 @@ def launch_processing_job(
     payload = dict(task_kwargs or {})
     outcome: dict[str, Any] = {}
 
+    _recover_stale_active_jobs()
     active_job = find_active_processing_job()
-    if active_job is not None:
-        from .job_recovery import recover_jobs
-
-        recover_jobs(
-            ids=[active_job.id],
-            running_heartbeat_minutes=int(getattr(settings, "JOB_STALE_HEARTBEAT_MINUTES", 15)),
-            running_started_minutes=int(getattr(settings, "JOB_STALE_STARTED_MINUTES", 30)),
-            pending_minutes=int(getattr(settings, "JOB_STALE_PENDING_MINUTES", 60)),
-            requested_stop_minutes=int(getattr(settings, "JOB_REQUESTED_STOP_STALE_MINUTES", 3)),
-            include_pending=True,
-            include_requested_pending=True,
-            dry_run=False,
-            sync_recent_terminal=True,
-        )
-        active_job = find_active_processing_job()
-
     if active_job is not None:
         return _build_conflict_outcome(
             job_type=job_type,

@@ -1,3 +1,0 @@
-V7.0.54
-- Added optional per-line global momentum filters for BUY/SELL with dedicated AND/OR combiner.
-- Centralized support in backtests and games without breaking existing signal-lines JSON.

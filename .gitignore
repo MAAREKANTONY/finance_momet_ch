@@ -20,3 +20,4 @@ ENV/
 .DS_Store
 logs/*.log
 tmp/
+backup/

@@ -1,5 +1,0 @@
-{
-  "core/tests/test_job_launch.py": true,
-  "core/tests/test_jobs_robustness.py": true,
-  "core/tests/test_job_queue_ops.py": true
-}
