@@ -204,6 +204,123 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(portfolio["TOTAL_TRADES"], 2)
         self.assertEqual(portfolio["FLAT_TRADES"], 0)
 
+    def test_forced_sell_at_backtest_end_updates_trade_counters_and_daily_row(self):
+        start = date(2024, 3, 10)
+        self._create_bars_for_symbol(self.symbol, ["10", "10", "13"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal(v), ratio_P=Decimal("1"))
+            for i, v in enumerate(["10", "10", "13"])
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+
+        bt = Backtest.objects.create(
+            name="Forced Sell End Sync",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        final = line["final"]
+        daily_last = line["daily"][-1]
+        portfolio = result["portfolio"]["kpi"]
+
+        self.assertEqual(final["N"], 1)
+        self.assertEqual(Decimal(final["BT"]), Decimal("0.3"))
+        self.assertEqual(Decimal(final["S_G_N"]), Decimal("0.3"))
+        self.assertEqual(Decimal(final["PNL_AMOUNT"]), Decimal("30"))
+        self.assertEqual(final["WIN_TRADES"], 1)
+        self.assertEqual(final["LOSS_TRADES"], 0)
+        self.assertEqual(final["FLAT_TRADES"], 0)
+        self.assertEqual(daily_last["action"], "FORCED_SELL")
+        self.assertTrue(daily_last["forced_close"])
+        self.assertEqual(daily_last["shares"], 0)
+        self.assertEqual(daily_last["N"], 1)
+        self.assertEqual(Decimal(daily_last["BT"]), Decimal("0.3"))
+        self.assertEqual(Decimal(daily_last["action_PNL_AMOUNT"]), Decimal("30"))
+        self.assertEqual(portfolio["TOTAL_TRADES"], 1)
+        self.assertEqual(Decimal(portfolio["TOTAL_PNL_AMOUNT"]), Decimal("30"))
+        self.assertEqual(Decimal(portfolio["WIN_RATE_AMOUNT"]), Decimal("100"))
+
+    def test_forced_sell_at_backtest_end_updates_loss_side_kpis(self):
+        start = date(2024, 3, 20)
+        self._create_bars_for_symbol(self.symbol, ["10", "9", "8"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal(v), ratio_P=Decimal("1"))
+            for i, v in enumerate(["10", "9", "8"])
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+
+        bt = Backtest.objects.create(
+            name="Forced Sell End Loss",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        final = result["tickers"][self.symbol.ticker]["lines"][0]["final"]
+        portfolio = result["portfolio"]["kpi"]
+
+        self.assertEqual(final["N"], 1)
+        self.assertEqual(final["WIN_TRADES"], 0)
+        self.assertEqual(final["LOSS_TRADES"], 1)
+        self.assertEqual(final["FLAT_TRADES"], 0)
+        self.assertEqual(Decimal(final["PNL_AMOUNT"]), Decimal("-20"))
+        self.assertEqual(Decimal(final["TOTAL_LOSS_AMOUNT"]), Decimal("-20"))
+        self.assertEqual(Decimal(final["MAX_LOSS_AMOUNT"]), Decimal("-20"))
+        self.assertEqual(portfolio["TOTAL_TRADES"], 1)
+        self.assertEqual(portfolio["LOSS_TRADES"], 1)
+        self.assertEqual(Decimal(portfolio["TOTAL_LOSS_AMOUNT"]), Decimal("-20"))
+
+    def test_run_backtest_kpi_only_counts_forced_sell_as_completed_trade(self):
+        start = date(2024, 4, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "11", "12"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal(v), ratio_P=Decimal("1"))
+            for i, v in enumerate(["10", "11", "12"])
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+
+        bt = Backtest.objects.create(
+            name="KPI Only Forced Sell",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest_kpi_only(bt)
+        final = result[self.symbol.ticker]["lines"][0]["final"]
+
+        self.assertEqual(final["N"], 1)
+        self.assertEqual(Decimal(final["BT"]), Decimal("0.2"))
+        self.assertEqual(Decimal(result[self.symbol.ticker]["best_bmd"]), Decimal(final["BMD"]))
+
     def test_incremental_and_full_indicator_calculations_match(self):
         dates = self._create_bars_for_symbol(self.symbol, ["10", "11", "12", "11", "13", "15", "14"])
 

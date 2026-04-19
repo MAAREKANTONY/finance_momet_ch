@@ -1,0 +1,77 @@
+StockAlert V8.0.09 — Correctif backtest forced sell fin de période
+
+Objectif
+- Corriger l’incohérence des backtests quand une position encore ouverte est liquidée automatiquement en fin de période.
+- Aligner complètement le traitement de FORCED_SELL avec un SELL normal.
+- Ne pas modifier la sémantique existante des signaux:
+  - crossing strict inchangé
+  - logique AND mémorisée inchangée
+
+Constat avant correction
+- Le bloc `close_positions_at_end` liquidait bien la position en cash, mais ne comptabilisait pas complètement le trade réalisé.
+- Impact observé:
+  - `N` pouvait rester à 0 alors qu’un `FORCED_SELL` apparaissait dans les lignes journalières
+  - `BT`, `S_G_N`, `WIN_TRADES`, `LOSS_TRADES`, `FLAT_TRADES` pouvaient rester faux
+  - les synthèses portefeuille pouvaient diverger des détails XLS exportés
+
+Corrections appliquées
+1) Source unique pour la clôture d’un trade
+- ajout de `core.services.backtesting.engine._close_open_position(...)`
+- cette fonction centralise la clôture complète d’une position:
+  - cash / bank
+  - PnL montant
+  - rendement G
+  - incrément `trade_count`
+  - cumul `sum_g`
+  - compteurs win/loss
+  - max gain / max loss
+  - jours de détention clôturés
+  - remise à zéro de l’état de position
+  - nettoyage mémoire signaux
+
+2) SELL normal et FORCED_SELL désormais alignés
+- le SELL standard utilise maintenant la même routine de clôture que le FORCED_SELL
+- le FORCED_SELL de fin de backtest met maintenant à jour les mêmes KPI qu’un SELL classique
+
+3) Cohérence des lignes journalières après FORCED_SELL
+- la dernière ligne journalière est maintenant resynchronisée avec les bons compteurs:
+  - `N`
+  - `S_G_N`
+  - `BT`
+  - `BMD`
+  - `BUY_DAYS_CLOSED`
+  - `shares`
+  - `cash_ticker`
+  - `bank`
+  - `action_PNL_AMOUNT`
+- les compteurs de jours tradables sont également recalculés après mutation de la dernière ligne
+
+4) Alignement du mode KPI-only
+- `run_backtest_kpi_only(...)` utilise aussi la routine commune de clôture
+- le FORCED_SELL final y compte désormais bien comme trade terminé
+
+5) Nettoyage mineur
+- suppression d’un double appel inutile à `_recompute_tradable_counters_from_rows(...)`
+- mise à jour de `engine_version` en `5.2.3`
+
+Fichiers modifiés
+- core/services/backtesting/engine.py
+- core/tests/test_engine_and_metrics.py
+
+Tests ajoutés
+- forced sell fin de backtest -> mise à jour des compteurs trade + dernière ligne journalière
+- forced sell fin de backtest perdant -> mise à jour des KPI de perte
+- mode KPI-only -> le forced sell final est compté comme trade clôturé
+
+Validation
+- `python manage.py test core.tests.test_engine_and_metrics -v 2` ✅
+
+Migration
+- aucune migration DB
+
+Impact attendu
+- les ventes forcées de fin de backtest sont désormais comptées comme de vrais trades réalisés
+- les synthèses et les exports détaillés doivent redevenir cohérents sur ce point
+- aucun changement volontaire sur:
+  - crossing strict
+  - logique AND mémorisée

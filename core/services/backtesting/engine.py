@@ -253,6 +253,66 @@ def _reset_trade_signal_memory(state_row: dict[str, Any]) -> None:
     state_row["active_signal_states"] = {}
     state_row["and_latched_states"] = {}
 
+def _close_open_position(
+    state_row: dict[str, Any],
+    *,
+    close_price: Decimal,
+    close_date: date,
+    CT: Decimal,
+    fixed_capital: bool,
+    reset_signal_memory: bool = True,
+) -> tuple[Decimal | None, Decimal] | None:
+    """Close an open position and fully update realized-trade state."""
+    if (not state_row.get("position_open")) or state_row.get("entry_price") is None or int(state_row.get("shares") or 0) <= 0:
+        return None
+
+    shares = int(state_row.get("shares") or 0)
+    close_price = Decimal(close_price)
+    proceeds = Decimal(shares) * close_price
+
+    if fixed_capital:
+        total_after = Decimal(state_row.get("cash_ticker") or 0) + proceeds
+        state_row["bank"] = Decimal(state_row.get("bank") or 0) + (total_after - CT)
+        state_row["cash_ticker"] = CT
+    else:
+        state_row["cash_ticker"] = Decimal(state_row.get("cash_ticker") or 0) + proceeds
+
+    entry = Decimal(state_row["entry_price"])
+    pnl_amount_today = Decimal(shares) * (close_price - entry)
+    G_today = None if entry == 0 else ((close_price - entry) / entry)
+
+    state_row["pnl_amount_total"] = Decimal(state_row.get("pnl_amount_total") or 0) + pnl_amount_today
+    if pnl_amount_today > 0:
+        state_row["total_gain_amount"] = Decimal(state_row.get("total_gain_amount") or 0) + pnl_amount_today
+        state_row["win_trades"] = int(state_row.get("win_trades") or 0) + 1
+        current_max_gain = state_row.get("max_gain_amount")
+        if current_max_gain is None or pnl_amount_today > current_max_gain:
+            state_row["max_gain_amount"] = pnl_amount_today
+    elif pnl_amount_today < 0:
+        state_row["total_loss_amount"] = Decimal(state_row.get("total_loss_amount") or 0) + pnl_amount_today
+        state_row["loss_trades"] = int(state_row.get("loss_trades") or 0) + 1
+        current_max_loss = state_row.get("max_loss_amount")
+        if current_max_loss is None or pnl_amount_today < current_max_loss:
+            state_row["max_loss_amount"] = pnl_amount_today
+
+    entry_date = state_row.get("entry_date")
+    if entry_date is not None:
+        try:
+            state_row["buy_days_closed"] = int(state_row.get("buy_days_closed") or 0) + int((close_date - entry_date).days) + 1
+        except Exception:
+            pass
+
+    state_row["entry_date"] = None
+    state_row["trade_count"] = int(state_row.get("trade_count") or 0) + 1
+    state_row["sum_g"] = Decimal(state_row.get("sum_g") or 0) + (G_today or Decimal("0"))
+    if reset_signal_memory:
+        _reset_trade_signal_memory(state_row)
+    state_row["position_open"] = False
+    state_row["entry_price"] = None
+    state_row["shares"] = 0
+    return G_today, pnl_amount_today
+
+
 def _match_codes_with_memory(day_alerts: set[str], latched_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
     codes = _normalize_codes(codes)
     if not codes:
@@ -789,49 +849,17 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
 
             def _do_sell(reason: str):
                 nonlocal G_today, pnl_amount_today
-                if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
+                closed = _close_open_position(
+                    st,
+                    close_price=close_d,
+                    close_date=d,
+                    CT=CT,
+                    fixed_capital=fixed_capital,
+                    reset_signal_memory=True,
+                )
+                if closed is None:
                     return
-                proceeds = Decimal(st["shares"]) * close_d
-                if fixed_capital:
-                    # Total value after closing the position (includes any cash left from rounding on BUY).
-                    total_after = Decimal(st["cash_ticker"]) + proceeds
-                    # Keep realized PnL in bank; reset cash_ticker back to CT for the next BUY.
-                    st["bank"] = Decimal(st.get("bank") or 0) + (total_after - CT)
-                    st["cash_ticker"] = CT
-                else:
-                    # Legacy behaviour: reinvest everything (capital evolves with PnL).
-                    st["cash_ticker"] = st["cash_ticker"] + proceeds
-                entry = Decimal(st["entry_price"])
-                pnl_amount_today = Decimal(st["shares"]) * (close_d - entry)
-                if entry != 0:
-                    G_today = (close_d - entry) / entry
-                st["pnl_amount_total"] = Decimal(st.get("pnl_amount_total") or 0) + pnl_amount_today
-                if pnl_amount_today > 0:
-                    st["total_gain_amount"] = Decimal(st.get("total_gain_amount") or 0) + pnl_amount_today
-                    st["win_trades"] = int(st.get("win_trades") or 0) + 1
-                    current_max_gain = st.get("max_gain_amount")
-                    if current_max_gain is None or pnl_amount_today > current_max_gain:
-                        st["max_gain_amount"] = pnl_amount_today
-                elif pnl_amount_today < 0:
-                    st["total_loss_amount"] = Decimal(st.get("total_loss_amount") or 0) + pnl_amount_today
-                    st["loss_trades"] = int(st.get("loss_trades") or 0) + 1
-                    current_max_loss = st.get("max_loss_amount")
-                    if current_max_loss is None or pnl_amount_today < current_max_loss:
-                        st["max_loss_amount"] = pnl_amount_today
-
-                # Count holding days ONLY for completed (buy->sell) trades
-                if st.get("entry_date") is not None:
-                    try:
-                        st["buy_days_closed"] += int((d - st["entry_date"]).days) + 1
-                    except Exception:
-                        pass
-                st["entry_date"] = None
-                st["trade_count"] += 1
-                st["sum_g"] += (G_today or Decimal("0"))
-                _reset_trade_signal_memory(st)
-                st["position_open"] = False
-                st["entry_price"] = None
-                st["shares"] = 0
+                G_today, pnl_amount_today = closed
                 logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
 
             sell_codes = st["sell_codes"]
@@ -1167,40 +1195,17 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             close_d = _to_dec(price_by_date[last_date])
             if close_d is None:
                 continue
-            proceeds = Decimal(st["shares"]) * close_d
-            if fixed_capital:
-                total_after = Decimal(st["cash_ticker"]) + proceeds
-                st["bank"] = Decimal(st.get("bank") or 0) + (total_after - CT)
-                st["cash_ticker"] = CT
-            else:
-                st["cash_ticker"] = st["cash_ticker"] + proceeds
-            entry = Decimal(st["entry_price"])
-            G_today = None
-            pnl_amount_today = Decimal(st["shares"]) * (close_d - entry)
-            if entry != 0:
-                G_today = (close_d - entry) / entry
-            st["pnl_amount_total"] = Decimal(st.get("pnl_amount_total") or 0) + pnl_amount_today
-            if pnl_amount_today > 0:
-                st["total_gain_amount"] = Decimal(st.get("total_gain_amount") or 0) + pnl_amount_today
-                st["win_trades"] = int(st.get("win_trades") or 0) + 1
-                current_max_gain = st.get("max_gain_amount")
-                if current_max_gain is None or pnl_amount_today > current_max_gain:
-                    st["max_gain_amount"] = pnl_amount_today
-            elif pnl_amount_today < 0:
-                st["total_loss_amount"] = Decimal(st.get("total_loss_amount") or 0) + pnl_amount_today
-                st["loss_trades"] = int(st.get("loss_trades") or 0) + 1
-                current_max_loss = st.get("max_loss_amount")
-                if current_max_loss is None or pnl_amount_today < current_max_loss:
-                    st["max_loss_amount"] = pnl_amount_today
-            st["entry_price"] = None
-            # Count holding days for forced-close completed trade
-            if st.get("entry_date") is not None:
-                try:
-                    st["buy_days_closed"] += int((last_date - st["entry_date"]).days) + 1
-                except Exception:
-                    pass
-            st["entry_date"] = None
-            st["shares"] = 0
+            closed = _close_open_position(
+                st,
+                close_price=close_d,
+                close_date=last_date,
+                CT=CT,
+                fixed_capital=fixed_capital,
+                reset_signal_memory=True,
+            )
+            if closed is None:
+                continue
+            G_today, pnl_amount_today = closed
             logs.append(f"{ticker}[L{li+1}] FORCED SELL on {last_date} close={close_d} G={G_today}")
 
             # Update last daily row for that ticker/line
@@ -1273,7 +1278,6 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                     "BUY_DAYS_CLOSED": bmd_days,
                 })
                 _recompute_tradable_counters_from_rows(st)
-                _recompute_tradable_counters_from_rows(st)
 
     # Build results structure compatible with previous output
     results: dict[str, Any] = {
@@ -1289,7 +1293,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             "X": str(X),
             "signal_lines": signal_lines,
             "global_cash_end": None if global_cash is None else str(global_cash),
-            "engine_version": "5.2.2",
+            "engine_version": "5.2.3",
         },
         "tickers": {},
     }
@@ -1757,25 +1761,17 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
 
             def _do_sell(reason: str):
                 nonlocal G_today
-                if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
+                closed = _close_open_position(
+                    st,
+                    close_price=close_d,
+                    close_date=d,
+                    CT=CT,
+                    fixed_capital=fixed_capital,
+                    reset_signal_memory=True,
+                )
+                if closed is None:
                     return
-                proceeds = Decimal(st["shares"]) * close_d
-                if fixed_capital:
-                    total_after = Decimal(st["cash_ticker"]) + proceeds
-                    st["bank"] = Decimal(st.get("bank") or 0) + (total_after - CT)
-                    st["cash_ticker"] = CT
-                else:
-                    st["cash_ticker"] = st["cash_ticker"] + proceeds
-                entry = Decimal(st["entry_price"])
-                if entry != 0:
-                    G_today = (close_d - entry) / entry
-                st["trade_count"] += 1
-                st["sum_g"] += (G_today or Decimal("0"))
-                _reset_trade_signal_memory(st)
-                st["position_open"] = False
-                st["entry_price"] = None
-                st["shares"] = 0
-                st["entry_date"] = None
+                G_today, _pnl_amount_today = closed
                 logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
 
             sell_codes = st["sell_codes"]
@@ -1919,16 +1915,16 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             close_d = _to_dec(tdata["price_by_date"].get(last_date))
             if close_d is None:
                 continue
-            entry = Decimal(st["entry_price"])
-            G_today = None
-            if entry != 0:
-                G_today = (close_d - entry) / entry
-            st["trade_count"] += 1
-            st["sum_g"] += (G_today or Decimal("0"))
-            st["position_open"] = False
-            st["entry_price"] = None
-            st["shares"] = 0
-            st["entry_date"] = None
+            closed = _close_open_position(
+                st,
+                close_price=close_d,
+                close_date=last_date,
+                CT=CT,
+                fixed_capital=fixed_capital,
+                reset_signal_memory=True,
+            )
+            if closed is None:
+                continue
 
     # Build finals
     out: dict[str, dict[str, Any]] = {}
