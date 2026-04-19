@@ -190,15 +190,23 @@ CSRF_COOKIE_SAMESITE = os.getenv("CSRF_COOKIE_SAMESITE", "Lax")
 SESSION_COOKIE_SAMESITE = os.getenv("SESSION_COOKIE_SAMESITE", "Lax")
 
 # ProcessingJob cleanup thresholds (minutes)
+# Tests should exercise the canonical recovery defaults, not container-specific
+# .env overrides that are meant for long-lived production workers.
 JOB_DB_RETRY_ATTEMPTS = int(os.getenv('JOB_DB_RETRY_ATTEMPTS', '5'))
 JOB_DB_RETRY_DELAY_SECONDS = int(os.getenv('JOB_DB_RETRY_DELAY_SECONDS', '2'))
 JOB_DB_RETRY_BACKOFF_SECONDS = int(os.getenv('JOB_DB_RETRY_BACKOFF_SECONDS', '2'))
 JOB_TASK_RETRY_COUNTDOWN_SECONDS = int(os.getenv('JOB_TASK_RETRY_COUNTDOWN_SECONDS', '15'))
 JOB_TASK_MAX_RETRIES = int(os.getenv('JOB_TASK_MAX_RETRIES', '5'))
-JOB_STALE_HEARTBEAT_MINUTES = int(os.getenv('JOB_STALE_HEARTBEAT_MINUTES', '2'))
-JOB_STALE_STARTED_MINUTES = int(os.getenv('JOB_STALE_STARTED_MINUTES', '3'))
-JOB_STALE_PENDING_MINUTES = int(os.getenv('JOB_STALE_PENDING_MINUTES', '10'))
-JOB_REQUESTED_STOP_STALE_MINUTES = int(os.getenv('JOB_REQUESTED_STOP_STALE_MINUTES', '1'))
+if TESTING:
+    JOB_STALE_HEARTBEAT_MINUTES = 2
+    JOB_STALE_STARTED_MINUTES = 3
+    JOB_STALE_PENDING_MINUTES = 10
+    JOB_REQUESTED_STOP_STALE_MINUTES = 1
+else:
+    JOB_STALE_HEARTBEAT_MINUTES = int(os.getenv('JOB_STALE_HEARTBEAT_MINUTES', '2'))
+    JOB_STALE_STARTED_MINUTES = int(os.getenv('JOB_STALE_STARTED_MINUTES', '3'))
+    JOB_STALE_PENDING_MINUTES = int(os.getenv('JOB_STALE_PENDING_MINUTES', '10'))
+    JOB_REQUESTED_STOP_STALE_MINUTES = int(os.getenv('JOB_REQUESTED_STOP_STALE_MINUTES', '1'))
 
 # GameScenario scheduler defaults (used by core.tasks)
 GAME_SCENARIO_RUN_HOUR = int(os.getenv('GAME_SCENARIO_RUN_HOUR', '3'))

@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
+from django.test.utils import override_settings
 from django.utils import timezone
 
 from core.job_launch import ActiveJobConflictError, dispatch_task_after_commit, find_active_processing_job, launch_processing_job
@@ -171,25 +172,30 @@ class GlobalSingleActiveJobGuardTests(TestCase):
             job_type=ProcessingJob.JobType.COMPUTE_METRICS,
             status=ProcessingJob.Status.RUNNING,
             scenario=self.scenario,
-            started_at=timezone.now() - timedelta(minutes=10),
-            heartbeat_at=timezone.now() - timedelta(minutes=10),
+            started_at=timezone.now() - timedelta(minutes=31),
+            heartbeat_at=timezone.now() - timedelta(minutes=31),
         )
         task = Mock()
         task.apply_async.return_value = SimpleNamespace(id="celery-task-789")
 
-        with patch("core.job_launch.transaction.on_commit", side_effect=lambda fn: fn()):
-            outcome = launch_processing_job(
-                task=task,
-                job_type=ProcessingJob.JobType.RUN_BACKTEST,
-                backtest=self.backtest,
-                scenario=self.scenario,
-                created_by=self.user,
-                message="En attente d'exécution",
-                task_kwargs={"backtest_id": self.backtest.id, "user_id": self.user.id},
-            )
+        with override_settings(
+            JOB_STALE_HEARTBEAT_MINUTES=2,
+            JOB_STALE_STARTED_MINUTES=3,
+            JOB_STALE_PENDING_MINUTES=10,
+            JOB_REQUESTED_STOP_STALE_MINUTES=1,
+        ):
+            with patch("core.job_launch.transaction.on_commit", side_effect=lambda fn: fn()):
+                outcome = launch_processing_job(
+                    task=task,
+                    job_type=ProcessingJob.JobType.RUN_BACKTEST,
+                    backtest=self.backtest,
+                    scenario=self.scenario,
+                    created_by=self.user,
+                    message="En attente d'exécution",
+                    task_kwargs={"backtest_id": self.backtest.id, "user_id": self.user.id},
+                )
 
         self.assertIsNone(outcome.dispatch_error)
         outcome.job.refresh_from_db()
         self.assertEqual(outcome.job.status, ProcessingJob.Status.PENDING)
         self.assertEqual(ProcessingJob.objects.filter(status=ProcessingJob.Status.RUNNING).count(), 0)
-
