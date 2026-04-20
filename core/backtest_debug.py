@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, Iterable
 from openpyxl import Workbook
 
+from .backtest_row_projection import augment_tradable_projection_row
 from .excel_utils import append_excel_row
 from .models import Backtest
 
@@ -46,27 +47,8 @@ def _codes_to_label(v: Any) -> str:
         return ''
     return str(v)
 
-
-def _int_or_zero(v: Any) -> int:
-    try:
-        return int(v)
-    except Exception:
-        return 0
-
-
 def augment_debug_row(row: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(row, dict):
-        return row
-    d = dict(row)
-    nip = _int_or_zero(d.get('NB_JOUR_OUVRES'))
-    ipc = _int_or_zero(d.get('BUY_DAYS_CLOSED'))
-    td = nip + ipc
-    d['TRADABLE_DAYS_NOT_IN_POSITION'] = nip
-    d['TRADABLE_DAYS_IN_POSITION_CLOSED'] = ipc
-    d['TRADABLE_DAYS'] = td
-    d['RATIO_NOT_IN_POSITION'] = (nip / td * 100.0) if td > 0 else 0.0
-    d['RATIO_IN_POSITION'] = (ipc / td * 100.0) if td > 0 else 0.0
-    return d
+    return augment_tradable_projection_row(row)
 
 
 def _load_daily_from_line(line: dict[str, Any]) -> list[dict[str, Any]]:

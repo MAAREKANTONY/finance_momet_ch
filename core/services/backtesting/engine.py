@@ -313,6 +313,25 @@ def _close_open_position(
     return G_today, pnl_amount_today
 
 
+def _build_shared_line_kpi_values(state_row: dict[str, Any]) -> dict[str, Any]:
+    """Return the shared per-line KPI values used by both backtest result paths."""
+    trade_count = int(state_row["trade_count"])
+    bt = state_row["sum_g"]
+    tradable_days = int(state_row.get("tradable_days") or 0)
+    in_position_days = int(state_row.get("tradable_days_in_position") or 0)
+    not_in_position_days = max(0, tradable_days - in_position_days)
+    return {
+        "N": trade_count,
+        "S_G_N": None if trade_count == 0 else (bt / Decimal(trade_count)),
+        "BT": bt,
+        "TRADABLE_DAYS": tradable_days,
+        "TRADABLE_DAYS_NOT_IN_POSITION": not_in_position_days,
+        "TRADABLE_DAYS_IN_POSITION_CLOSED": in_position_days,
+        "BMJ": None if not_in_position_days == 0 else (bt / Decimal(not_in_position_days)),
+        "BMD": None if in_position_days == 0 else (bt / Decimal(in_position_days)),
+    }
+
+
 def _match_codes_with_memory(day_alerts: set[str], latched_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
     codes = _normalize_codes(codes)
     if not codes:
@@ -1303,22 +1322,23 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
         tentry = {"lines": []}
         for li, line in enumerate(signal_lines):
             st = state[(ticker, li)]
-            N = st["trade_count"]
-            S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
-            BT = st["sum_g"]
+            shared_kpis = _build_shared_line_kpi_values(st)
+            N = shared_kpis["N"]
+            S_G_N = shared_kpis["S_G_N"]
+            BT = shared_kpis["BT"]
             # Day counters are derived from the end-of-day rows (see section 3.b above).
             # They count "tradable" days (ratio_p >= X unless include_all) and whether a position
             # is held at the end of the day (shares > 0).
-            tradable_days = int(st.get("tradable_days") or 0)
-            in_pos_days = int(st.get("tradable_days_in_position") or 0)
-            not_in_pos_days = max(0, tradable_days - in_pos_days)
+            tradable_days = shared_kpis["TRADABLE_DAYS"]
+            in_pos_days = shared_kpis["TRADABLE_DAYS_IN_POSITION_CLOSED"]
+            not_in_pos_days = shared_kpis["TRADABLE_DAYS_NOT_IN_POSITION"]
 
             # Keep legacy keys in the JSON for backward compatibility.
             nb = not_in_pos_days
             bmd_days = in_pos_days
 
-            BMJ = None if nb == 0 else (BT / Decimal(nb))
-            BMD = None if bmd_days == 0 else (BT / Decimal(bmd_days))
+            BMJ = shared_kpis["BMJ"]
+            BMD = shared_kpis["BMD"]
             pnl_amount_total = Decimal(st.get("pnl_amount_total") or 0)
             total_gain_amount = Decimal(st.get("total_gain_amount") or 0)
             total_loss_amount = Decimal(st.get("total_loss_amount") or 0)
@@ -1933,13 +1953,14 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         best_bmd: Decimal | None = None
         for li, _line in enumerate(signal_lines):
             st = state[(ticker, li)]
-            N = st["trade_count"]
-            BT = st["sum_g"]
-            tradable_days = int(st.get("tradable_days") or 0)
-            in_pos_days = int(st.get("tradable_days_in_position") or 0)
-            not_in_pos_days = max(0, tradable_days - in_pos_days)
-            BMJ = None if not_in_pos_days == 0 else (BT / Decimal(not_in_pos_days))
-            BMD = None if in_pos_days == 0 else (BT / Decimal(in_pos_days))
+            shared_kpis = _build_shared_line_kpi_values(st)
+            N = shared_kpis["N"]
+            BT = shared_kpis["BT"]
+            tradable_days = shared_kpis["TRADABLE_DAYS"]
+            in_pos_days = shared_kpis["TRADABLE_DAYS_IN_POSITION_CLOSED"]
+            not_in_pos_days = shared_kpis["TRADABLE_DAYS_NOT_IN_POSITION"]
+            BMJ = shared_kpis["BMJ"]
+            BMD = shared_kpis["BMD"]
             if BMD is not None:
                 if best_bmd is None or BMD > best_bmd:
                     best_bmd = BMD

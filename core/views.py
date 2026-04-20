@@ -54,6 +54,7 @@ from .forms import (
     AlertDefinitionForm,
     GameScenarioForm,
 )
+from .backtest_row_projection import augment_tradable_projection_row
 from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
@@ -2336,24 +2337,8 @@ def backtest_results(request, pk: int):
     # - NB_JOUR_OUVRES: tradable days where we end the day out of position
     # - BUY_DAYS_CLOSED: tradable days where we end the day in position (for closed trades)
     # The UI wants clearer names + extra ratios, computed at render time to avoid regressions.
-    def _int_or_zero(v):
-        try:
-            return int(v)
-        except Exception:
-            return 0
-
     def _augment_row(d: dict) -> dict:
-        if not isinstance(d, dict):
-            return d
-        nip = _int_or_zero(d.get("NB_JOUR_OUVRES"))
-        ipc = _int_or_zero(d.get("BUY_DAYS_CLOSED"))
-        td = nip + ipc
-        d["TRADABLE_DAYS_NOT_IN_POSITION"] = nip
-        d["TRADABLE_DAYS_IN_POSITION_CLOSED"] = ipc
-        d["TRADABLE_DAYS"] = td
-        d["RATIO_NOT_IN_POSITION"] = (nip / td * 100.0) if td > 0 else 0.0
-        d["RATIO_IN_POSITION"] = (ipc / td * 100.0) if td > 0 else 0.0
-        return d
+        return augment_tradable_projection_row(d)
 
     final = _augment_row(dict(final))
     daily = [_augment_row(dict(r)) for r in (daily or [])]
