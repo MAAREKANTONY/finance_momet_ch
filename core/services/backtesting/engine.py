@@ -1511,14 +1511,13 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     if non_positive_ticker_ratios:
         avg_ratio_non_positive = sum(non_positive_ticker_ratios) / Decimal(len(non_positive_ticker_ratios))
 
+    portfolio_capital_base = CP_raw
     bt_return = None
     bmj_return = None
-    if invested_end > 0:
-        bt_return = (equity_end - invested_end) / invested_end
-        if nb_days_invested > 0:
-            bmj_return = bt_return / Decimal(nb_days_invested)
+    if portfolio_capital_base > 0 and nb_days_invested > 0:
+        bt_return = (equity_end - portfolio_capital_base) / portfolio_capital_base
+        bmj_return = bt_return / Decimal(nb_days_invested)
 
-    portfolio_capital_base = (CP_raw if not CP_infinite else invested_total)
     total_pnl_amount = equity_end - portfolio_capital_base
     total_return_on_capital = None if portfolio_capital_base <= 0 else (total_pnl_amount / portfolio_capital_base)
     total_gain_amount = Decimal("0")
@@ -1584,7 +1583,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
 
     results["portfolio"] = {
         "kpi": {
-            "capital_total": str(CP_raw if not CP_infinite else invested_total),
+            "capital_total": str(CP_raw),
             "invested_end": str(invested_end),
             "equity_end": str(equity_end),
             "BT": None if bt_return is None else str(bt_return),

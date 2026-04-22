@@ -22,3 +22,11 @@ Always return:
 3. commands run
 4. result
 5. remaining failures
+
+## KPI correction rule
+- Any KPI formula change must include:
+  - production code update
+  - regression/golden test update
+  - user-facing documentation update
+  - label/help text clarification where needed
+- No KPI business correction is considered complete without aligned UI/help wording.

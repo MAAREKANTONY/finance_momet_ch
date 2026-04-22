@@ -602,9 +602,9 @@ class BacktestPortfolioKPI(models.Model):
     invested_end = models.DecimalField(max_digits=20, decimal_places=6, default=0)
     equity_end = models.DecimalField(max_digits=20, decimal_places=6, default=0)
 
-    # Total return ratio: (equity_end - invested_end) / invested_end
+    # Total portfolio return ratio: (equity_end - capital_total) / capital_total
     bt_return = models.DecimalField(max_digits=20, decimal_places=12, null=True, blank=True)
-    # Mean return per day (ratio). Simple average based on invested days.
+    # Mean portfolio return per invested day: bt_return / nb_days.
     bmj_return = models.DecimalField(max_digits=20, decimal_places=12, null=True, blank=True)
 
     nb_days = models.PositiveIntegerField(default=0)

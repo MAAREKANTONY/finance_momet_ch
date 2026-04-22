@@ -122,6 +122,106 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertIsNone(portfolio["MAX_LOSS_AMOUNT"])
         self.assertEqual(Decimal(portfolio["max_drawdown_amount"]), Decimal("0"))
 
+    def test_backtest_golden_line_kpis_single_profitable_trade(self):
+        start = date(2024, 1, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "12", "15", "11"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal(v), ratio_P=Decimal("1"))
+            for i, v in enumerate(["10", "12", "15", "11"])
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1"),
+        ])
+
+        bt = Backtest.objects.create(
+            name="Golden KPI Profitable Trade",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        final = line["final"]
+        daily_last = line["daily"][-1]
+        portfolio = result["portfolio"]["kpi"]
+
+        self.assertEqual(Decimal(final["BT"]), Decimal("0.5"))
+        self.assertEqual(final["TRADABLE_DAYS"], 4)
+        self.assertEqual(final["TRADABLE_DAYS_NOT_IN_POSITION"], 2)
+        self.assertEqual(final["TRADABLE_DAYS_IN_POSITION_CLOSED"], 2)
+        self.assertEqual(Decimal(final["RATIO_NOT_IN_POSITION"]), Decimal("50"))
+        self.assertEqual(Decimal(final["RATIO_IN_POSITION"]), Decimal("50"))
+        self.assertEqual(Decimal(final["BMJ"]), Decimal("0.25"))
+        self.assertEqual(Decimal(final["BMD"]), Decimal("0.25"))
+
+        self.assertEqual(Decimal(daily_last["BT"]), Decimal("0.5"))
+        self.assertEqual(daily_last["TRADABLE_DAYS"], 4)
+        self.assertEqual(daily_last["TRADABLE_DAYS_NOT_IN_POSITION"], 2)
+        self.assertEqual(daily_last["TRADABLE_DAYS_IN_POSITION_CLOSED"], 2)
+        self.assertEqual(Decimal(daily_last["RATIO_NOT_IN_POSITION"]), Decimal("50"))
+        self.assertEqual(Decimal(daily_last["RATIO_IN_POSITION"]), Decimal("50"))
+        self.assertEqual(Decimal(daily_last["BMJ"]), Decimal("0.25"))
+        self.assertEqual(Decimal(daily_last["BMD"]), Decimal("0.25"))
+
+        self.assertEqual(Decimal(portfolio["invested_end"]), Decimal("100"))
+        self.assertEqual(Decimal(portfolio["equity_end"]), Decimal("1050"))
+        self.assertEqual(portfolio["NB_DAYS"], 4)
+        self.assertEqual(Decimal(portfolio["BT"]), Decimal("0.05"))
+        self.assertEqual(Decimal(portfolio["BMJ"]), Decimal("0.0125"))
+        self.assertEqual(Decimal(portfolio["BT"]), Decimal(portfolio["TOTAL_RETURN_ON_CAPITAL"]))
+
+    def test_backtest_golden_portfolio_kpis_no_trade_all_days_tradable(self):
+        start = date(2024, 2, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "10", "10"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(3)
+        ])
+
+        bt = Backtest.objects.create(
+            name="Golden KPI No Trade",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        final = result["tickers"][self.symbol.ticker]["lines"][0]["final"]
+        portfolio = result["portfolio"]["kpi"]
+
+        self.assertEqual(Decimal(final["BT"]), Decimal("0"))
+        self.assertEqual(final["TRADABLE_DAYS"], 3)
+        self.assertEqual(final["TRADABLE_DAYS_NOT_IN_POSITION"], 3)
+        self.assertEqual(final["TRADABLE_DAYS_IN_POSITION_CLOSED"], 0)
+        self.assertEqual(Decimal(final["RATIO_NOT_IN_POSITION"]), Decimal("100"))
+        self.assertEqual(Decimal(final["RATIO_IN_POSITION"]), Decimal("0"))
+        self.assertEqual(Decimal(final["BMJ"]), Decimal("0"))
+        self.assertIsNone(final["BMD"])
+
+        self.assertEqual(Decimal(portfolio["invested_end"]), Decimal("0"))
+        self.assertEqual(Decimal(portfolio["equity_end"]), Decimal("1000"))
+        self.assertEqual(portfolio["NB_DAYS"], 0)
+        self.assertIsNone(portfolio["BT"])
+        self.assertIsNone(portfolio["BMJ"])
+
 
     def test_backtest_portfolio_counts_flat_trades_and_total_return_on_capital(self):
         start = date(2024, 2, 1)
