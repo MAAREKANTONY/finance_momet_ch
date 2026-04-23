@@ -21,3 +21,4 @@ ENV/
 logs/*.log
 tmp/
 backup/
+data/
