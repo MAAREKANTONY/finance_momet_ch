@@ -27,7 +27,55 @@
     &nbsp; | &nbsp;
     <b>Statut:</b> {{ obj.last_run_status }}
   </p>
+  <p>
+    <b>Prix minimum d'achat:</b> {{ obj.settings.min_price|default:"aucune borne minimum" }}
+    &nbsp; | &nbsp;
+    <b>Prix maximum d'achat:</b> {{ obj.settings.max_price|default:"aucune borne maximum" }}
+  </p>
   {% if obj.last_run_message %}<p class="muted">{{ obj.last_run_message }}</p>{% endif %}
+
+  <div style="margin-top:12px;">
+    <b>Lignes de signaux (achat / vente):</b>
+    {% if obj.signal_lines %}
+      <table style="margin-top:8px;">
+        <thead><tr><th>#</th><th>Mode de déclenchement</th><th>Achat</th><th>Vente</th></tr></thead>
+        <tbody>
+          {% for line in obj.signal_lines %}
+            <tr>
+              <td>{{ forloop.counter }}</td>
+              <td>
+                {{ line|trading_model_business_label }}
+              </td>
+              <td>
+                {% if line.buy|length %}
+                  {% if line.buy_logic == "OR" %}
+                    {{ line.buy|join:" | " }} <span class="muted">(OU)</span>
+                  {% else %}
+                    {{ line.buy|join:" & " }} <span class="muted">(ET)</span>
+                  {% endif %}
+                {% else %}—{% endif %}
+              </td>
+              <td>
+                {% if line.sell == "AUTO_K1F_UPPER_DOWN_B1F" or line.sell.0 == "AUTO_K1F_UPPER_DOWN_B1F" %}
+                  <span class="pill" title="Vente auto : B1f prioritaire, sinon K1f recoupe en descente la 1ère ligne au-dessus (K1/K2/K3/K4) selon le jour.">AUTO (K1f)</span>
+                {% else %}
+                  {% if line.sell|length %}
+                    {% if line.sell_logic == "AND" %}
+                      {{ line.sell|join:" & " }} <span class="muted">(ET)</span>
+                    {% else %}
+                      {{ line.sell|join:" | " }} <span class="muted">(OU)</span>
+                    {% endif %}
+                  {% else %}—{% endif %}
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <span class="muted">—</span>
+    {% endif %}
+  </div>
 
   <form method="post" action="{% url 'game_scenario_launch' obj.pk %}" style="display:inline;">
     {% csrf_token %}

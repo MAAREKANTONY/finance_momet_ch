@@ -1,4 +1,5 @@
 {% extends "base.html" %}
+{% load backtest_extras %}
 {% block content %}
 <h2>{{ bt.name }}</h2>
 
@@ -25,14 +26,25 @@
             {% endif %}
           </td>
         </tr>
-        <tr><th>Lignes (buy/sell)</th><td>
+        <tr>
+          <th>Prix minimum d'achat</th>
+          <td>{{ bt.settings.min_price|default:"aucune borne minimum" }}</td>
+        </tr>
+        <tr>
+          <th>Prix maximum d'achat</th>
+          <td>{{ bt.settings.max_price|default:"aucune borne maximum" }}</td>
+        </tr>
+        <tr><th>Lignes de signaux (achat / vente)</th><td>
   {% if bt.signal_lines %}
     <table>
-      <thead><tr><th>#</th><th>BUY</th><th>SELL</th></tr></thead>
+      <thead><tr><th>#</th><th>Mode de déclenchement</th><th>Achat</th><th>Vente</th></tr></thead>
       <tbody>
       {% for line in bt.signal_lines %}
         <tr>
           <td>{{ forloop.counter }}</td>
+          <td>
+            {{ line|trading_model_business_label }}
+          </td>
           <td>
             {% if line.buy|length %}
               {% if line.buy_logic == "OR" %}

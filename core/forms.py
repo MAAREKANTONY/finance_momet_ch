@@ -37,6 +37,11 @@ GLOBAL_REGIME_FILTER_CHOICES = [
 GLOBAL_REGIME_FILTER_CODES = {code for code, _label in GLOBAL_REGIME_FILTER_CHOICES}
 
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
+from .trading_model_config import (
+    TRADING_MODEL_LATCH_STATEFUL,
+    resolve_trading_model,
+    validate_explicit_latch_config,
+)
 from .widgets import SymbolPickerWidget
 
 
@@ -84,8 +89,13 @@ def _clean_signal_lines_json(value):
         mode = str(item.get("mode") or "standard").strip() or "standard"
         buy = _normalize_signal_code_list(item.get("buy") or item.get("buy_conditions"))
         sell = _normalize_signal_code_list(item.get("sell") or item.get("sell_conditions"))
+        try:
+            trading_model, explicit_trading_model = resolve_trading_model(item.get("trading_model"), buy)
+        except ValueError as exc:
+            raise forms.ValidationError(str(exc)) from exc
         payload = {
             "mode": mode,
+            "trading_model": trading_model,
             "buy": buy,
             "sell": sell,
             "buy_logic": _normalize_logic(item.get("buy_logic"), "AND"),
@@ -95,6 +105,16 @@ def _clean_signal_lines_json(value):
             "sell_gm_filter": _normalize_global_regime_filter(item.get("sell_gm_filter")),
             "sell_gm_operator": _normalize_logic(item.get("sell_gm_operator"), "AND"),
         }
+        if explicit_trading_model and trading_model == TRADING_MODEL_LATCH_STATEFUL:
+            try:
+                validate_explicit_latch_config(
+                    buy_codes=buy,
+                    buy_logic=payload["buy_logic"],
+                    sell_codes=sell,
+                    sell_gm_filter=payload["sell_gm_filter"],
+                )
+            except ValueError as exc:
+                raise forms.ValidationError(str(exc)) from exc
         if buy or sell or payload["buy_gm_filter"] != "IGNORE" or payload["sell_gm_filter"] != "IGNORE":
             cleaned.append(payload)
     return cleaned
@@ -505,6 +525,9 @@ class SymbolImportForm(forms.Form):
 class BacktestForm(forms.ModelForm):
     """Create/Edit a Backtest configuration (engine results will be computed later)."""
 
+    min_price = forms.DecimalField(required=False, min_value=0, label="Prix minimum")
+    max_price = forms.DecimalField(required=False, min_value=0, label="Prix maximum")
+
     class Meta:
         model = Backtest
         fields = [
@@ -518,6 +541,8 @@ class BacktestForm(forms.ModelForm):
             "capital_mode",
             "ratio_threshold",
             "include_all_tickers",
+            "min_price",
+            "max_price",
             "signal_lines",
             "warmup_days",
             "close_positions_at_end",
@@ -528,12 +553,59 @@ class BacktestForm(forms.ModelForm):
             "end_date": forms.DateInput(format="%Y-%m-%d", attrs={"type": "date"}),
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        settings = getattr(self.instance, "settings", None) or {}
+        if isinstance(settings, dict):
+            self.fields["min_price"].initial = settings.get("min_price")
+            self.fields["max_price"].initial = settings.get("max_price")
+
     def clean_signal_lines(self):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
+
+    def clean(self):
+        cleaned = super().clean()
+        min_price = cleaned.get("min_price")
+        max_price = cleaned.get("max_price")
+        if min_price is not None and max_price is not None and min_price > max_price:
+            self.add_error("max_price", "Le prix maximum doit être supérieur ou égal au prix minimum.")
+        return cleaned
+
+    def save(self, commit=True):
+        obj = super().save(commit=False)
+        settings = dict(obj.settings or {})
+        min_price = self.cleaned_data.get("min_price")
+        max_price = self.cleaned_data.get("max_price")
+        if min_price is None:
+            settings.pop("min_price", None)
+        else:
+            settings["min_price"] = str(min_price)
+        if max_price is None:
+            settings.pop("max_price", None)
+        else:
+            settings["max_price"] = str(max_price)
+        obj.settings = settings
+        if commit:
+            obj.save()
+            self.save_m2m()
+        return obj
 
 
 class GameScenarioForm(forms.ModelForm):
     """CRUD form for GameScenario."""
+
+    min_price = forms.DecimalField(
+        required=False,
+        min_value=0,
+        label="Prix minimum",
+        help_text="Une action ne pourra etre achetee que si son prix du jour est compris dans cette plage.",
+    )
+    max_price = forms.DecimalField(
+        required=False,
+        min_value=0,
+        label="Prix maximum",
+        help_text="Ce filtre s'applique uniquement a l'achat. La vente reste toujours possible.",
+    )
 
     class Meta:
         from .models import GameScenario
@@ -562,6 +634,8 @@ class GameScenarioForm(forms.ModelForm):
             "capital_total",
             "capital_per_ticker",
             "capital_mode",
+            "min_price",
+            "max_price",
             "signal_lines",
             "warmup_days",
             "close_positions_at_end",
@@ -576,5 +650,39 @@ class GameScenarioForm(forms.ModelForm):
             ),
         }
 
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        settings = getattr(self.instance, "settings", None) or {}
+        if isinstance(settings, dict):
+            self.fields["min_price"].initial = settings.get("min_price")
+            self.fields["max_price"].initial = settings.get("max_price")
+
     def clean_signal_lines(self):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
+
+    def clean(self):
+        cleaned = super().clean()
+        min_price = cleaned.get("min_price")
+        max_price = cleaned.get("max_price")
+        if min_price is not None and max_price is not None and min_price > max_price:
+            self.add_error("max_price", "Le prix maximum doit être supérieur ou égal au prix minimum.")
+        return cleaned
+
+    def save(self, commit=True):
+        obj = super().save(commit=False)
+        settings = dict(obj.settings or {})
+        min_price = self.cleaned_data.get("min_price")
+        max_price = self.cleaned_data.get("max_price")
+        if min_price is None:
+            settings.pop("min_price", None)
+        else:
+            settings["min_price"] = str(min_price)
+        if max_price is None:
+            settings.pop("max_price", None)
+        else:
+            settings["max_price"] = str(max_price)
+        obj.settings = settings
+        if commit:
+            obj.save()
+            self.save_m2m()
+        return obj

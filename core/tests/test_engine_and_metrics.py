@@ -27,6 +27,26 @@ from core.services.global_momentum import (
 from core.tasks import _enrich_alerts_with_global_momentum
 
 
+def apply_signal_events_to_latch_state(state: dict[str, bool], events: set[str]) -> dict[str, bool]:
+    """Pure spec helper for the target latch model used by tests only."""
+    updated = dict(state)
+    grouped: dict[str, set[str]] = {}
+    for raw_event in events:
+        event = str(raw_event or "").strip().upper()
+        if len(event) < 2 or event[-1] not in {"+", "-"}:
+            continue
+        grouped.setdefault(event[:-1], set()).add(event[-1])
+
+    for signal_id, polarities in grouped.items():
+        if "+" in polarities and "-" in polarities:
+            updated[signal_id] = False
+        elif "+" in polarities:
+            updated[signal_id] = True
+        elif "-" in polarities:
+            updated[signal_id] = False
+    return updated
+
+
 class EngineAndMetricsRegressionTests(TestCase):
     def setUp(self):
         self.symbol = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)
@@ -67,6 +87,76 @@ class EngineAndMetricsRegressionTests(TestCase):
             )
         DailyBar.objects.bulk_create(bars)
         return [b.date for b in bars]
+
+    def _create_latch_routing_fixture(self, *, start: date | None = None) -> date:
+        start = start or date(2024, 8, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "10", "10", "10"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(4)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=1), alerts="C1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1"),
+        ])
+        return start
+
+    def _create_progressive_af_spva_basse_fixture(
+        self,
+        *,
+        start: date | None = None,
+        ratio_p: Decimal | None = Decimal("1"),
+        closes: list[str] | None = None,
+    ) -> date:
+        start = start or date(2024, 10, 1)
+        closes = closes or ["10", "10", "12"]
+        self._create_bars_for_symbol(self.symbol, closes, start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(
+                symbol=self.symbol,
+                scenario=self.scenario,
+                date=start + timedelta(days=i),
+                P=Decimal(close),
+                ratio_P=ratio_p,
+            )
+            for i, close in enumerate(closes)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="Af"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=1), alerts="SPVa_basse"),
+        ])
+        return start
+
+    def _create_price_range_backtest(
+        self,
+        *,
+        settings: dict | None = None,
+        closes: list[str] | None = None,
+        ratio_p: Decimal | None = None,
+        close_positions_at_end: bool = False,
+        signal_lines: list[dict] | None = None,
+    ) -> tuple[Backtest, date]:
+        start = self._create_progressive_af_spva_basse_fixture(
+            ratio_p=ratio_p,
+            closes=closes or ["50", "50", "50"],
+        )
+        bt = Backtest.objects.create(
+            name="Price Range Tradability",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=signal_lines or [{"trading_model": "LATCH_STATEFUL", "buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=close_positions_at_end,
+            settings=settings or {},
+        )
+        return bt, start
 
 
     def test_backtest_computes_pnl_amount_kpis_globally_and_per_line(self):
@@ -551,6 +641,32 @@ class EngineAndMetricsRegressionTests(TestCase):
             )
         )
 
+    def test_signal_latch_progressively_activates_required_codes_across_days(self):
+        state = {}
+        state = apply_signal_events_to_latch_state(state, {"S1+"})
+        self.assertEqual(state, {"S1": True})
+        self.assertFalse(all(state.get(signal, False) for signal in ("S1", "S2")))
+
+        state = apply_signal_events_to_latch_state(state, set())
+        self.assertEqual(state, {"S1": True})
+        self.assertFalse(all(state.get(signal, False) for signal in ("S1", "S2")))
+
+        state = apply_signal_events_to_latch_state(state, {"S2+"})
+        self.assertEqual(state, {"S1": True, "S2": True})
+        self.assertTrue(all(state.get(signal, False) for signal in ("S1", "S2")))
+
+    def test_signal_latch_selectively_invalidates_only_matching_pair_before_buy(self):
+        state = {"S1": True, "S2": True}
+        state = apply_signal_events_to_latch_state(state, {"S1-"})
+        self.assertEqual(state, {"S1": False, "S2": True})
+        self.assertFalse(all(state.get(signal, False) for signal in ("S1", "S2")))
+
+    def test_signal_latch_handles_same_day_activation_and_invalidation_conservatively(self):
+        state = {"S1": True, "S2": True}
+        state = apply_signal_events_to_latch_state(state, {"S1+", "S1-"})
+        self.assertEqual(state, {"S1": False, "S2": True})
+        self.assertFalse(all(state.get(signal, False) for signal in ("S1", "S2")))
+
 
     def test_normalize_codes_accepts_legacy_csv_for_sell_or_logic(self):
         self.assertTrue(
@@ -616,6 +732,642 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertNotIn("BUY", {row.get("action") for row in daily[2:]})
         self.assertEqual(Decimal(line["final"]["cash_ticker_end"]), Decimal("100"))
         self.assertEqual(Decimal(line["final"]["FINAL_EQUITY"]), Decimal("100"))
+
+    def test_run_backtest_warmup_carries_latched_setup_into_first_live_day(self):
+        start = date(2024, 5, 3)
+        self._create_bars_for_symbol(self.symbol, ["10", "10", "10", "10"], start=start - timedelta(days=2))
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start - timedelta(days=2) + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(4)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start - timedelta(days=2), alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start - timedelta(days=1), alerts="C1"),
+        ])
+
+        bt = Backtest.objects.create(
+            name="Warmup Latch Carryover",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=1),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1", "C1"], "buy_logic": "AND", "sell": ["B1"], "sell_logic": "OR"}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=2,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        self.assertEqual(line["daily"][0]["action"], "BUY")
+
+    def test_run_backtest_target_model_sells_on_first_invalidated_latch_without_explicit_sell_codes(self):
+        start = date(2024, 6, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "10", "10", "10"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(4)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=1), alerts="C1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1"),
+        ])
+
+        bt = Backtest.objects.create(
+            name="Latch Sell Without Sell Codes",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1", "C1"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertEqual(daily[2]["action"], "SELL")
+        self.assertEqual(line["final"]["N"], 1)
+
+    def test_run_backtest_target_model_resets_after_sell_and_blocks_same_day_reentry(self):
+        start = date(2024, 7, 1)
+        self._create_bars_for_symbol(self.symbol, ["10", "10", "10", "10"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(4)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=1), alerts="C1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1,A1,C1"),
+        ])
+
+        bt = Backtest.objects.create(
+            name="Latch Reset Same Day Reentry",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1", "C1"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertEqual(daily[2]["action"], "SELL")
+        self.assertNotIn("BUY", str(daily[2]["action"]))
+        self.assertEqual(line["final"]["N"], 1)
+
+    def test_explicit_legacy_daily_forces_legacy_routing_for_supported_latch_codes(self):
+        start = self._create_latch_routing_fixture()
+        bt = Backtest.objects.create(
+            name="Explicit Legacy Routing",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LEGACY_DAILY", "buy": ["A1", "C1"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(result["meta"]["signal_lines"][0]["trading_model"], "LEGACY_DAILY")
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertNotIn("SELL", {row.get("action") for row in daily})
+        self.assertEqual(line["final"]["N"], 0)
+
+    def test_explicit_latch_stateful_forces_latch_routing(self):
+        start = self._create_latch_routing_fixture()
+        bt = Backtest.objects.create(
+            name="Explicit Latch Routing",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["A1", "C1"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(result["meta"]["signal_lines"][0]["trading_model"], "LATCH_STATEFUL")
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertEqual(daily[2]["action"], "SELL")
+        self.assertEqual(line["final"]["N"], 1)
+
+    def test_missing_trading_model_preserves_current_implicit_latch_routing(self):
+        start = self._create_latch_routing_fixture()
+        bt = Backtest.objects.create(
+            name="Implicit Latch Routing",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1", "C1"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(result["meta"]["signal_lines"][0]["trading_model"], "LATCH_STATEFUL")
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertEqual(daily[2]["action"], "SELL")
+        self.assertEqual(line["final"]["N"], 1)
+
+    def test_invalid_explicit_latch_config_raises(self):
+        invalid_lines = [
+            {"trading_model": "LATCH_STATEFUL", "buy": ["A1"], "buy_logic": "OR", "sell": []},
+            {"trading_model": "LATCH_STATEFUL", "buy": ["B1"], "buy_logic": "AND", "sell": []},
+            {"trading_model": "LATCH_STATEFUL", "buy": ["A1"], "buy_logic": "AND", "sell": ["B1"]},
+            {"trading_model": "LATCH_STATEFUL", "buy": ["A1"], "buy_logic": "AND", "sell": [], "sell_gm_filter": "GM_POS"},
+        ]
+        for line in invalid_lines:
+            with self.subTest(line=line):
+                bt = Backtest(
+                    scenario=self.scenario,
+                    start_date=date(2024, 9, 1),
+                    end_date=date(2024, 9, 2),
+                    capital_total=Decimal("1000"),
+                    capital_per_ticker=Decimal("100"),
+                    capital_mode="FIXED",
+                    include_all_tickers=True,
+                    signal_lines=[line],
+                    universe_snapshot=[self.symbol.ticker],
+                    warmup_days=0,
+                    close_positions_at_end=False,
+                )
+                with self.assertRaises(ValueError):
+                    run_backtest(bt)
+
+    def test_explicit_latch_routing_matches_kpi_only_path(self):
+        start = self._create_latch_routing_fixture()
+        bt = Backtest.objects.create(
+            name="Latch Full KPI Parity",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["A1", "C1"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        full_final = run_backtest(bt).results["tickers"][self.symbol.ticker]["lines"][0]["final"]
+        kpi_final = run_backtest_kpi_only(bt)[self.symbol.ticker]["lines"][0]["final"]
+
+        self.assertEqual(full_final["N"], 1)
+        self.assertEqual(kpi_final["N"], 1)
+        self.assertEqual(Decimal(full_final["BT"]), Decimal(kpi_final["BT"]))
+
+    def test_default_tradability_allows_progressive_buy_when_ratio_p_missing(self):
+        start = self._create_progressive_af_spva_basse_fixture(ratio_p=None)
+        bt = Backtest.objects.create(
+            name="Default Tradability Progressive",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        daily = result["tickers"][self.symbol.ticker]["lines"][0]["daily"]
+
+        self.assertIsNone(daily[0]["action"])
+        self.assertEqual(daily[1]["action"], "BUY")
+
+    def test_price_range_default_bounds_preserve_progressive_buy_with_missing_ratio_p(self):
+        bt, _start = self._create_price_range_backtest(settings={"min_price": None, "max_price": None}, ratio_p=None)
+
+        result = run_backtest(bt).results
+        daily = result["tickers"][self.symbol.ticker]["lines"][0]["daily"]
+
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertTrue(daily[1]["tradable"])
+
+    def test_price_range_below_min_blocks_buy_and_marks_day_not_tradable(self):
+        bt, _start = self._create_price_range_backtest(settings={"min_price": "100"}, closes=["90", "90", "90"], ratio_p=None)
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertIsNone(daily[1]["action"])
+        self.assertFalse(daily[1]["tradable"])
+        self.assertEqual(line["final"]["N"], 0)
+
+    def test_price_range_above_max_blocks_buy_and_marks_day_not_tradable(self):
+        bt, _start = self._create_price_range_backtest(settings={"max_price": "50"}, closes=["60", "60", "60"], ratio_p=None)
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertIsNone(daily[1]["action"])
+        self.assertFalse(daily[1]["tradable"])
+        self.assertEqual(line["final"]["N"], 0)
+
+    def test_price_range_inside_bounds_allows_buy(self):
+        bt, _start = self._create_price_range_backtest(settings={"min_price": "10", "max_price": "100"}, closes=["50", "50", "50"], ratio_p=None)
+
+        result = run_backtest(bt).results
+        daily = result["tickers"][self.symbol.ticker]["lines"][0]["daily"]
+
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertTrue(daily[1]["tradable"])
+
+    def test_price_range_missing_trading_day_price_blocks_buy_and_marks_day_not_tradable(self):
+        start = date(2024, 10, 1)
+        other = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        self._create_bars_for_symbol(self.symbol, ["50"], start=start)
+        self._create_bars_for_symbol(other, ["50", "50", "50"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("50"), ratio_P=None)
+            for i in range(3)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="Af"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=1), alerts="SPVa_basse"),
+        ])
+        bt = Backtest.objects.create(
+            name="Missing Price Tradability",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+            settings={"min_price": "10", "max_price": "100"},
+        )
+
+        result = run_backtest(bt).results
+        daily = result["tickers"][self.symbol.ticker]["lines"][0]["daily"]
+        by_date = {row["date"]: row for row in daily}
+        missing_price_day = str(start + timedelta(days=1))
+
+        self.assertIn(missing_price_day, by_date)
+        self.assertIsNone(by_date[missing_price_day]["action"])
+        self.assertFalse(by_date[missing_price_day]["tradable"])
+
+    def test_price_range_does_not_block_forced_sell_at_end(self):
+        bt, _start = self._create_price_range_backtest(
+            settings={"max_price": "50"},
+            closes=["40", "40", "60"],
+            ratio_p=None,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        daily = result["tickers"][self.symbol.ticker]["lines"][0]["daily"]
+
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertGreater(Decimal(daily[-1]["price_close"]), Decimal("50"))
+        self.assertIn("FORCED_SELL", daily[-1]["action"])
+        self.assertTrue(daily[-1]["forced_close"])
+        self.assertEqual(daily[-1]["shares"], 0)
+
+    def test_price_range_does_not_block_explicit_sell_signal(self):
+        start = date(2024, 11, 1)
+        self._create_bars_for_symbol(self.symbol, ["40", "60", "60"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("60"), ratio_P=None)
+            for i in range(3)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=1), alerts="B1"),
+        ])
+        bt = Backtest.objects.create(
+            name="Price Range Sell Not Blocked",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LEGACY_DAILY", "buy": ["A1"], "buy_logic": "AND", "sell": ["B1"], "sell_logic": "OR"}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+            settings={"max_price": "50"},
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(daily[0]["action"], "BUY")
+        self.assertGreater(Decimal(daily[1]["price_close"]), Decimal("50"))
+        self.assertEqual(daily[1]["action"], "SELL")
+        self.assertEqual(daily[1]["shares"], 0)
+        self.assertEqual(line["final"]["N"], 1)
+
+    def test_price_range_does_not_block_progressive_invalidation_sell(self):
+        start = date(2024, 12, 1)
+        self._create_bars_for_symbol(self.symbol, ["40", "40", "60"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("60"), ratio_P=None)
+            for i in range(3)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="Af"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=1), alerts="SPVa_basse"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="Bf"),
+        ])
+        bt = Backtest.objects.create(
+            name="Price Range Progressive Sell Not Blocked",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+            settings={"max_price": "50"},
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertGreater(Decimal(daily[2]["price_close"]), Decimal("50"))
+        self.assertEqual(daily[2]["action"], "SELL")
+        self.assertEqual(daily[2]["shares"], 0)
+        self.assertEqual(line["final"]["N"], 1)
+
+    def test_price_range_kpi_only_matches_full_backtest_final_state(self):
+        bt, _start = self._create_price_range_backtest(settings={"min_price": "10", "max_price": "100"}, closes=["50", "50", "50"], ratio_p=None, close_positions_at_end=True)
+
+        full_final = run_backtest(bt).results["tickers"][self.symbol.ticker]["lines"][0]["final"]
+        kpi_final = run_backtest_kpi_only(bt)[self.symbol.ticker]["lines"][0]["final"]
+
+        self.assertEqual(full_final["N"], kpi_final["N"])
+        self.assertEqual(Decimal(full_final["BT"]), Decimal(kpi_final["BT"]))
+        self.assertEqual(full_final["TRADABLE_DAYS"], kpi_final["TRADABLE_DAYS"])
+        self.assertEqual(full_final["TRADABLE_DAYS_IN_POSITION_CLOSED"], kpi_final["TRADABLE_DAYS_IN_POSITION_CLOSED"])
+
+    def test_price_range_game_runner_uses_same_backtest_logic(self):
+        self._create_progressive_af_spva_basse_fixture(ratio_p=None, closes=["90", "90", "90"])
+        game = GameScenario.objects.create(
+            name="Price Range Game",
+            active=True,
+            study_days=3,
+            tradability_threshold=Decimal("0"),
+            presence_threshold_pct=Decimal("0"),
+            npente=2,
+            slope_threshold=Decimal("0.01"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.005"),
+            nglobal=2,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=2,
+            n2=2,
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            close_positions_at_end=True,
+            settings={"min_price": "100"},
+        )
+        fake_depth = SimpleNamespace(needs_full_recompute=lambda: False, missing_symbol_ids=[], total_symbols=1)
+
+        with patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 1, "bars": 0}), \
+             patch("core.tasks._compute_metrics_for_scenario", return_value={"symbols": 1, "rows": 0}), \
+             patch("core.services.game_scenarios.runner._sync_engine_scenario", return_value=self.scenario), \
+             patch("core.services.game_scenarios.runner.check_metrics_depth", return_value=fake_depth), \
+             patch("core.services.game_scenarios.runner._compute_avg_slope_for_ticker", return_value="0.2"):
+            run_game_scenario_now(game.id, skip_metrics=True)
+
+        game.refresh_from_db()
+        rows = game.today_results.get("rows") or []
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["ticker"], self.symbol.ticker)
+        self.assertIsNone(rows[0]["bmd"])
+        self.assertEqual(rows[0]["TRADABLE_DAYS"], 0)
+
+    def test_price_range_applies_to_legacy_mode_buy_eligibility(self):
+        start = self._create_latch_routing_fixture()
+        bt = Backtest.objects.create(
+            name="Legacy Price Range Tradability",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LEGACY_DAILY", "buy": ["A1"], "buy_logic": "AND", "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+            settings={"min_price": "100"},
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+
+        self.assertEqual(line["final"]["N"], 0)
+        self.assertNotIn("BUY", {row.get("action") for row in line["daily"]})
+
+    def test_explicit_eligibility_filter_blocks_progressive_buy_when_ratio_p_missing(self):
+        start = self._create_progressive_af_spva_basse_fixture(ratio_p=None)
+        bt = Backtest.objects.create(
+            name="Explicit Eligibility Progressive",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            ratio_threshold=Decimal("1"),
+            include_all_tickers=False,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+
+        self.assertNotIn("BUY", {row.get("action") for row in line["daily"]})
+        self.assertEqual(line["final"]["N"], 0)
+
+    def test_supported_progressive_signals_use_progressive_model_by_default(self):
+        start = self._create_progressive_af_spva_basse_fixture(ratio_p=Decimal("1"))
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="Bf")
+        bt = Backtest.objects.create(
+            name="Implicit Progressive AF SPVA Basse",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        daily = result["tickers"][self.symbol.ticker]["lines"][0]["daily"]
+
+        self.assertEqual(result["meta"]["signal_lines"][0]["trading_model"], "LATCH_STATEFUL")
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertEqual(daily[2]["action"], "SELL")
+
+    def test_end_of_backtest_forced_sell_closes_default_progressive_position(self):
+        start = self._create_progressive_af_spva_basse_fixture(ratio_p=Decimal("1"))
+        bt = Backtest.objects.create(
+            name="Default Progressive Forced Sell",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertEqual(daily[-1]["action"], "FORCED_SELL")
+        self.assertTrue(daily[-1]["forced_close"])
+        self.assertEqual(daily[-1]["shares"], 0)
+        self.assertEqual(line["final"]["N"], 1)
+        self.assertEqual(Decimal(line["final"]["cash_ticker_end"]), Decimal("100"))
+        self.assertEqual(Decimal(line["final"]["PNL_AMOUNT"]), Decimal("20"))
+        self.assertEqual(Decimal(line["final"]["FINAL_EQUITY"]), Decimal("120"))
+
+    def test_end_of_backtest_forced_sell_closes_explicit_progressive_position(self):
+        start = self._create_progressive_af_spva_basse_fixture(ratio_p=Decimal("1"))
+        bt = Backtest.objects.create(
+            name="Explicit Progressive Forced Sell",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertEqual(daily[-1]["action"], "FORCED_SELL")
+        self.assertTrue(daily[-1]["forced_close"])
+        self.assertEqual(daily[-1]["shares"], 0)
+        self.assertEqual(line["final"]["N"], 1)
+        self.assertEqual(Decimal(line["final"]["cash_ticker_end"]), Decimal("100"))
+        self.assertEqual(Decimal(line["final"]["PNL_AMOUNT"]), Decimal("20"))
+        self.assertEqual(Decimal(line["final"]["FINAL_EQUITY"]), Decimal("120"))
+
+    def test_forced_sell_final_state_matches_kpi_only_for_progressive_model(self):
+        start = self._create_progressive_af_spva_basse_fixture(ratio_p=Decimal("1"))
+        bt = Backtest.objects.create(
+            name="Progressive Forced Sell KPI Parity",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af", "SPVa_basse"], "buy_logic": "AND", "sell": []}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=True,
+        )
+
+        full_final = run_backtest(bt).results["tickers"][self.symbol.ticker]["lines"][0]["final"]
+        kpi_final = run_backtest_kpi_only(bt)[self.symbol.ticker]["lines"][0]["final"]
+
+        self.assertEqual(full_final["N"], 1)
+        self.assertEqual(kpi_final["N"], 1)
+        self.assertEqual(Decimal(full_final["BT"]), Decimal(kpi_final["BT"]))
+        self.assertEqual(full_final["TRADABLE_DAYS"], kpi_final["TRADABLE_DAYS"])
+        self.assertEqual(full_final["TRADABLE_DAYS_IN_POSITION_CLOSED"], kpi_final["TRADABLE_DAYS_IN_POSITION_CLOSED"])
 
     def test_run_backtest_kpi_only_keeps_query_count_low_for_many_tickers(self):
         symbols = [self.symbol]
