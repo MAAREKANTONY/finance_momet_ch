@@ -2,7 +2,7 @@ import json
 
 from django.test import TestCase
 
-from core.forms import ScenarioForm, StudyScenarioForm, UniverseForm, GameScenarioForm
+from core.forms import BacktestForm, ScenarioForm, StudyScenarioForm, UniverseForm, GameScenarioForm
 from core.models import Scenario, Study, Symbol, Universe
 
 
@@ -94,3 +94,30 @@ class SymbolPickerFormTests(TestCase):
         cleaned = form.cleaned_data["signal_lines"]
         self.assertEqual(cleaned[0]["buy_gm_filter"], "GM_POS")
         self.assertEqual(cleaned[0]["buy_gm_operator"], "OR")
+
+    def test_backtest_form_rejects_invalid_price_range(self):
+        scenario = Scenario.objects.create(name="Price Range", active=True)
+        form = BacktestForm(
+            data={
+                "name": "BT price range",
+                "description": "",
+                "scenario": str(scenario.id),
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-03",
+                "capital_total": "1000",
+                "capital_per_ticker": "100",
+                "capital_mode": "FIXED",
+                "ratio_threshold": "0",
+                "include_all_tickers": "on",
+                "signal_lines": json.dumps([
+                    {"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}
+                ]),
+                "warmup_days": "0",
+                "close_positions_at_end": "on",
+                "min_price": "100",
+                "max_price": "50",
+            }
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("max_price", form.errors)

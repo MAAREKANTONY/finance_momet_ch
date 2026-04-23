@@ -32,10 +32,14 @@ from core.services.global_momentum import (
     compute_global_momentum_values_by_date,
     regime_for_value,
 )
-
-# Pseudo signal used by UI to activate the special sell rule.
-# IMPORTANT: additive only; legacy backtests ignore it unless explicitly chosen.
-SPECIAL_SELL_K1F_UPPER_DOWN_B1F = "AUTO_K1F_UPPER_DOWN_B1F"
+from core.trading_model_config import (
+    SIGNAL_LATCH_INVALIDATORS,
+    SIGNAL_LATCH_STATE_PAIRS,
+    SPECIAL_SELL_K1F_UPPER_DOWN_B1F,
+    TRADING_MODEL_LATCH_STATEFUL,
+    resolve_trading_model,
+    validate_explicit_latch_config,
+)
 
 GLOBAL_REGIME_FILTER_CODES = {"IGNORE", "GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR_NEU", "GM_NEG_OR_NEU"}
 
@@ -48,6 +52,69 @@ def _to_dec(v) -> Decimal | None:
         return Decimal(str(v))
     except Exception:
         return None
+
+
+def _normalize_price_bound(value: Any, default: Decimal | None = None) -> Decimal | None:
+    if value in (None, ""):
+        return default
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return default
+
+
+def _price_bounds_from_settings(settings: Any) -> tuple[Decimal, Decimal | None]:
+    settings = settings if isinstance(settings, dict) else {}
+    min_price = _normalize_price_bound(settings.get("min_price"), Decimal("0"))
+    max_price = _normalize_price_bound(settings.get("max_price"), None)
+    return min_price if min_price is not None else Decimal("0"), max_price
+
+
+def _trade_price_in_bounds(price_value: Any, *, min_price: Decimal, max_price: Decimal | None) -> bool:
+    price = _to_dec(price_value)
+    if price is None:
+        return False
+    if price < min_price:
+        return False
+    if max_price is not None and price > max_price:
+        return False
+    return True
+
+
+def _ratio_values_for_tradability(ratio_p_val) -> tuple[Decimal | None, Decimal | None]:
+    if isinstance(ratio_p_val, dict):
+        ratio_p_val = ratio_p_val.get("ratio_P")
+    elif isinstance(ratio_p_val, tuple):
+        ratio_p_val = _metric_val(ratio_p_val, _M_RATIO_P)
+
+    if ratio_p_val is None:
+        return None, None
+    try:
+        r_raw = Decimal(str(ratio_p_val))
+        return r_raw, r_raw
+    except Exception:
+        return None, None
+
+
+def _buy_tradability_for_day(
+    *,
+    price_value: Any,
+    ratio_p_val: Any,
+    include_all: bool,
+    ratio_threshold: Decimal,
+    min_price: Decimal,
+    max_price: Decimal | None,
+) -> tuple[bool, Decimal | None, Decimal | None]:
+    ratio_pct, ratio_raw = _ratio_values_for_tradability(ratio_p_val)
+    if not _trade_price_in_bounds(price_value, min_price=min_price, max_price=max_price):
+        return False, ratio_pct, ratio_raw
+
+    eligibility_filter_active = (not include_all) and ratio_threshold > 0
+    if ratio_pct is None:
+        return (not eligibility_filter_active, ratio_pct, ratio_raw)
+    if not eligibility_filter_active:
+        return True, ratio_pct, ratio_raw
+    return ratio_pct >= ratio_threshold, ratio_pct, ratio_raw
 
 
 def _cross_down(prev_a: Decimal | None, a: Decimal | None, prev_b: Decimal | None, b: Decimal | None) -> bool:
@@ -136,7 +203,8 @@ def _normalize_global_regime_filter(value: Any) -> str:
 
 def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
     if not isinstance(signal_lines, list) or not signal_lines:
-        return [{"mode": "standard", "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR"}]
+        default_buy = ["AF"]
+        return [{"mode": "standard", "trading_model": TRADING_MODEL_LATCH_STATEFUL, "buy": default_buy, "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR"}]
     out: list[dict[str, Any]] = []
     for raw in signal_lines:
         if not isinstance(raw, dict):
@@ -145,18 +213,30 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
         buy_codes = _normalize_codes(raw.get("buy") or raw.get("buy_conditions"))
         sell_codes = _normalize_codes(raw.get("sell") or raw.get("sell_conditions"))
         if buy_codes or sell_codes:
+            trading_model, explicit_trading_model = resolve_trading_model(raw.get("trading_model"), buy_codes)
+            buy_logic = _normalize_logic(raw.get("buy_logic"), "AND")
+            sell_logic = _normalize_logic(raw.get("sell_logic"), "OR")
+            sell_gm_filter = _normalize_global_regime_filter(raw.get("sell_gm_filter"))
+            if explicit_trading_model and trading_model == TRADING_MODEL_LATCH_STATEFUL:
+                validate_explicit_latch_config(
+                    buy_codes=buy_codes,
+                    buy_logic=buy_logic,
+                    sell_codes=sell_codes,
+                    sell_gm_filter=sell_gm_filter,
+                )
             out.append({
                 "mode": mode,
+                "trading_model": trading_model,
                 "buy": buy_codes,
                 "sell": sell_codes,
-                "buy_logic": _normalize_logic(raw.get("buy_logic"), "AND"),
-                "sell_logic": _normalize_logic(raw.get("sell_logic"), "OR"),
+                "buy_logic": buy_logic,
+                "sell_logic": sell_logic,
                 "buy_gm_filter": _normalize_global_regime_filter(raw.get("buy_gm_filter")),
                 "buy_gm_operator": _normalize_logic(raw.get("buy_gm_operator"), "AND"),
-                "sell_gm_filter": _normalize_global_regime_filter(raw.get("sell_gm_filter")),
+                "sell_gm_filter": sell_gm_filter,
                 "sell_gm_operator": _normalize_logic(raw.get("sell_gm_operator"), "AND"),
             })
-    return out or [{"mode": "standard", "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
+    return out or [{"mode": "standard", "trading_model": TRADING_MODEL_LATCH_STATEFUL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
 
 
 def _match_codes(day_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
@@ -182,22 +262,14 @@ _SIGNAL_STATE_PAIRS: tuple[tuple[str, str], ...] = (
 # A1 on day T, then C1 on day T+X => A1 AND C1 becomes true on T+X if B1 did not
 # occur in-between. We keep this memory separate from the persistent AF/SP*
 # states so that single-signal strategies keep their historical event semantics.
-_AND_LATCH_STATE_PAIRS: tuple[tuple[str, str], ...] = (
-    ("A1", "B1"),
-    ("C1", "D1"),
-    ("E1", "F1"),
-    ("G1", "H1"),
-    ("AF", "BF"),
-    ("SPA", "SPV"),
-    ("SPVA", "SPVV"),
-    ("SPA_BASSE", "SPV_BASSE"),
-    ("SPVA_BASSE", "SPVV_BASSE"),
-)
+_AND_LATCH_STATE_PAIRS = SIGNAL_LATCH_STATE_PAIRS
 
 _AND_LATCH_OPPOSITE: dict[str, str] = {}
 for _pos, _neg in _AND_LATCH_STATE_PAIRS:
     _AND_LATCH_OPPOSITE[_pos] = _neg
     _AND_LATCH_OPPOSITE[_neg] = _pos
+
+_SIGNAL_LATCH_INVALIDATORS = SIGNAL_LATCH_INVALIDATORS
 
 
 def _apply_signal_state_transitions(active_states: dict[str, bool], day_alerts: set[str]) -> set[str]:
@@ -252,6 +324,65 @@ def _reset_trade_signal_memory(state_row: dict[str, Any]) -> None:
     """
     state_row["active_signal_states"] = {}
     state_row["and_latched_states"] = {}
+    state_row["signal_latch_state"] = {}
+    state_row["signal_latch_invalidated_today"] = set()
+    state_row["signal_latch_last_date"] = None
+
+
+def _line_uses_signal_latch_model(state_row: dict[str, Any]) -> bool:
+    return state_row.get("trading_model") == TRADING_MODEL_LATCH_STATEFUL
+
+
+def _apply_signal_events_to_latch_state(
+    state: dict[str, bool],
+    required_codes: list[str],
+    events: set[str],
+) -> tuple[dict[str, bool], set[str]]:
+    updated = dict(state or {})
+    normalized_events = {str(code).strip().upper() for code in (events or set()) if str(code).strip()}
+    invalidated: set[str] = set()
+    for code in _normalize_codes(required_codes):
+        opposite = _SIGNAL_LATCH_INVALIDATORS.get(code)
+        if not opposite:
+            continue
+        pos_seen = code in normalized_events
+        neg_seen = opposite in normalized_events
+        if pos_seen and neg_seen:
+            if updated.get(code):
+                invalidated.add(code)
+            updated[code] = False
+        elif neg_seen:
+            if updated.get(code):
+                invalidated.add(code)
+            updated[code] = False
+        elif pos_seen:
+            updated[code] = True
+    return updated, invalidated
+
+
+def _get_signal_latch_day_state(state_row: dict[str, Any], day_alerts: set[str], as_of_date: date) -> tuple[dict[str, bool], set[str]]:
+    if state_row.get("signal_latch_last_date") != as_of_date:
+        latch_state, invalidated = _apply_signal_events_to_latch_state(
+            state_row.get("signal_latch_state") or {},
+            state_row.get("buy_codes") or [],
+            day_alerts,
+        )
+        state_row["signal_latch_state"] = latch_state
+        state_row["signal_latch_invalidated_today"] = invalidated
+        state_row["signal_latch_last_date"] = as_of_date
+    return state_row.get("signal_latch_state") or {}, state_row.get("signal_latch_invalidated_today") or set()
+
+
+def _signal_latch_buy_ready(state_row: dict[str, Any], gm_code: str | None) -> bool:
+    buy_codes = _normalize_codes(state_row.get("buy_codes"))
+    if not buy_codes:
+        return False
+    latch_state = state_row.get("signal_latch_state") or {}
+    local_ok = all(bool(latch_state.get(code)) for code in buy_codes)
+    gm_filter = _normalize_global_regime_filter(state_row.get("buy_gm_filter"))
+    if gm_filter == "IGNORE":
+        return local_ok
+    return local_ok and _gm_filter_match(gm_code, gm_filter)
 
 def _close_open_position(
     state_row: dict[str, Any],
@@ -540,6 +671,7 @@ def _preload_backtest_ticker_data(*, symbols: list[Symbol], scenario_id: int, fe
                 row.get("P"),
             )
         data_by_ticker[ticker]["metrics"][row["date"]] = payload
+        all_dates.add(row["date"])
 
     alerts_rows = Alert.objects.filter(
         symbol_id__in=symbol_ids,
@@ -552,6 +684,7 @@ def _preload_backtest_ticker_data(*, symbols: list[Symbol], scenario_id: int, fe
         if not ticker:
             continue
         data_by_ticker[ticker]["alerts"][row["date"]] = _alerts_set(row["alerts"])
+        all_dates.add(row["date"])
 
     data_by_ticker = {ticker: payload for ticker, payload in data_by_ticker.items() if payload["price_by_date"]}
     return data_by_ticker, all_dates
@@ -610,6 +743,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     fixed_capital = (capital_mode == "FIXED")
     X = Decimal(str(backtest.ratio_threshold or 0))  # percent threshold
     include_all = bool(getattr(backtest, "include_all_tickers", False))
+    min_price, max_price = _price_bounds_from_settings(getattr(backtest, "settings", {}) or {})
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
@@ -660,32 +794,20 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     # Per (ticker, line_index) state
     state: dict[tuple[str, int], dict[str, Any]] = {}
 
-    def _ratio_tradable(ratio_p_val) -> tuple[bool, Decimal | None, Decimal | None]:
+    def _ratio_tradable(price_value, ratio_p_val) -> tuple[bool, Decimal | None, Decimal | None]:
         """Return (tradable, ratio_percent, ratio_raw).
 
         If include_all is enabled, tradable is always True (eligibility bypass),
         while ratio values are kept for ranking/display when available.
         """
-        # Accept either:
-        # - legacy scalar ratio_P
-        # - legacy dict like {"ratio_P": ...}
-        # - compact tuple (ratio_P, K1, K1f, K2f, K2, K3, K4)
-        if isinstance(ratio_p_val, dict):
-            ratio_p_val = ratio_p_val.get("ratio_P")
-        elif isinstance(ratio_p_val, tuple):
-            ratio_p_val = _metric_val(ratio_p_val, _M_RATIO_P)
-
-        if ratio_p_val is None:
-            return (True, None, None) if include_all else (False, None, None)
-        try:
-            r_raw = Decimal(str(ratio_p_val))
-            # ratio_P is already stored as a percentage (0-100)
-            r_pct = r_raw
-            if include_all:
-                return (True, r_pct, r_raw)
-            return (r_pct >= X, r_pct, r_raw)
-        except Exception:
-            return (True, None, None) if include_all else (False, None, None)
+        return _buy_tradability_for_day(
+            price_value=price_value,
+            ratio_p_val=ratio_p_val,
+            include_all=include_all,
+            ratio_threshold=X,
+            min_price=min_price,
+            max_price=max_price,
+        )
 
     for ticker in data_by_ticker.keys():
         for li, line in enumerate(signal_lines):
@@ -698,6 +820,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 "buy_gm_operator": _normalize_logic(line.get("buy_gm_operator"), "AND"),
                 "sell_gm_filter": _normalize_global_regime_filter(line.get("sell_gm_filter")),
                 "sell_gm_operator": _normalize_logic(line.get("sell_gm_operator"), "AND"),
+                "trading_model": line.get("trading_model"),
                 "allocated": False,
                 "cash_ticker": Decimal("0"),
                 # Realized PnL that is NOT reinvested when fixed_capital is enabled.
@@ -729,6 +852,11 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 "prev_k": None,  # previous day's K-values dict (K1,K1f,K2,K3,K4)
                 "active_signal_states": {},
                 "and_latched_states": {},
+                "use_signal_latch_model": _line_uses_signal_latch_model(line),
+                "signal_latch_state": {},
+                "signal_latch_invalidated_today": set(),
+                "signal_latch_last_date": None,
+                "_sold_today": False,
                 "daily_rows": [],
             }
 
@@ -740,12 +868,15 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             tdata = data_by_ticker.get(ticker)
             if not tdata or d not in tdata.get("price_by_date", {}):
                 continue
-            event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
+            local_event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
+            event_alerts = set(local_event_alerts)
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
             _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             _update_and_latched_states(st["and_latched_states"], event_alerts)
+            if st["use_signal_latch_model"]:
+                _get_signal_latch_day_state(st, local_event_alerts, d)
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
                 st["prev_k"] = tdata["metrics"].get(d)
 
@@ -840,25 +971,63 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
 
         # 1) SELL phase (sell before buy)
         for (ticker, li), st in state.items():
+            st["_sold_today"] = False
             tdata = data_by_ticker.get(ticker)
             if not tdata:
                 continue
             price_by_date = tdata["price_by_date"]
             if d not in price_by_date:
+                ratio_pct, ratio_raw = _ratio_values_for_tradability(tdata["metrics"].get(d))
+                st["daily_rows"].append({
+                    "date": str(d),
+                    "price_close": None,
+                    "ratio_P": None if ratio_raw is None else str(ratio_raw),
+                    "ratio_P_pct": None if ratio_pct is None else str(ratio_pct),
+                    "tradable": False,
+                    "alerts": sorted(list(tdata["alerts"].get(d, set()))),
+                    "buy_code": _compose_condition_label(st["buy_codes"], st["buy_logic"], st["buy_gm_filter"], st["buy_gm_operator"]),
+                    "sell_code": _compose_condition_label(st["sell_codes"], st["sell_logic"], st["sell_gm_filter"], st["sell_gm_operator"]),
+                    "buy_codes": st["buy_codes"],
+                    "sell_codes": st["sell_codes"],
+                    "buy_logic": st["buy_logic"],
+                    "sell_logic": st["sell_logic"],
+                    "buy_gm_filter": st["buy_gm_filter"],
+                    "buy_gm_operator": st["buy_gm_operator"],
+                    "sell_gm_filter": st["sell_gm_filter"],
+                    "sell_gm_operator": st["sell_gm_operator"],
+                    "action": None,
+                    "action_G": None,
+                    "action_PNL_AMOUNT": None,
+                    "forced_close": False,
+                    "allocated": st["allocated"],
+                    "cash_ticker": str(st["cash_ticker"]),
+                    "bank": str(st.get("bank") or Decimal("0")),
+                    "shares": st["shares"],
+                    "N": st["trade_count"],
+                    "S_G_N": None if int(st["trade_count"]) == 0 else str(st["sum_g"] / Decimal(int(st["trade_count"]))),
+                    "BT": str(st["sum_g"]),
+                    "NB_JOUR_OUVRES": max(0, int(st.get("tradable_days") or 0) - int(st.get("tradable_days_in_position") or 0)),
+                    "BMJ": None,
+                    "BMD": None,
+                    "BUY_DAYS_CLOSED": int(st.get("tradable_days_in_position") or 0),
+                })
                 continue  # no market data for this ticker that day
             close_d = _to_dec(price_by_date[d])
             if close_d is None:
                 continue
             day_alerts_raw = tdata["alerts"].get(d, set())
-            event_alerts = {a.upper() for a in day_alerts_raw}
+            local_event_alerts = {a.upper() for a in day_alerts_raw}
+            event_alerts = set(local_event_alerts)
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
+            if st["use_signal_latch_model"]:
+                _get_signal_latch_day_state(st, local_event_alerts, d)
 
             # tradable status computed for NB_JOUR_OUVRES before actions
-            tradable, ratio_pct, ratio_raw = _ratio_tradable(tdata["metrics"].get(d))
+            tradable, ratio_pct, ratio_raw = _ratio_tradable(price_by_date.get(d), tdata["metrics"].get(d))
             if tradable and not st["position_open"]:
                 st["nb_jours_ouvres"] += 1
 
@@ -913,8 +1082,14 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                         if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
                             _do_sell(f"AUTO ({target_key}: K1f cross down)")
 
+            elif st["position_open"] and st["use_signal_latch_model"]:
+                _latch_state, invalidated_signals = _get_signal_latch_day_state(st, local_event_alerts, d)
+                if invalidated_signals:
+                    _do_sell(f"signal invalidation {','.join(sorted(invalidated_signals))}")
             elif st["position_open"] and _match_line_with_global_filter(day_alerts, latched_alerts, sell_codes, st["sell_logic"], gm_code, st["sell_gm_filter"], st["sell_gm_operator"]):
                 _do_sell(f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}")
+            if G_today is not None:
+                st["_sold_today"] = True
 
             # record daily row (we may update with buy action later, but keep as dict to mutate)
             N = st["trade_count"]
@@ -983,20 +1158,25 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             price_by_date = tdata["price_by_date"]
             if d not in price_by_date:
                 continue
-            if st["position_open"]:
+            if st["position_open"] or st.get("_sold_today"):
                 continue
             buy_codes = st["buy_codes"]
             day_alerts_raw = tdata["alerts"].get(d, set())
-            event_alerts = {a.upper() for a in day_alerts_raw}
+            local_event_alerts = {a.upper() for a in day_alerts_raw}
+            event_alerts = set(local_event_alerts)
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
-            if not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
+            if st["use_signal_latch_model"]:
+                _get_signal_latch_day_state(st, local_event_alerts, d)
+                if not _signal_latch_buy_ready(st, gm_code):
+                    continue
+            elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                 continue
 
-            tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
+            tradable, ratio_pct, _ = _ratio_tradable(price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
 
@@ -1047,21 +1227,26 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             price_by_date = tdata["price_by_date"]
             if d not in price_by_date:
                 continue
-            if st["position_open"]:
+            if st["position_open"] or st.get("_sold_today"):
                 continue
 
             buy_codes = st["buy_codes"]
             day_alerts_raw = tdata["alerts"].get(d, set())
-            event_alerts = {a.upper() for a in day_alerts_raw}
+            local_event_alerts = {a.upper() for a in day_alerts_raw}
+            event_alerts = set(local_event_alerts)
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
-            if not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
+            if st["use_signal_latch_model"]:
+                _get_signal_latch_day_state(st, local_event_alerts, d)
+                if not _signal_latch_buy_ready(st, gm_code):
+                    continue
+            elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                 continue
 
-            tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
+            tradable, _, _ = _ratio_tradable(price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
 
@@ -1087,7 +1272,8 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             st["position_open"] = True
             st["entry_price"] = str(close_d)
             st["entry_date"] = d
-            _reset_trade_signal_memory(st)
+            if not st["use_signal_latch_model"]:
+                _reset_trade_signal_memory(st)
 
             logs.append(f"{ticker}[L{li+1}] BUY signal {_compose_condition_label(buy_codes, st['buy_logic'], st['buy_gm_filter'], st['buy_gm_operator'])} on {d} close={close_d} shares={shares} cash_left={st['cash_ticker']}")
 
@@ -1662,6 +1848,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     fixed_capital = (capital_mode == "FIXED")
     X = Decimal("0")  # Game mode: eligibility bypass (include_all)
     include_all = True
+    min_price, max_price = _price_bounds_from_settings(getattr(backtest, "settings", {}) or {})
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
@@ -1709,6 +1896,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 "buy_gm_operator": _normalize_logic(line.get("buy_gm_operator"), "AND"),
                 "sell_gm_filter": _normalize_global_regime_filter(line.get("sell_gm_filter")),
                 "sell_gm_operator": _normalize_logic(line.get("sell_gm_operator"), "AND"),
+                "trading_model": line.get("trading_model"),
                 "allocated": False,
                 "cash_ticker": Decimal("0"),
                 "bank": Decimal("0"),
@@ -1730,11 +1918,22 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 "prev_k": None,
                 "active_signal_states": {},
                 "and_latched_states": {},
+                "use_signal_latch_model": _line_uses_signal_latch_model(line),
+                "signal_latch_state": {},
+                "signal_latch_invalidated_today": set(),
+                "signal_latch_last_date": None,
+                "_sold_today": False,
             }
 
-    def _ratio_tradable(_mtuple) -> tuple[bool, Decimal | None, Decimal | None]:
-        # Game mode: always tradable
-        return True, None, None
+    def _ratio_tradable(price_value, ratio_p_val) -> tuple[bool, Decimal | None, Decimal | None]:
+        return _buy_tradability_for_day(
+            price_value=price_value,
+            ratio_p_val=ratio_p_val,
+            include_all=include_all,
+            ratio_threshold=X,
+            min_price=min_price,
+            max_price=max_price,
+        )
 
     # Warmup phase: reconstruct persistent states before the real game period.
     # No allocation, no trades, no counters during warmup.
@@ -1744,12 +1943,15 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             tdata = data_by_ticker.get(ticker)
             if not tdata or d not in tdata.get("price_by_date", {}):
                 continue
-            event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
+            local_event_alerts = {a.upper() for a in tdata.get("alerts", {}).get(d, set())}
+            event_alerts = set(local_event_alerts)
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
             _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             _update_and_latched_states(st["and_latched_states"], event_alerts)
+            if st["use_signal_latch_model"]:
+                _get_signal_latch_day_state(st, local_event_alerts, d)
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
                 st["prev_k"] = tdata["metrics"].get(d)
 
@@ -1758,6 +1960,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         _checkpoint()
         # SELL phase
         for (ticker, li), st in state.items():
+            st["_sold_today"] = False
             tdata = data_by_ticker.get(ticker)
             if not tdata:
                 continue
@@ -1768,13 +1971,16 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             if close_d is None:
                 continue
 
-            event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            local_event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            event_alerts = set(local_event_alerts)
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
-            tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
+            if st["use_signal_latch_model"]:
+                _get_signal_latch_day_state(st, local_event_alerts, d)
+            tradable, _, _ = _ratio_tradable(price_by_date.get(d), tdata["metrics"].get(d))
 
             G_today: Decimal | None = None
 
@@ -1818,8 +2024,14 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                         if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
                             _do_sell(f"AUTO ({target_key}: K1f cross down)")
 
+            elif st["position_open"] and st["use_signal_latch_model"]:
+                _latch_state, invalidated_signals = _get_signal_latch_day_state(st, local_event_alerts, d)
+                if invalidated_signals:
+                    _do_sell(f"signal invalidation {','.join(sorted(invalidated_signals))}")
             elif st["position_open"] and _match_line_with_global_filter(day_alerts, latched_alerts, sell_codes, st["sell_logic"], gm_code, st["sell_gm_filter"], st["sell_gm_operator"]):
                 _do_sell(f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}")
+            if G_today is not None:
+                st["_sold_today"] = True
 
             # Keep prev_k for special sells
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
@@ -1833,18 +2045,23 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 continue
             if d not in tdata["price_by_date"]:
                 continue
-            if st["position_open"]:
+            if st["position_open"] or st.get("_sold_today"):
                 continue
             buy_codes = st["buy_codes"]
-            event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            local_event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            event_alerts = set(local_event_alerts)
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
-            if not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
+            if st["use_signal_latch_model"]:
+                _get_signal_latch_day_state(st, local_event_alerts, d)
+                if not _signal_latch_buy_ready(st, gm_code):
+                    continue
+            elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                 continue
-            tradable, ratio_pct, _ = _ratio_tradable(tdata["metrics"].get(d))
+            tradable, ratio_pct, _ = _ratio_tradable(tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
 
@@ -1876,18 +2093,23 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 continue
             if d not in tdata["price_by_date"]:
                 continue
-            if st["position_open"]:
+            if st["position_open"] or st.get("_sold_today"):
                 continue
             buy_codes = st["buy_codes"]
-            event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            local_event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
+            event_alerts = set(local_event_alerts)
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
             day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
-            if not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
+            if st["use_signal_latch_model"]:
+                _get_signal_latch_day_state(st, local_event_alerts, d)
+                if not _signal_latch_buy_ready(st, gm_code):
+                    continue
+            elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                 continue
-            tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
+            tradable, _, _ = _ratio_tradable(tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
             if not st["allocated"]:
@@ -1907,7 +2129,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             st["position_open"] = True
             st["entry_price"] = str(close_d)
             st["entry_date"] = d
-            _reset_trade_signal_memory(st)
+            if not st["use_signal_latch_model"]:
+                _reset_trade_signal_memory(st)
 
         # End-of-day counters
         for (ticker, li), st in state.items():
@@ -1916,7 +2139,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 continue
             if d not in tdata["price_by_date"]:
                 continue
-            tradable, _, _ = _ratio_tradable(tdata["metrics"].get(d))
+            tradable, _, _ = _ratio_tradable(tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if tradable:
                 st["tradable_days"] += 1
                 if st["position_open"] and st["shares"] > 0:
@@ -1944,6 +2167,9 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             )
             if closed is None:
                 continue
+            tradable, _, _ = _ratio_tradable(tdata["price_by_date"].get(last_date), tdata["metrics"].get(last_date))
+            if tradable and int(st.get("tradable_days_in_position") or 0) > 0:
+                st["tradable_days_in_position"] -= 1
 
     # Build finals
     out: dict[str, dict[str, Any]] = {}
