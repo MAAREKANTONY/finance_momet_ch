@@ -79,6 +79,21 @@
       {% if form.include_all_tickers.errors %}<div class="error">{{ form.include_all_tickers.errors }}</div>{% endif %}
     </div>
 
+    <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+      <div>
+        <label for="{{ form.min_price.id_for_label }}">Prix minimum</label><br>
+        {{ form.min_price }}
+        <div class="muted">Une action ne pourra être achetée que si son prix du jour est compris dans cette plage.</div>
+        {% if form.min_price.errors %}<div class="error">{{ form.min_price.errors }}</div>{% endif %}
+      </div>
+      <div>
+        <label for="{{ form.max_price.id_for_label }}">Prix maximum</label><br>
+        {{ form.max_price }}
+        <div class="muted">Ce filtre s'applique uniquement à l'achat. La vente reste toujours possible.</div>
+        {% if form.max_price.errors %}<div class="error">{{ form.max_price.errors }}</div>{% endif %}
+      </div>
+    </div>
+
     <div class="field" style="margin-top:16px;">
       <label>Lignes de signaux (achat / vente)</label>
       <div class="muted">Chaque ligne peut contenir 1 à N conditions BUY et 1 à N conditions SELL. Utilise les cases à cocher pour le multi-sélecteur et les boutons radio pour choisir la logique ET ou OU. Par défaut : BUY=ET, SELL=OU.</div>

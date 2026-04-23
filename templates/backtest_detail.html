@@ -26,6 +26,14 @@
             {% endif %}
           </td>
         </tr>
+        <tr>
+          <th>Prix minimum d'achat</th>
+          <td>{{ bt.settings.min_price|default:"aucune borne minimum" }}</td>
+        </tr>
+        <tr>
+          <th>Prix maximum d'achat</th>
+          <td>{{ bt.settings.max_price|default:"aucune borne maximum" }}</td>
+        </tr>
         <tr><th>Lignes de signaux (achat / vente)</th><td>
   {% if bt.signal_lines %}
     <table>

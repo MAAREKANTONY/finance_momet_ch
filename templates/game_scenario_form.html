@@ -46,9 +46,24 @@
         </div>
       {% else %}
         <div class="field" style="margin-top:12px;">
-          <label for="{{ field.id_for_label }}">{{ field.label }}</label>
+          <label for="{{ field.id_for_label }}">
+            {% if field.name == 'min_price' %}
+              Prix minimum
+            {% elif field.name == 'max_price' %}
+              Prix maximum
+            {% else %}
+              {{ field.label }}
+            {% endif %}
+          </label>
           {{ field }}
-          {% if field.help_text %}<div class="muted">{{ field.help_text }}</div>{% endif %}
+          {% if field.name == 'min_price' %}
+            <div class="muted">Une action ne pourra être achetée que si son prix du jour est compris dans cette plage.</div>
+            <div class="muted">Ce filtre s'applique uniquement à l'achat.</div>
+          {% elif field.name == 'max_price' %}
+            <div class="muted">La vente reste toujours possible.</div>
+          {% elif field.help_text %}
+            <div class="muted">{{ field.help_text }}</div>
+          {% endif %}
           {% if field.errors %}<div class="error">{{ field.errors }}</div>{% endif %}
         </div>
       {% endif %}
