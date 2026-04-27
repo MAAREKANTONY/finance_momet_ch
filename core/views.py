@@ -1,4 +1,4 @@
-.import csv
+import csv
 import os
 from io import BytesIO
 from typing import Iterable
