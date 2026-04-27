@@ -26,7 +26,20 @@ class SymbolPickerWidget(forms.Widget):
         if hasattr(data, 'getlist'):
             raw_list = data.getlist(name)
             if len(raw_list) > 1:
-                return [str(x).strip() for x in raw_list if str(x).strip()]
+                out = []
+                for raw in raw_list:
+                    if raw in (None, ""):
+                        continue
+                    if isinstance(raw, str):
+                        out.extend(x.strip() for x in raw.split(",") if x.strip())
+                    else:
+                        try:
+                            out.extend(str(x).strip() for x in raw if str(x).strip())
+                        except TypeError:
+                            value = str(raw).strip()
+                            if value:
+                                out.append(value)
+                return out
         raw = data.get(name) if hasattr(data, "get") else None
         if raw in (None, ""):
             return []

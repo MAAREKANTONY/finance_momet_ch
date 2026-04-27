@@ -1,6 +1,7 @@
 from django.test import SimpleTestCase, TestCase
 from django.urls import reverse
 
+from core.forms import UniverseForm
 from core.models import Symbol, Universe
 from core.widgets import SymbolPickerWidget
 
@@ -19,6 +20,16 @@ class SymbolPickerWidgetTests(SimpleTestCase):
         class Dummy(dict):
             def getlist(self, key):
                 return ['1', '2', '3']
+        data = Dummy()
+        self.assertEqual(widget.value_from_datadict(data, {}, 'symbols'), ['1', '2', '3'])
+
+    def test_value_from_repeated_csv_values_is_flattened(self):
+        widget = SymbolPickerWidget()
+
+        class Dummy(dict):
+            def getlist(self, key):
+                return ['1,2,3', '']
+
         data = Dummy()
         self.assertEqual(widget.value_from_datadict(data, {}, 'symbols'), ['1', '2', '3'])
 
@@ -47,3 +58,47 @@ class SymbolSearchRegressionTests(TestCase):
         body = resp.json()
         self.assertEqual(set(body['ids']), {self.aapl.id, self.msft.id})
         self.assertEqual({s['ticker'] for s in body['symbols']}, {'AAPL', 'MSFT'})
+
+    def test_universe_form_accepts_csv_string(self):
+        form = UniverseForm(data={
+            'name': 'U csv',
+            'active': 'on',
+            'symbols': f'{self.aapl.id},{self.msft.id}',
+        })
+        self.assertTrue(form.is_valid(), form.errors)
+        saved = form.save()
+        self.assertEqual(set(saved.symbols.values_list('id', flat=True)), {self.aapl.id, self.msft.id})
+
+    def test_universe_form_accepts_duplicate_multi_entry_post(self):
+        csv_ids = f'{self.aapl.id},{self.msft.id}'
+
+        class Dummy(dict):
+            def getlist(self, key):
+                if key == 'symbols':
+                    return [csv_ids, csv_ids]
+                value = self.get(key)
+                if value is None:
+                    return []
+                return [value]
+
+        form = UniverseForm(Dummy({
+            'name': 'U dup',
+            'active': 'on',
+            'symbols': csv_ids,
+        }))
+        self.assertTrue(form.is_valid(), form.errors)
+        saved = form.save()
+        self.assertEqual(set(saved.symbols.values_list('id', flat=True)), {self.aapl.id, self.msft.id})
+
+    def test_universe_create_view_saves_csv_selection(self):
+        resp = self.client.post(reverse('universe_create'), {
+            'name': 'Universe view',
+            'active': 'on',
+            'symbols': f'{self.aapl.id},{self.msft.id},{self.nvda.id}',
+        })
+        self.assertEqual(resp.status_code, 302)
+        saved = Universe.objects.get(name='Universe view')
+        self.assertEqual(
+            set(saved.symbols.values_list('id', flat=True)),
+            {self.aapl.id, self.msft.id, self.nvda.id},
+        )
