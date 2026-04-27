@@ -1,4 +1,4 @@
-import csv
+.import csv
 import os
 from io import BytesIO
 from typing import Iterable
@@ -2345,8 +2345,26 @@ def backtest_results(request, pk: int):
 
     # Portfolio synthesis (Feature 8)
     portfolio = results.get("portfolio") or {}
-    port_kpi = portfolio.get("kpi") or {}
+    port_kpi = dict(portfolio.get("kpi") or {})
     port_daily = portfolio.get("daily") or []
+
+    try:
+        persisted_kpi = getattr(bt, "portfolio_kpi", None)
+    except Exception:
+        persisted_kpi = None
+
+    # BT — Bénéfice total / retour portefeuille
+    if not port_kpi.get("BT"):
+        bt_fallback = port_kpi.get("TOTAL_RETURN_ON_CAPITAL")
+        if bt_fallback not in (None, ""):
+            port_kpi["BT"] = bt_fallback
+        elif persisted_kpi is not None and persisted_kpi.bt_return not in (None, ""):
+            port_kpi["BT"] = str(persisted_kpi.bt_return)
+
+    # BMJ — Bénéfice moyen par jour investi
+    if not port_kpi.get("BMJ"):
+        if persisted_kpi is not None and persisted_kpi.bmj_return not in (None, ""):
+            port_kpi["BMJ"] = str(persisted_kpi.bmj_return)
 
     def _downsample_series_keep_full_period(series, max_points=400):
         if not isinstance(series, list) or len(series) <= max_points:

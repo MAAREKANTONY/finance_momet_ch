@@ -3,7 +3,7 @@ from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
 
-from core.models import Backtest, ProcessingJob, Scenario, Study, Symbol, Universe
+from core.models import Backtest, BacktestPortfolioKPI, ProcessingJob, Scenario, Study, Symbol, Universe
 
 
 class LargeSymbolFormViewTests(TestCase):
@@ -312,10 +312,100 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertIn("Synthèse portefeuille globale", body)
+        self.assertIn("BT — Retour portefeuille / capital total", body)
+        self.assertIn("BMJ — Retour portefeuille moyen / jour investi", body)
         self.assertIn("P&amp;L total", body)
         self.assertIn("1050", body)
         self.assertIn("TOTAL_PNL_AMOUNT", body)
         self.assertIn("max_drawdown_amount", body)
+
+    def test_backtest_results_portfolio_uses_total_return_fallback_for_bt(self):
+        bt = Backtest.objects.create(
+            name="BT View Fallback Total Return",
+            scenario=self.scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            results={
+                "tickers": {
+                    self.symbol.ticker: {
+                        "lines": [{
+                            "line_index": 1,
+                            "buy": ["A1"],
+                            "sell": ["B1"],
+                            "allocated": "100",
+                            "daily": [],
+                            "final": {"N": 0},
+                        }]
+                    }
+                },
+                "portfolio": {
+                    "kpi": {
+                        "TOTAL_RETURN_ON_CAPITAL": "0.05",
+                        "BMJ": "0.0125",
+                        "TOTAL_PNL_AMOUNT": "50",
+                        "FINAL_EQUITY": "1050",
+                    },
+                    "daily": [],
+                },
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("5.000%", body)
+        self.assertIn("1.2500%", body)
+
+    def test_backtest_results_portfolio_uses_persisted_kpi_fallbacks(self):
+        bt = Backtest.objects.create(
+            name="BT View Persisted KPI Fallback",
+            scenario=self.scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            results={
+                "tickers": {
+                    self.symbol.ticker: {
+                        "lines": [{
+                            "line_index": 1,
+                            "buy": ["A1"],
+                            "sell": ["B1"],
+                            "allocated": "100",
+                            "daily": [],
+                            "final": {"N": 0},
+                        }]
+                    }
+                },
+                "portfolio": {"kpi": {"TOTAL_PNL_AMOUNT": "50", "FINAL_EQUITY": "1050"}, "daily": []},
+            },
+        )
+        BacktestPortfolioKPI.objects.create(
+            backtest=bt,
+            capital_total="1000",
+            invested_end="100",
+            equity_end="1050",
+            bt_return="0.05",
+            bmj_return="0.0125",
+            nb_days=4,
+            max_drawdown="0",
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("5.000%", body)
+        self.assertIn("1.2500%", body)
 
     def test_backtest_debug_excel_export_queues_job(self):
         scenario = Scenario.objects.create(
