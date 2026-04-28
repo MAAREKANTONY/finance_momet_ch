@@ -1698,8 +1698,6 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
         avg_ratio_non_positive = sum(non_positive_ticker_ratios) / Decimal(len(non_positive_ticker_ratios))
 
     portfolio_capital_base = CP_raw
-    total_pnl_amount = equity_end - portfolio_capital_base
-    total_return_on_capital = None if portfolio_capital_base <= 0 else (total_pnl_amount / portfolio_capital_base)
     portfolio_n = 0
     portfolio_bt = Decimal("0")
     portfolio_tradable_days_not_in_position = 0
@@ -1775,18 +1773,23 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 except Exception:
                     pass
 
+    total_pnl_amount = total_gain_amount + total_loss_amount
+    total_return_on_capital = None if portfolio_capital_base <= 0 else (total_pnl_amount / portfolio_capital_base)
     avg_trade_amount = None if total_trades_amount == 0 else (total_pnl_amount / Decimal(total_trades_amount))
     profit_factor_amount = None
     if total_loss_amount < 0:
         profit_factor_amount = total_gain_amount / abs(total_loss_amount)
     win_rate_amount = None if total_trades_amount == 0 else ((Decimal(win_trades_amount) / Decimal(total_trades_amount)) * Decimal("100"))
     portfolio_s_g_n = None if portfolio_n == 0 else (portfolio_bt / Decimal(portfolio_n))
+    portfolio_bt_display = None
+    if total_trades_amount > 0 and equity_end > 0:
+        portfolio_bt_display = (equity_end - invested_end) / equity_end
     portfolio_bmj = None
-    if portfolio_tradable_days_not_in_position > 0:
-        portfolio_bmj = portfolio_bt / Decimal(portfolio_tradable_days_not_in_position)
+    if portfolio_bt_display is not None and nb_days_invested > 0:
+        portfolio_bmj = portfolio_bt_display / Decimal(nb_days_invested)
     portfolio_bmd = None
-    if portfolio_tradable_days_in_position_closed > 0:
-        portfolio_bmd = portfolio_bt / Decimal(portfolio_tradable_days_in_position_closed)
+    if portfolio_bt_display is not None and portfolio_tradable_days_in_position_closed > 0:
+        portfolio_bmd = portfolio_bt_display / Decimal(portfolio_tradable_days_in_position_closed)
 
     results["portfolio"] = {
         "kpi": {
@@ -1795,7 +1798,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             "equity_end": str(equity_end),
             "N": portfolio_n,
             "S_G_N": None if portfolio_s_g_n is None else str(portfolio_s_g_n),
-            "BT": str(portfolio_bt),
+            "BT": None if portfolio_bt_display is None else str(portfolio_bt_display),
             "TRADABLE_DAYS_NOT_IN_POSITION": portfolio_tradable_days_not_in_position,
             "TRADABLE_DAYS_IN_POSITION_CLOSED": portfolio_tradable_days_in_position_closed,
             "BMJ": None if portfolio_bmj is None else str(portfolio_bmj),
