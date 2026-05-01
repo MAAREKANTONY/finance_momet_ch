@@ -47,7 +47,7 @@
       <th>Equity (fin)</th><td>{{ portfolio_kpi.equity_end }}</td>
     </tr>
     <tr>
-      <th>BT — Retour portefeuille / capital total</th><td>{{ portfolio_kpi.BT|pct:3 }}</td>
+      <th>BT — Retour portefeuille / investi final</th><td>{{ portfolio_kpi.BT|pct:3 }}</td>
       <th>BMJ — Retour portefeuille moyen / jour investi</th><td>{{ portfolio_kpi.BMJ|pct:4 }}</td>
       <th>Max drawdown</th><td>{{ portfolio_kpi.max_drawdown|pct:3 }}</td>
     </tr>
@@ -249,7 +249,7 @@
       <li><b>RATIO_IN_POSITION</b> : <code>100 × TRADABLE_DAYS_IN_POSITION_CLOSED / TRADABLE_DAYS</code>.</li>
       <li><b>BMJ</b> : bénéfice moyen par jour tradable hors position : <code>BMJ = BT / TRADABLE_DAYS_NOT_IN_POSITION</code>.</li>
       <li><b>BMD</b> : bénéfice moyen par jour tradable en position : <code>BMD = BT / TRADABLE_DAYS_IN_POSITION_CLOSED</code>.</li>
-      <li><b>BT portefeuille</b> : rendement global du portefeuille sur le capital total initial : <code>(Equity finale - Capital total initial) / Capital total initial</code>.</li>
+      <li><b>BT portefeuille</b> : rendement global du portefeuille sur l'investi final : <code>(Equity finale - Investi final) / Investi final</code>.</li>
       <li><b>BMJ portefeuille</b> : rendement portefeuille moyen par jour investi : <code>BT portefeuille / NB_DAYS</code>.</li>
       <li><b>NB_DAYS</b> : nombre de jours de la courbe portefeuille où <code>invested &gt; 0</code>.</li>
       <li><b>Cash</b> : cash restant pour ce ticker/ligne après achats/ventes (arrondi au nombre entier d'actions).</li>
