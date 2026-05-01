@@ -312,16 +312,16 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertIn("Synthèse portefeuille globale", body)
-        self.assertIn("BT — Retour portefeuille / capital total", body)
+        self.assertIn("BT — Retour portefeuille / investi final", body)
         self.assertIn("BMJ — Retour portefeuille moyen / jour investi", body)
         self.assertIn("P&amp;L total", body)
         self.assertIn("1050", body)
         self.assertIn("TOTAL_PNL_AMOUNT", body)
         self.assertIn("max_drawdown_amount", body)
 
-    def test_backtest_results_portfolio_uses_total_return_fallback_for_bt(self):
+    def test_backtest_results_portfolio_recomputes_bt_from_equity_and_invested(self):
         bt = Backtest.objects.create(
-            name="BT View Fallback Total Return",
+            name="BT View Recomputed BT",
             scenario=self.scenario,
             start_date="2024-01-01",
             end_date="2024-01-31",
@@ -347,7 +347,9 @@ class BacktestResultsRenderTests(TestCase):
                 "portfolio": {
                     "kpi": {
                         "TOTAL_RETURN_ON_CAPITAL": "0.05",
-                        "BMJ": "0.0125",
+                        "equity_end": "1050",
+                        "invested_end": "1000",
+                        "NB_DAYS": 4,
                         "TOTAL_PNL_AMOUNT": "50",
                         "FINAL_EQUITY": "1050",
                     },

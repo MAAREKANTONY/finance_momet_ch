@@ -267,7 +267,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(Decimal(portfolio["equity_end"]), Decimal("1050"))
         self.assertEqual(portfolio["NB_DAYS"], 4)
         self.assertEqual(Decimal(portfolio["TOTAL_PNL_AMOUNT"]), Decimal(portfolio["TOTAL_GAIN_AMOUNT"]) + Decimal(portfolio["TOTAL_LOSS_AMOUNT"]))
-        self.assertEqual(Decimal(portfolio["BT"]), (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["equity_end"]))
+        self.assertEqual(Decimal(portfolio["BT"]), (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["invested_end"]))
         self.assertEqual(Decimal(portfolio["BMJ"]), Decimal(portfolio["BT"]) / Decimal(portfolio["NB_DAYS"]))
 
     def test_backtest_golden_portfolio_kpis_no_trade_all_days_tradable(self):
@@ -343,7 +343,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         result = run_backtest(bt).results
         portfolio = result["portfolio"]["kpi"]
 
-        expected_bt = (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["equity_end"])
+        expected_bt = (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["invested_end"])
         self.assertEqual(Decimal(portfolio["BT"]), expected_bt)
         self.assertEqual(Decimal(portfolio["BMJ"]), expected_bt / Decimal(portfolio["NB_DAYS"]))
 
@@ -417,7 +417,7 @@ class EngineAndMetricsRegressionTests(TestCase):
 
         result = run_backtest(bt).results
         portfolio = result["portfolio"]["kpi"]
-        expected_bt = (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["equity_end"])
+        expected_bt = (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["invested_end"])
         self.assertEqual(Decimal(portfolio["BT"]), expected_bt)
         self.assertEqual(Decimal(portfolio["BMJ"]), expected_bt / Decimal(portfolio["NB_DAYS"]))
 
@@ -453,7 +453,7 @@ class EngineAndMetricsRegressionTests(TestCase):
 
         self.assertEqual(Decimal(portfolio["TOTAL_PNL_AMOUNT"]), Decimal(portfolio["TOTAL_GAIN_AMOUNT"]) + Decimal(portfolio["TOTAL_LOSS_AMOUNT"]))
         self.assertNotEqual(Decimal(portfolio["TOTAL_PNL_AMOUNT"]), Decimal(portfolio["FINAL_EQUITY"]))
-        expected_bt = (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["equity_end"])
+        expected_bt = (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["invested_end"])
         self.assertEqual(Decimal(portfolio["BT"]), expected_bt)
         self.assertEqual(Decimal(portfolio["BMJ"]), expected_bt / Decimal(portfolio["NB_DAYS"]))
 
@@ -484,7 +484,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         result = run_backtest(bt).results
         portfolio = result["portfolio"]["kpi"]
 
-        expected_bt = (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["equity_end"])
+        expected_bt = (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["invested_end"])
         self.assertEqual(Decimal(portfolio["TOTAL_PNL_AMOUNT"]), Decimal(portfolio["TOTAL_GAIN_AMOUNT"]) + Decimal(portfolio["TOTAL_LOSS_AMOUNT"]))
         self.assertEqual(Decimal(portfolio["BT"]), expected_bt)
         self.assertEqual(Decimal(portfolio["BMJ"]), expected_bt / Decimal(portfolio["NB_DAYS"]))

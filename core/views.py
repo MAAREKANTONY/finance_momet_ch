@@ -2,6 +2,7 @@ import csv
 import os
 from io import BytesIO
 from typing import Iterable
+from decimal import Decimal
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, JsonResponse, HttpResponse, FileResponse
@@ -58,6 +59,7 @@ from .backtest_row_projection import augment_tradable_projection_row
 from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
+from .services.backtesting.engine import _compute_portfolio_bt_ratio
 from .excel_utils import append_excel_row
 from .job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
 from .services.derived_data import (
@@ -2355,15 +2357,25 @@ def backtest_results(request, pk: int):
 
     # BT — Bénéfice total / retour portefeuille
     if not port_kpi.get("BT"):
-        bt_fallback = port_kpi.get("TOTAL_RETURN_ON_CAPITAL")
-        if bt_fallback not in (None, ""):
-            port_kpi["BT"] = bt_fallback
+        eq = _to_dec(port_kpi.get("equity_end"))
+        inv = _to_dec(port_kpi.get("invested_end"))
+        bt_fallback = _compute_portfolio_bt_ratio(eq, inv)
+        if bt_fallback is not None:
+            port_kpi["BT"] = str(bt_fallback)
         elif persisted_kpi is not None and persisted_kpi.bt_return not in (None, ""):
             port_kpi["BT"] = str(persisted_kpi.bt_return)
 
     # BMJ — Bénéfice moyen par jour investi
     if not port_kpi.get("BMJ"):
-        if persisted_kpi is not None and persisted_kpi.bmj_return not in (None, ""):
+        bt_val = _to_dec(port_kpi.get("BT"))
+        nb_days = port_kpi.get("NB_DAYS")
+        try:
+            nb_days = int(nb_days)
+        except Exception:
+            nb_days = 0
+        if bt_val is not None and nb_days > 0:
+            port_kpi["BMJ"] = str(bt_val / Decimal(nb_days))
+        elif persisted_kpi is not None and persisted_kpi.bmj_return not in (None, ""):
             port_kpi["BMJ"] = str(persisted_kpi.bmj_return)
 
     def _downsample_series_keep_full_period(series, max_points=400):

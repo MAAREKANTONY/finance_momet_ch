@@ -463,6 +463,16 @@ def _build_shared_line_kpi_values(state_row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _compute_portfolio_bt_ratio(equity_end: Decimal, invested_end: Decimal) -> Decimal | None:
+    """Return the validated portfolio BT ratio.
+
+    BT = (equity_end - invested_end) / invested_end when invested_end > 0.
+    """
+    if invested_end <= 0:
+        return None
+    return (equity_end - invested_end) / invested_end
+
+
 def _match_codes_with_memory(day_alerts: set[str], latched_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
     codes = _normalize_codes(codes)
     if not codes:
@@ -1782,8 +1792,8 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     win_rate_amount = None if total_trades_amount == 0 else ((Decimal(win_trades_amount) / Decimal(total_trades_amount)) * Decimal("100"))
     portfolio_s_g_n = None if portfolio_n == 0 else (portfolio_bt / Decimal(portfolio_n))
     portfolio_bt_display = None
-    if total_trades_amount > 0 and equity_end > 0:
-        portfolio_bt_display = (equity_end - invested_end) / equity_end
+    if total_trades_amount > 0:
+        portfolio_bt_display = _compute_portfolio_bt_ratio(equity_end, invested_end)
     portfolio_bmj = None
     if portfolio_bt_display is not None and nb_days_invested > 0:
         portfolio_bmj = portfolio_bt_display / Decimal(nb_days_invested)

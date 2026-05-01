@@ -15,14 +15,14 @@ Next phase:
 - no code behavior change before business expectations are frozen
 
 First business correction implemented:
-- portfolio BT now uses total capital as denominator
+- portfolio BT now uses invested_end as denominator
 - portfolio BMJ is derived from the corrected portfolio BT
 - portfolio NB_DAYS remains the count of portfolio daily rows where invested > 0
 - line BT/BMJ/BMD remain unchanged in this iteration
 
 Business note:
 - historical portfolio BT/BMJ values computed before this correction are not directly comparable
-  to corrected values because the previous denominator was invested_end instead of total capital
+  to corrected values because the denominator changed during the correction iterations
 
 First target formulas:
 - line BT
