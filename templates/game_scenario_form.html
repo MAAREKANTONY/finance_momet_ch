@@ -81,6 +81,7 @@
 
 <script>
 (function() {
+  const INITIAL_SIGNAL_LINES = {{ signal_lines_json|safe }};
   const SIGNAL_CHOICES = {{ signal_choices_json|safe }};
   const SPECIAL_SELL = "AUTO_K1F_UPPER_DOWN_B1F";
   const LOGIC_CHOICES = [["AND", "ET"], ["OR", "OU"]];
@@ -366,12 +367,13 @@
     hidden.value = JSON.stringify(out);
     updateSummary();
   }
-  let initial = [];
-  try { initial = JSON.parse(hidden.value || '[]'); } catch(e) { initial = []; }
+  let initial = Array.isArray(INITIAL_SIGNAL_LINES) ? INITIAL_SIGNAL_LINES : [];
+  if (!initial.length) {
+    try { initial = JSON.parse(hidden.value || '[]'); } catch(e) { initial = []; }
+  }
   if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', trading_model:'LATCH_STATEFUL', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND'}];
   initial.forEach((it, idx) => addRow(idx, it));
   renumber();
-  serialize();
   addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', trading_model:'LATCH_STATEFUL', buy:[], sell:[], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND'}); renumber(); serialize(); });
   form?.addEventListener('submit', serialize);
 })();

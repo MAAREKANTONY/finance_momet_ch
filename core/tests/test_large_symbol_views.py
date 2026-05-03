@@ -2,8 +2,9 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
+import json
 
-from core.models import Backtest, BacktestPortfolioKPI, ProcessingJob, Scenario, Study, Symbol, Universe
+from core.models import Backtest, BacktestPortfolioKPI, GameScenario, ProcessingJob, Scenario, Study, Symbol, Universe
 
 
 class LargeSymbolFormViewTests(TestCase):
@@ -195,6 +196,142 @@ class LargeSymbolFormViewTests(TestCase):
             self.assertIn(sym.ticker, body)
         self.assertIn('server-selected-bootstrap', body)
 
+    def test_backtest_create_view_hides_gm_codes_from_signal_choices_but_keeps_gm_filters(self):
+        scenario = Scenario.objects.create(
+            name="Scenario GM UI",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        response = self.client.get(reverse("backtest_create"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("GM positif", body)
+        self.assertIn("GM négatif", body)
+        self.assertIn("GM neutre", body)
+        self.assertNotIn("GM_POS (momentum global positif)", body)
+        self.assertNotIn("GM_NEG (momentum global négatif)", body)
+        self.assertNotIn("GM_NEU (momentum global neutre)", body)
+
+    def test_backtest_edit_view_preserves_existing_signal_lines_json(self):
+        signal_lines = [
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af", "SPVa_basse"],
+                "buy_logic": "AND",
+                "buy_gm_filter": "GM_POS",
+                "buy_gm_operator": "AND",
+                "sell": [],
+                "sell_logic": "OR",
+                "sell_gm_filter": "IGNORE",
+                "sell_gm_operator": "AND",
+            }
+        ]
+        scenario = Scenario.objects.create(
+            name="Scenario GM Edit",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        bt = Backtest.objects.create(
+            name="BT GM Edit",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=signal_lines,
+            universe_snapshot=[],
+        )
+        response = self.client.get(reverse("backtest_update", args=[bt.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["signal_lines_json"], json.dumps(signal_lines))
+        body = response.content.decode()
+        self.assertIn('"buy_gm_filter": "GM_POS"', body)
+        self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
+        self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
+
+    def test_backtest_detail_displays_buy_gm_filter_in_french(self):
+        signal_lines = [
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af", "SPVa_basse"],
+                "buy_logic": "AND",
+                "buy_gm_filter": "GM_POS",
+                "buy_gm_operator": "AND",
+                "sell": [],
+                "sell_logic": "OR",
+                "sell_gm_filter": "IGNORE",
+                "sell_gm_operator": "AND",
+            }
+        ]
+        scenario = Scenario.objects.create(
+            name="Scenario GM Detail",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        bt = Backtest.objects.create(
+            name="BT GM Detail",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=signal_lines,
+            universe_snapshot=[],
+        )
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Filtre GM achat : GM positif", body)
+        self.assertNotIn("Filtre GM vente", body)
+
+    def test_game_scenario_form_hides_gm_codes_from_signal_choices_but_keeps_gm_filters(self):
+        response = self.client.get(reverse("game_scenario_create"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("GM positif", body)
+        self.assertIn("GM négatif", body)
+        self.assertIn("GM neutre", body)
+        self.assertNotIn("GM_POS (momentum global positif)", body)
+        self.assertNotIn("GM_NEG (momentum global négatif)", body)
+        self.assertNotIn("GM_NEU (momentum global neutre)", body)
+
+    def test_game_scenario_edit_view_preserves_existing_signal_lines_json(self):
+        signal_lines = [
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af", "SPVa_basse"],
+                "buy_logic": "AND",
+                "buy_gm_filter": "GM_POS",
+                "buy_gm_operator": "AND",
+                "sell": [],
+                "sell_logic": "OR",
+                "sell_gm_filter": "IGNORE",
+                "sell_gm_operator": "AND",
+            }
+        ]
+        game = GameScenario.objects.create(
+            name="Game GM Edit",
+            active=True,
+            signal_lines=signal_lines,
+        )
+        response = self.client.get(reverse("game_scenario_edit", args=[game.pk]))
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["signal_lines_json"], json.dumps(signal_lines))
+        body = response.content.decode()
+        self.assertIn('"buy_gm_filter": "GM_POS"', body)
+        self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
+        self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
+
 
 class SymbolCsvSubmissionRegressionTests(TestCase):
     def setUp(self):
@@ -256,7 +393,7 @@ class BacktestResultsRenderTests(TestCase):
             capital_per_ticker="100",
             capital_mode="FIXED",
             include_all_tickers=True,
-            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"], "buy_gm_filter": "GM_POS"}],
             universe_snapshot=[self.symbol.ticker],
             results={
                 "tickers": {
@@ -265,6 +402,7 @@ class BacktestResultsRenderTests(TestCase):
                             "line_index": 1,
                             "buy": ["A1"],
                             "sell": ["B1"],
+                            "buy_gm_filter": "GM_POS",
                             "allocated": "100",
                             "daily": [],
                             "final": {
@@ -318,6 +456,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("1050", body)
         self.assertIn("TOTAL_PNL_AMOUNT", body)
         self.assertIn("max_drawdown_amount", body)
+        self.assertIn("Filtre GM achat : <b>GM positif</b>", body)
 
     def test_backtest_results_portfolio_recomputes_bt_from_equity_and_invested(self):
         bt = Backtest.objects.create(

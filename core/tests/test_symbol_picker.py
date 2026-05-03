@@ -56,6 +56,36 @@ class SignalLinesCleaningTests(SimpleTestCase):
                 }
             ])
 
+    def test_clean_signal_lines_keeps_gm_filter_separate_from_buy_signals(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af", "SPVa_basse"],
+                "sell": [],
+                "buy_logic": "AND",
+                "buy_gm_filter": "GM_POS",
+                "buy_gm_operator": "AND",
+            }
+        ])
+        self.assertEqual(len(cleaned), 1)
+        line = cleaned[0]
+        self.assertEqual(line["buy"], ["Af", "SPVa_basse"])
+        self.assertEqual(line["buy_gm_filter"], "GM_POS")
+        self.assertEqual(line["buy_gm_operator"], "AND")
+        self.assertNotIn("GM_POS", line["buy"])
+
+    def test_clean_signal_lines_rejects_gm_as_explicit_progressive_buy_signal(self):
+        with self.assertRaises(forms.ValidationError):
+            _clean_signal_lines_json([
+                {
+                    "trading_model": "LATCH_STATEFUL",
+                    "buy": ["GM_POS"],
+                    "sell": [],
+                    "buy_logic": "AND",
+                    "buy_gm_filter": "GM_POS",
+                }
+            ])
+
 
 class SignalLineTemplateDefaultsTests(SimpleTestCase):
     repo_root = Path(__file__).resolve().parents[2]
@@ -104,3 +134,8 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
             self.assertIn("Prix maximum d'achat", content)
             self.assertIn("aucune borne minimum", content)
             self.assertIn("aucune borne maximum", content)
+
+    def test_edit_templates_do_not_serialize_signal_lines_on_initial_load(self):
+        for template_name in ("backtest_edit.html", "game_scenario_form.html"):
+            content = self._template(template_name)
+            self.assertNotIn("renumber();\n  serialize();", content)
