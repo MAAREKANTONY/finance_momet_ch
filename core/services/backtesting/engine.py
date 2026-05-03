@@ -463,12 +463,12 @@ def _build_shared_line_kpi_values(state_row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _compute_portfolio_bt_ratio(equity_end: Decimal, invested_end: Decimal) -> Decimal | None:
+def _compute_portfolio_bt_ratio(equity_end: Decimal | None, invested_end: Decimal | None) -> Decimal | None:
     """Return the validated portfolio BT ratio.
 
     BT = (equity_end - invested_end) / invested_end when invested_end > 0.
     """
-    if invested_end <= 0:
+    if equity_end is None or invested_end is None or invested_end <= 0:
         return None
     return (equity_end - invested_end) / invested_end
 

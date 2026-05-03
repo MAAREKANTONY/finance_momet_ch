@@ -53,6 +53,7 @@
                 {{ line.buy|join:" & " }} <span class="muted">(ET)</span>
               {% endif %}
             {% else %}—{% endif %}
+            <div class="muted" style="margin-top:4px;">Filtre GM achat : {{ line.buy_gm_filter|gm_filter_business_label }}</div>
           </td>
           <td>
             {% if line.sell == "AUTO_K1F_UPPER_DOWN_B1F" or line.sell.0 == "AUTO_K1F_UPPER_DOWN_B1F" %}
@@ -65,6 +66,10 @@
                   {{ line.sell|join:" | " }} <span class="muted">(OU)</span>
                 {% endif %}
               {% else %}—{% endif %}
+            {% endif %}
+            {% line_gm_filter_display line "sell" as sell_gm_display %}
+            {% if sell_gm_display %}
+              <div class="muted" style="margin-top:4px;">Filtre GM vente : {{ sell_gm_display }}</div>
             {% endif %}
           </td>
         </tr>

@@ -209,6 +209,15 @@
       <option value="PRICE_POS">Prix + position (aire verte/rouge)</option>
     </select>
   </div>
+  {% if line %}
+    <div class="muted" style="margin-top:12px;">
+      <div>Filtre GM achat : <b>{% line_gm_filter_display line "buy" %}</b></div>
+      {% line_gm_filter_display line "sell" as sell_gm_display %}
+      {% if sell_gm_display %}
+        <div>Filtre GM vente : <b>{{ sell_gm_display }}</b></div>
+      {% endif %}
+    </div>
+  {% endif %}
 </div>
 </details>
 

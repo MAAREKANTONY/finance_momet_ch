@@ -78,6 +78,12 @@ except Exception:  # pragma: no cover
     fetch_daily_bars_task = None
 
 
+TRADING_SIGNAL_CHOICES = [
+    choice for choice in BACKTEST_SIGNAL_CHOICES
+    if choice[0] not in {"GM_POS", "GM_NEG", "GM_NEU"}
+]
+
+
 def _refresh_backtest_universe_snapshot(bt: Backtest) -> None:
     """Refresh the backtest universe_snapshot from the current Scenario symbols.
 
@@ -2176,8 +2182,9 @@ def backtest_create(request):
             return redirect("backtest_detail", pk=bt.pk)
     else:
         form = BacktestForm(initial={"include_all_tickers": True})
-    signal_lines_json = json.dumps(form["signal_lines"].value() or [])
-    return render(request, "backtest_create.html", {"form": form, "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES), "signal_lines_json": signal_lines_json})
+    raw_signal_lines_value = form["signal_lines"].value()
+    signal_lines_json = raw_signal_lines_value if isinstance(raw_signal_lines_value, str) else json.dumps(raw_signal_lines_value or [])
+    return render(request, "backtest_create.html", {"form": form, "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES), "signal_lines_json": signal_lines_json})
 
 
 @login_required
@@ -2216,7 +2223,8 @@ def backtest_update(request, pk: int):
     else:
         form = BacktestForm(instance=bt)
 
-    signal_lines_json = json.dumps(form["signal_lines"].value() or [])
+    raw_signal_lines_value = form["signal_lines"].value()
+    signal_lines_json = raw_signal_lines_value if isinstance(raw_signal_lines_value, str) else json.dumps(raw_signal_lines_value or [])
 
     return render(
         request,
@@ -2224,7 +2232,7 @@ def backtest_update(request, pk: int):
         {
             "form": form,
             "bt": bt,
-            "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES),
+            "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES),
             "signal_lines_json": signal_lines_json,
         },
     )
@@ -3615,14 +3623,15 @@ def game_scenario_create(request: HttpRequest):
             return redirect("game_scenario_detail", pk=obj.pk)
     else:
         form = GameScenarioForm()
-    signal_lines_json = json.dumps(form["signal_lines"].value() or [])
+    raw_signal_lines_value = form["signal_lines"].value()
+    signal_lines_json = raw_signal_lines_value if isinstance(raw_signal_lines_value, str) else json.dumps(raw_signal_lines_value or [])
     return render(
         request,
         "game_scenario_form.html",
         {
             "form": form,
             "mode": "create",
-            "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES),
+            "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES),
             "signal_lines_json": signal_lines_json,
         },
     )
@@ -3644,7 +3653,8 @@ def game_scenario_edit(request: HttpRequest, pk: int):
             return redirect("game_scenario_detail", pk=obj.pk)
     else:
         form = GameScenarioForm(instance=obj)
-    signal_lines_json = json.dumps(form["signal_lines"].value() or [])
+    raw_signal_lines_value = form["signal_lines"].value()
+    signal_lines_json = raw_signal_lines_value if isinstance(raw_signal_lines_value, str) else json.dumps(raw_signal_lines_value or [])
     return render(
         request,
         "game_scenario_form.html",
@@ -3652,7 +3662,7 @@ def game_scenario_edit(request: HttpRequest, pk: int):
             "form": form,
             "mode": "edit",
             "obj": obj,
-            "signal_choices_json": json.dumps(BACKTEST_SIGNAL_CHOICES),
+            "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES),
             "signal_lines_json": signal_lines_json,
         },
     )

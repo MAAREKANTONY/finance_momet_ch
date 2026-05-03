@@ -19,6 +19,15 @@ TRADING_MODEL_BUSINESS_LABELS = {
     TRADING_MODEL_LATCH_STATEFUL: "Déclenchement progressif (conditions validées dans le temps)",
 }
 
+GM_FILTER_BUSINESS_LABELS = {
+    "IGNORE": "Ignoré",
+    "GM_POS": "GM positif",
+    "GM_NEG": "GM négatif",
+    "GM_NEU": "GM neutre",
+    "GM_POS_OR_NEU": "GM positif ou neutre",
+    "GM_NEG_OR_NEU": "GM négatif ou neutre",
+}
+
 
 def _to_decimal(value) -> Decimal | None:
     if value is None or value == "":
@@ -76,3 +85,32 @@ def trading_model_business_label(line) -> str:
     if resolved_model == TRADING_MODEL_LEGACY_DAILY:
         return "Mode automatique → Déclenchement classique"
     return f"Mode automatique → {label}"
+
+
+@register.filter
+def gm_filter_business_label(value) -> str:
+    code = str(value or "IGNORE").upper()
+    return GM_FILTER_BUSINESS_LABELS.get(code, code)
+
+
+@register.simple_tag
+def line_gm_filter_display(line, side: str = "buy") -> str:
+    try:
+        trading_model = line.get("trading_model") if isinstance(line, dict) else getattr(line, "trading_model", None)
+        buy = line.get("buy") if isinstance(line, dict) else getattr(line, "buy", None)
+        resolved_model, _explicit = resolve_trading_model(trading_model, buy)
+    except Exception:
+        resolved_model = TRADING_MODEL_LEGACY_DAILY
+
+    key = f"{side}_gm_filter"
+    code = ""
+    if isinstance(line, dict):
+        code = line.get(key) or "IGNORE"
+    else:
+        code = getattr(line, key, None) or "IGNORE"
+    code = str(code).upper()
+
+    if side == "sell":
+        if resolved_model == TRADING_MODEL_LATCH_STATEFUL or code == "IGNORE":
+            return ""
+    return GM_FILTER_BUSINESS_LABELS.get(code, code)
