@@ -59,7 +59,7 @@ from .backtest_row_projection import augment_tradable_projection_row
 from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
-from .services.backtesting.engine import _compute_portfolio_bt_ratio
+from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
 from .excel_utils import append_excel_row
 from .job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
 from .services.derived_data import (
