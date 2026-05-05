@@ -1,0 +1,115 @@
+StockAlert V8.0.10 — Diagnostic visuel par ticker dans les résultats de backtest
+
+Objectif
+- Ajouter un diagnostic visuel minimal par ticker / ligne dans la page de résultats d’un backtest complet.
+- Aider à valider visuellement:
+  - le prix de référence P(t)
+  - le prix de clôture
+  - les séries techniques utiles à la ligne sélectionnée
+  - les marqueurs BUY / SELL / FORCED_SELL
+  - le filtre GM quand il est configuré
+- Ne rien changer à la logique de trading, aux KPI, ni au comportement GM.
+
+Constat avant correction
+- Les résultats de backtest affichaient déjà les données journalières et les KPI, mais aucun diagnostic visuel ciblé par ticker / ligne.
+- Il n’existait pas de payload dédié pour exploiter:
+  - les actions journalières
+  - les métriques `DailyMetric`
+  - la courbe GM globale
+- Les sorties KPI-only / game n’ont pas de trace journalière suffisante pour ce diagnostic.
+
+Corrections appliquées
+1) Payload de diagnostic en lecture seule
+- ajout de `core/services/backtesting/diagnostic.py`
+- ajout du helper `build_diagnostic_chart_payload(...)`
+- ce helper construit, pour le ticker / la ligne sélectionnés:
+  - `ticker`
+  - `line_index`
+  - `dates`
+  - `reference_price`
+  - `close_price`
+  - `markers`
+  - `signal_series`
+  - `gm`
+
+2) Sources de données utilisées
+- trace journalière de la ligne sélectionnée pour:
+  - les dates
+  - le prix de clôture
+  - les actions BUY / SELL / FORCED_SELL
+- `DailyMetric` pour:
+  - `P`
+  - `Kf2bis`
+  - `K1`, `K2`, `K3`, `K4`
+  - `sum_slope`, `slope_vrai`
+  - `sum_slope_basse`, `slope_vrai_basse`
+- `portfolio.daily[*].avg_global_nglobal` pour la courbe GM quand un filtre GM achat est configuré
+
+3) Mapping minimal des signaux
+- `Af/Bf` -> `P` + `Kf2bis`
+- `SPa/SPv` -> `SUM_SLOPE`
+- `SPVa/SPVv` -> `SLOPE_VRAI`
+- `SPa_basse/SPv_basse` -> `SUM_SLOPE_BASSE`
+- `SPVa_basse/SPVv_basse` -> `SLOPE_VRAI_BASSE`
+- `A1/B1` -> `K1`
+- `C1/D1` -> `K2`
+- `E1/F1` -> `K3`
+- `G1/H1` -> `K4`
+
+4) Marqueurs de trading
+- parsing de:
+  - `BUY`
+  - `SELL`
+  - `FORCED_SELL`
+- prise en charge des actions combinées:
+  - `SELL+BUY`
+  - `BUY+FORCED_SELL`
+
+5) Rendu UI minimal dans `backtest_results`
+- ajout d’une nouvelle section:
+  - `Diagnostic visuel de la stratégie`
+- rendu avec la librairie déjà présente `Chart.js`
+- affichage:
+  - de `P(t)`
+  - du prix de clôture
+  - des séries techniques pertinentes
+  - des marqueurs BUY / SELL / FORCED_SELL
+  - du GM uniquement si configuré
+- GM est explicitement affiché comme:
+  - `Filtre GM`
+  - jamais comme signal
+
+6) Exclusion des sorties sans trace journalière
+- si la ligne sélectionnée n’a pas de `daily`, aucun payload de diagnostic n’est construit
+- les sorties KPI-only / game restent donc exclues
+
+Fichiers modifiés
+- core/services/backtesting/diagnostic.py
+- core/views.py
+- templates/backtest_results.html
+- core/tests/test_large_symbol_views.py
+
+Tests ajoutés / mis à jour
+- payload de diagnostic construit uniquement pour le ticker / la ligne sélectionnés
+- GM absent si `buy_gm_filter = IGNORE`
+- GM présent uniquement comme filtre quand configuré
+- parsing des marqueurs BUY / SELL / FORCED_SELL
+- découpage des actions combinées
+- mapping des signaux vers les bonnes séries techniques
+- absence du diagnostic pour les résultats KPI-only-like
+- rendu du bloc UI de diagnostic uniquement quand le payload existe
+
+Validation
+- `python tools/run_quality_gate.py` ✅
+- `python manage.py test core.tests.test_engine_and_metrics core.tests.test_large_symbol_views -v 2` ✅
+
+Migration
+- aucune migration DB
+
+Impact attendu
+- meilleure validation visuelle des backtests complets
+- aucun changement de logique sur:
+  - trading
+  - KPI
+  - GM
+- aucun impact sur les sorties KPI-only / game

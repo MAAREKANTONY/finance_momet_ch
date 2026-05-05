@@ -344,6 +344,28 @@
 </div>
 </details>
 
+{% if diagnostic_chart_payload %}
+<details class="card acc" open data-acc-key="diagnostic-chart">
+<summary class="acc-summary"><span class="acc-title">Diagnostic visuel de la stratégie</span></summary>
+<div class="acc-body">
+  <div class="muted" style="margin-bottom:10px;">
+    <div>Prix de référence P(t), prix de clôture, signaux techniques utiles et marqueurs BUY / SELL / FORCED_SELL.</div>
+    {% if diagnostic_chart_payload.gm %}
+      <div><b>{{ diagnostic_chart_payload.gm.label }}</b> : {{ diagnostic_chart_payload.gm.filter_code }}</div>
+    {% endif %}
+  </div>
+  <canvas id="diagnosticChart" height="140"></canvas>
+  <div class="muted" style="margin-top:8px;">
+    <span style="margin-right:12px;">Marqueurs : BUY / SELL / FORCED_SELL</span>
+    {% if diagnostic_chart_payload.gm %}
+      <span>GM affiché comme <b>filtre</b>, jamais comme signal.</span>
+    {% endif %}
+  </div>
+</div>
+</details>
+{{ diagnostic_chart_payload|json_script:"diagnostic-chart-payload" }}
+{% endif %}
+
 <details class="card acc" open data-acc-key="daily">
 <summary class="acc-summary"><span class="acc-title">Données journalières {% if is_truncated %}(dernières 200 lignes){% endif %}</span></summary>
 <div class="acc-body">
@@ -588,6 +610,137 @@
         responsive: true,
         spanGaps: true,
         scales: { y: { type: "linear", title: { display: true, text: "%" } } }
+      }
+    });
+  }
+
+  const diagnosticPayloadNode = document.getElementById("diagnostic-chart-payload");
+  const diagnosticCanvas = document.getElementById("diagnosticChart");
+  if (diagnosticPayloadNode && diagnosticCanvas) {
+    const payload = JSON.parse(diagnosticPayloadNode.textContent);
+    const labels = payload.dates || [];
+    const colors = {
+      P: "#1d4ed8",
+      close: "#111827",
+      Kf2bis: "#7c3aed",
+      K1: "#0f766e",
+      K2: "#9333ea",
+      K3: "#b45309",
+      K4: "#be123c",
+      SUM_SLOPE: "#2563eb",
+      SLOPE_VRAI: "#7c2d12",
+      SUM_SLOPE_BASSE: "#0f766e",
+      SLOPE_VRAI_BASSE: "#9f1239",
+      GM: "#16a34a",
+      BUY: "#16a34a",
+      SELL: "#dc2626",
+      FORCED_SELL: "#ea580c",
+    };
+
+    function buildMarkerSeries(markerType) {
+      const points = new Array(labels.length).fill(null);
+      const source = markerType === "BUY" ? payload.reference_price : payload.close_price;
+      (payload.markers || []).forEach((marker) => {
+        if (marker.type !== markerType) return;
+        const idx = labels.indexOf(marker.date);
+        if (idx < 0) return;
+        const rawValue = (source && source[idx] !== undefined && source[idx] !== null) ? source[idx] : payload.reference_price[idx];
+        const numeric = toNumber(rawValue);
+        if (numeric !== null) points[idx] = numeric;
+      });
+      return points;
+    }
+
+    const datasets = [
+      {
+        type: "line",
+        label: "Prix de référence P(t)",
+        data: (payload.reference_price || []).map(toNumber),
+        yAxisID: "yPrice",
+        borderColor: colors.P,
+        backgroundColor: colors.P,
+        spanGaps: true,
+        tension: 0.2,
+      },
+      {
+        type: "line",
+        label: "Prix de clôture",
+        data: (payload.close_price || []).map(toNumber),
+        yAxisID: "yPrice",
+        borderColor: colors.close,
+        backgroundColor: colors.close,
+        borderDash: [6, 4],
+        spanGaps: true,
+        tension: 0.2,
+      }
+    ];
+
+    const signalLabelMap = {
+      P: "P(t)",
+      Kf2bis: "Kf2bis",
+      K1: "K1",
+      K2: "K2",
+      K3: "K3",
+      K4: "K4",
+      SUM_SLOPE: "SUM_SLOPE",
+      SLOPE_VRAI: "SLOPE_VRAI",
+      SUM_SLOPE_BASSE: "SUM_SLOPE_BASSE",
+      SLOPE_VRAI_BASSE: "SLOPE_VRAI_BASSE",
+    };
+
+    Object.entries(payload.signal_series || {}).forEach(([key, series]) => {
+      datasets.push({
+        type: "line",
+        label: signalLabelMap[key] || key,
+        data: ((series && series.values) || []).map(toNumber),
+        yAxisID: key === "P" || key === "Kf2bis" ? "yPrice" : "ySignal",
+        borderColor: colors[key] || "#6b7280",
+        backgroundColor: colors[key] || "#6b7280",
+        spanGaps: true,
+        tension: 0.2,
+      });
+    });
+
+    if (payload.gm) {
+      datasets.push({
+        type: "line",
+        label: payload.gm.label,
+        data: (payload.gm.values || []).map((v) => {
+          const n = toNumber(v);
+          return n === null ? null : n * 100;
+        }),
+        yAxisID: "yGm",
+        borderColor: colors.GM,
+        backgroundColor: colors.GM,
+        spanGaps: true,
+        tension: 0.2,
+      });
+    }
+
+    ["BUY", "SELL", "FORCED_SELL"].forEach((markerType) => {
+      datasets.push({
+        type: "scatter",
+        label: markerType,
+        data: buildMarkerSeries(markerType),
+        yAxisID: "yPrice",
+        borderColor: colors[markerType],
+        backgroundColor: colors[markerType],
+        showLine: false,
+        pointRadius: 5,
+        pointHoverRadius: 6,
+      });
+    });
+
+    new Chart(diagnosticCanvas.getContext("2d"), {
+      data: { labels, datasets },
+      options: {
+        responsive: true,
+        spanGaps: true,
+        scales: {
+          yPrice: { type: "linear", position: "left", title: { display: true, text: "Prix" } },
+          ySignal: { type: "linear", position: "right", title: { display: true, text: "Signaux" }, grid: { drawOnChartArea: false } },
+          yGm: { type: "linear", position: "right", title: { display: !!payload.gm, text: "Filtre GM (%)" }, grid: { drawOnChartArea: false }, display: !!payload.gm },
+        }
       }
     });
   }
