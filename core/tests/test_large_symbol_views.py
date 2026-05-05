@@ -4,7 +4,7 @@ from django.test import Client, TestCase
 from django.urls import reverse
 import json
 
-from core.models import Backtest, BacktestPortfolioKPI, GameScenario, ProcessingJob, Scenario, Study, Symbol, Universe
+from core.models import Backtest, BacktestPortfolioKPI, DailyMetric, GameScenario, ProcessingJob, Scenario, Study, Symbol, Universe
 
 
 class LargeSymbolFormViewTests(TestCase):
@@ -383,6 +383,65 @@ class BacktestResultsRenderTests(TestCase):
             npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
         )
 
+    def _create_metric(self, symbol, dt, **overrides):
+        payload = {
+            "symbol": symbol,
+            "scenario": self.scenario,
+            "date": dt,
+            "P": "100",
+            "K1": "1",
+            "K1f": "99",
+            "K2f": "98",
+            "K2": "2",
+            "K3": "3",
+            "K4": "4",
+            "sum_slope": "0.12",
+            "slope_vrai": "0.08",
+            "sum_slope_basse": "0.03",
+            "slope_vrai_basse": "0.02",
+            "ratio_P": "0.5",
+        }
+        payload.update(overrides)
+        defaults = payload.copy()
+        symbol_obj = defaults.pop("symbol")
+        scenario_obj = defaults.pop("scenario")
+        date_value = defaults.pop("date")
+        obj, _created = DailyMetric.objects.update_or_create(
+            symbol=symbol_obj,
+            scenario=scenario_obj,
+            date=date_value,
+            defaults=defaults,
+        )
+        return obj
+
+    def _build_diagnostic_backtest(self, *, signal_lines, ticker_lines, extra_symbols=None):
+        symbols = {self.symbol.ticker: self.symbol}
+        if extra_symbols:
+            symbols.update({sym.ticker: sym for sym in extra_symbols})
+        for sym in symbols.values():
+            self._create_metric(sym, "2024-01-02")
+            self._create_metric(sym, "2024-01-03", P="101")
+            self._create_metric(sym, "2024-01-04", P="102")
+
+        results = {
+            "meta": {"start_date": "2024-01-01", "end_date": "2024-01-31"},
+            "tickers": ticker_lines,
+            "portfolio": {"kpi": {}, "daily": []},
+        }
+        return Backtest.objects.create(
+            name="BT Diagnostic",
+            scenario=self.scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=signal_lines,
+            universe_snapshot=list(symbols.keys()),
+            results=results,
+        )
+
     def test_backtest_results_renders_portfolio_kpis_and_legend_terms(self):
         bt = Backtest.objects.create(
             name="BT View",
@@ -579,3 +638,167 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 302)
         job = ProcessingJob.objects.filter(backtest=bt, job_type=ProcessingJob.JobType.EXPORT_BACKTEST_DEBUG_XLSX).latest('id')
         self.assertEqual(job.status, ProcessingJob.Status.PENDING)
+
+    def test_backtest_results_diagnostic_payload_is_generated_for_selected_ticker_line_only(self):
+        other = Symbol.objects.create(ticker="BBB", exchange="NASDAQ", active=True)
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            extra_symbols=[other],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+                "BBB": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "20", "action": None},
+                    {"date": "2024-01-03", "price_close": "21", "action": "BUY"},
+                    {"date": "2024-01-04", "price_close": "22", "action": "SELL"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]), {"ticker": "BBB", "line": 1})
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["ticker"], "BBB")
+        self.assertEqual(payload["line_index"], 1)
+        self.assertEqual(payload["dates"], ["2024-01-02", "2024-01-03", "2024-01-04"])
+        self.assertIn("Diagnostic visuel de la stratégie", response.content.decode())
+
+    def test_backtest_results_diagnostic_payload_omits_gm_when_filter_is_ignored(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "buy_gm_filter": "IGNORE"}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "buy_gm_filter": "IGNORE", "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertIsNone(payload["gm"])
+        body = response.content.decode()
+        self.assertIn("Diagnostic visuel de la stratégie", body)
+        self.assertNotIn("Filtre GM</b>", body)
+
+    def test_backtest_results_diagnostic_payload_includes_gm_only_as_filter_when_configured(self):
+        for gm_filter in ["GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR_NEU", "GM_NEG_OR_NEU"]:
+            with self.subTest(gm_filter=gm_filter):
+                bt = self._build_diagnostic_backtest(
+                    signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "buy_gm_filter": gm_filter}],
+                    ticker_lines={
+                        "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "buy_gm_filter": gm_filter, "daily": [
+                            {"date": "2024-01-02", "price_close": "10", "action": None},
+                            {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                        ], "final": {}}]},
+                    },
+                )
+                response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+                payload = response.context["diagnostic_chart_payload"]
+                self.assertEqual(payload["gm"]["role"], "filter")
+                self.assertEqual(payload["gm"]["filter_code"], gm_filter)
+                self.assertEqual(payload["gm"]["label"], "Filtre GM")
+                body = response.content.decode()
+                self.assertIn("Filtre GM", body)
+                self.assertIn("GM affiché comme <b>filtre</b>, jamais comme signal.", body)
+
+    def test_backtest_results_diagnostic_payload_parses_buy_sell_and_forced_sell_markers(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": "BUY"},
+                    {"date": "2024-01-03", "price_close": "11", "action": "SELL"},
+                    {"date": "2024-01-04", "price_close": "12", "action": "FORCED_SELL"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(
+            payload["markers"],
+            [
+                {"date": "2024-01-02", "type": "BUY"},
+                {"date": "2024-01-03", "type": "SELL"},
+                {"date": "2024-01-04", "type": "FORCED_SELL"},
+            ],
+        )
+
+    def test_backtest_results_diagnostic_payload_splits_combined_actions_into_multiple_markers(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": "SELL+BUY"},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY+FORCED_SELL"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(
+            payload["markers"],
+            [
+                {"date": "2024-01-02", "type": "SELL"},
+                {"date": "2024-01-02", "type": "BUY"},
+                {"date": "2024-01-03", "type": "BUY"},
+                {"date": "2024-01-03", "type": "FORCED_SELL"},
+            ],
+        )
+
+    def test_backtest_results_diagnostic_payload_maps_supported_signals_to_expected_series(self):
+        cases = [
+            (["Af"], {"P", "Kf2bis"}),
+            (["SPa"], {"SUM_SLOPE"}),
+            (["SPVa"], {"SLOPE_VRAI"}),
+            (["SPa_basse"], {"SUM_SLOPE_BASSE"}),
+            (["SPVa_basse"], {"SLOPE_VRAI_BASSE"}),
+            (["A1"], {"K1"}),
+            (["C1"], {"K2"}),
+            (["E1"], {"K3"}),
+            (["G1"], {"K4"}),
+        ]
+        for buy_codes, expected_keys in cases:
+            with self.subTest(buy_codes=buy_codes):
+                bt = self._build_diagnostic_backtest(
+                    signal_lines=[{"buy": buy_codes, "sell": ["Bf"]}],
+                    ticker_lines={
+                        "AAA": {"lines": [{"line_index": 1, "buy": buy_codes, "sell": ["Bf"], "daily": [
+                            {"date": "2024-01-02", "price_close": "10", "action": None},
+                            {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                        ], "final": {}}]},
+                    },
+                )
+                response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+                payload = response.context["diagnostic_chart_payload"]
+                self.assertTrue(expected_keys.issubset(set(payload["signal_series"].keys())))
+
+    def test_backtest_results_diagnostic_payload_is_absent_for_kpi_only_like_results(self):
+        bt = Backtest.objects.create(
+            name="BT KPI Only Like",
+            scenario=self.scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            universe_snapshot=[self.symbol.ticker],
+            results={
+                "meta": {"start_date": "2024-01-01", "end_date": "2024-01-31"},
+                "tickers": {
+                    "AAA": {
+                        "lines": [{
+                            "line_index": 1,
+                            "buy": ["Af"],
+                            "sell": ["Bf"],
+                            "final": {"N": 1, "BT": "0.1"},
+                        }]
+                    }
+                },
+                "portfolio": {"kpi": {}, "daily": []},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        self.assertIsNone(response.context.get("diagnostic_chart_payload"))
+        self.assertNotIn("Diagnostic visuel de la stratégie", response.content.decode())

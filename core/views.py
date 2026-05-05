@@ -60,6 +60,7 @@ from .services.provider_twelvedata import TwelveDataClient
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
+from .services.backtesting.diagnostic import build_diagnostic_chart_payload
 from .excel_utils import append_excel_row
 from .job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
 from .services.derived_data import (
@@ -2352,6 +2353,7 @@ def backtest_results(request, pk: int):
 
     final = _augment_row(dict(final))
     daily = [_augment_row(dict(r)) for r in (daily or [])]
+    diagnostic_daily = list(daily)
 
     # Portfolio synthesis (Feature 8)
     portfolio = results.get("portfolio") or {}
@@ -2405,6 +2407,14 @@ def backtest_results(request, pk: int):
 
     # keep charts responsive without hiding the start of the backtest period
     port_daily_for_ui = _downsample_series_keep_full_period(port_daily, max_points=400)
+    diagnostic_chart_payload = build_diagnostic_chart_payload(
+        backtest=bt,
+        ticker=ticker,
+        line_index=line_index,
+        line=line,
+        daily=diagnostic_daily,
+        portfolio_daily=port_daily,
+    )
 
     # Truncate very large series for UI rendering (default: last 200 days)
     show_all = request.GET.get("all") == "1"
@@ -2508,6 +2518,7 @@ def backtest_results(request, pk: int):
             "portfolio_kpi": port_kpi,
             "portfolio_daily": port_daily_for_ui,
             "portfolio_daily_json": json.dumps(port_daily_for_ui),
+            "diagnostic_chart_payload": diagnostic_chart_payload,
             "is_truncated": is_truncated,
             "total_daily_count": total_daily_count,
             "ticker_options": ticker_options,
