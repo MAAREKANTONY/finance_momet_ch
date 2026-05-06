@@ -102,6 +102,92 @@ class EngineAndMetricsRegressionTests(TestCase):
         ])
         return start
 
+    def _create_selective_latch_retention_fixture(
+        self,
+        *,
+        start: date | None = None,
+        prices: list[str] | None = None,
+        alerts_by_offset: dict[int, str] | None = None,
+        k1_by_offset: dict[int, str] | None = None,
+        slope_vrai_by_offset: dict[int, str] | None = None,
+    ) -> tuple[date, Backtest]:
+        start = start or date(2024, 12, 16)
+        prices = prices or ["10", "11", "13", "12.5", "11.5", "13"]
+        alerts_by_offset = alerts_by_offset or {
+            1: "A1",
+            2: "C1",
+            4: "B1",
+            5: "A1",
+        }
+        k1_by_offset = k1_by_offset or {
+            0: "-1",
+            1: "1",
+            2: "1",
+            3: "1",
+            4: "-1",
+            5: "1",
+        }
+        slope_vrai_by_offset = slope_vrai_by_offset or {
+            0: "0.10",
+            1: "0.15",
+            2: "0.25",
+            3: "0.24",
+            4: "0.23",
+            5: "0.24",
+        }
+
+        self.scenario.nglobal = 1
+        self.scenario.slope_threshold = Decimal("0.2")
+        self.scenario.save(update_fields=["nglobal", "slope_threshold"])
+
+        self._create_bars_for_symbol(self.symbol, prices, start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(
+                symbol=self.symbol,
+                scenario=self.scenario,
+                date=start + timedelta(days=i),
+                P=Decimal(prices[i]),
+                ratio_P=Decimal("1"),
+                K1=Decimal(k1_by_offset[i]),
+                slope_vrai=Decimal(slope_vrai_by_offset[i]),
+            )
+            for i in range(len(prices))
+        ])
+        Alert.objects.bulk_create([
+            Alert(
+                symbol=self.symbol,
+                scenario=self.scenario,
+                date=start + timedelta(days=offset),
+                alerts=alerts,
+            )
+            for offset, alerts in sorted(alerts_by_offset.items())
+        ])
+
+        bt = Backtest.objects.create(
+            name="Selective Latch Retention",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=len(prices) - 1),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["A1", "C1"],
+                "buy_logic": "AND",
+                "sell": [],
+                "buy_gm_filter": "GM_POS",
+            }],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+        return start, bt
+
+    def _gm_regime_map(self, start: date, mapping: dict[int, str]) -> dict[date, str]:
+        return {start + timedelta(days=offset): regime for offset, regime in mapping.items()}
+
     def _create_progressive_af_spva_basse_fixture(
         self,
         *,
@@ -902,7 +988,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         )
 
 
-    def test_run_backtest_clears_signal_memory_after_sell_preventing_same_day_rebuy(self):
+    def test_run_backtest_blocks_rebuy_after_sell_without_fresh_signal_reactivation(self):
         start = date(2024, 1, 1)
         self._create_bars_for_symbol(self.symbol, ["10", "10", "10", "10"], start=start)
         DailyMetric.objects.bulk_create([
@@ -916,7 +1002,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         ])
 
         bt = Backtest.objects.create(
-            name="Memory Reset Test",
+            name="No Immediate Rebuy After Sell",
             scenario=self.scenario,
             start_date=start,
             end_date=start + timedelta(days=3),
@@ -1007,7 +1093,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(daily[2]["action"], "SELL")
         self.assertEqual(line["final"]["N"], 1)
 
-    def test_run_backtest_target_model_resets_after_sell_and_blocks_same_day_reentry(self):
+    def test_run_backtest_target_model_blocks_same_day_reentry_after_sell(self):
         start = date(2024, 7, 1)
         self._create_bars_for_symbol(self.symbol, ["10", "10", "10", "10"], start=start)
         DailyMetric.objects.bulk_create([
@@ -1021,7 +1107,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         ])
 
         bt = Backtest.objects.create(
-            name="Latch Reset Same Day Reentry",
+            name="Latch Same Day Reentry Blocked",
             scenario=self.scenario,
             start_date=start,
             end_date=start + timedelta(days=3),
@@ -1043,6 +1129,168 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(daily[2]["action"], "SELL")
         self.assertNotIn("BUY", str(daily[2]["action"]))
         self.assertEqual(line["final"]["N"], 1)
+
+    def test_latch_sell_keeps_non_invalidated_buy_signal_after_sell(self):
+        start, bt = self._create_selective_latch_retention_fixture()
+        gm_regimes = self._gm_regime_map(start, {2: "GM_POS", 5: "GM_POS"})
+
+        with patch("core.services.backtesting.engine._build_global_momentum_regime_from_values", return_value=gm_regimes):
+            result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(daily[2]["action"], "BUY")
+        self.assertEqual(daily[4]["action"], "SELL")
+        self.assertNotIn("C1", daily[5]["alerts"])
+        self.assertEqual(daily[5]["action"], "BUY")
+
+    def test_latch_rebuy_occurs_when_only_invalidated_signal_reactivates_after_sell(self):
+        start, bt = self._create_selective_latch_retention_fixture()
+        gm_regimes = self._gm_regime_map(start, {2: "GM_POS", 5: "GM_POS"})
+
+        with patch("core.services.backtesting.engine._build_global_momentum_regime_from_values", return_value=gm_regimes):
+            result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+        buy_days = [row["date"] for row in daily if row.get("action") == "BUY"]
+
+        self.assertEqual(buy_days, [str(bt.start_date + timedelta(days=2)), str(bt.start_date + timedelta(days=5))])
+        self.assertEqual(line["final"]["N"], 1)
+
+    def test_gm_never_triggers_sell_in_latch_mode(self):
+        start, bt = self._create_selective_latch_retention_fixture(
+            prices=["10", "11", "13", "12", "11.9"],
+            alerts_by_offset={
+                1: "A1",
+                2: "C1",
+            },
+            k1_by_offset={
+                0: "-1",
+                1: "1",
+                2: "1",
+                3: "1",
+                4: "1",
+            },
+            slope_vrai_by_offset={
+                0: "0.10",
+                1: "0.15",
+                2: "0.25",
+                3: "0.24",
+                4: "0.23",
+            },
+        )
+        gm_regimes = self._gm_regime_map(start, {2: "GM_POS", 3: "GM_NEG", 4: "GM_NEG"})
+
+        with patch("core.services.backtesting.engine._build_global_momentum_regime_from_values", return_value=gm_regimes):
+            result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        actions = [row.get("action") for row in line["daily"]]
+
+        self.assertIn("BUY", actions)
+        self.assertNotIn("SELL", {action for action in actions if action})
+        self.assertEqual(line["final"]["N"], 0)
+
+    def test_latch_rebuy_still_blocked_when_gm_filter_invalid(self):
+        start, bt = self._create_selective_latch_retention_fixture(
+            prices=["10", "11", "13", "12.5", "11.5", "10.5", "12"],
+            alerts_by_offset={
+                1: "A1",
+                2: "C1",
+                4: "B1",
+                5: "A1",
+            },
+            k1_by_offset={
+                0: "-1",
+                1: "1",
+                2: "1",
+                3: "1",
+                4: "-1",
+                5: "1",
+                6: "1",
+            },
+            slope_vrai_by_offset={
+                0: "0.10",
+                1: "0.15",
+                2: "0.25",
+                3: "0.24",
+                4: "0.23",
+                5: "0.24",
+                6: "0.24",
+            },
+        )
+        gm_regimes = self._gm_regime_map(start, {2: "GM_POS", 5: "GM_NEG", 6: "GM_POS"})
+
+        with patch("core.services.backtesting.engine._build_global_momentum_regime_from_values", return_value=gm_regimes):
+            result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+
+        self.assertEqual(daily[2]["action"], "BUY")
+        self.assertEqual(daily[4]["action"], "SELL")
+        self.assertIsNone(daily[5]["action"])
+        self.assertEqual(daily[6]["action"], "BUY")
+
+    def test_latch_real_case_a1_spva_gmpos_rebuys_without_fresh_spva_after_b1_sell(self):
+        start = date(2024, 12, 16)
+        self.scenario.nglobal = 1
+        self.scenario.slope_threshold = Decimal("0.2")
+        self.scenario.save(update_fields=["nglobal", "slope_threshold"])
+        self._create_bars_for_symbol(self.symbol, ["10", "11", "13", "12.5", "11.5", "13"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(
+                symbol=self.symbol,
+                scenario=self.scenario,
+                date=start + timedelta(days=i),
+                P=Decimal(price),
+                ratio_P=Decimal("1"),
+                K1=Decimal(k1),
+                slope_vrai=Decimal(slope),
+            )
+            for i, (price, k1, slope) in enumerate([
+                ("10", "-1", "0.10"),
+                ("11", "1", "0.15"),
+                ("13", "1", "0.25"),
+                ("12.5", "1", "0.24"),
+                ("11.5", "-1", "0.23"),
+                ("13", "1", "0.24"),
+            ])
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=1), alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="SPVa"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=4), alerts="B1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=5), alerts="A1"),
+        ])
+
+        bt = Backtest.objects.create(
+            name="A1 SPVa GM_POS Selective Rebuy",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=5),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["A1", "SPVa"],
+                "buy_logic": "AND",
+                "sell": [],
+                "buy_gm_filter": "GM_POS",
+            }],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        gm_regimes = self._gm_regime_map(start, {2: "GM_POS", 5: "GM_POS"})
+        with patch("core.services.backtesting.engine._build_global_momentum_regime_from_values", return_value=gm_regimes):
+            result = run_backtest(bt).results
+        daily = result["tickers"][self.symbol.ticker]["lines"][0]["daily"]
+
+        self.assertEqual(daily[2]["action"], "BUY")
+        self.assertEqual(daily[4]["action"], "SELL")
+        self.assertEqual(daily[5]["action"], "BUY")
 
     def test_explicit_legacy_daily_forces_legacy_routing_for_supported_latch_codes(self):
         start = self._create_latch_routing_fixture()
