@@ -348,19 +348,33 @@
 <details class="card acc" open data-acc-key="diagnostic-chart">
 <summary class="acc-summary"><span class="acc-title">Diagnostic visuel de la stratégie</span></summary>
 <div class="acc-body">
-  <div class="muted" style="margin-bottom:10px;">
-    <div>Prix de référence P(t), prix de clôture, signaux techniques utiles et marqueurs BUY / SELL / FORCED_SELL.</div>
-    {% if diagnostic_chart_payload.gm %}
-      <div><b>{{ diagnostic_chart_payload.gm.label }}</b> : {{ diagnostic_chart_payload.gm.filter_code }}</div>
-    {% endif %}
+  <div class="muted" style="margin-bottom:12px;">
+    <div>Visualisation dédiée au ticker et à la ligne sélectionnés.</div>
+    <div>Les marqueurs BUY / SELL / FORCED_SELL sont tracés directement sur le panneau prix.</div>
   </div>
-  <canvas id="diagnosticChart" height="140"></canvas>
-  <div class="muted" style="margin-top:8px;">
-    <span style="margin-right:12px;">Marqueurs : BUY / SELL / FORCED_SELL</span>
-    {% if diagnostic_chart_payload.gm %}
-      <span>GM affiché comme <b>filtre</b>, jamais comme signal.</span>
-    {% endif %}
+
+  <div style="margin-bottom:18px;">
+    <h4 style="margin:0 0 8px 0;">Prix et intersections</h4>
+    <canvas id="diagnosticPriceChart" height="130"></canvas>
   </div>
+
+  {% if diagnostic_chart_payload.signal_series.SUM_SLOPE or diagnostic_chart_payload.signal_series.SLOPE_VRAI or diagnostic_chart_payload.signal_series.SUM_SLOPE_BASSE or diagnostic_chart_payload.signal_series.SLOPE_VRAI_BASSE %}
+  <div style="margin-bottom:18px;">
+    <h4 style="margin:0 0 8px 0;">Signaux de pente / oscillateurs</h4>
+    <canvas id="diagnosticSlopeChart" height="120"></canvas>
+  </div>
+  {% endif %}
+
+  {% if diagnostic_chart_payload.gm %}
+  <div style="margin-bottom:8px;">
+    <h4 style="margin:0 0 8px 0;">Filtre GM</h4>
+    <div class="muted" style="margin-bottom:8px;">
+      <b>{{ diagnostic_chart_payload.gm.label }}</b> : {{ diagnostic_chart_payload.gm.filter_code }}
+      <span style="margin-left:10px;">GM affiché comme <b>filtre</b>, jamais comme signal.</span>
+    </div>
+    <canvas id="diagnosticGmChart" height="110"></canvas>
+  </div>
+  {% endif %}
 </div>
 </details>
 {{ diagnostic_chart_payload|json_script:"diagnostic-chart-payload" }}
@@ -615,8 +629,8 @@
   }
 
   const diagnosticPayloadNode = document.getElementById("diagnostic-chart-payload");
-  const diagnosticCanvas = document.getElementById("diagnosticChart");
-  if (diagnosticPayloadNode && diagnosticCanvas) {
+  const diagnosticPriceCanvas = document.getElementById("diagnosticPriceChart");
+  if (diagnosticPayloadNode && diagnosticPriceCanvas) {
     const payload = JSON.parse(diagnosticPayloadNode.textContent);
     const labels = payload.dates || [];
     const colors = {
@@ -635,11 +649,22 @@
       BUY: "#16a34a",
       SELL: "#dc2626",
       FORCED_SELL: "#ea580c",
+      ZERO: "#9ca3af",
+    };
+    const pointStyles = {
+      BUY: "triangle",
+      SELL: "triangle",
+      FORCED_SELL: "rectRot",
+    };
+    const pointRotations = {
+      BUY: 0,
+      SELL: 180,
+      FORCED_SELL: 0,
     };
 
     function buildMarkerSeries(markerType) {
       const points = new Array(labels.length).fill(null);
-      const source = markerType === "BUY" ? payload.reference_price : payload.close_price;
+      const source = payload.reference_price || payload.close_price || [];
       (payload.markers || []).forEach((marker) => {
         if (marker.type !== markerType) return;
         const idx = labels.indexOf(marker.date);
@@ -651,98 +676,152 @@
       return points;
     }
 
-    const datasets = [
+    const priceDatasets = [
       {
         type: "line",
         label: "Prix de référence P(t)",
         data: (payload.reference_price || []).map(toNumber),
-        yAxisID: "yPrice",
         borderColor: colors.P,
         backgroundColor: colors.P,
         spanGaps: true,
         tension: 0.2,
+        pointRadius: 0,
       },
       {
         type: "line",
         label: "Prix de clôture",
         data: (payload.close_price || []).map(toNumber),
-        yAxisID: "yPrice",
         borderColor: colors.close,
         backgroundColor: colors.close,
         borderDash: [6, 4],
         spanGaps: true,
         tension: 0.2,
+        pointRadius: 0,
       }
     ];
 
-    const signalLabelMap = {
-      P: "P(t)",
-      Kf2bis: "Kf2bis",
-      K1: "K1",
-      K2: "K2",
-      K3: "K3",
-      K4: "K4",
-      SUM_SLOPE: "SUM_SLOPE",
-      SLOPE_VRAI: "SLOPE_VRAI",
-      SUM_SLOPE_BASSE: "SUM_SLOPE_BASSE",
-      SLOPE_VRAI_BASSE: "SLOPE_VRAI_BASSE",
-    };
+    const priceSeriesKeys = ["Kf2bis", "K1", "K2", "K3", "K4"];
+    const slopeSeriesKeys = ["SUM_SLOPE", "SLOPE_VRAI", "SUM_SLOPE_BASSE", "SLOPE_VRAI_BASSE"];
 
-    Object.entries(payload.signal_series || {}).forEach(([key, series]) => {
-      datasets.push({
+    priceSeriesKeys.forEach((key) => {
+      const series = (payload.signal_series || {})[key];
+      if (!series) return;
+      priceDatasets.push({
         type: "line",
-        label: signalLabelMap[key] || key,
+        label: key,
         data: ((series && series.values) || []).map(toNumber),
-        yAxisID: key === "P" || key === "Kf2bis" ? "yPrice" : "ySignal",
         borderColor: colors[key] || "#6b7280",
         backgroundColor: colors[key] || "#6b7280",
         spanGaps: true,
         tension: 0.2,
+        pointRadius: 0,
       });
     });
 
-    if (payload.gm) {
-      datasets.push({
-        type: "line",
-        label: payload.gm.label,
-        data: (payload.gm.values || []).map((v) => {
-          const n = toNumber(v);
-          return n === null ? null : n * 100;
-        }),
-        yAxisID: "yGm",
-        borderColor: colors.GM,
-        backgroundColor: colors.GM,
-        spanGaps: true,
-        tension: 0.2,
-      });
-    }
-
     ["BUY", "SELL", "FORCED_SELL"].forEach((markerType) => {
-      datasets.push({
+      priceDatasets.push({
         type: "scatter",
         label: markerType,
         data: buildMarkerSeries(markerType),
-        yAxisID: "yPrice",
         borderColor: colors[markerType],
         backgroundColor: colors[markerType],
         showLine: false,
-        pointRadius: 5,
-        pointHoverRadius: 6,
+        pointRadius: 7,
+        pointHoverRadius: 8,
+        pointStyle: pointStyles[markerType],
+        rotation: pointRotations[markerType],
       });
     });
 
-    new Chart(diagnosticCanvas.getContext("2d"), {
-      data: { labels, datasets },
+    new Chart(diagnosticPriceCanvas.getContext("2d"), {
+      data: { labels, datasets: priceDatasets },
       options: {
         responsive: true,
         spanGaps: true,
         scales: {
-          yPrice: { type: "linear", position: "left", title: { display: true, text: "Prix" } },
-          ySignal: { type: "linear", position: "right", title: { display: true, text: "Signaux" }, grid: { drawOnChartArea: false } },
-          yGm: { type: "linear", position: "right", title: { display: !!payload.gm, text: "Filtre GM (%)" }, grid: { drawOnChartArea: false }, display: !!payload.gm },
+          y: { type: "linear", position: "left", title: { display: true, text: "Prix" } },
         }
       }
     });
+
+    const diagnosticSlopeCanvas = document.getElementById("diagnosticSlopeChart");
+    if (diagnosticSlopeCanvas) {
+      const slopeDatasets = [{
+        type: "line",
+        label: "Ligne zéro",
+        data: labels.map(() => 0),
+        borderColor: colors.ZERO,
+        backgroundColor: colors.ZERO,
+        borderDash: [5, 5],
+        pointRadius: 0,
+        spanGaps: true,
+      }];
+      slopeSeriesKeys.forEach((key) => {
+        const series = (payload.signal_series || {})[key];
+        if (!series) return;
+        slopeDatasets.push({
+          type: "line",
+          label: key,
+          data: ((series && series.values) || []).map(toNumber),
+          borderColor: colors[key] || "#6b7280",
+          backgroundColor: colors[key] || "#6b7280",
+          spanGaps: true,
+          tension: 0.2,
+          pointRadius: 0,
+        });
+      });
+      new Chart(diagnosticSlopeCanvas.getContext("2d"), {
+        data: { labels, datasets: slopeDatasets },
+        options: {
+          responsive: true,
+          spanGaps: true,
+          scales: {
+            y: { type: "linear", position: "left", title: { display: true, text: "Pente / oscillateur" } },
+          }
+        }
+      });
+    }
+
+    const diagnosticGmCanvas = document.getElementById("diagnosticGmChart");
+    if (diagnosticGmCanvas && payload.gm) {
+      new Chart(diagnosticGmCanvas.getContext("2d"), {
+        data: {
+          labels,
+          datasets: [
+            {
+              type: "line",
+              label: "Ligne zéro",
+              data: labels.map(() => 0),
+              borderColor: colors.ZERO,
+              backgroundColor: colors.ZERO,
+              borderDash: [5, 5],
+              pointRadius: 0,
+              spanGaps: true,
+            },
+            {
+              type: "line",
+              label: payload.gm.label,
+              data: (payload.gm.values || []).map((v) => {
+                const n = toNumber(v);
+                return n === null ? null : n * 100;
+              }),
+              borderColor: colors.GM,
+              backgroundColor: colors.GM,
+              spanGaps: true,
+              tension: 0.2,
+              pointRadius: 0,
+            }
+          ]
+        },
+        options: {
+          responsive: true,
+          spanGaps: true,
+          scales: {
+            y: { type: "linear", position: "left", title: { display: true, text: "Filtre GM (%)" } },
+          }
+        }
+      });
+    }
   }
 </script>
 {% endblock %}
