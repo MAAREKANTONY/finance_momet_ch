@@ -676,6 +676,18 @@
       return points;
     }
 
+    function buildMarkerSeriesFromValues(markerType, values) {
+      const points = new Array(labels.length).fill(null);
+      (payload.markers || []).forEach((marker) => {
+        if (marker.type !== markerType) return;
+        const idx = labels.indexOf(marker.date);
+        if (idx < 0) return;
+        const numeric = toNumber((values || [])[idx]);
+        if (numeric !== null) points[idx] = numeric;
+      });
+      return points;
+    }
+
     const priceDatasets = [
       {
         type: "line",
@@ -756,18 +768,71 @@
         pointRadius: 0,
         spanGaps: true,
       }];
+      const slopeSeriesValues = [];
       slopeSeriesKeys.forEach((key) => {
         const series = (payload.signal_series || {})[key];
         if (!series) return;
+        const numericValues = ((series && series.values) || []).map(toNumber);
+        slopeSeriesValues.push(numericValues);
         slopeDatasets.push({
           type: "line",
           label: key,
-          data: ((series && series.values) || []).map(toNumber),
+          data: numericValues,
           borderColor: colors[key] || "#6b7280",
           backgroundColor: colors[key] || "#6b7280",
           spanGaps: true,
           tension: 0.2,
           pointRadius: 0,
+        });
+      });
+      const thresholds = payload.thresholds || {};
+      const hasMainSlopeSeries = slopeSeriesKeys.some((key) => ["SUM_SLOPE", "SLOPE_VRAI"].includes(key) && (payload.signal_series || {})[key]);
+      const hasLowerSlopeSeries = slopeSeriesKeys.some((key) => ["SUM_SLOPE_BASSE", "SLOPE_VRAI_BASSE"].includes(key) && (payload.signal_series || {})[key]);
+      const slopeThreshold = toNumber(thresholds.slope_threshold);
+      const slopeThresholdBasse = toNumber(thresholds.slope_threshold_basse);
+      if (hasMainSlopeSeries && slopeThreshold !== null) {
+        slopeDatasets.push({
+          type: "line",
+          label: "Seuil pente",
+          data: labels.map(() => slopeThreshold),
+          borderColor: "#475569",
+          backgroundColor: "#475569",
+          borderDash: [8, 4],
+          pointRadius: 0,
+          spanGaps: true,
+        });
+      }
+      if (hasLowerSlopeSeries && slopeThresholdBasse !== null) {
+        slopeDatasets.push({
+          type: "line",
+          label: "Seuil pente basse",
+          data: labels.map(() => slopeThresholdBasse),
+          borderColor: "#64748b",
+          backgroundColor: "#64748b",
+          borderDash: [3, 4],
+          pointRadius: 0,
+          spanGaps: true,
+        });
+      }
+      const firstSlopeValues = labels.map((_, idx) => {
+        for (const values of slopeSeriesValues) {
+          const numeric = toNumber(values[idx]);
+          if (numeric !== null) return numeric;
+        }
+        return null;
+      });
+      ["BUY", "SELL", "FORCED_SELL"].forEach((markerType) => {
+        slopeDatasets.push({
+          type: "scatter",
+          label: markerType,
+          data: buildMarkerSeriesFromValues(markerType, firstSlopeValues),
+          borderColor: colors[markerType],
+          backgroundColor: colors[markerType],
+          showLine: false,
+          pointRadius: 8,
+          pointHoverRadius: 9,
+          pointStyle: pointStyles[markerType],
+          rotation: pointRotations[markerType],
         });
       });
       new Chart(diagnosticSlopeCanvas.getContext("2d"), {
@@ -784,6 +849,10 @@
 
     const diagnosticGmCanvas = document.getElementById("diagnosticGmChart");
     if (diagnosticGmCanvas && payload.gm) {
+      const gmValues = (payload.gm.values || []).map((v) => {
+        const n = toNumber(v);
+        return n === null ? null : n * 100;
+      });
       new Chart(diagnosticGmCanvas.getContext("2d"), {
         data: {
           labels,
@@ -801,16 +870,25 @@
             {
               type: "line",
               label: payload.gm.label,
-              data: (payload.gm.values || []).map((v) => {
-                const n = toNumber(v);
-                return n === null ? null : n * 100;
-              }),
+              data: gmValues,
               borderColor: colors.GM,
               backgroundColor: colors.GM,
               spanGaps: true,
               tension: 0.2,
               pointRadius: 0,
-            }
+            },
+            ...["BUY", "SELL", "FORCED_SELL"].map((markerType) => ({
+              type: "scatter",
+              label: markerType,
+              data: buildMarkerSeriesFromValues(markerType, gmValues),
+              borderColor: colors[markerType],
+              backgroundColor: colors[markerType],
+              showLine: false,
+              pointRadius: 8,
+              pointHoverRadius: 9,
+              pointStyle: pointStyles[markerType],
+              rotation: pointRotations[markerType],
+            }))
           ]
         },
         options: {
