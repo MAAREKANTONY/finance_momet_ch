@@ -661,7 +661,10 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(payload["ticker"], "BBB")
         self.assertEqual(payload["line_index"], 1)
         self.assertEqual(payload["dates"], ["2024-01-02", "2024-01-03", "2024-01-04"])
-        self.assertIn("Diagnostic visuel de la stratégie", response.content.decode())
+        body = response.content.decode()
+        self.assertIn("Diagnostic visuel de la stratégie", body)
+        self.assertIn('id="diagnosticPriceChart"', body)
+        self.assertNotIn('id="diagnosticChart"', body)
 
     def test_backtest_results_diagnostic_payload_omits_gm_when_filter_is_ignored(self):
         bt = self._build_diagnostic_backtest(
@@ -678,7 +681,8 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIsNone(payload["gm"])
         body = response.content.decode()
         self.assertIn("Diagnostic visuel de la stratégie", body)
-        self.assertNotIn("Filtre GM</b>", body)
+        self.assertNotIn("Filtre GM</h4>", body)
+        self.assertNotIn('id="diagnosticGmChart"', body)
 
     def test_backtest_results_diagnostic_payload_includes_gm_only_as_filter_when_configured(self):
         for gm_filter in ["GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR_NEU", "GM_NEG_OR_NEU"]:
@@ -700,6 +704,8 @@ class BacktestResultsRenderTests(TestCase):
                 body = response.content.decode()
                 self.assertIn("Filtre GM", body)
                 self.assertIn("GM affiché comme <b>filtre</b>, jamais comme signal.", body)
+                self.assertIn('id="diagnosticGmChart"', body)
+                self.assertNotIn("signal GM", body)
 
     def test_backtest_results_diagnostic_payload_parses_buy_sell_and_forced_sell_markers(self):
         bt = self._build_diagnostic_backtest(
@@ -771,6 +777,53 @@ class BacktestResultsRenderTests(TestCase):
                 response = self.client.get(reverse("backtest_results", args=[bt.pk]))
                 payload = response.context["diagnostic_chart_payload"]
                 self.assertTrue(expected_keys.issubset(set(payload["signal_series"].keys())))
+
+    def test_backtest_results_diagnostic_slope_panel_appears_for_slope_signals(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["SPVa_basse"], "sell": ["SPVv_basse"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["SPVa_basse"], "sell": ["SPVv_basse"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        body = response.content.decode()
+        self.assertIn("Signaux de pente / oscillateurs", body)
+        self.assertIn('id="diagnosticSlopeChart"', body)
+
+    def test_backtest_results_diagnostic_slope_panel_absent_for_af_only(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        body = response.content.decode()
+        self.assertNotIn("Signaux de pente / oscillateurs", body)
+        self.assertNotIn('id="diagnosticSlopeChart"', body)
+
+    def test_backtest_results_diagnostic_price_panel_lists_marker_datasets(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": "BUY"},
+                    {"date": "2024-01-03", "price_close": "11", "action": "SELL"},
+                    {"date": "2024-01-04", "price_close": "12", "action": "FORCED_SELL"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        body = response.content.decode()
+        self.assertIn('label: "BUY"', body)
+        self.assertIn('label: "SELL"', body)
+        self.assertIn('label: "FORCED_SELL"', body)
 
     def test_backtest_results_diagnostic_payload_is_absent_for_kpi_only_like_results(self):
         bt = Backtest.objects.create(
