@@ -705,6 +705,7 @@ class BacktestResultsRenderTests(TestCase):
                 self.assertIn("Filtre GM", body)
                 self.assertIn("GM affiché comme <b>filtre</b>, jamais comme signal.", body)
                 self.assertIn('id="diagnosticGmChart"', body)
+                self.assertIn('data: buildMarkerSeriesFromValues(markerType, gmValues)', body)
                 self.assertNotIn("signal GM", body)
 
     def test_backtest_results_diagnostic_payload_parses_buy_sell_and_forced_sell_markers(self):
@@ -778,6 +779,35 @@ class BacktestResultsRenderTests(TestCase):
                 payload = response.context["diagnostic_chart_payload"]
                 self.assertTrue(expected_keys.issubset(set(payload["signal_series"].keys())))
 
+    def test_backtest_results_diagnostic_payload_exposes_slope_thresholds(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["SPVa_basse"], "sell": ["SPVv_basse"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["SPVa_basse"], "sell": ["SPVv_basse"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["thresholds"]["slope_threshold"], str(self.scenario.slope_threshold))
+        self.assertEqual(payload["thresholds"]["slope_threshold_basse"], str(self.scenario.slope_threshold_basse))
+
+    def test_backtest_results_diagnostic_slope_panel_contains_main_threshold_line(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["SPVa"], "sell": ["SPVv"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["SPVa"], "sell": ["SPVv"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": "BUY"},
+                    {"date": "2024-01-03", "price_close": "11", "action": "SELL"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        body = response.content.decode()
+        self.assertIn('label: "Seuil pente"', body)
+
     def test_backtest_results_diagnostic_slope_panel_appears_for_slope_signals(self):
         bt = self._build_diagnostic_backtest(
             signal_lines=[{"buy": ["SPVa_basse"], "sell": ["SPVv_basse"]}],
@@ -792,6 +822,9 @@ class BacktestResultsRenderTests(TestCase):
         body = response.content.decode()
         self.assertIn("Signaux de pente / oscillateurs", body)
         self.assertIn('id="diagnosticSlopeChart"', body)
+        self.assertIn('label: "Seuil pente basse"', body)
+        self.assertIn('label: "Ligne zéro"', body)
+        self.assertIn('data: buildMarkerSeriesFromValues(markerType, firstSlopeValues)', body)
 
     def test_backtest_results_diagnostic_slope_panel_absent_for_af_only(self):
         bt = self._build_diagnostic_backtest(

@@ -140,6 +140,11 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
             "values": [gm_by_date.get(date) for date in dates],
         }
 
+    thresholds = {
+        "slope_threshold": None if getattr(backtest.scenario, "slope_threshold", None) in (None, "") else str(backtest.scenario.slope_threshold),
+        "slope_threshold_basse": None if getattr(backtest.scenario, "slope_threshold_basse", None) in (None, "") else str(backtest.scenario.slope_threshold_basse),
+    }
+
     return {
         "ticker": ticker,
         "line_index": int(line_index),
@@ -149,4 +154,5 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         "markers": _build_markers(daily),
         "signal_series": signal_series,
         "gm": gm,
+        "thresholds": thresholds,
     }
