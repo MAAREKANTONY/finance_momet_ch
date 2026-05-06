@@ -329,6 +329,29 @@ def _reset_trade_signal_memory(state_row: dict[str, Any]) -> None:
     state_row["signal_latch_last_date"] = None
 
 
+def _retain_non_invalidated_latch_signals_after_sell(
+    state_row: dict[str, Any],
+    invalidated_signals: set[str] | None,
+    previous_latch_state: dict[str, bool] | None = None,
+) -> None:
+    """After a latch-model SELL, clear only the invalidated buy signals.
+
+    Product rule:
+    - when a latch-model position is sold because one latched BUY signal is invalidated,
+      other still-valid BUY latches must remain available for the next cycle;
+    - GM remains outside latch memory and is re-evaluated only at BUY time.
+    """
+    invalidated = {str(code).strip().upper() for code in (invalidated_signals or set()) if str(code).strip()}
+    if not invalidated:
+        return
+    latch_state = dict(previous_latch_state or state_row.get("signal_latch_state") or {})
+    for code in invalidated:
+        latch_state[code] = False
+    state_row["signal_latch_state"] = latch_state
+    state_row["signal_latch_invalidated_today"] = set()
+    state_row["signal_latch_last_date"] = None
+
+
 def _line_uses_signal_latch_model(state_row: dict[str, Any]) -> bool:
     return state_row.get("trading_model") == TRADING_MODEL_LATCH_STATEFUL
 
@@ -1095,7 +1118,9 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             elif st["position_open"] and st["use_signal_latch_model"]:
                 _latch_state, invalidated_signals = _get_signal_latch_day_state(st, local_event_alerts, d)
                 if invalidated_signals:
+                    previous_latch_state = dict(_latch_state or {})
                     _do_sell(f"signal invalidation {','.join(sorted(invalidated_signals))}")
+                    _retain_non_invalidated_latch_signals_after_sell(st, invalidated_signals, previous_latch_state)
             elif st["position_open"] and _match_line_with_global_filter(day_alerts, latched_alerts, sell_codes, st["sell_logic"], gm_code, st["sell_gm_filter"], st["sell_gm_operator"]):
                 _do_sell(f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}")
             if G_today is not None:
@@ -2066,7 +2091,9 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             elif st["position_open"] and st["use_signal_latch_model"]:
                 _latch_state, invalidated_signals = _get_signal_latch_day_state(st, local_event_alerts, d)
                 if invalidated_signals:
+                    previous_latch_state = dict(_latch_state or {})
                     _do_sell(f"signal invalidation {','.join(sorted(invalidated_signals))}")
+                    _retain_non_invalidated_latch_signals_after_sell(st, invalidated_signals, previous_latch_state)
             elif st["position_open"] and _match_line_with_global_filter(day_alerts, latched_alerts, sell_codes, st["sell_logic"], gm_code, st["sell_gm_filter"], st["sell_gm_operator"]):
                 _do_sell(f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}")
             if G_today is not None:

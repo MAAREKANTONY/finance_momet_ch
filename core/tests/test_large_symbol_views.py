@@ -821,9 +821,11 @@ class BacktestResultsRenderTests(TestCase):
         )
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         body = response.content.decode()
-        self.assertIn('label: "BUY"', body)
-        self.assertIn('label: "SELL"', body)
-        self.assertIn('label: "FORCED_SELL"', body)
+        self.assertIn('["BUY", "SELL", "FORCED_SELL"].forEach((markerType)', body)
+        self.assertIn('pointStyles = {', body)
+        self.assertIn('BUY: "triangle"', body)
+        self.assertIn('SELL: "triangle"', body)
+        self.assertIn('FORCED_SELL: "rectRot"', body)
 
     def test_backtest_results_diagnostic_payload_is_absent_for_kpi_only_like_results(self):
         bt = Backtest.objects.create(
