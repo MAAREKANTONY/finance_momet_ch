@@ -2731,7 +2731,7 @@ def _build_backtest_workbook_full(bt):
         append_excel_row(ws_p, [k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    append_excel_row(ws_pd, ["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
+    append_excel_row(ws_pd, ["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale différences Nglobal", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
@@ -2745,7 +2745,7 @@ def _build_backtest_workbook_full(bt):
             _to_float(r.get("positions_value")),
             _to_float(r.get("pnl_global")),
             _pct_ratio_to_percent(r.get("portfolio_return_global")),
-            _pct_ratio_to_percent(r.get("avg_global_nglobal")),
+            _to_float(r.get("avg_global_nglobal")),
             _pct_ratio_to_percent(r.get("drawdown")),
         ])
 
@@ -3133,7 +3133,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         append_excel_row(ws_p, [k, v])
 
     ws_pd = wb.create_sheet("Portfolio_Daily")
-    append_excel_row(ws_pd, ["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale rendements Nglobal (%)", "Drawdown (%)"])
+    append_excel_row(ws_pd, ["Date", "Equity", "Invested", "GlobalCash", "CashAllocated", "PositionsValue", "PnL global", "Performance portefeuille (%)", "Moyenne globale différences Nglobal", "Drawdown (%)"])
     ws_pd.freeze_panes = "A2"
     for cell in ws_pd[1]:
         cell.font = Font(bold=True)
@@ -3147,7 +3147,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
             _to_float(r.get("positions_value")),
             _to_float(r.get("pnl_global")),
             _pct_ratio_to_percent(r.get("portfolio_return_global")),
-            _pct_ratio_to_percent(r.get("avg_global_nglobal")),
+            _to_float(r.get("avg_global_nglobal")),
             _pct_ratio_to_percent(r.get("drawdown")),
         ])
     _auto_width(ws_p)

@@ -65,6 +65,29 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertEqual(rows[1][2], '["SPA", "SPVA"]')
         self.assertEqual(rows[1][3], '["SVA"]')
 
+    def test_build_backtest_workbook_full_uses_difference_wording_for_global_momentum(self):
+        bt = self._make_backtest_stub()
+        bt.results["portfolio"]["daily"] = [
+            {
+                "date": "2024-01-02",
+                "equity": "1000",
+                "invested": "900",
+                "global_cash": "100",
+                "cash_allocated": "0",
+                "positions_value": "900",
+                "pnl_global": "100",
+                "portfolio_return_global": "0.1",
+                "avg_global_nglobal": "5",
+                "drawdown": "0",
+            }
+        ]
+        wb, _ = _build_backtest_workbook_full(bt)
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            loaded = load_workbook(tmp.name, read_only=True)
+            rows = list(loaded["Portfolio_Daily"].iter_rows(values_only=True))
+        self.assertIn("Moyenne globale différences Nglobal", rows[0][8])
+
     def test_backtest_debug_workbook_serializes_nested_daily_values(self):
         scenario = SimpleNamespace(name="Scenario X", description="")
         bt = SimpleNamespace(id=1, name="BT", scenario=scenario, start_date=None, end_date=None, capital_total=0, capital_per_ticker=0, capital_mode="fixed", ratio_threshold=0, include_all_tickers=False, warmup_days=0, close_positions_at_end=False, results={
