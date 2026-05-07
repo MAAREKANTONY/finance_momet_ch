@@ -9,7 +9,7 @@ GLOBAL_MOMENTUM_POS = "GM_POS"
 GLOBAL_MOMENTUM_NEG = "GM_NEG"
 GLOBAL_MOMENTUM_NEU = "GM_NEU"
 GLOBAL_MOMENTUM_CODES = (GLOBAL_MOMENTUM_POS, GLOBAL_MOMENTUM_NEG, GLOBAL_MOMENTUM_NEU)
-DEFAULT_GLOBAL_MOMENTUM_NEUTRAL_BAND = Decimal("0.001")  # 0.1%
+DEFAULT_GLOBAL_MOMENTUM_NEUTRAL_BAND = Decimal("0")
 
 
 def _to_dec(v: Any) -> Decimal | None:
@@ -43,10 +43,10 @@ def compute_global_momentum_values_by_date(
     nglobal: int,
     p_getter: Callable[[Any], Any] | None = None,
 ) -> dict[date, Decimal | None]:
-    """Average per-date Nglobal return across all available tickers.
+    """Average per-date Nglobal price difference across all available tickers.
 
     Exact formula per ticker i on date t:
-        P_i(t) / P_i(t-Nglobal) - 1
+        P_i(t) - P_i(t-Nglobal)
 
     where t-Nglobal means the Nglobal-th prior *available trading observation* for
     that ticker in the provided series.
@@ -66,10 +66,10 @@ def compute_global_momentum_values_by_date(
         for idx in range(nglobal, len(ordered)):
             cur = p_values[idx]
             base = p_values[idx - nglobal]
-            if cur is None or base in (None, Decimal("0")):
+            if cur is None or base is None:
                 continue
             try:
-                ret = (cur / base) - Decimal("1")
+                ret = cur - base
             except Exception:
                 continue
             d = ordered[idx][0]

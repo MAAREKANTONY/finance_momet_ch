@@ -705,6 +705,8 @@ class BacktestResultsRenderTests(TestCase):
                 self.assertIn("Filtre GM", body)
                 self.assertIn("GM affiché comme <b>filtre</b>, jamais comme signal.", body)
                 self.assertIn('id="diagnosticGmChart"', body)
+                self.assertIn("Filtre GM (différence)", body)
+                self.assertNotIn("Filtre GM (%)", body)
                 self.assertIn('data: buildMarkerSeriesFromValues(markerType, gmValues)', body)
                 self.assertNotIn("signal GM", body)
 

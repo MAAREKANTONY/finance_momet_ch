@@ -860,11 +860,47 @@ class EngineAndMetricsRegressionTests(TestCase):
         }
         values = compute_global_momentum_values_by_date(metrics_by_ticker, nglobal=1)
         self.assertEqual(values[date(2024, 1, 2)], Decimal("0"))
-        self.assertEqual(values[date(2024, 1, 3)], Decimal("0"))
+        self.assertEqual(values[date(2024, 1, 3)], Decimal("1"))
 
         regimes = build_global_momentum_regime_by_date(metrics_by_ticker, nglobal=1, neutral_band=Decimal("0.0001"))
         self.assertEqual(regimes[date(2024, 1, 2)], "GM_NEU")
-        self.assertEqual(regimes[date(2024, 1, 3)], "GM_NEU")
+        self.assertEqual(regimes[date(2024, 1, 3)], "GM_POS")
+
+    def test_global_momentum_uses_simple_differences_and_regime_sign(self):
+        metrics_by_ticker = {
+            "AAA": {
+                date(2024, 1, 1): Decimal("100"),
+                date(2024, 1, 2): Decimal("103"),
+                date(2024, 1, 3): Decimal("99"),
+            },
+            "BBB": {
+                date(2024, 1, 1): Decimal("50"),
+                date(2024, 1, 2): Decimal("51"),
+                date(2024, 1, 3): Decimal("52"),
+            },
+        }
+        values = compute_global_momentum_values_by_date(metrics_by_ticker, nglobal=1)
+        self.assertEqual(values[date(2024, 1, 2)], Decimal("2"))
+        self.assertEqual(values[date(2024, 1, 3)], Decimal("-1.5"))
+
+        regimes = build_global_momentum_regime_by_date(metrics_by_ticker, nglobal=1, neutral_band=Decimal("0"))
+        self.assertEqual(regimes[date(2024, 1, 2)], "GM_POS")
+        self.assertEqual(regimes[date(2024, 1, 3)], "GM_NEG")
+
+    def test_global_momentum_does_not_explode_when_base_price_is_near_zero(self):
+        metrics_by_ticker = {
+            "AAA": {
+                date(2024, 1, 1): Decimal("0.0001"),
+                date(2024, 1, 2): Decimal("10.0001"),
+            },
+            "BBB": {
+                date(2024, 1, 1): Decimal("5"),
+                date(2024, 1, 2): Decimal("5"),
+            },
+        }
+        values = compute_global_momentum_values_by_date(metrics_by_ticker, nglobal=1)
+        self.assertEqual(values[date(2024, 1, 2)], Decimal("5"))
+        self.assertLess(abs(values[date(2024, 1, 2)]), Decimal("100"))
 
     def test_alert_enrichment_appends_current_gm_and_removes_stale_code(self):
         other = Symbol.objects.create(ticker="BBB", exchange="NASDAQ", active=True)

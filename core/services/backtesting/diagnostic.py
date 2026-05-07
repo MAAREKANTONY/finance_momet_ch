@@ -63,6 +63,16 @@ def _metric_series_value(metric_row: dict[str, Any] | None, series_key: str) -> 
     return None if value in (None, "") else str(value)
 
 
+def _decimal_str(value: Any) -> str | None:
+    dec = value
+    if dec in (None, ""):
+        return None
+    try:
+        return format(dec.normalize(), "f")
+    except Exception:
+        return str(dec)
+
+
 def _build_markers(daily: list[dict[str, Any]]) -> list[dict[str, str]]:
     markers: list[dict[str, str]] = []
     for row in daily:
@@ -141,8 +151,8 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         }
 
     thresholds = {
-        "slope_threshold": None if getattr(backtest.scenario, "slope_threshold", None) in (None, "") else str(backtest.scenario.slope_threshold),
-        "slope_threshold_basse": None if getattr(backtest.scenario, "slope_threshold_basse", None) in (None, "") else str(backtest.scenario.slope_threshold_basse),
+        "slope_threshold": _decimal_str(getattr(backtest.scenario, "slope_threshold", None)),
+        "slope_threshold_basse": _decimal_str(getattr(backtest.scenario, "slope_threshold_basse", None)),
     }
 
     return {
