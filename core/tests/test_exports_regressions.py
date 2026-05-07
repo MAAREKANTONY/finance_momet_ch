@@ -65,7 +65,7 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertEqual(rows[1][2], '["SPA", "SPVA"]')
         self.assertEqual(rows[1][3], '["SVA"]')
 
-    def test_build_backtest_workbook_full_uses_difference_wording_for_global_momentum(self):
+    def test_build_backtest_workbook_full_uses_bounded_return_wording_for_global_momentum(self):
         bt = self._make_backtest_stub()
         bt.results["portfolio"]["daily"] = [
             {
@@ -86,7 +86,7 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             wb.save(tmp.name)
             loaded = load_workbook(tmp.name, read_only=True)
             rows = list(loaded["Portfolio_Daily"].iter_rows(values_only=True))
-        self.assertIn("Moyenne globale différences Nglobal", rows[0][8])
+        self.assertIn("Moyenne globale rendements bornés Nglobal (%)", rows[0][8])
 
     def test_backtest_debug_workbook_serializes_nested_daily_values(self):
         scenario = SimpleNamespace(name="Scenario X", description="")

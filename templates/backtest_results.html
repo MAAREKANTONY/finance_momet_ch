@@ -613,16 +613,17 @@
   if (ngCanvas && portRows && portRows.length) {
     const labels = portRows.map(r => r.date);
     const avgNglobal = portRows.map(r => {
-      return toNumber(r.avg_global_nglobal);
+      const v = toNumber(r.avg_global_nglobal);
+      return v === null ? null : (v * 100);
     });
     const ctx = ngCanvas.getContext("2d");
     new Chart(ctx, {
       type: "line",
-      data: { labels, datasets: [{ label: "Moyenne globale différences Nglobal", data: avgNglobal }] },
+      data: { labels, datasets: [{ label: "Moyenne globale rendements bornés Nglobal (%)", data: avgNglobal }] },
       options: {
         responsive: true,
         spanGaps: true,
-        scales: { y: { type: "linear", title: { display: true, text: "Différence" } } }
+        scales: { y: { type: "linear", title: { display: true, text: "%" } } }
       }
     });
   }
@@ -848,7 +849,10 @@
 
     const diagnosticGmCanvas = document.getElementById("diagnosticGmChart");
     if (diagnosticGmCanvas && payload.gm) {
-      const gmValues = (payload.gm.values || []).map(toNumber);
+      const gmValues = (payload.gm.values || []).map((v) => {
+        const n = toNumber(v);
+        return n === null ? null : n * 100;
+      });
       new Chart(diagnosticGmCanvas.getContext("2d"), {
         data: {
           labels,
@@ -891,7 +895,7 @@
           responsive: true,
           spanGaps: true,
           scales: {
-            y: { type: "linear", position: "left", title: { display: true, text: "Filtre GM (différence)" } },
+            y: { type: "linear", position: "left", title: { display: true, text: "Filtre GM — rendement borné (%)" } },
           }
         }
       });
