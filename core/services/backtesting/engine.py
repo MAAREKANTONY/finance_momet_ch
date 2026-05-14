@@ -20,6 +20,7 @@ Future iterations will extend:
 """
 from __future__ import annotations
 
+from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
@@ -32,6 +33,7 @@ from core.services.global_momentum import (
     compute_global_momentum_values_by_date,
     regime_for_value,
 )
+from core.services.market_cap import preload_market_cap_series
 from core.trading_model_config import (
     SIGNAL_LATCH_INVALIDATORS,
     SIGNAL_LATCH_STATE_PAIRS,
@@ -42,6 +44,8 @@ from core.trading_model_config import (
 )
 
 GLOBAL_REGIME_FILTER_CODES = {"IGNORE", "GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR_NEU", "GM_NEG_OR_NEU"}
+MARKET_CAP_MISSING_POLICY_ALLOW = "ALLOW"
+MARKET_CAP_MISSING_POLICY_BLOCK = "BLOCK"
 
 
 def _to_dec(v) -> Decimal | None:
@@ -70,6 +74,25 @@ def _price_bounds_from_settings(settings: Any) -> tuple[Decimal, Decimal | None]
     return min_price if min_price is not None else Decimal("0"), max_price
 
 
+def _market_cap_bounds_from_settings(settings: Any) -> tuple[Decimal | None, Decimal | None]:
+    settings = settings if isinstance(settings, dict) else {}
+    return (
+        _normalize_price_bound(settings.get("market_cap_min"), None),
+        _normalize_price_bound(settings.get("market_cap_max"), None),
+    )
+
+
+def _market_cap_filter_enabled(min_market_cap: Decimal | None, max_market_cap: Decimal | None) -> bool:
+    return min_market_cap is not None or max_market_cap is not None
+
+
+def _market_cap_missing_policy_from_settings(settings: Any) -> str:
+    settings = settings if isinstance(settings, dict) else {}
+    raw = settings.get("market_cap_missing_policy")
+    policy = str(raw or "").strip().upper()
+    return MARKET_CAP_MISSING_POLICY_ALLOW if policy == MARKET_CAP_MISSING_POLICY_ALLOW else MARKET_CAP_MISSING_POLICY_BLOCK
+
+
 def _trade_price_in_bounds(price_value: Any, *, min_price: Decimal, max_price: Decimal | None) -> bool:
     price = _to_dec(price_value)
     if price is None:
@@ -77,6 +100,25 @@ def _trade_price_in_bounds(price_value: Any, *, min_price: Decimal, max_price: D
     if price < min_price:
         return False
     if max_price is not None and price > max_price:
+        return False
+    return True
+
+
+def _market_cap_in_bounds(
+    market_cap_value: Any,
+    *,
+    min_market_cap: Decimal | None,
+    max_market_cap: Decimal | None,
+    missing_policy: str,
+) -> bool:
+    if not _market_cap_filter_enabled(min_market_cap, max_market_cap):
+        return True
+    market_cap = _to_dec(market_cap_value)
+    if market_cap is None:
+        return missing_policy == MARKET_CAP_MISSING_POLICY_ALLOW
+    if min_market_cap is not None and market_cap < min_market_cap:
+        return False
+    if max_market_cap is not None and market_cap > max_market_cap:
         return False
     return True
 
@@ -100,13 +142,24 @@ def _buy_tradability_for_day(
     *,
     price_value: Any,
     ratio_p_val: Any,
+    market_cap_value: Any = None,
     include_all: bool,
     ratio_threshold: Decimal,
     min_price: Decimal,
     max_price: Decimal | None,
+    min_market_cap: Decimal | None = None,
+    max_market_cap: Decimal | None = None,
+    market_cap_missing_policy: str = MARKET_CAP_MISSING_POLICY_BLOCK,
 ) -> tuple[bool, Decimal | None, Decimal | None]:
     ratio_pct, ratio_raw = _ratio_values_for_tradability(ratio_p_val)
     if not _trade_price_in_bounds(price_value, min_price=min_price, max_price=max_price):
+        return False, ratio_pct, ratio_raw
+    if not _market_cap_in_bounds(
+        market_cap_value,
+        min_market_cap=min_market_cap,
+        max_market_cap=max_market_cap,
+        missing_policy=market_cap_missing_policy,
+    ):
         return False, ratio_pct, ratio_raw
 
     eligibility_filter_active = (not include_all) and ratio_threshold > 0
@@ -721,6 +774,34 @@ def _preload_backtest_ticker_data(*, symbols: list[Symbol], scenario_id: int, fe
 
     data_by_ticker = {ticker: payload for ticker, payload in data_by_ticker.items() if payload["price_by_date"]}
     return data_by_ticker, all_dates
+
+
+def _preload_market_cap_cache(symbols: list[Symbol], end_d, *, provider: str = "eodhd") -> dict[int, dict[str, list[Any]]]:
+    # One bounded preload query per simulation; hot loops use _market_cap_from_cache.
+    if not symbols or not end_d:
+        return {}
+    raw_series = preload_market_cap_series(symbols, date.min, end_d, provider=provider)
+    return {
+        symbol_id: {
+            "dates": [row_date for row_date, _market_cap in series],
+            "values": [market_cap for _row_date, market_cap in series],
+        }
+        for symbol_id, series in raw_series.items()
+    }
+
+
+def _market_cap_from_cache(cache_entry: dict[str, list[Any]] | None, as_of) -> Decimal | None:
+    # O(log n) lookup over each symbol's pre-sorted historical rows.
+    if not cache_entry or not as_of:
+        return None
+    dates = cache_entry.get("dates") or []
+    idx = bisect_right(dates, as_of) - 1
+    if idx < 0:
+        return None
+    values = cache_entry.get("values") or []
+    return values[idx] if idx < len(values) else None
+
+
 def _build_global_momentum_regime_from_values(
     values_by_date: dict[date, Decimal | None],
 ) -> dict[date, str]:
@@ -776,7 +857,11 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     fixed_capital = (capital_mode == "FIXED")
     X = Decimal(str(backtest.ratio_threshold or 0))  # percent threshold
     include_all = bool(getattr(backtest, "include_all_tickers", False))
-    min_price, max_price = _price_bounds_from_settings(getattr(backtest, "settings", {}) or {})
+    settings = getattr(backtest, "settings", {}) or {}
+    min_price, max_price = _price_bounds_from_settings(settings)
+    min_market_cap, max_market_cap = _market_cap_bounds_from_settings(settings)
+    market_cap_missing_policy = _market_cap_missing_policy_from_settings(settings)
+    market_cap_filter_enabled = _market_cap_filter_enabled(min_market_cap, max_market_cap)
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
@@ -804,6 +889,11 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
         end_d=end_d,
         include_compact_extras=True,
     )
+    market_cap_cache = (
+        _preload_market_cap_cache(list(sym_by_ticker.values()), end_d)
+        if market_cap_filter_enabled
+        else {}
+    )
     for ticker in tickers:
         if ticker in sym_by_ticker and ticker not in data_by_ticker:
             logs.append(f"No DailyBar data for {ticker} in range; skipped.")
@@ -827,7 +917,15 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     # Per (ticker, line_index) state
     state: dict[tuple[str, int], dict[str, Any]] = {}
 
-    def _ratio_tradable(price_value, ratio_p_val) -> tuple[bool, Decimal | None, Decimal | None]:
+    def _market_cap_for_day(ticker: str, d) -> Decimal | None:
+        if not market_cap_filter_enabled:
+            return None
+        symbol = sym_by_ticker.get(ticker)
+        if not symbol:
+            return None
+        return _market_cap_from_cache(market_cap_cache.get(symbol.id), d)
+
+    def _ratio_tradable(ticker: str, d, price_value, ratio_p_val) -> tuple[bool, Decimal | None, Decimal | None]:
         """Return (tradable, ratio_percent, ratio_raw).
 
         If include_all is enabled, tradable is always True (eligibility bypass),
@@ -836,10 +934,14 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
         return _buy_tradability_for_day(
             price_value=price_value,
             ratio_p_val=ratio_p_val,
+            market_cap_value=_market_cap_for_day(ticker, d),
             include_all=include_all,
             ratio_threshold=X,
             min_price=min_price,
             max_price=max_price,
+            min_market_cap=min_market_cap,
+            max_market_cap=max_market_cap,
+            market_cap_missing_policy=market_cap_missing_policy,
         )
 
     for ticker in data_by_ticker.keys():
@@ -1060,7 +1162,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 _get_signal_latch_day_state(st, local_event_alerts, d)
 
             # tradable status computed for NB_JOUR_OUVRES before actions
-            tradable, ratio_pct, ratio_raw = _ratio_tradable(price_by_date.get(d), tdata["metrics"].get(d))
+            tradable, ratio_pct, ratio_raw = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
             if tradable and not st["position_open"]:
                 st["nb_jours_ouvres"] += 1
 
@@ -1211,7 +1313,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                 continue
 
-            tradable, ratio_pct, _ = _ratio_tradable(price_by_date.get(d), tdata["metrics"].get(d))
+            tradable, ratio_pct, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
 
@@ -1281,7 +1383,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                 continue
 
-            tradable, _, _ = _ratio_tradable(price_by_date.get(d), tdata["metrics"].get(d))
+            tradable, _, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
 
@@ -1912,7 +2014,11 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     fixed_capital = (capital_mode == "FIXED")
     X = Decimal("0")  # Game mode: eligibility bypass (include_all)
     include_all = True
-    min_price, max_price = _price_bounds_from_settings(getattr(backtest, "settings", {}) or {})
+    settings = getattr(backtest, "settings", {}) or {}
+    min_price, max_price = _price_bounds_from_settings(settings)
+    min_market_cap, max_market_cap = _market_cap_bounds_from_settings(settings)
+    market_cap_missing_policy = _market_cap_missing_policy_from_settings(settings)
+    market_cap_filter_enabled = _market_cap_filter_enabled(min_market_cap, max_market_cap)
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
@@ -1930,6 +2036,11 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         fetch_start_d=fetch_start_d,
         end_d=end_d,
         include_compact_extras=False,
+    )
+    market_cap_cache = (
+        _preload_market_cap_cache(list(sym_by_ticker.values()), end_d)
+        if market_cap_filter_enabled
+        else {}
     )
 
     if not data_by_ticker:
@@ -1989,14 +2100,26 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 "_sold_today": False,
             }
 
-    def _ratio_tradable(price_value, ratio_p_val) -> tuple[bool, Decimal | None, Decimal | None]:
+    def _market_cap_for_day(ticker: str, d) -> Decimal | None:
+        if not market_cap_filter_enabled:
+            return None
+        symbol = sym_by_ticker.get(ticker)
+        if not symbol:
+            return None
+        return _market_cap_from_cache(market_cap_cache.get(symbol.id), d)
+
+    def _ratio_tradable(ticker: str, d, price_value, ratio_p_val) -> tuple[bool, Decimal | None, Decimal | None]:
         return _buy_tradability_for_day(
             price_value=price_value,
             ratio_p_val=ratio_p_val,
+            market_cap_value=_market_cap_for_day(ticker, d),
             include_all=include_all,
             ratio_threshold=X,
             min_price=min_price,
             max_price=max_price,
+            min_market_cap=min_market_cap,
+            max_market_cap=max_market_cap,
+            market_cap_missing_policy=market_cap_missing_policy,
         )
 
     # Warmup phase: reconstruct persistent states before the real game period.
@@ -2044,7 +2167,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
             if st["use_signal_latch_model"]:
                 _get_signal_latch_day_state(st, local_event_alerts, d)
-            tradable, _, _ = _ratio_tradable(price_by_date.get(d), tdata["metrics"].get(d))
+            tradable, _, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
 
             G_today: Decimal | None = None
 
@@ -2127,7 +2250,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     continue
             elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                 continue
-            tradable, ratio_pct, _ = _ratio_tradable(tdata["price_by_date"].get(d), tdata["metrics"].get(d))
+            tradable, ratio_pct, _ = _ratio_tradable(ticker, d, tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
 
@@ -2175,7 +2298,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     continue
             elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                 continue
-            tradable, _, _ = _ratio_tradable(tdata["price_by_date"].get(d), tdata["metrics"].get(d))
+            tradable, _, _ = _ratio_tradable(ticker, d, tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
             if not st["allocated"]:
@@ -2205,7 +2328,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 continue
             if d not in tdata["price_by_date"]:
                 continue
-            tradable, _, _ = _ratio_tradable(tdata["price_by_date"].get(d), tdata["metrics"].get(d))
+            tradable, _, _ = _ratio_tradable(ticker, d, tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if tradable:
                 st["tradable_days"] += 1
                 if st["position_open"] and st["shares"] > 0:
@@ -2233,7 +2356,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             )
             if closed is None:
                 continue
-            tradable, _, _ = _ratio_tradable(tdata["price_by_date"].get(last_date), tdata["metrics"].get(last_date))
+            tradable, _, _ = _ratio_tradable(ticker, last_date, tdata["price_by_date"].get(last_date), tdata["metrics"].get(last_date))
             if tradable and int(st.get("tradable_days_in_position") or 0) > 0:
                 st["tradable_days_in_position"] -= 1
 

@@ -1,0 +1,23 @@
+<div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+  <div>
+    <label for="{{ form.market_cap_min.id_for_label }}">Min Market Cap</label><br>
+    {{ form.market_cap_min }}
+    <div class="muted">{{ form.market_cap_min.help_text }}</div>
+    <div class="muted">Optional: leave blank for no minimum bound.</div>
+    {% if form.market_cap_min.errors %}<div class="error">{{ form.market_cap_min.errors }}</div>{% endif %}
+  </div>
+  <div>
+    <label for="{{ form.market_cap_max.id_for_label }}">Max Market Cap</label><br>
+    {{ form.market_cap_max }}
+    <div class="muted">{{ form.market_cap_max.help_text }}</div>
+    <div class="muted">Optional: leave blank for no maximum bound.</div>
+    {% if form.market_cap_max.errors %}<div class="error">{{ form.market_cap_max.errors }}</div>{% endif %}
+  </div>
+  <div>
+    <label for="{{ form.market_cap_missing_policy.id_for_label }}">If Market Cap Missing</label><br>
+    {{ form.market_cap_missing_policy }}
+    <div class="muted">{{ form.market_cap_missing_policy.help_text }}</div>
+    <div class="muted">`BLOCK`: BUY is blocked when market cap is unknown. `ALLOW`: BUY remains allowed when market cap is unknown.</div>
+    {% if form.market_cap_missing_policy.errors %}<div class="error">{{ form.market_cap_missing_policy.errors }}</div>{% endif %}
+  </div>
+</div>

@@ -36,6 +36,12 @@ GLOBAL_REGIME_FILTER_CHOICES = [
 
 GLOBAL_REGIME_FILTER_CODES = {code for code, _label in GLOBAL_REGIME_FILTER_CHOICES}
 
+MARKET_CAP_MIN_KEY = "market_cap_min"
+MARKET_CAP_MAX_KEY = "market_cap_max"
+MARKET_CAP_MISSING_POLICY_KEY = "market_cap_missing_policy"
+MARKET_CAP_POLICY_BLOCK = "BLOCK"
+MARKET_CAP_POLICY_ALLOW = "ALLOW"
+
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
 from .trading_model_config import (
     TRADING_MODEL_LATCH_STATEFUL,
@@ -527,6 +533,28 @@ class BacktestForm(forms.ModelForm):
 
     min_price = forms.DecimalField(required=False, min_value=0, label="Prix minimum")
     max_price = forms.DecimalField(required=False, min_value=0, label="Prix maximum")
+    market_cap_min = forms.DecimalField(
+        required=False,
+        min_value=0,
+        label="Min Market Cap",
+        help_text="Minimum historical company market capitalization required to allow BUY.",
+    )
+    market_cap_max = forms.DecimalField(
+        required=False,
+        min_value=0,
+        label="Max Market Cap",
+        help_text="Maximum historical company market capitalization allowed for BUY.",
+    )
+    market_cap_missing_policy = forms.ChoiceField(
+        required=False,
+        choices=[
+            (MARKET_CAP_POLICY_BLOCK, "Block BUY (recommended)"),
+            (MARKET_CAP_POLICY_ALLOW, "Allow BUY"),
+        ],
+        initial=MARKET_CAP_POLICY_BLOCK,
+        label="If Market Cap Missing",
+        help_text="What to do when no historical market capitalization exists at or before the BUY date.",
+    )
 
     class Meta:
         model = Backtest
@@ -543,6 +571,9 @@ class BacktestForm(forms.ModelForm):
             "include_all_tickers",
             "min_price",
             "max_price",
+            "market_cap_min",
+            "market_cap_max",
+            "market_cap_missing_policy",
             "signal_lines",
             "warmup_days",
             "close_positions_at_end",
@@ -559,6 +590,11 @@ class BacktestForm(forms.ModelForm):
         if isinstance(settings, dict):
             self.fields["min_price"].initial = settings.get("min_price")
             self.fields["max_price"].initial = settings.get("max_price")
+            self.fields["market_cap_min"].initial = settings.get(MARKET_CAP_MIN_KEY)
+            self.fields["market_cap_max"].initial = settings.get(MARKET_CAP_MAX_KEY)
+            self.fields["market_cap_missing_policy"].initial = (
+                settings.get(MARKET_CAP_MISSING_POLICY_KEY) or MARKET_CAP_POLICY_BLOCK
+            )
 
     def clean_signal_lines(self):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
@@ -569,6 +605,10 @@ class BacktestForm(forms.ModelForm):
         max_price = cleaned.get("max_price")
         if min_price is not None and max_price is not None and min_price > max_price:
             self.add_error("max_price", "Le prix maximum doit être supérieur ou égal au prix minimum.")
+        market_cap_min = cleaned.get("market_cap_min")
+        market_cap_max = cleaned.get("market_cap_max")
+        if market_cap_min is not None and market_cap_max is not None and market_cap_min > market_cap_max:
+            self.add_error("market_cap_max", "Max Market Cap must be greater than or equal to Min Market Cap.")
         return cleaned
 
     def save(self, commit=True):
@@ -576,6 +616,9 @@ class BacktestForm(forms.ModelForm):
         settings = dict(obj.settings or {})
         min_price = self.cleaned_data.get("min_price")
         max_price = self.cleaned_data.get("max_price")
+        market_cap_min = self.cleaned_data.get("market_cap_min")
+        market_cap_max = self.cleaned_data.get("market_cap_max")
+        market_cap_missing_policy = self.cleaned_data.get("market_cap_missing_policy") or MARKET_CAP_POLICY_BLOCK
         if min_price is None:
             settings.pop("min_price", None)
         else:
@@ -584,6 +627,18 @@ class BacktestForm(forms.ModelForm):
             settings.pop("max_price", None)
         else:
             settings["max_price"] = str(max_price)
+        if market_cap_min is None:
+            settings.pop(MARKET_CAP_MIN_KEY, None)
+        else:
+            settings[MARKET_CAP_MIN_KEY] = str(market_cap_min)
+        if market_cap_max is None:
+            settings.pop(MARKET_CAP_MAX_KEY, None)
+        else:
+            settings[MARKET_CAP_MAX_KEY] = str(market_cap_max)
+        if market_cap_min is None and market_cap_max is None:
+            settings.pop(MARKET_CAP_MISSING_POLICY_KEY, None)
+        else:
+            settings[MARKET_CAP_MISSING_POLICY_KEY] = market_cap_missing_policy
         obj.settings = settings
         if commit:
             obj.save()
@@ -605,6 +660,28 @@ class GameScenarioForm(forms.ModelForm):
         min_value=0,
         label="Prix maximum",
         help_text="Ce filtre s'applique uniquement a l'achat. La vente reste toujours possible.",
+    )
+    market_cap_min = forms.DecimalField(
+        required=False,
+        min_value=0,
+        label="Min Market Cap",
+        help_text="Minimum historical company market capitalization required to allow BUY.",
+    )
+    market_cap_max = forms.DecimalField(
+        required=False,
+        min_value=0,
+        label="Max Market Cap",
+        help_text="Maximum historical company market capitalization allowed for BUY.",
+    )
+    market_cap_missing_policy = forms.ChoiceField(
+        required=False,
+        choices=[
+            (MARKET_CAP_POLICY_BLOCK, "Block BUY (recommended)"),
+            (MARKET_CAP_POLICY_ALLOW, "Allow BUY"),
+        ],
+        initial=MARKET_CAP_POLICY_BLOCK,
+        label="If Market Cap Missing",
+        help_text="What to do when no historical market capitalization exists at or before the BUY date.",
     )
 
     class Meta:
@@ -636,6 +713,9 @@ class GameScenarioForm(forms.ModelForm):
             "capital_mode",
             "min_price",
             "max_price",
+            "market_cap_min",
+            "market_cap_max",
+            "market_cap_missing_policy",
             "signal_lines",
             "warmup_days",
             "close_positions_at_end",
@@ -656,6 +736,11 @@ class GameScenarioForm(forms.ModelForm):
         if isinstance(settings, dict):
             self.fields["min_price"].initial = settings.get("min_price")
             self.fields["max_price"].initial = settings.get("max_price")
+            self.fields["market_cap_min"].initial = settings.get(MARKET_CAP_MIN_KEY)
+            self.fields["market_cap_max"].initial = settings.get(MARKET_CAP_MAX_KEY)
+            self.fields["market_cap_missing_policy"].initial = (
+                settings.get(MARKET_CAP_MISSING_POLICY_KEY) or MARKET_CAP_POLICY_BLOCK
+            )
 
     def clean_signal_lines(self):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
@@ -666,6 +751,10 @@ class GameScenarioForm(forms.ModelForm):
         max_price = cleaned.get("max_price")
         if min_price is not None and max_price is not None and min_price > max_price:
             self.add_error("max_price", "Le prix maximum doit être supérieur ou égal au prix minimum.")
+        market_cap_min = cleaned.get("market_cap_min")
+        market_cap_max = cleaned.get("market_cap_max")
+        if market_cap_min is not None and market_cap_max is not None and market_cap_min > market_cap_max:
+            self.add_error("market_cap_max", "Max Market Cap must be greater than or equal to Min Market Cap.")
         return cleaned
 
     def save(self, commit=True):
@@ -673,6 +762,9 @@ class GameScenarioForm(forms.ModelForm):
         settings = dict(obj.settings or {})
         min_price = self.cleaned_data.get("min_price")
         max_price = self.cleaned_data.get("max_price")
+        market_cap_min = self.cleaned_data.get("market_cap_min")
+        market_cap_max = self.cleaned_data.get("market_cap_max")
+        market_cap_missing_policy = self.cleaned_data.get("market_cap_missing_policy") or MARKET_CAP_POLICY_BLOCK
         if min_price is None:
             settings.pop("min_price", None)
         else:
@@ -681,6 +773,18 @@ class GameScenarioForm(forms.ModelForm):
             settings.pop("max_price", None)
         else:
             settings["max_price"] = str(max_price)
+        if market_cap_min is None:
+            settings.pop(MARKET_CAP_MIN_KEY, None)
+        else:
+            settings[MARKET_CAP_MIN_KEY] = str(market_cap_min)
+        if market_cap_max is None:
+            settings.pop(MARKET_CAP_MAX_KEY, None)
+        else:
+            settings[MARKET_CAP_MAX_KEY] = str(market_cap_max)
+        if market_cap_min is None and market_cap_max is None:
+            settings.pop(MARKET_CAP_MISSING_POLICY_KEY, None)
+        else:
+            settings[MARKET_CAP_MISSING_POLICY_KEY] = market_cap_missing_policy
         obj.settings = settings
         if commit:
             obj.save()

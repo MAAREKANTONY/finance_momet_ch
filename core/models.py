@@ -819,6 +819,7 @@ class ProcessingJob(models.Model):
     class JobType(models.TextChoices):
         FETCH_BARS = "FETCH_BARS", "Fetch Daily Bars"
         COMPUTE_METRICS = "COMPUTE_METRICS", "Compute Metrics"
+        SYNC_MARKET_CAPS = "SYNC_MARKET_CAPS", "Sync Market Caps"
         RUN_BACKTEST = "RUN_BACKTEST", "Run Backtest"
         RUN_GAME = "RUN_GAME", "Run Game Scenario"
         SEND_EMAILS = "SEND_EMAILS", "Send Emails"

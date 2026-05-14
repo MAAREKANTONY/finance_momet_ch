@@ -40,6 +40,15 @@
   </div>
 
   <div class="card">
+    <h3>Market Caps (EODHD)</h3>
+    <form method="post">
+      {% csrf_token %}
+      <button class="btn" name="action" value="market_caps" type="submit">Sync Market Caps (global)</button>
+    </form>
+    <p class="muted" style="margin-top:8px;">Uses EODHD quota; data is cached locally; no API calls occur during backtests.</p>
+  </div>
+
+  <div class="card">
     <h3>Calculs métriques (Compute)</h3>
     <form method="post">
       {% csrf_token %}
@@ -88,6 +97,9 @@
       </div>
       <div style="margin-top:10px;">
         <button class="btn" name="action" value="bt_run" type="submit">Run Backtest</button>
+      </div>
+      <div style="margin-top:10px;">
+        <button class="btn" name="action" value="bt_market_caps" type="submit">Sync Market Caps</button>
       </div>
     </form>
   </div>

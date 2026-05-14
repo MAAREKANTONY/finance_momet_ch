@@ -34,6 +34,20 @@
           <th>Prix maximum d'achat</th>
           <td>{{ bt.settings.max_price|default:"aucune borne maximum" }}</td>
         </tr>
+        {% if bt.settings.market_cap_min or bt.settings.market_cap_max %}
+          <tr>
+            <th>Min Market Cap</th>
+            <td>{{ bt.settings.market_cap_min|default:"None" }}</td>
+          </tr>
+          <tr>
+            <th>Max Market Cap</th>
+            <td>{{ bt.settings.market_cap_max|default:"None" }}</td>
+          </tr>
+          <tr>
+            <th>Missing Cap Policy</th>
+            <td>{{ bt.settings.market_cap_missing_policy|default:"BLOCK" }}</td>
+          </tr>
+        {% endif %}
         <tr><th>Lignes de signaux (achat / vente)</th><td>
   {% if bt.signal_lines %}
     <table>
@@ -106,9 +120,17 @@
         <td>{% if j %}{{ j.message|default:j.error }}{% else %}<span class="muted">Aucun job lancé</span>{% endif %}</td>
       </tr>
       {% endwith %}
+      {% with j=latest_by_type.SYNC_MARKET_CAPS %}
+      <tr>
+        <td>3) Sync Market Caps</td>
+        <td>{% if j %}<span class="pill">{{ j.status }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td>{% if j %}{{ j.created_at|date:"Y-m-d H:i" }}{% else %}<span class="muted">—</span>{% endif %}</td>
+        <td>{% if j %}{{ j.message|default:j.error }}{% else %}<span class="muted">Aucun job lancé</span>{% endif %}</td>
+      </tr>
+      {% endwith %}
       {% with j=latest_by_type.RUN_BACKTEST %}
       <tr>
-        <td>3) Backtest</td>
+        <td>4) Backtest</td>
         <td>{% if j %}<span class="pill">{{ j.status }}</span>{% else %}<span class="muted">—</span>{% endif %}</td>
         <td>{% if j %}{{ j.created_at|date:"Y-m-d H:i" }}{% else %}<span class="muted">—</span>{% endif %}</td>
         <td>{% if j %}{{ j.message|default:j.error }}{% else %}<span class="muted">Aucun job lancé</span>{% endif %}</td>
@@ -126,6 +148,10 @@
       <form method="post" action="{% url 'backtest_compute_metrics' bt.id %}">
         {% csrf_token %}
         <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Calculer indicateurs</button>
+      </form>
+      <form method="post" action="{% url 'backtest_sync_market_caps' bt.id %}">
+        {% csrf_token %}
+        <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Sync Market Caps</button>
       </form>
 
       <form method="post" action="{% url 'backtest_recompute_metrics' bt.id %}" onsubmit="return confirm('Force Full Recompute : recalcul complet des métriques pour toute la profondeur du scénario de ce backtest. Continuer ?');">
@@ -158,6 +184,7 @@
       {% endif %}
       {% if bt.status == 'RUNNING' %}<span class="muted">En cours… rafraîchis la page dans quelques secondes.</span>{% endif %}
     </div>
+    <div class="muted" style="margin-top:8px;">Uses EODHD quota; data is cached locally; no API calls occur during backtests.</div>
 
     {% if jobs %}
       <div class="card" style="margin-top:12px;">

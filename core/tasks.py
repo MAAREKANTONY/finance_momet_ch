@@ -16,6 +16,7 @@ from .services.provider_twelvedata import TwelveDataClient
 from .services.calculations import compute_for_symbol_scenario
 from .services.global_momentum import build_global_momentum_regime_by_date, GLOBAL_MOMENTUM_CODES
 from .services.calculations_fast import compute_full_for_symbol_scenario
+from .services.market_cap_sync import sync_market_caps_for_symbols
 from .job_tracking import JobCancelled, JobCheckpointPulse, JobKilled, job_checkpoint, mark_job_running
 from .job_status_sync import sync_related_state_for_terminal_job
 from .excel_utils import append_excel_row
@@ -663,6 +664,116 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
         raise
 
 
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
+def sync_market_caps_job_task(
+    self,
+    *,
+    symbol_ids=None,
+    backtest_id=None,
+    from_date=None,
+    to_date=None,
+    force_full: bool = False,
+    user_id=None,
+    job_id=None,
+):
+    """Tracked job wrapper around historical market-cap sync."""
+    del force_full  # compatibility placeholder for future UI symmetry
+    job = None
+    if job_id:
+        job = ProcessingJob.objects.filter(id=job_id).first()
+        if job:
+            mark_job_running(job, task_request=self.request)
+    if job is None:
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.SYNC_MARKET_CAPS,
+            status=ProcessingJob.Status.PENDING,
+            backtest_id=backtest_id,
+            created_by_id=user_id,
+        )
+        mark_job_running(job, task_request=self.request, message="started")
+    try:
+        job_checkpoint(job, task_request=self.request)
+        bt = Backtest.objects.select_related("scenario").filter(id=backtest_id).first() if backtest_id else None
+
+        if symbol_ids:
+            symbols = list(Symbol.objects.filter(id__in=list(symbol_ids)).order_by("ticker", "exchange"))
+            scope_note = f"explicit_ids={len(symbols)}"
+        elif bt is not None:
+            tickers = []
+            try:
+                for row in (bt.universe_snapshot or []):
+                    if isinstance(row, dict):
+                        ticker = row.get("ticker")
+                        if ticker:
+                            tickers.append(ticker)
+                    elif isinstance(row, str) and row:
+                        tickers.append(row)
+            except Exception:
+                tickers = []
+            symbols = (
+                list(Symbol.objects.filter(ticker__in=tickers).order_by("ticker", "exchange"))
+                if tickers else
+                list(bt.scenario.symbols.filter(active=True).order_by("ticker", "exchange"))
+            )
+            scope_note = f"backtest={bt.id}"
+        else:
+            symbols = list(Symbol.objects.filter(active=True).order_by("ticker", "exchange"))
+            scope_note = "active_symbols"
+
+        resolved_from = date.fromisoformat(str(from_date)) if from_date else (
+            bt.start_date if bt and bt.start_date else date.fromisoformat(str(getattr(settings, "EODHD_MARKET_CAP_SYNC_START_DATE", "2020-01-01")))
+        )
+        resolved_to = date.fromisoformat(str(to_date)) if to_date else (
+            bt.end_date if bt and bt.end_date else timezone.now().date()
+        )
+        pulse = JobCheckpointPulse(
+            job,
+            every_n=1,
+            every_seconds=10,
+            task_request=self.request,
+            base_label="sync_market_caps",
+        )
+        stats = sync_market_caps_for_symbols(
+            symbols,
+            resolved_from,
+            resolved_to,
+            provider="eodhd",
+            dry_run=False,
+            progress_callback=lambda message: pulse.hit(checkpoint=message, force=True),
+        )
+        job.status = ProcessingJob.Status.DONE
+        job.message = (
+            f"Synced market caps: scope={scope_note} from={resolved_from} to={resolved_to} "
+            f"symbols={len(symbols)} fetched={stats.get('fetched')} inserted={stats.get('inserted')} "
+            f"updated={stats.get('updated')} existing={stats.get('existing')} "
+            f"skipped={stats.get('skipped')} errors={stats.get('errors')}"
+        )
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return job.message
+    except JobCancelled:
+        job.status = ProcessingJob.Status.CANCELLED
+        job.message = (job.message or "") + "\nCancelled by user."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "cancelled"
+    except JobKilled:
+        job.status = ProcessingJob.Status.KILLED
+        job.message = (job.message or "") + "\nKilled by user."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "killed"
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
+    except Exception as e:
+        job.status = ProcessingJob.Status.FAILED
+        job.error = str(e)
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
+        raise
+
+
 @shared_task(bind=True)
 def compute_metrics_all_job_task(self, recompute_all: bool = False, user_id=None, job_id=None):
     """Tracked job wrapper for a full compute across all active scenarios.
@@ -1025,8 +1136,9 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
 
     What it does (as requested):
       1) Fetch latest DailyBars for ALL active tickers (delta fetch, no full refresh)
-      2) Compute indicators for ALL active Scenarios (incremental; no full recompute unless operator forces it manually)
-      3) Compute Game tables by running ALL active GameScenarios (uses their incremental compute rules)
+      2) Sync historical market caps for ALL active tickers
+      3) Compute indicators for ALL active Scenarios (incremental; no full recompute unless operator forces it manually)
+      4) Compute Game tables by running ALL active GameScenarios (uses their incremental compute rules)
 
     Safety:
       - Redis lock prevents overlaps
@@ -1071,9 +1183,30 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
         outputsize = max(desired_outputsize_years(int(max_years)), min(5000, int(max_study_days) + 400) if max_study_days else 0)
         outputsize = max(260, min(5000, int(outputsize)))
 
-        job.message = f"Step1/3 Fetch DailyBars (delta) outputsize={outputsize}"
+        job.message = f"Step 1/4: Fetch OHLC (delta) outputsize={outputsize}"
         job.save(update_fields=["message"])
         _fetch_daily_bars_for_symbols(symbol_qs=symbols, outputsize=outputsize, force_full=False, job=job, task_request=self.request)
+
+        # 2) Sync historical market caps for the same active symbol scope.
+        sync_start = date.fromisoformat(str(getattr(settings, "EODHD_MARKET_CAP_SYNC_START_DATE", "2020-01-01")))
+        sync_end = timezone.now().date()
+        job.message = f"Step 2/4: Sync Market Caps from={sync_start} to={sync_end}"
+        job.save(update_fields=["message"])
+        market_cap_pulse = JobCheckpointPulse(
+            job,
+            every_n=1,
+            every_seconds=10,
+            task_request=self.request,
+            base_label="daily_refresh:market_caps",
+        )
+        market_cap_stats = sync_market_caps_for_symbols(
+            list(symbols),
+            sync_start,
+            sync_end,
+            provider="eodhd",
+            dry_run=False,
+            progress_callback=lambda message: market_cap_pulse.hit(checkpoint=message, force=True),
+        )
 
         # 2) Compute metrics for ALL active scenarios + ALL active games' engine scenarios.
         #    Optimization: canonical signature (hash of indicator parameters) => compute once per signature,
@@ -1118,7 +1251,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
             union_symbols = list(Symbol.objects.filter(id__in=list(union_ids)).order_by("ticker"))
 
             job.message = (
-                f"Step2/3 Compute metrics group={done_groups}/{len(groups)} "
+                f"Step 3/4: Compute Metrics group={done_groups}/{len(groups)} "
                 f"sig={sig[:10]} primary_scenario={primary.id} symbols={len(union_symbols)} targets={len(group_targets)}"
             )
             job.save(update_fields=["message"])
@@ -1142,7 +1275,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
                 start_dt = (last_dt - timedelta(days=buffer_days)) if last_dt else None
 
                 job.message = (
-                    f"Step2/3 Clone metrics sig={sig[:10]} from={primary.id} to={to_sc.id} "
+                    f"Step 3/4: Clone Metrics sig={sig[:10]} from={primary.id} to={to_sc.id} "
                     f"symbols={len(to_syms)} start={start_dt or 'ALL'}"
                 )
                 job.save(update_fields=["message"])
@@ -1164,7 +1297,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
         done_g = 0
         for gs in games:
             job_checkpoint(job, task_request=self.request)
-            job.message = f"Step3/3 Run game={gs.id} ({done_g+1}/{total_g})"
+            job.message = f"Step 4/4: Games refresh game={gs.id} ({done_g+1}/{total_g})"
             job.save(update_fields=["message"])
             try:
                 run_game_scenario_now(gs.id, force_fetch=False, force_recompute=False, skip_metrics=True, job=job)
@@ -1174,7 +1307,16 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
 
         job.status = ProcessingJob.Status.DONE
         job.finished_at = timezone.now()
-        job.message = f"Daily refresh OK: symbols={symbols.count()} scenarios={done_sc} games={done_g}"
+        job.message = (
+            f"Daily refresh OK: symbols={symbols.count()} "
+            f"market_caps_fetched={market_cap_stats.get('fetched')} "
+            f"market_caps_inserted={market_cap_stats.get('inserted')} "
+            f"market_caps_updated={market_cap_stats.get('updated')} "
+            f"market_caps_existing={market_cap_stats.get('existing')} "
+            f"market_caps_skipped={market_cap_stats.get('skipped')} "
+            f"market_caps_errors={market_cap_stats.get('errors')} "
+            f"scenarios={done_sc} games={done_g}"
+        )
         job.save(update_fields=["status", "finished_at", "message"])
         return job.message
 

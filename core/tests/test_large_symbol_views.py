@@ -1,10 +1,11 @@
-from django.contrib.auth import get_user_model
+from decimal import Decimal
+
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
 import json
 
-from core.models import Backtest, BacktestPortfolioKPI, DailyMetric, GameScenario, ProcessingJob, Scenario, Study, Symbol, Universe
+from core.models import Backtest, BacktestPortfolioKPI, DailyMetric, GameScenario, HistoricalMarketCap, ProcessingJob, Scenario, Study, Symbol, Universe
 
 
 class LargeSymbolFormViewTests(TestCase):
@@ -214,6 +215,30 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertNotIn("GM_NEG (momentum global négatif)", body)
         self.assertNotIn("GM_NEU (momentum global neutre)", body)
 
+    def test_backtest_create_view_renders_market_cap_filter_fields(self):
+        Scenario.objects.create(
+            name="Scenario Market Cap UI",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+
+        response = self.client.get(reverse("backtest_create"))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Min Market Cap", body)
+        self.assertIn("Max Market Cap", body)
+        self.assertIn("If Market Cap Missing", body)
+        self.assertIn("Block BUY (recommended)", body)
+        self.assertIn("Allow BUY", body)
+        self.assertIn("Minimum historical company market capitalization required to allow BUY.", body)
+        self.assertIn("Maximum historical company market capitalization allowed for BUY.", body)
+        self.assertIn("What to do when no historical market capitalization exists at or before the BUY date.", body)
+        self.assertIn("BUY is blocked when market cap is unknown.", body)
+        self.assertIn("BUY remains allowed when market cap is unknown.", body)
+
     def test_backtest_edit_view_preserves_existing_signal_lines_json(self):
         signal_lines = [
             {
@@ -255,6 +280,40 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
         self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
 
+    def test_backtest_edit_view_shows_persisted_market_cap_filter_values(self):
+        scenario = Scenario.objects.create(
+            name="Scenario Market Cap Edit",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        bt = Backtest.objects.create(
+            name="BT Market Cap Edit",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            universe_snapshot=[],
+            settings={
+                "market_cap_min": "100000000",
+                "market_cap_max": "5000000000",
+                "market_cap_missing_policy": "ALLOW",
+            },
+        )
+
+        response = self.client.get(reverse("backtest_update", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn('value="100000000"', body)
+        self.assertIn('value="5000000000"', body)
+        self.assertIn('<option value="ALLOW" selected>', body)
+
     def test_backtest_detail_displays_buy_gm_filter_in_french(self):
         signal_lines = [
             {
@@ -294,6 +353,70 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn("Filtre GM achat : GM positif", body)
         self.assertNotIn("Filtre GM vente", body)
 
+    def test_backtest_detail_displays_configured_market_cap_filter(self):
+        scenario = Scenario.objects.create(
+            name="Scenario Market Cap Detail",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        bt = Backtest.objects.create(
+            name="BT Market Cap Detail",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            universe_snapshot=[],
+            settings={
+                "market_cap_min": "100000000",
+                "market_cap_max": "5000000000",
+                "market_cap_missing_policy": "BLOCK",
+            },
+        )
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Min Market Cap", body)
+        self.assertIn("100000000", body)
+        self.assertIn("Max Market Cap", body)
+        self.assertIn("5000000000", body)
+        self.assertIn("Missing Cap Policy", body)
+        self.assertIn("BLOCK", body)
+
+    def test_backtest_detail_omits_market_cap_filter_for_legacy_settings(self):
+        scenario = Scenario.objects.create(
+            name="Scenario Legacy Detail",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        bt = Backtest.objects.create(
+            name="BT Legacy Detail",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            universe_snapshot=[],
+            settings={},
+        )
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Min Market Cap", response.content.decode())
+
     def test_game_scenario_form_hides_gm_codes_from_signal_choices_but_keeps_gm_filters(self):
         response = self.client.get(reverse("game_scenario_create"))
         self.assertEqual(response.status_code, 200)
@@ -304,6 +427,20 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertNotIn("GM_POS (momentum global positif)", body)
         self.assertNotIn("GM_NEG (momentum global négatif)", body)
         self.assertNotIn("GM_NEU (momentum global neutre)", body)
+
+    def test_game_scenario_create_view_renders_market_cap_filter_fields(self):
+        response = self.client.get(reverse("game_scenario_create"))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Min Market Cap", body)
+        self.assertIn("Max Market Cap", body)
+        self.assertIn("If Market Cap Missing", body)
+        self.assertIn("Block BUY (recommended)", body)
+        self.assertIn("Allow BUY", body)
+        self.assertIn("Minimum historical company market capitalization required to allow BUY.", body)
+        self.assertIn("Maximum historical company market capitalization allowed for BUY.", body)
+        self.assertIn("What to do when no historical market capitalization exists at or before the BUY date.", body)
 
     def test_game_scenario_edit_view_preserves_existing_signal_lines_json(self):
         signal_lines = [
@@ -331,6 +468,62 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn('"buy_gm_filter": "GM_POS"', body)
         self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
         self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
+
+    def test_game_scenario_edit_view_shows_persisted_market_cap_filter_values(self):
+        game = GameScenario.objects.create(
+            name="Game Market Cap Edit",
+            active=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            settings={
+                "market_cap_min": "100000000",
+                "market_cap_max": "5000000000",
+                "market_cap_missing_policy": "ALLOW",
+            },
+        )
+
+        response = self.client.get(reverse("game_scenario_edit", args=[game.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn('value="100000000"', body)
+        self.assertIn('value="5000000000"', body)
+        self.assertIn('<option value="ALLOW" selected>', body)
+
+    def test_game_scenario_detail_displays_configured_market_cap_filter(self):
+        game = GameScenario.objects.create(
+            name="Game Market Cap Detail",
+            active=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            settings={
+                "market_cap_min": "100000000",
+                "market_cap_max": "5000000000",
+                "market_cap_missing_policy": "BLOCK",
+            },
+        )
+
+        response = self.client.get(reverse("game_scenario_detail", args=[game.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Min Market Cap", body)
+        self.assertIn("100000000", body)
+        self.assertIn("Max Market Cap", body)
+        self.assertIn("5000000000", body)
+        self.assertIn("Missing Cap Policy", body)
+        self.assertIn("BLOCK", body)
+
+    def test_game_scenario_detail_omits_market_cap_filter_for_legacy_settings(self):
+        game = GameScenario.objects.create(
+            name="Game Legacy Detail",
+            active=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            settings={},
+        )
+
+        response = self.client.get(reverse("game_scenario_detail", args=[game.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertNotIn("Min Market Cap", response.content.decode())
 
 
 class SymbolCsvSubmissionRegressionTests(TestCase):
@@ -440,6 +633,14 @@ class BacktestResultsRenderTests(TestCase):
             signal_lines=signal_lines,
             universe_snapshot=list(symbols.keys()),
             results=results,
+        )
+
+    def _add_historical_market_cap(self, symbol, dt, value, provider="eodhd"):
+        return HistoricalMarketCap.objects.create(
+            symbol=symbol,
+            date=dt,
+            market_cap=Decimal(value),
+            provider=provider,
         )
 
     def test_backtest_results_renders_portfolio_kpis_and_legend_terms(self):
@@ -891,3 +1092,156 @@ class BacktestResultsRenderTests(TestCase):
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         self.assertIsNone(response.context.get("diagnostic_chart_payload"))
         self.assertNotIn("Diagnostic visuel de la stratégie", response.content.decode())
+
+    def test_backtest_results_diagnostic_payload_includes_market_cap_series_for_selected_ticker(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                    {"date": "2024-01-04", "price_close": "12", "action": "SELL"},
+                ], "final": {}}]},
+            },
+        )
+        self._add_historical_market_cap(self.symbol, "2024-01-02", "120000000")
+        self._add_historical_market_cap(self.symbol, "2024-01-04", "125000000")
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(
+            payload["market_cap"],
+            {
+                "label": "Historical Market Cap",
+                "values": ["120000000", "120000000", "125000000"],
+                "min": None,
+                "max": None,
+                "missing_policy": None,
+                "has_data": True,
+            },
+        )
+        body = response.content.decode()
+        self.assertIn("Historical Market Cap", body)
+        self.assertIn('id="diagnosticMarketCapChart"', body)
+        self.assertIn('id="diagnosticPriceChart"', body)
+
+    def test_backtest_results_diagnostic_payload_includes_market_cap_thresholds_and_policy(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": "BUY"},
+                    {"date": "2024-01-03", "price_close": "11", "action": "SELL"},
+                ], "final": {}}]},
+            },
+        )
+        bt.settings = {
+            "market_cap_min": "100000000",
+            "market_cap_max": "5000000000",
+            "market_cap_missing_policy": "BLOCK",
+        }
+        bt.save(update_fields=["settings"])
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["market_cap"]["min"], "100000000")
+        self.assertEqual(payload["market_cap"]["max"], "5000000000")
+        self.assertEqual(payload["market_cap"]["missing_policy"], "BLOCK")
+
+    def test_backtest_results_diagnostic_payload_market_cap_never_uses_future_values(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                    {"date": "2024-01-04", "price_close": "12", "action": "SELL"},
+                ], "final": {}}]},
+            },
+        )
+        self._add_historical_market_cap(self.symbol, "2024-01-04", "125000000")
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["market_cap"]["values"], [None, None, "125000000"])
+
+    def test_backtest_results_diagnostic_payload_omits_market_cap_when_no_filter_and_no_data(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertIsNone(payload["market_cap"])
+        body = response.content.decode()
+        self.assertNotIn("Historical Market Cap", body)
+        self.assertNotIn('id="diagnosticMarketCapChart"', body)
+
+    def test_backtest_results_diagnostic_payload_market_cap_panel_can_render_without_series_when_filter_configured(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        bt.settings = {"market_cap_min": "100000000", "market_cap_missing_policy": "ALLOW"}
+        bt.save(update_fields=["settings"])
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["market_cap"]["values"], [None, None])
+        self.assertEqual(payload["market_cap"]["min"], "100000000")
+        self.assertEqual(payload["market_cap"]["missing_policy"], "ALLOW")
+        body = response.content.decode()
+        self.assertIn("Historical Market Cap", body)
+        self.assertIn("Uses latest known local market capitalization at or before each date.", body)
+        self.assertIn("No local historical market-cap data available for this ticker/date range.", body)
+
+    def test_backtest_results_kpi_only_like_payload_does_not_include_market_cap_diagnostic(self):
+        bt = Backtest.objects.create(
+            name="BT KPI Only Market Cap",
+            scenario=self.scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            universe_snapshot=[self.symbol.ticker],
+            settings={"market_cap_min": "100000000", "market_cap_missing_policy": "BLOCK"},
+            results={
+                "meta": {"start_date": "2024-01-01", "end_date": "2024-01-31"},
+                "tickers": {
+                    "AAA": {
+                        "lines": [{
+                            "line_index": 1,
+                            "buy": ["Af"],
+                            "sell": ["Bf"],
+                            "final": {"N": 1, "BT": "0.1"},
+                        }]
+                    }
+                },
+                "portfolio": {"kpi": {}, "daily": []},
+            },
+        )
+        self._add_historical_market_cap(self.symbol, "2024-01-02", "120000000")
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertIsNone(response.context.get("diagnostic_chart_payload"))
+        self.assertNotIn("Historical Market Cap", response.content.decode())
