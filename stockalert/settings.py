@@ -139,6 +139,12 @@ CELERY_TIMEZONE = TIME_ZONE
 
 TWELVE_DATA_API_KEY = os.getenv("TWELVE_DATA_API_KEY", "")
 DEFAULT_EXCHANGE = os.getenv("DEFAULT_EXCHANGE", "")
+EODHD_API_KEY = os.getenv("EODHD_API_KEY", "")
+EODHD_BASE_URL = os.getenv("EODHD_BASE_URL", "https://eodhd.com/api")
+EODHD_REQUEST_DELAY_SECONDS = float(os.getenv("EODHD_REQUEST_DELAY_SECONDS", "0"))
+EODHD_MAX_RETRIES = int(os.getenv("EODHD_MAX_RETRIES", "3"))
+EODHD_BACKOFF_SECONDS = float(os.getenv("EODHD_BACKOFF_SECONDS", "1"))
+EODHD_MARKET_CAP_SYNC_START_DATE = os.getenv("EODHD_MARKET_CAP_SYNC_START_DATE", "2020-01-01")
 
 # Twelve Data safety throttling
 # Keep the default below the provider hard limit to preserve a margin and avoid

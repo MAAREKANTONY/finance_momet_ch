@@ -32,6 +32,15 @@
     &nbsp; | &nbsp;
     <b>Prix maximum d'achat:</b> {{ obj.settings.max_price|default:"aucune borne maximum" }}
   </p>
+  {% if obj.settings.market_cap_min or obj.settings.market_cap_max %}
+    <p>
+      <b>Min Market Cap:</b> {{ obj.settings.market_cap_min|default:"None" }}
+      &nbsp; | &nbsp;
+      <b>Max Market Cap:</b> {{ obj.settings.market_cap_max|default:"None" }}
+      &nbsp; | &nbsp;
+      <b>Missing Cap Policy:</b> {{ obj.settings.market_cap_missing_policy|default:"BLOCK" }}
+    </p>
+  {% endif %}
   {% if obj.last_run_message %}<p class="muted">{{ obj.last_run_message }}</p>{% endif %}
 
   <div style="margin-top:12px;">

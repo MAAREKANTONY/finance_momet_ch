@@ -1474,6 +1474,58 @@ def backtest_fetch_data(request, pk: int):
 
 @login_required
 @require_POST
+def backtest_sync_market_caps(request, pk: int):
+    """Launch a scoped historical market-cap sync for a given backtest universe."""
+    bt = get_object_or_404(Backtest, pk=pk)
+
+    if bt.status != Backtest.Status.RUNNING:
+        _refresh_backtest_universe_snapshot(bt)
+
+    tickers = []
+    try:
+        for row in (bt.universe_snapshot or []):
+            if isinstance(row, dict):
+                ticker = row.get("ticker")
+                if ticker:
+                    tickers.append(ticker)
+            elif isinstance(row, str) and row:
+                tickers.append(row)
+    except Exception:
+        tickers = []
+
+    symbol_ids = (
+        list(Symbol.objects.filter(ticker__in=tickers).values_list("id", flat=True))
+        if tickers else
+        list(bt.scenario.symbols.values_list("id", flat=True))
+    )
+
+    from .tasks import sync_market_caps_job_task
+
+    launch = launch_processing_job(
+        task=sync_market_caps_job_task,
+        job_type=ProcessingJob.JobType.SYNC_MARKET_CAPS,
+        backtest=bt,
+        scenario=bt.scenario,
+        created_by=request.user if request.user.is_authenticated else None,
+        message="En attente d'exécution (sync market caps)",
+        task_kwargs={
+            "symbol_ids": symbol_ids,
+            "backtest_id": bt.id,
+            "from_date": (bt.start_date.isoformat() if bt.start_date else None),
+            "to_date": ((bt.end_date or timezone.now().date()).isoformat()),
+            "user_id": request.user.id if request.user.is_authenticated else None,
+        },
+    )
+    if launch.dispatch_error:
+        messages.error(request, f"Impossible de lancer la sync market caps: {launch.dispatch_error}")
+        return redirect("backtest_detail", pk=pk)
+
+    messages.success(request, "Sync Market Caps demandée pour ce backtest (traitement en arrière-plan).")
+    return redirect("backtest_detail", pk=pk)
+
+
+@login_required
+@require_POST
 def backtest_compute_metrics(request, pk: int):
     """Launch a scoped metrics computation for the backtest scenario + universe."""
     bt = get_object_or_404(Backtest, pk=pk)
@@ -2245,7 +2297,12 @@ def backtest_detail(request, pk: int):
     jobs = ProcessingJob.objects.filter(backtest=bt).order_by("-created_at")[:30]
 
     latest_by_type = {}
-    for jt in [ProcessingJob.JobType.FETCH_BARS, ProcessingJob.JobType.COMPUTE_METRICS, ProcessingJob.JobType.RUN_BACKTEST]:
+    for jt in [
+        ProcessingJob.JobType.FETCH_BARS,
+        ProcessingJob.JobType.SYNC_MARKET_CAPS,
+        ProcessingJob.JobType.COMPUTE_METRICS,
+        ProcessingJob.JobType.RUN_BACKTEST,
+    ]:
         latest_by_type[jt] = ProcessingJob.objects.filter(backtest=bt, job_type=jt).order_by("-created_at").first()
 
     return render(request, "backtest_detail.html", {"bt": bt, "jobs": jobs, "latest_by_type": latest_by_type})
@@ -3834,6 +3891,24 @@ def trigger_page(request: HttpRequest):
                         raise launch.dispatch_error
                     messages.success(request, "Collecte demandée." + (" (force full)" if force_full else ""))
 
+                elif action == "market_caps":
+                    from core.tasks import sync_market_caps_job_task
+
+                    launch = launch_processing_job(
+                        task=sync_market_caps_job_task,
+                        job_type=ProcessingJob.JobType.SYNC_MARKET_CAPS,
+                        created_by=request.user if request.user.is_authenticated else None,
+                        message="En attente d'exécution (sync market caps global)",
+                        task_kwargs={
+                            "from_date": str(getattr(settings, "EODHD_MARKET_CAP_SYNC_START_DATE", "2020-01-01")),
+                            "to_date": timezone.now().date().isoformat(),
+                            "user_id": user_id,
+                        },
+                    )
+                    if launch.dispatch_error:
+                        raise launch.dispatch_error
+                    messages.success(request, "Sync Market Caps globale demandée.")
+
                 elif action in ("compute", "recompute"):
                     from core.tasks import compute_metrics_job_task, compute_metrics_all_job_task
 
@@ -3965,6 +4040,53 @@ def trigger_page(request: HttpRequest):
                         if launch.dispatch_error:
                             raise launch.dispatch_error
                         messages.success(request, "Collecte demandée pour ce backtest." + (" (force full)" if force_full else ""))
+
+                elif action == "bt_market_caps":
+                    if not backtest_id:
+                        messages.error(request, "Choisis un backtest.")
+                    else:
+                        from core.tasks import sync_market_caps_job_task
+                        bt = Backtest.objects.get(id=int(backtest_id))
+
+                        if bt.status != Backtest.Status.RUNNING:
+                            _refresh_backtest_universe_snapshot(bt)
+
+                        tickers = []
+                        try:
+                            for row in (bt.universe_snapshot or []):
+                                if isinstance(row, dict):
+                                    ticker = row.get("ticker")
+                                    if ticker:
+                                        tickers.append(ticker)
+                                elif isinstance(row, str) and row:
+                                    tickers.append(row)
+                        except Exception:
+                            tickers = []
+
+                        symbol_ids = (
+                            list(Symbol.objects.filter(ticker__in=tickers).values_list("id", flat=True))
+                            if tickers else
+                            list(bt.scenario.symbols.values_list("id", flat=True))
+                        )
+
+                        launch = launch_processing_job(
+                            task=sync_market_caps_job_task,
+                            job_type=ProcessingJob.JobType.SYNC_MARKET_CAPS,
+                            backtest=bt,
+                            scenario=bt.scenario,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message="En attente d'exécution (sync market caps backtest)",
+                            task_kwargs={
+                                "symbol_ids": symbol_ids,
+                                "backtest_id": bt.id,
+                                "from_date": (bt.start_date.isoformat() if bt.start_date else None),
+                                "to_date": ((bt.end_date or timezone.now().date()).isoformat()),
+                                "user_id": user_id,
+                            },
+                        )
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
+                        messages.success(request, "Sync Market Caps demandée pour ce backtest.")
 
                 elif action in ("bt_compute", "bt_recompute"):
                     if not backtest_id:

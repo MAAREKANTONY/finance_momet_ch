@@ -375,6 +375,31 @@
     <canvas id="diagnosticGmChart" height="110"></canvas>
   </div>
   {% endif %}
+
+  {% if diagnostic_chart_payload.market_cap %}
+  <div style="margin-bottom:8px;">
+    <h4 style="margin:0 0 8px 0;">Historical Market Cap</h4>
+    <div class="muted" style="margin-bottom:8px;">
+      <div>Uses latest known local market capitalization at or before each date.</div>
+      {% if diagnostic_chart_payload.market_cap.min or diagnostic_chart_payload.market_cap.max %}
+        <span>Filtre achat :</span>
+        <span>min {{ diagnostic_chart_payload.market_cap.min|default:"aucune" }}</span>
+        <span style="margin-left:10px;">max {{ diagnostic_chart_payload.market_cap.max|default:"aucune" }}</span>
+        <span style="margin-left:10px;">politique absence {{ diagnostic_chart_payload.market_cap.missing_policy|default:"BLOCK" }}</span>
+      {% else %}
+        <span>Série historique locale uniquement.</span>
+      {% endif %}
+    </div>
+    {% if diagnostic_chart_payload.market_cap.min or diagnostic_chart_payload.market_cap.max %}
+      {% if not diagnostic_chart_payload.market_cap.has_data %}
+      <div class="muted" style="margin-bottom:8px; color:#92400e;">
+        No local historical market-cap data available for this ticker/date range.
+      </div>
+      {% endif %}
+    {% endif %}
+    <canvas id="diagnosticMarketCapChart" height="110"></canvas>
+  </div>
+  {% endif %}
 </div>
 </details>
 {{ diagnostic_chart_payload|json_script:"diagnostic-chart-payload" }}
@@ -662,6 +687,17 @@
       FORCED_SELL: 0,
     };
 
+    function formatMarketCapValue(value) {
+      const numeric = toNumber(value);
+      if (numeric === null) return "";
+      const abs = Math.abs(numeric);
+      if (abs >= 1e12) return `${(numeric / 1e12).toFixed(abs >= 1e13 ? 0 : 1).replace(/\.0$/, "")}T`;
+      if (abs >= 1e9) return `${(numeric / 1e9).toFixed(abs >= 1e10 ? 0 : 1).replace(/\.0$/, "")}B`;
+      if (abs >= 1e6) return `${(numeric / 1e6).toFixed(abs >= 1e7 ? 0 : 1).replace(/\.0$/, "")}M`;
+      if (abs >= 1e3) return `${(numeric / 1e3).toFixed(abs >= 1e4 ? 0 : 1).replace(/\.0$/, "")}K`;
+      return `${numeric}`;
+    }
+
     function buildMarkerSeries(markerType) {
       const points = new Array(labels.length).fill(null);
       const source = payload.reference_price || payload.close_price || [];
@@ -896,6 +932,92 @@
           spanGaps: true,
           scales: {
             y: { type: "linear", position: "left", title: { display: true, text: "Filtre GM — rendement borné (%)" } },
+          }
+        }
+      });
+    }
+
+    const diagnosticMarketCapCanvas = document.getElementById("diagnosticMarketCapChart");
+    if (diagnosticMarketCapCanvas && payload.market_cap) {
+      const marketCapValues = (payload.market_cap.values || []).map(toNumber);
+      const marketCapDatasets = [
+        {
+          type: "line",
+          label: payload.market_cap.label,
+          data: marketCapValues,
+          borderColor: "#0f766e",
+          backgroundColor: "#0f766e",
+          spanGaps: true,
+          tension: 0.2,
+          pointRadius: 0,
+        }
+      ];
+      const marketCapMin = toNumber(payload.market_cap.min);
+      const marketCapMax = toNumber(payload.market_cap.max);
+      if (marketCapMin !== null) {
+        marketCapDatasets.push({
+          type: "line",
+          label: "Min Market Cap",
+          data: labels.map(() => marketCapMin),
+          borderColor: "#475569",
+          backgroundColor: "#475569",
+          borderDash: [8, 4],
+          pointRadius: 0,
+          spanGaps: true,
+        });
+      }
+      if (marketCapMax !== null) {
+        marketCapDatasets.push({
+          type: "line",
+          label: "Max Market Cap",
+          data: labels.map(() => marketCapMax),
+          borderColor: "#64748b",
+          backgroundColor: "#64748b",
+          borderDash: [3, 4],
+          pointRadius: 0,
+          spanGaps: true,
+        });
+      }
+      ["BUY", "SELL", "FORCED_SELL"].forEach((markerType) => {
+        marketCapDatasets.push({
+          type: "scatter",
+          label: markerType,
+          data: buildMarkerSeriesFromValues(markerType, marketCapValues),
+          borderColor: colors[markerType],
+          backgroundColor: colors[markerType],
+          showLine: false,
+          pointRadius: 8,
+          pointHoverRadius: 9,
+          pointStyle: pointStyles[markerType],
+          rotation: pointRotations[markerType],
+        });
+      });
+      new Chart(diagnosticMarketCapCanvas.getContext("2d"), {
+        data: { labels, datasets: marketCapDatasets },
+        options: {
+          responsive: true,
+          spanGaps: true,
+          scales: {
+            y: {
+              type: "linear",
+              position: "left",
+              title: { display: true, text: "Capitalisation historique" },
+              ticks: {
+                callback(value) {
+                  return formatMarketCapValue(value);
+                }
+              }
+            },
+          },
+          plugins: {
+            tooltip: {
+              callbacks: {
+                label(context) {
+                  const datasetLabel = context.dataset.label || "";
+                  return `${datasetLabel}: ${formatMarketCapValue(context.parsed.y)}`;
+                }
+              }
+            }
           }
         }
       });

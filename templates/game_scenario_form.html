@@ -44,6 +44,9 @@
 
           {% if field.errors %}<div class="error" style="margin-top:8px;">{{ field.errors }}</div>{% endif %}
         </div>
+      {% elif field.name == 'market_cap_min' %}
+        {% include "partials/market_cap_filter_fields.html" %}
+      {% elif field.name == 'market_cap_max' or field.name == 'market_cap_missing_policy' %}
       {% else %}
         <div class="field" style="margin-top:12px;">
           <label for="{{ field.id_for_label }}">

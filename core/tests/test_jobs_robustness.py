@@ -1,16 +1,16 @@
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import date, timedelta
 from io import StringIO
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
-from django.test import Client, TestCase
+from django.test import Client, TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone
 
-from core.models import Backtest, GameScenario, ProcessingJob, Scenario
+from core.models import Backtest, GameScenario, ProcessingJob, Scenario, Symbol
 
 
 class JobControlViewTests(TestCase):
@@ -252,6 +252,121 @@ class SchedulerConfigurationTests(TestCase):
         self.assertNotIn("core.tasks.compute_metrics_task", tasks)
         self.assertNotIn("core.tasks.send_daily_alerts_task", tasks)
         self.assertIn("core.tasks.daily_system_refresh_job_task", tasks)
+
+
+class DailySystemRefreshTaskTests(TestCase):
+    @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_market_caps_for_symbols")
+    @patch("core.tasks._compute_metrics_for_scenario")
+    @patch("core.tasks._fetch_daily_bars_for_symbols")
+    def test_daily_refresh_calls_market_cap_sync_after_fetch_and_before_compute(
+        self,
+        mock_fetch,
+        mock_compute,
+        mock_sync_caps,
+        mock_redis_from_url,
+    ):
+        from core import tasks as core_tasks
+
+        call_order = []
+        sym = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)
+        sc = Scenario.objects.create(name="Scenario Refresh", active=True, history_years=2)
+        sc.symbols.set([sym])
+
+        mock_redis_from_url.return_value.set.return_value = True
+        mock_fetch.side_effect = lambda **kwargs: call_order.append("fetch") or {"symbols": 1, "bars": 1}
+        mock_sync_caps.side_effect = lambda *args, **kwargs: call_order.append("market_caps") or {
+            "fetched": 1, "inserted": 0, "updated": 0, "existing": 1, "skipped": 0, "errors": 0, "per_symbol": []
+        }
+        mock_compute.side_effect = lambda **kwargs: call_order.append("compute") or {"symbols": 1, "rows": 1, "full": False}
+
+        result = core_tasks.daily_system_refresh_job_task.run()
+
+        self.assertEqual(call_order, ["fetch", "market_caps", "compute"])
+        self.assertIn("market_caps_fetched=1", result)
+
+    @override_settings(EODHD_MARKET_CAP_SYNC_START_DATE="2020-01-01")
+    @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_market_caps_for_symbols")
+    @patch("core.tasks._compute_metrics_for_scenario", return_value={"symbols": 0, "rows": 0, "full": False})
+    @patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 0, "bars": 0})
+    def test_daily_refresh_passes_all_active_symbols_and_default_dates(
+        self,
+        mock_fetch,
+        mock_compute,
+        mock_sync_caps,
+        mock_redis_from_url,
+    ):
+        from core import tasks as core_tasks
+
+        sym_a = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)
+        sym_b = Symbol.objects.create(ticker="BBB", exchange="NASDAQ", active=True)
+        Symbol.objects.create(ticker="ZZZ", exchange="NASDAQ", active=False)
+        sc = Scenario.objects.create(name="Scenario Refresh Scope", active=True, history_years=2)
+        sc.symbols.set([sym_a, sym_b])
+
+        mock_redis_from_url.return_value.set.return_value = True
+        mock_sync_caps.return_value = {
+            "fetched": 0, "inserted": 0, "updated": 0, "existing": 0, "skipped": 0, "errors": 0, "per_symbol": []
+        }
+
+        core_tasks.daily_system_refresh_job_task.run()
+
+        args, kwargs = mock_sync_caps.call_args
+        self.assertEqual([symbol.ticker for symbol in args[0]], ["AAA", "BBB"])
+        self.assertEqual(args[1], date(2020, 1, 1))
+        self.assertEqual(args[2], timezone.now().date())
+
+    @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_market_caps_for_symbols")
+    @patch("core.tasks._compute_metrics_for_scenario", return_value={"symbols": 0, "rows": 0, "full": False})
+    @patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 0, "bars": 0})
+    def test_daily_refresh_keeps_running_when_market_cap_service_reports_symbol_errors(
+        self,
+        mock_fetch,
+        mock_compute,
+        mock_sync_caps,
+        mock_redis_from_url,
+    ):
+        from core import tasks as core_tasks
+
+        sym = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)
+        sc = Scenario.objects.create(name="Scenario Refresh Errors", active=True, history_years=2)
+        sc.symbols.set([sym])
+
+        mock_redis_from_url.return_value.set.return_value = True
+        mock_sync_caps.return_value = {
+            "fetched": 1, "inserted": 0, "updated": 0, "existing": 0, "skipped": 0, "errors": 2, "per_symbol": []
+        }
+
+        result = core_tasks.daily_system_refresh_job_task.run()
+
+        self.assertIn("market_caps_errors=2", result)
+
+    @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_market_caps_for_symbols", side_effect=RuntimeError("eodhd down"))
+    @patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 0, "bars": 0})
+    def test_daily_refresh_fails_on_fatal_market_cap_sync_exception(
+        self,
+        mock_fetch,
+        mock_sync_caps,
+        mock_redis_from_url,
+    ):
+        from core import tasks as core_tasks
+
+        sym = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)
+        sc = Scenario.objects.create(name="Scenario Refresh Fatal", active=True, history_years=2)
+        sc.symbols.set([sym])
+
+        mock_redis_from_url.return_value.set.return_value = True
+        job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.COMPUTE_METRICS, status=ProcessingJob.Status.PENDING)
+
+        with self.assertRaises(RuntimeError):
+            core_tasks.daily_system_refresh_job_task.run(job_id=job.id)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertIn("eodhd down", job.error)
 
 
 class CleanupStaleProcessingJobsTaskTests(TestCase):

@@ -167,6 +167,52 @@ class GlobalSingleActiveJobGuardTests(TestCase):
         self.assertIn(f"job #{active.id}", outcome.job.error)
         task.apply_async.assert_not_called()
 
+    def test_market_cap_job_is_blocked_when_fetch_job_is_active(self):
+        active = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.RUNNING,
+            scenario=self.scenario,
+        )
+        task = Mock()
+
+        outcome = launch_processing_job(
+            task=task,
+            job_type=ProcessingJob.JobType.SYNC_MARKET_CAPS,
+            backtest=self.backtest,
+            scenario=self.scenario,
+            created_by=self.user,
+            message="En attente d'exécution",
+            task_kwargs={"backtest_id": self.backtest.id, "user_id": self.user.id},
+        )
+
+        self.assertIsInstance(outcome.dispatch_error, ActiveJobConflictError)
+        self.assertEqual(outcome.job.status, ProcessingJob.Status.FAILED)
+        self.assertIn(f"job #{active.id}", outcome.job.error)
+        task.apply_async.assert_not_called()
+
+    def test_fetch_job_is_blocked_when_market_cap_job_is_active(self):
+        active = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.SYNC_MARKET_CAPS,
+            status=ProcessingJob.Status.RUNNING,
+            backtest=self.backtest,
+        )
+        task = Mock()
+
+        outcome = launch_processing_job(
+            task=task,
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            backtest=self.backtest,
+            scenario=self.scenario,
+            created_by=self.user,
+            message="En attente d'exécution",
+            task_kwargs={"backtest_id": self.backtest.id, "user_id": self.user.id},
+        )
+
+        self.assertIsInstance(outcome.dispatch_error, ActiveJobConflictError)
+        self.assertEqual(outcome.job.status, ProcessingJob.Status.FAILED)
+        self.assertIn(f"job #{active.id}", outcome.job.error)
+        task.apply_async.assert_not_called()
+
     def test_launch_processing_job_recovers_obvious_stale_active_job_before_launching(self):
         ProcessingJob.objects.create(
             job_type=ProcessingJob.JobType.COMPUTE_METRICS,

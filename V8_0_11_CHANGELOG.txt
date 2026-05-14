@@ -1,0 +1,49 @@
+StockAlert V8.0.11 — Historical market-cap filter polish and operator documentation
+
+Objectif
+- Finaliser l'ergonomie et la documentation du filtre de capitalisation historique.
+- Ne rien changer a la logique moteur, aux filtres BUY, au GM, ni aux exports.
+
+Corrections appliquees
+1) Aide UI concise
+- ajout d'un texte d'aide sur:
+  - `Min Market Cap`
+  - `Max Market Cap`
+  - `If Market Cap Missing`
+- rappel explicite:
+  - `BLOCK` bloque l'achat quand la capitalisation est inconnue
+  - `ALLOW` laisse l'achat possible quand la capitalisation est inconnue
+
+2) Clarification du diagnostic backtest
+- ajout d'une phrase de contexte dans le panneau `Historical Market Cap`
+- affichage d'un avertissement discret quand un filtre market-cap est configure mais qu'aucune donnee locale n'est disponible sur la plage
+
+3) Documentation developpeur / exploitation
+- ajout de `docs/market_cap_filter.md`
+- documentation:
+  - objectif du filtre
+  - comportement BUY-only
+  - absence d'impact SELL / GM / latch
+  - lookup historique sans fuite vers le futur
+  - politique `BLOCK` / `ALLOW`
+  - architecture cache locale
+  - variables d'environnement EODHD
+  - exemple de commande `sync_market_caps_eodhd`
+
+Validation
+- `python -m py_compile ...` ✅
+- suites ciblees Docker:
+  - `core.tests.test_market_cap_filter_engine` ✅
+  - `core.tests.test_large_symbol_views` ✅
+  - `core.tests.test_engine_and_metrics` ✅
+  - `core.tests.test_exports_regressions` ✅
+
+Impact attendu
+- meilleure comprehension du filtre pour les utilisateurs
+- meilleure maintenabilite pour les operateurs
+- aucun changement sur:
+  - logique moteur
+  - logique de filtrage
+  - appels runtime EODHD
+  - GM / latch
+  - structure des exports

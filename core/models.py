@@ -691,6 +691,36 @@ class DailyMetric(models.Model):
         indexes = [models.Index(fields=["symbol", "scenario", "date"])]
 
 
+class HistoricalMarketCap(models.Model):
+    symbol = models.ForeignKey(
+        Symbol,
+        on_delete=models.CASCADE,
+        related_name="historical_market_caps",
+    )
+    date = models.DateField()
+    market_cap = models.DecimalField(max_digits=24, decimal_places=2)
+    currency = models.CharField(max_length=8, blank=True, default="")
+    provider = models.CharField(max_length=32, default="eodhd")
+    provider_symbol = models.CharField(max_length=64, blank=True, default="")
+    source_payload = models.JSONField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=["provider", "symbol", "date"],
+                name="historical_market_cap_unique_provider_symbol_date",
+            ),
+        ]
+        indexes = [
+            models.Index(
+                fields=["provider", "symbol", "date"],
+                name="core_hmcap_prov_sym_dt_idx",
+            ),
+        ]
+
+
 class Alert(models.Model):
     symbol = models.ForeignKey(Symbol, on_delete=models.CASCADE)
     scenario = models.ForeignKey(Scenario, on_delete=models.CASCADE)
@@ -789,6 +819,7 @@ class ProcessingJob(models.Model):
     class JobType(models.TextChoices):
         FETCH_BARS = "FETCH_BARS", "Fetch Daily Bars"
         COMPUTE_METRICS = "COMPUTE_METRICS", "Compute Metrics"
+        SYNC_MARKET_CAPS = "SYNC_MARKET_CAPS", "Sync Market Caps"
         RUN_BACKTEST = "RUN_BACKTEST", "Run Backtest"
         RUN_GAME = "RUN_GAME", "Run Game Scenario"
         SEND_EMAILS = "SEND_EMAILS", "Send Emails"
