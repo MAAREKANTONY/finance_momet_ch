@@ -200,3 +200,28 @@ class MarketCapSyncTriggerPageTests(TestCase):
         body = response.content.decode()
         self.assertIn("Sync Market Caps (global)", body)
         self.assertIn("Market Caps (EODHD)", body)
+
+    @override_settings(EODHD_MARKET_CAP_SYNC_START_DATE="2020-01-01")
+    @patch("core.views.launch_processing_job")
+    def test_trigger_page_market_caps_post_enqueues_global_processing_job(self, mock_launch):
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.SYNC_MARKET_CAPS,
+            status=ProcessingJob.Status.PENDING,
+        )
+        mock_launch.return_value = JobLaunchOutcome(job=job, dispatch_error=None)
+
+        response = self.client.post(reverse("trigger_page"), {"action": "market_caps"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(mock_launch.called)
+        self.assertEqual(mock_launch.call_args.kwargs["job_type"], ProcessingJob.JobType.SYNC_MARKET_CAPS)
+        self.assertEqual(
+            mock_launch.call_args.kwargs["task_kwargs"]["from_date"],
+            "2020-01-01",
+        )
+        self.assertEqual(
+            mock_launch.call_args.kwargs["task_kwargs"]["to_date"],
+            date.today().isoformat(),
+        )
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Sync Market Caps globale demandée." in str(m) for m in messages))
