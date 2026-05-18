@@ -122,17 +122,33 @@ class EODHDClient:
             f"/historical-market-cap/{provider_symbol}",
             {"from": str(from_date), "to": str(to_date)},
         )
-        return normalize_historical_market_cap_payload(payload, provider_symbol)
+        rows = normalize_historical_market_cap_payload(payload, provider_symbol)
+        if rows:
+            return rows
+        if payload in (None, "", [], {}):
+            return []
+        raise EODHDError(_unsupported_payload_message(payload))
 
 
 def _records_from_payload(payload: Any) -> list[Any]:
     if isinstance(payload, list):
         return payload
     if isinstance(payload, dict):
-        for key in ("data", "values", "market_cap", "market_caps"):
+        numeric_key_items = [
+            (int(key), value)
+            for key, value in payload.items()
+            if isinstance(key, str) and key.isdigit()
+        ]
+        if numeric_key_items:
+            return [value for _idx, value in sorted(numeric_key_items, key=lambda item: item[0])]
+        for key in ("data", "values", "results", "items", "market_cap", "market_caps"):
             value = payload.get(key)
             if isinstance(value, list):
                 return value
+            if isinstance(value, dict):
+                nested_records = _records_from_payload(value)
+                if nested_records:
+                    return nested_records
     return []
 
 
@@ -165,6 +181,19 @@ def normalize_historical_market_cap_payload(payload: Any, provider_symbol: str) 
             "source_payload": record,
         })
     return rows
+
+
+def _unsupported_payload_message(payload: Any) -> str:
+    if isinstance(payload, dict):
+        sample_keys = list(payload.keys())[:5]
+        return (
+            "Unsupported EODHD historical market cap payload shape: "
+            f"dict keys={sample_keys}"
+        )
+    return (
+        "Unsupported EODHD historical market cap payload shape: "
+        f"type={type(payload).__name__}"
+    )
 
 
 def _date_from_record(value: Any) -> date | None:

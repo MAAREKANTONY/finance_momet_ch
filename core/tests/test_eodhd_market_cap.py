@@ -21,6 +21,34 @@ from core.services.provider_eodhd import (
 
 
 class EODHDMarketCapClientTests(TestCase):
+    def test_normalize_historical_market_cap_payload_handles_dict_indexed_payload(self):
+        payload = {
+            "0": {"date": "2024-01-05", "value": 2801386317300},
+            "1": {"date": "2024-01-12", "value": 2874675704300},
+        }
+
+        rows = normalize_historical_market_cap_payload(payload, "AAPL.US")
+
+        self.assertEqual(
+            rows,
+            [
+                {
+                    "date": date(2024, 1, 5),
+                    "market_cap": Decimal("2801386317300"),
+                    "currency": "",
+                    "provider_symbol": "AAPL.US",
+                    "source_payload": {"date": "2024-01-05", "value": 2801386317300},
+                },
+                {
+                    "date": date(2024, 1, 12),
+                    "market_cap": Decimal("2874675704300"),
+                    "currency": "",
+                    "provider_symbol": "AAPL.US",
+                    "source_payload": {"date": "2024-01-12", "value": 2874675704300},
+                },
+            ],
+        )
+
     def test_client_normalizes_sample_payload(self):
         payload = [
             {"date": "2024-01-02", "market_cap": "1000000", "currency": "USD"},
@@ -49,6 +77,24 @@ class EODHDMarketCapClientTests(TestCase):
 
     @override_settings(EODHD_API_KEY="token", EODHD_BASE_URL="https://example.test/api")
     @patch("core.services.provider_eodhd.requests.get")
+    def test_client_fetch_historical_market_cap_supports_dict_indexed_payload(self, mock_get):
+        response = Mock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "0": {"date": "2024-01-05", "value": 2801386317300},
+            "1": {"date": "2024-01-12", "value": 2874675704300},
+        }
+        mock_get.return_value = response
+
+        rows = EODHDClient().fetch_historical_market_cap("AAPL.US", date(2024, 1, 1), date(2024, 1, 31))
+
+        self.assertEqual([row["date"] for row in rows], [date(2024, 1, 5), date(2024, 1, 12)])
+        self.assertEqual(rows[0]["market_cap"], Decimal("2801386317300"))
+        self.assertEqual(rows[1]["market_cap"], Decimal("2874675704300"))
+
+    @override_settings(EODHD_API_KEY="token", EODHD_BASE_URL="https://example.test/api")
+    @patch("core.services.provider_eodhd.requests.get")
     def test_provider_error_payload_raises_controlled_error(self, mock_get):
         response = Mock()
         response.status_code = 200
@@ -58,6 +104,21 @@ class EODHDMarketCapClientTests(TestCase):
 
         with self.assertRaises(EODHDError):
             EODHDClient().fetch_historical_market_cap("AAPL.US", date(2024, 1, 1), date(2024, 1, 2))
+
+    @override_settings(EODHD_API_KEY="token", EODHD_BASE_URL="https://example.test/api")
+    @patch("core.services.provider_eodhd.requests.get")
+    def test_malformed_non_empty_payload_raises_controlled_error(self, mock_get):
+        response = Mock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"unexpected": {"foo": "bar"}}
+        mock_get.return_value = response
+
+        with self.assertRaises(EODHDError) as exc:
+            EODHDClient().fetch_historical_market_cap("AAPL.US", date(2024, 1, 1), date(2024, 1, 2))
+
+        self.assertIn("Unsupported EODHD historical market cap payload shape", str(exc.exception))
+        self.assertIn("unexpected", str(exc.exception))
 
     @override_settings(
         EODHD_API_KEY="token",
@@ -186,6 +247,24 @@ class MarketCapSyncServiceTests(TestCase):
         self.assertEqual(row.market_cap, Decimal("1000000.00"))
         self.assertEqual(row.provider_symbol, "AAPL.US")
         self.assertEqual(stats["inserted"], 1)
+
+    @patch("core.services.market_cap_sync.EODHDClient")
+    def test_service_inserts_rows_from_dict_indexed_payload_shape(self, mock_client_cls):
+        mock_client_cls.return_value.fetch_historical_market_cap.return_value = normalize_historical_market_cap_payload(
+            {
+                "0": {"date": "2024-01-05", "value": 2801386317300},
+                "1": {"date": "2024-01-12", "value": 2874675704300},
+            },
+            "AAPL.US",
+        )
+
+        stats = sync_market_caps_for_symbols([self.aapl], date(2024, 1, 1), date(2024, 1, 31))
+
+        self.assertEqual(stats["inserted"], 2)
+        self.assertEqual(
+            list(HistoricalMarketCap.objects.filter(symbol=self.aapl).order_by("date").values_list("date", flat=True)),
+            [date(2024, 1, 5), date(2024, 1, 12)],
+        )
 
     @patch("core.services.market_cap_sync.EODHDClient")
     def test_service_is_idempotent(self, mock_client_cls):
