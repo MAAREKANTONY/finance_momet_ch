@@ -34,6 +34,12 @@ from core.services.global_momentum import (
     regime_for_value,
 )
 from core.services.market_cap import preload_market_cap_series
+from core.services.trend_filters import (
+    collect_distinct_benchmark_tickers,
+    evaluate_trend_filters_for_symbol,
+    has_active_trend_filters,
+    preload_benchmark_price_cache,
+)
 from core.trading_model_config import (
     SIGNAL_LATCH_INVALIDATORS,
     SIGNAL_LATCH_STATE_PAIRS,
@@ -862,6 +868,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     min_market_cap, max_market_cap = _market_cap_bounds_from_settings(settings)
     market_cap_missing_policy = _market_cap_missing_policy_from_settings(settings)
     market_cap_filter_enabled = _market_cap_filter_enabled(min_market_cap, max_market_cap)
+    trend_filters_enabled = has_active_trend_filters(settings)
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
@@ -892,6 +899,25 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     market_cap_cache = (
         _preload_market_cap_cache(list(sym_by_ticker.values()), end_d)
         if market_cap_filter_enabled
+        else {}
+    )
+    benchmark_tickers = (
+        sorted(collect_distinct_benchmark_tickers(list(sym_by_ticker.values()), settings))
+        if trend_filters_enabled
+        else []
+    )
+    benchmark_symbols_by_ticker: dict[str, Symbol] = {}
+    if benchmark_tickers:
+        for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
+            benchmark_symbols_by_ticker.setdefault(benchmark_symbol.ticker, benchmark_symbol)
+    benchmark_price_cache = (
+        preload_benchmark_price_cache(
+            symbols=list(benchmark_symbols_by_ticker.values()),
+            scenario=backtest.scenario,
+            start_date=fetch_start_d,
+            end_date=end_d,
+        )
+        if trend_filters_enabled
         else {}
     )
     for ticker in tickers:
@@ -942,6 +968,21 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             min_market_cap=min_market_cap,
             max_market_cap=max_market_cap,
             market_cap_missing_policy=market_cap_missing_policy,
+        )
+
+    def _trend_filter_allows_buy(ticker: str, d, gm_code: str | None, buy_gm_filter: str | None) -> bool:
+        if not trend_filters_enabled:
+            return True
+        return bool(
+            evaluate_trend_filters_for_symbol(
+                symbol=sym_by_ticker.get(ticker),
+                settings=settings,
+                as_of=d,
+                nglobal=nglobal,
+                gm_current_regime=gm_code,
+                benchmark_cache_by_ticker=benchmark_price_cache,
+                suppress_gm_current=_normalize_global_regime_filter(buy_gm_filter) != "IGNORE",
+            )["passed"]
         )
 
     for ticker in data_by_ticker.keys():
@@ -1316,6 +1357,8 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             tradable, ratio_pct, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
+            if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
+                continue
 
             if not st["allocated"]:
                 # Needs CT allocation to be able to buy
@@ -1385,6 +1428,8 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
 
             tradable, _, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
+                continue
+            if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
 
             if not st["allocated"]:
@@ -2019,6 +2064,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     min_market_cap, max_market_cap = _market_cap_bounds_from_settings(settings)
     market_cap_missing_policy = _market_cap_missing_policy_from_settings(settings)
     market_cap_filter_enabled = _market_cap_filter_enabled(min_market_cap, max_market_cap)
+    trend_filters_enabled = has_active_trend_filters(settings)
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
@@ -2040,6 +2086,25 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     market_cap_cache = (
         _preload_market_cap_cache(list(sym_by_ticker.values()), end_d)
         if market_cap_filter_enabled
+        else {}
+    )
+    benchmark_tickers = (
+        sorted(collect_distinct_benchmark_tickers(list(sym_by_ticker.values()), settings))
+        if trend_filters_enabled
+        else []
+    )
+    benchmark_symbols_by_ticker: dict[str, Symbol] = {}
+    if benchmark_tickers:
+        for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
+            benchmark_symbols_by_ticker.setdefault(benchmark_symbol.ticker, benchmark_symbol)
+    benchmark_price_cache = (
+        preload_benchmark_price_cache(
+            symbols=list(benchmark_symbols_by_ticker.values()),
+            scenario=backtest.scenario,
+            start_date=fetch_start_d,
+            end_date=end_d,
+        )
+        if trend_filters_enabled
         else {}
     )
 
@@ -2120,6 +2185,21 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             min_market_cap=min_market_cap,
             max_market_cap=max_market_cap,
             market_cap_missing_policy=market_cap_missing_policy,
+        )
+
+    def _trend_filter_allows_buy(ticker: str, d, gm_code: str | None, buy_gm_filter: str | None) -> bool:
+        if not trend_filters_enabled:
+            return True
+        return bool(
+            evaluate_trend_filters_for_symbol(
+                symbol=sym_by_ticker.get(ticker),
+                settings=settings,
+                as_of=d,
+                nglobal=nglobal,
+                gm_current_regime=gm_code,
+                benchmark_cache_by_ticker=benchmark_price_cache,
+                suppress_gm_current=_normalize_global_regime_filter(buy_gm_filter) != "IGNORE",
+            )["passed"]
         )
 
     # Warmup phase: reconstruct persistent states before the real game period.
@@ -2253,6 +2333,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             tradable, ratio_pct, _ = _ratio_tradable(ticker, d, tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
+            if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
+                continue
 
             if not st["allocated"]:
                 if CP_infinite:
@@ -2300,6 +2382,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 continue
             tradable, _, _ = _ratio_tradable(ticker, d, tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if not tradable:
+                continue
+            if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
             if not st["allocated"]:
                 continue

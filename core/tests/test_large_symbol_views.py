@@ -1,11 +1,12 @@
 from decimal import Decimal
+from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase
 from django.urls import reverse
 import json
 
-from core.models import Backtest, BacktestPortfolioKPI, DailyMetric, GameScenario, HistoricalMarketCap, ProcessingJob, Scenario, Study, Symbol, Universe
+from core.models import Backtest, BacktestPortfolioKPI, DailyBar, DailyMetric, GameScenario, HistoricalMarketCap, ProcessingJob, Scenario, Study, Symbol, Universe
 
 
 class LargeSymbolFormViewTests(TestCase):
@@ -197,7 +198,7 @@ class LargeSymbolFormViewTests(TestCase):
             self.assertIn(sym.ticker, body)
         self.assertIn('server-selected-bootstrap', body)
 
-    def test_backtest_create_view_hides_gm_codes_from_signal_choices_but_keeps_gm_filters(self):
+    def test_backtest_create_view_hides_legacy_gm_controls_and_keeps_trend_filters(self):
         scenario = Scenario.objects.create(
             name="Scenario GM UI",
             active=True,
@@ -208,9 +209,13 @@ class LargeSymbolFormViewTests(TestCase):
         response = self.client.get(reverse("backtest_create"))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("GM positif", body)
-        self.assertIn("GM négatif", body)
-        self.assertIn("GM neutre", body)
+        self.assertIn("Trend Filters", body)
+        self.assertIn("GM_market", body)
+        self.assertIn("GM_sector", body)
+        self.assertNotIn('data-role="buy_gm_filter"', body)
+        self.assertNotIn('data-role="sell_gm_filter"', body)
+        self.assertNotIn('data-role="buy_gm_operator"', body)
+        self.assertNotIn('data-role="sell_gm_operator"', body)
         self.assertNotIn("GM_POS (momentum global positif)", body)
         self.assertNotIn("GM_NEG (momentum global négatif)", body)
         self.assertNotIn("GM_NEU (momentum global neutre)", body)
@@ -239,7 +244,222 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn("BUY is blocked when market cap is unknown.", body)
         self.assertIn("BUY remains allowed when market cap is unknown.", body)
 
-    def test_backtest_edit_view_preserves_existing_signal_lines_json(self):
+    def test_backtest_create_view_renders_trend_filter_fields(self):
+        Scenario.objects.create(
+            name="Scenario Trend UI",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        response = self.client.get(reverse("backtest_create"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Trend Filters", body)
+        self.assertIn("Combine Trend Filters With", body)
+        self.assertIn("GM_market", body)
+        self.assertIn("GM_sector", body)
+
+
+class SymbolMetadataViewTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="symbol-meta", password="secret123")
+        self.client = Client()
+        self.client.force_login(self.user)
+        self.default_scenario = Scenario.objects.create(name="Default", active=True, is_default=True)
+
+    def test_symbols_page_renders_update_buttons(self):
+        symbol = Symbol.objects.create(ticker="AAPL", exchange="NASDAQ", active=True)
+
+        response = self.client.get(reverse("symbols_page"))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Update missing metadata", body)
+        self.assertIn(reverse("symbol_update_metadata", args=[symbol.id]), body)
+        self.assertIn("Update metadata", body)
+
+    @patch("core.views.enrich_symbols_metadata")
+    def test_web_symbol_add_calls_enrichment_service(self, enrich_mock):
+        enrich_mock.return_value = {
+            "processed": 1,
+            "updated": 1,
+            "unchanged": 0,
+            "skipped": 0,
+            "errors": 0,
+            "per_symbol": [{"symbol": "AAPL", "updated_fields": ["name"], "error": "", "skipped": False}],
+        }
+
+        response = self.client.post(reverse("symbol_add"), {"ticker": "AAPL"})
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(enrich_mock.called)
+        passed_symbols = enrich_mock.call_args.args[0]
+        self.assertEqual(len(passed_symbols), 1)
+        self.assertEqual(passed_symbols[0].ticker, "AAPL")
+        self.assertEqual(enrich_mock.call_args.kwargs["only_missing"], True)
+
+    @patch("core.services.symbol_enrichment.TwelveDataClient.fetch_symbol_metadata")
+    def test_web_symbol_add_fills_missing_metadata(self, metadata_mock):
+        metadata_mock.return_value = {
+            "name": "Apple Inc.",
+            "country": "United States",
+            "currency": "USD",
+            "sector": "Technology",
+            "instrument_type": "Common Stock",
+        }
+
+        response = self.client.post(reverse("symbol_add"), {"ticker": "AAPL", "exchange": "NASDAQ"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        symbol = Symbol.objects.get(ticker="AAPL", exchange="NASDAQ")
+        self.assertEqual(symbol.name, "Apple Inc.")
+        self.assertEqual(symbol.country, "United States")
+        self.assertEqual(symbol.currency, "USD")
+        self.assertEqual(symbol.sector, "Technology")
+        self.assertEqual(symbol.instrument_type, "Common Stock")
+
+    @patch("core.services.symbol_enrichment.TwelveDataClient.fetch_symbol_metadata")
+    def test_web_symbol_add_does_not_overwrite_user_entered_values(self, metadata_mock):
+        metadata_mock.return_value = {
+            "name": "Apple Inc.",
+            "exchange": "NASDAQ",
+            "country": "United States",
+        }
+
+        self.client.post(
+            reverse("symbol_add"),
+            {"ticker": "AAPL", "exchange": "NYSE", "name": "Custom Name", "country": "France"},
+            follow=True,
+        )
+
+        symbol = Symbol.objects.get(ticker="AAPL", exchange="NYSE")
+        self.assertEqual(symbol.name, "Custom Name")
+        self.assertEqual(symbol.country, "France")
+
+    @patch("core.views.enrich_symbols_metadata")
+    def test_web_symbol_add_still_creates_symbol_if_enrichment_fails(self, enrich_mock):
+        enrich_mock.return_value = {
+            "processed": 1,
+            "updated": 0,
+            "unchanged": 0,
+            "skipped": 0,
+            "errors": 1,
+            "per_symbol": [{"symbol": "AAPL", "updated_fields": [], "error": "provider exploded", "skipped": False}],
+        }
+
+        response = self.client.post(reverse("symbol_add"), {"ticker": "AAPL"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Symbol.objects.filter(ticker="AAPL").exists())
+        messages = list(response.context["messages"])
+        self.assertTrue(any("metadata update failed" in str(m) for m in messages))
+
+    @patch("core.views.enrich_symbols_metadata")
+    def test_add_via_search_flow_also_triggers_enrichment(self, enrich_mock):
+        enrich_mock.return_value = {
+            "processed": 1,
+            "updated": 1,
+            "unchanged": 0,
+            "skipped": 0,
+            "errors": 0,
+            "per_symbol": [{"symbol": "AAPL:NASDAQ", "updated_fields": ["sector"], "error": "", "skipped": False}],
+        }
+
+        response = self.client.post(
+            reverse("symbol_add"),
+            {
+                "ticker": "AAPL",
+                "exchange": "NASDAQ",
+                "name": "Apple Search",
+                "instrument_type": "Common Stock",
+                "country": "United States",
+                "currency": "USD",
+            },
+        )
+
+        self.assertEqual(response.status_code, 302)
+        self.assertTrue(enrich_mock.called)
+
+    @patch("core.views.enrich_symbols_metadata")
+    def test_per_symbol_update_button_calls_enrichment(self, enrich_mock):
+        enrich_mock.return_value = {
+            "processed": 1,
+            "updated": 0,
+            "unchanged": 1,
+            "skipped": 0,
+            "errors": 0,
+            "per_symbol": [{"symbol": "AAPL:NASDAQ", "updated_fields": [], "error": "", "skipped": False}],
+        }
+        symbol = Symbol.objects.create(ticker="AAPL", exchange="NASDAQ", active=True)
+
+        response = self.client.post(reverse("symbol_update_metadata", args=[symbol.id]), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(enrich_mock.called)
+        passed_symbols = enrich_mock.call_args.args[0]
+        self.assertEqual([sym.id for sym in passed_symbols], [symbol.id])
+
+    @patch("core.views.enrich_symbols_metadata")
+    def test_bulk_update_missing_selects_only_symbols_with_blank_metadata(self, enrich_mock):
+        complete = Symbol.objects.create(
+            ticker="FULL",
+            exchange="NASDAQ",
+            name="Full",
+            instrument_type="Common Stock",
+            country="United States",
+            currency="USD",
+            sector="Technology",
+            active=True,
+        )
+        missing = Symbol.objects.create(ticker="MISS", exchange="", active=True)
+        inactive_missing = Symbol.objects.create(ticker="OFF", exchange="", active=False)
+        enrich_mock.return_value = {
+            "processed": 1,
+            "updated": 1,
+            "unchanged": 0,
+            "skipped": 0,
+            "errors": 0,
+            "per_symbol": [{"symbol": "MISS", "updated_fields": ["exchange"], "error": "", "skipped": False}],
+        }
+
+        response = self.client.post(reverse("symbols_update_missing_metadata"), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(enrich_mock.called)
+        symbols = list(enrich_mock.call_args.args[0])
+        self.assertEqual([sym.id for sym in symbols], [missing.id])
+        self.assertNotIn(complete.id, [sym.id for sym in symbols])
+        self.assertNotIn(inactive_missing.id, [sym.id for sym in symbols])
+
+    @patch("core.views.enrich_symbols_metadata")
+    def test_bulk_update_missing_displays_summary(self, enrich_mock):
+        Symbol.objects.create(ticker="MISS", exchange="", active=True)
+        enrich_mock.return_value = {
+            "processed": 1,
+            "updated": 1,
+            "unchanged": 0,
+            "skipped": 0,
+            "errors": 0,
+            "per_symbol": [{"symbol": "MISS", "updated_fields": ["exchange"], "error": "", "skipped": False}],
+        }
+
+        response = self.client.post(reverse("symbols_update_missing_metadata"), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Metadata update: processed=1 updated=1" in str(m) for m in messages))
+
+    def test_get_to_update_endpoints_not_allowed(self):
+        symbol = Symbol.objects.create(ticker="AAPL", exchange="NASDAQ", active=True)
+
+        response_single = self.client.get(reverse("symbol_update_metadata", args=[symbol.id]))
+        response_bulk = self.client.get(reverse("symbols_update_missing_metadata"))
+
+        self.assertEqual(response_single.status_code, 405)
+        self.assertEqual(response_bulk.status_code, 405)
+
+    def test_backtest_edit_view_normalizes_existing_signal_lines_json(self):
         signal_lines = [
             {
                 "trading_model": "LATCH_STATEFUL",
@@ -274,9 +494,19 @@ class LargeSymbolFormViewTests(TestCase):
         )
         response = self.client.get(reverse("backtest_update", args=[bt.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["signal_lines_json"], json.dumps(signal_lines))
+        normalized_signal_lines = [{
+            **signal_lines[0],
+            "buy_gm_filter": "IGNORE",
+            "buy_gm_operator": "AND",
+            "sell_gm_filter": "IGNORE",
+            "sell_gm_operator": "AND",
+        }]
+        self.assertEqual(response.context["signal_lines_json"], json.dumps(normalized_signal_lines))
         body = response.content.decode()
-        self.assertIn('"buy_gm_filter": "GM_POS"', body)
+        self.assertNotIn('data-role="buy_gm_filter"', body)
+        self.assertNotIn('data-role="sell_gm_filter"', body)
+        self.assertIn('"buy_gm_filter": "IGNORE"', body)
+        self.assertIn('<option value="GM_POS" selected>', body)
         self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
         self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
 
@@ -314,7 +544,41 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn('value="5000000000"', body)
         self.assertIn('<option value="ALLOW" selected>', body)
 
-    def test_backtest_detail_displays_buy_gm_filter_in_french(self):
+    def test_backtest_edit_view_shows_persisted_trend_filter_values(self):
+        scenario = Scenario.objects.create(
+            name="Scenario Trend Edit",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        bt = Backtest.objects.create(
+            name="BT Trend Edit",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            universe_snapshot=[],
+            settings={
+                "trend_filter_operator": "OR",
+                "trend_filter_gm_current": "GM_POS",
+                "trend_filter_gm_market": "GM_NEG",
+                "trend_filter_gm_sector": "GM_NEU",
+            },
+        )
+        response = self.client.get(reverse("backtest_update", args=[bt.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn('<option value="OR" selected>', body)
+        self.assertIn('<option value="GM_POS" selected>', body)
+        self.assertIn('<option value="GM_NEG" selected>', body)
+        self.assertIn('<option value="GM_NEU" selected>', body)
+
+    def test_backtest_detail_hides_legacy_buy_gm_filter_after_normalized_save(self):
         signal_lines = [
             {
                 "trading_model": "LATCH_STATEFUL",
@@ -347,10 +611,30 @@ class LargeSymbolFormViewTests(TestCase):
             signal_lines=signal_lines,
             universe_snapshot=[],
         )
-        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+        response = self.client.post(
+            reverse("backtest_update", args=[bt.pk]),
+            {
+                "name": bt.name,
+                "description": bt.description,
+                "scenario": str(scenario.id),
+                "start_date": bt.start_date,
+                "end_date": bt.end_date,
+                "capital_total": bt.capital_total,
+                "capital_per_ticker": bt.capital_per_ticker,
+                "capital_mode": bt.capital_mode,
+                "ratio_threshold": bt.ratio_threshold,
+                "include_all_tickers": "on",
+                "signal_lines": json.dumps(signal_lines),
+                "warmup_days": bt.warmup_days,
+                "close_positions_at_end": "on",
+            },
+            follow=True,
+        )
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Filtre GM achat : GM positif", body)
+        self.assertIn("GM current", body)
+        self.assertIn("GM positif", body)
+        self.assertNotIn("Legacy GM filter:", body)
         self.assertNotIn("Filtre GM vente", body)
 
     def test_backtest_detail_displays_configured_market_cap_filter(self):
@@ -417,13 +701,54 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("Min Market Cap", response.content.decode())
 
-    def test_game_scenario_form_hides_gm_codes_from_signal_choices_but_keeps_gm_filters(self):
-        response = self.client.get(reverse("game_scenario_create"))
-        self.assertEqual(response.status_code, 200)
+    def test_backtest_detail_displays_configured_trend_filters(self):
+        scenario = Scenario.objects.create(
+            name="Scenario Trend Detail",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        bt = Backtest.objects.create(
+            name="BT Trend Detail",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            universe_snapshot=[],
+            settings={
+                "trend_filter_operator": "OR",
+                "trend_filter_gm_current": "GM_POS",
+                "trend_filter_gm_market": "GM_NEG",
+                "trend_filter_gm_sector": "GM_NEU",
+            },
+        )
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
         body = response.content.decode()
+        self.assertIn("Trend filters operator", body)
+        self.assertIn("GM current", body)
+        self.assertIn("GM_market", body)
+        self.assertIn("GM_sector", body)
+        self.assertIn("GM_market and GM_sector require local OHLC data for benchmark ETFs such as SPY, XLK, XLF, etc.", body)
         self.assertIn("GM positif", body)
         self.assertIn("GM négatif", body)
         self.assertIn("GM neutre", body)
+
+    def test_game_scenario_form_hides_legacy_gm_controls_and_keeps_trend_filters(self):
+        response = self.client.get(reverse("game_scenario_create"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Trend Filters", body)
+        self.assertIn("GM_market", body)
+        self.assertIn("GM_sector", body)
+        self.assertNotIn('data-role="buy_gm_filter"', body)
+        self.assertNotIn('data-role="sell_gm_filter"', body)
+        self.assertNotIn('data-role="buy_gm_operator"', body)
+        self.assertNotIn('data-role="sell_gm_operator"', body)
         self.assertNotIn("GM_POS (momentum global positif)", body)
         self.assertNotIn("GM_NEG (momentum global négatif)", body)
         self.assertNotIn("GM_NEU (momentum global neutre)", body)
@@ -442,7 +767,16 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn("Maximum historical company market capitalization allowed for BUY.", body)
         self.assertIn("What to do when no historical market capitalization exists at or before the BUY date.", body)
 
-    def test_game_scenario_edit_view_preserves_existing_signal_lines_json(self):
+    def test_game_scenario_create_view_renders_trend_filter_fields(self):
+        response = self.client.get(reverse("game_scenario_create"))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Trend Filters", body)
+        self.assertIn("Combine Trend Filters With", body)
+        self.assertIn("GM_market", body)
+        self.assertIn("GM_sector", body)
+
+    def test_game_scenario_edit_view_normalizes_existing_signal_lines_json(self):
         signal_lines = [
             {
                 "trading_model": "LATCH_STATEFUL",
@@ -463,9 +797,19 @@ class LargeSymbolFormViewTests(TestCase):
         )
         response = self.client.get(reverse("game_scenario_edit", args=[game.pk]))
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.context["signal_lines_json"], json.dumps(signal_lines))
+        normalized_signal_lines = [{
+            **signal_lines[0],
+            "buy_gm_filter": "IGNORE",
+            "buy_gm_operator": "AND",
+            "sell_gm_filter": "IGNORE",
+            "sell_gm_operator": "AND",
+        }]
+        self.assertEqual(response.context["signal_lines_json"], json.dumps(normalized_signal_lines))
         body = response.content.decode()
-        self.assertIn('"buy_gm_filter": "GM_POS"', body)
+        self.assertNotIn('data-role="buy_gm_filter"', body)
+        self.assertNotIn('data-role="sell_gm_filter"', body)
+        self.assertIn('"buy_gm_filter": "IGNORE"', body)
+        self.assertIn('<option value="GM_POS" selected>', body)
         self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
         self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
 
@@ -488,6 +832,26 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn('value="100000000"', body)
         self.assertIn('value="5000000000"', body)
         self.assertIn('<option value="ALLOW" selected>', body)
+
+    def test_game_scenario_edit_view_shows_persisted_trend_filter_values(self):
+        game = GameScenario.objects.create(
+            name="Game Trend Edit",
+            active=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            settings={
+                "trend_filter_operator": "OR",
+                "trend_filter_gm_current": "GM_POS",
+                "trend_filter_gm_market": "GM_NEG",
+                "trend_filter_gm_sector": "GM_NEU",
+            },
+        )
+        response = self.client.get(reverse("game_scenario_edit", args=[game.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn('<option value="OR" selected>', body)
+        self.assertIn('<option value="GM_POS" selected>', body)
+        self.assertIn('<option value="GM_NEG" selected>', body)
+        self.assertIn('<option value="GM_NEU" selected>', body)
 
     def test_game_scenario_detail_displays_configured_market_cap_filter(self):
         game = GameScenario.objects.create(
@@ -524,6 +888,29 @@ class LargeSymbolFormViewTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("Min Market Cap", response.content.decode())
+
+    def test_game_scenario_detail_displays_configured_trend_filters(self):
+        game = GameScenario.objects.create(
+            name="Game Trend Detail",
+            active=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            settings={
+                "trend_filter_operator": "OR",
+                "trend_filter_gm_current": "GM_POS",
+                "trend_filter_gm_market": "GM_NEG",
+                "trend_filter_gm_sector": "GM_NEU",
+            },
+        )
+        response = self.client.get(reverse("game_scenario_detail", args=[game.pk]))
+        body = response.content.decode()
+        self.assertIn("Trend filters operator", body)
+        self.assertIn("GM current", body)
+        self.assertIn("GM_market", body)
+        self.assertIn("GM_sector", body)
+        self.assertIn("GM_market and GM_sector require local OHLC data for benchmark ETFs such as SPY, XLK, XLF, etc.", body)
+        self.assertIn("GM positif", body)
+        self.assertIn("GM négatif", body)
+        self.assertIn("GM neutre", body)
 
 
 class SymbolCsvSubmissionRegressionTests(TestCase):
@@ -641,6 +1028,17 @@ class BacktestResultsRenderTests(TestCase):
             date=dt,
             market_cap=Decimal(value),
             provider=provider,
+        )
+
+    def _add_bar(self, symbol, dt, price):
+        return DailyBar.objects.create(
+            symbol=symbol,
+            date=dt,
+            open=Decimal(price),
+            high=Decimal(price),
+            low=Decimal(price),
+            close=Decimal(price),
+            volume=1000,
         )
 
     def test_backtest_results_renders_portfolio_kpis_and_legend_terms(self):
@@ -1210,6 +1608,190 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("Historical Market Cap", body)
         self.assertIn("Uses latest known local market capitalization at or before each date.", body)
         self.assertIn("No local historical market-cap data available for this ticker/date range.", body)
+
+    def test_backtest_results_diagnostic_payload_includes_market_trend_curve_when_configured(self):
+        self.scenario.nglobal = 1
+        self.scenario.save(update_fields=["nglobal"])
+        spy = Symbol.objects.create(ticker="SPY", exchange="NYSE", country="US", active=True)
+        self._add_bar(spy, "2024-01-02", "100")
+        self._add_bar(spy, "2024-01-03", "110")
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        bt.settings = {"trend_filter_gm_market": "GM_POS"}
+        bt.save(update_fields=["settings"])
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["trend_filters"]["market"]["benchmark_ticker"], "SPY")
+        self.assertEqual(payload["trend_filters"]["market"]["values"], [None, "0.1"])
+        self.assertEqual(payload["trend_filters"]["zero_line"], "0")
+
+    def test_backtest_results_diagnostic_payload_handles_string_avg_global_nglobal(self):
+        self.scenario.nglobal = 1
+        self.scenario.save(update_fields=["nglobal"])
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        bt.settings = {"trend_filter_gm_current": "GM_POS"}
+        bt.results["portfolio"]["daily"] = [
+            {"date": "2024-01-02", "avg_global_nglobal": ""},
+            {"date": "2024-01-03", "avg_global_nglobal": "0.2"},
+        ]
+        bt.save(update_fields=["settings", "results"])
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        self.assertEqual(response.status_code, 200)
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["trend_filters"]["current"]["values"], [None, "0.2"])
+        self.assertEqual(payload["trend_filters"]["current"]["status"], "passed")
+
+    def test_backtest_results_diagnostic_payload_includes_sector_trend_curve_when_configured(self):
+        self.scenario.nglobal = 1
+        self.scenario.save(update_fields=["nglobal"])
+        self.symbol.sector = "Technology"
+        self.symbol.save(update_fields=["sector"])
+        xlk = Symbol.objects.create(ticker="XLK", exchange="NYSE", country="US", sector="Technology", active=True)
+        self._add_bar(xlk, "2024-01-02", "100")
+        self._add_bar(xlk, "2024-01-03", "110")
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        bt.settings = {"trend_filter_gm_sector": "GM_POS"}
+        bt.save(update_fields=["settings"])
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["trend_filters"]["sector"]["benchmark_ticker"], "XLK")
+        self.assertEqual(payload["trend_filters"]["sector"]["values"], [None, "0.1"])
+
+    def test_backtest_results_renders_with_all_trend_filters_configured(self):
+        self.scenario.nglobal = 1
+        self.scenario.save(update_fields=["nglobal"])
+        self.symbol.sector = "Technology"
+        self.symbol.save(update_fields=["sector"])
+        spy = Symbol.objects.create(ticker="SPY", exchange="NYSE", country="US", active=True)
+        xlk = Symbol.objects.create(ticker="XLK", exchange="NYSE", country="US", sector="Technology", active=True)
+        self._add_bar(spy, "2024-01-02", "100")
+        self._add_bar(spy, "2024-01-03", "110")
+        self._add_bar(xlk, "2024-01-02", "100")
+        self._add_bar(xlk, "2024-01-03", "110")
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        bt.settings = {
+            "trend_filter_operator": "AND",
+            "trend_filter_gm_current": "GM_POS",
+            "trend_filter_gm_market": "GM_POS",
+            "trend_filter_gm_sector": "GM_POS",
+        }
+        bt.results["portfolio"]["daily"] = [
+            {"date": "2024-01-02", "avg_global_nglobal": None},
+            {"date": "2024-01-03", "avg_global_nglobal": "0.2"},
+        ]
+        bt.save(update_fields=["settings", "results"])
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("BUY-only Trend Filters", body)
+        self.assertIn("GM current", body)
+        self.assertIn("GM_market", body)
+        self.assertIn("GM_sector", body)
+
+    def test_backtest_results_diagnostic_payload_warns_on_missing_market_mapping_or_data(self):
+        symbol = Symbol.objects.create(ticker="INTL", exchange="", country="", sector="Technology", active=True)
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "INTL": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+            extra_symbols=[symbol],
+        )
+        bt.universe_snapshot = ["INTL"]
+        bt.settings = {"trend_filter_gm_market": "GM_POS"}
+        bt.save(update_fields=["universe_snapshot", "settings"])
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]), {"ticker": "INTL"})
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertIn("missing benchmark mapping", payload["trend_filters"]["market"]["reason"])
+
+    def test_backtest_results_diagnostic_payload_warns_on_missing_sector_mapping_or_data(self):
+        symbol = Symbol.objects.create(ticker="UNKN", exchange="NYSE", country="US", sector="", active=True)
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "UNKN": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+            extra_symbols=[symbol],
+        )
+        bt.universe_snapshot = ["UNKN"]
+        bt.settings = {"trend_filter_gm_sector": "GM_POS"}
+        bt.save(update_fields=["universe_snapshot", "settings"])
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]), {"ticker": "UNKN"})
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertIn("missing sector mapping", payload["trend_filters"]["sector"]["reason"])
+
+    def test_backtest_results_diagnostic_payload_dedupes_benchmark_curves_and_caps_sector_summary(self):
+        extra_symbols = [
+            Symbol.objects.create(ticker="BBB", exchange="NYSE", country="US", sector="Financials", active=True),
+            Symbol.objects.create(ticker="CCC", exchange="NYSE", country="US", sector="Healthcare", active=True),
+            Symbol.objects.create(ticker="DDD", exchange="NYSE", country="US", sector="Energy", active=True),
+            Symbol.objects.create(ticker="EEE", exchange="NYSE", country="US", sector="Industrials", active=True),
+            Symbol.objects.create(ticker="FFF", exchange="NYSE", country="US", sector="Utilities", active=True),
+            Symbol.objects.create(ticker="GGG", exchange="NYSE", country="US", sector="Real Estate", active=True),
+            Symbol.objects.create(ticker="HHH", exchange="NYSE", country="US", sector="Materials", active=True),
+        ]
+        ticker_lines = {
+            "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                {"date": "2024-01-02", "price_close": "10", "action": None},
+                {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+            ], "final": {}}]},
+        }
+        for symbol in extra_symbols:
+            ticker_lines[symbol.ticker] = {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                {"date": "2024-01-02", "price_close": "10", "action": None},
+                {"date": "2024-01-03", "price_close": "11", "action": None},
+            ], "final": {}}]}
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines=ticker_lines,
+            extra_symbols=extra_symbols,
+        )
+        bt.universe_snapshot = ["AAA"] + [symbol.ticker for symbol in extra_symbols]
+        bt.settings = {"trend_filter_gm_market": "GM_POS", "trend_filter_gm_sector": "GM_POS"}
+        bt.save(update_fields=["universe_snapshot", "settings"])
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["trend_filters"]["universe"]["market_benchmarks"], ["SPY"])
+        self.assertEqual(len(payload["trend_filters"]["universe"]["sector_benchmarks"]), 6)
+        self.assertEqual(payload["trend_filters"]["universe"]["sector_benchmark_total"], 7)
+        self.assertIn("Too many distinct sector ETF curves", payload["trend_filters"]["universe"]["sector_warning"])
 
     def test_backtest_results_kpi_only_like_payload_does_not_include_market_cap_diagnostic(self):
         bt = Backtest.objects.create(

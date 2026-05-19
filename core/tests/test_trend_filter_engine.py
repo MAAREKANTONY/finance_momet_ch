@@ -1,0 +1,686 @@
+from __future__ import annotations
+
+import copy
+import json
+from datetime import date, timedelta
+from decimal import Decimal
+from unittest.mock import patch
+
+from django.db import connection
+from django.test import TestCase
+from django.test.utils import CaptureQueriesContext
+
+from core.forms import BacktestForm
+from core.models import Alert, Backtest, DailyBar, DailyMetric, HistoricalMarketCap, Scenario, Symbol
+from core.services.backtesting.engine import run_backtest, run_backtest_kpi_only
+from core.services.trend_filters import (
+    TREND_FILTER_GM_CURRENT_KEY,
+    TREND_FILTER_GM_MARKET_KEY,
+    TREND_FILTER_GM_SECTOR_KEY,
+    TREND_FILTER_OPERATOR_KEY,
+    evaluate_trend_filters_for_symbol,
+    preload_benchmark_price_cache,
+)
+
+
+class TrendFilterEngineTests(TestCase):
+    def setUp(self):
+        self.start = date(2024, 1, 1)
+        self._symbol_seq = 0
+        self.scenario = Scenario.objects.create(
+            name="Trend Filter Scenario",
+            active=True,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=2,
+            slope_threshold=Decimal("0.01"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.005"),
+            nglobal=1,
+            history_years=2,
+        )
+        self.symbol = Symbol.objects.create(
+            ticker="AAA",
+            exchange="NYSE",
+            country="US",
+            sector="Technology",
+            active=True,
+        )
+        self.spy = Symbol.objects.create(ticker="SPY", exchange="NYSE", country="US", sector="Financials", active=True)
+        self.xlk = Symbol.objects.create(ticker="XLK", exchange="NYSE", country="US", sector="Technology", active=True)
+
+    def _fresh_symbol(
+        self,
+        *,
+        exchange: str = "NYSE",
+        country: str = "US",
+        sector: str = "Technology",
+    ) -> Symbol:
+        self._symbol_seq += 1
+        return Symbol.objects.create(
+            ticker=f"SYM{self._symbol_seq}",
+            exchange=exchange,
+            country=country,
+            sector=sector,
+            active=True,
+        )
+
+    def _add_bars(self, symbol: Symbol, rows: list[dict[str, str | date]]) -> None:
+        DailyBar.objects.bulk_create([
+            DailyBar(
+                symbol=symbol,
+                date=row["date"],
+                open=Decimal(str(row["open"])),
+                high=Decimal(str(row["high"])),
+                low=Decimal(str(row["low"])),
+                close=Decimal(str(row["close"])),
+                volume=1000,
+            )
+            for row in rows
+        ])
+
+    def _add_symbol_fixture(
+        self,
+        *,
+        symbol: Symbol | None = None,
+        prices: list[str] | None = None,
+        alerts_by_offset: dict[int, str] | None = None,
+    ) -> Symbol:
+        symbol = symbol or self.symbol
+        prices = prices or ["10", "11", "12", "13"]
+        alerts_by_offset = alerts_by_offset or {0: "Af", 1: "SPVa_basse"}
+        self._add_bars(
+            symbol,
+            rows=[
+                {
+                    "date": self.start + timedelta(days=i),
+                    "open": price,
+                    "high": Decimal(price) + Decimal("1"),
+                    "low": Decimal(price) - Decimal("1"),
+                    "close": price,
+                }
+                for i, price in enumerate(prices)
+            ],
+        )
+        DailyMetric.objects.bulk_create([
+            DailyMetric(
+                symbol=symbol,
+                scenario=self.scenario,
+                date=self.start + timedelta(days=i),
+                P=Decimal(price),
+                ratio_P=Decimal("1"),
+                K1=Decimal("1"),
+                slope_vrai_basse=Decimal("0.02"),
+            )
+            for i, price in enumerate(prices)
+        ])
+        Alert.objects.bulk_create([
+            Alert(
+                symbol=symbol,
+                scenario=self.scenario,
+                date=self.start + timedelta(days=offset),
+                alerts=alerts,
+            )
+            for offset, alerts in sorted(alerts_by_offset.items())
+        ])
+        return symbol
+
+    def _add_benchmark_fixture(self, symbol: Symbol, rows: list[dict[str, str | date]]) -> None:
+        self._add_bars(symbol, rows)
+
+    def _create_backtest(
+        self,
+        *,
+        settings: dict | None = None,
+        signal_lines: list[dict] | None = None,
+        prices: list[str] | None = None,
+        alerts_by_offset: dict[int, str] | None = None,
+        symbol: Symbol | None = None,
+        close_positions_at_end: bool = False,
+    ) -> Backtest:
+        symbol = self._add_symbol_fixture(symbol=symbol or self._fresh_symbol(), prices=prices, alerts_by_offset=alerts_by_offset)
+        backtest = Backtest.objects.create(
+            name="Trend Filter Backtest",
+            scenario=self.scenario,
+            start_date=self.start,
+            end_date=self.start + timedelta(days=(len(prices or ["10", "11", "12", "13"]) - 1)),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=signal_lines or [{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af", "SPVa_basse"],
+                "buy_logic": "AND",
+                "sell": [],
+                "buy_gm_filter": "IGNORE",
+                "sell_gm_filter": "IGNORE",
+            }],
+            universe_snapshot=[symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=close_positions_at_end,
+            settings=settings or {},
+        )
+        backtest._test_symbol = symbol
+        return backtest
+
+    def _actions(self, backtest: Backtest) -> list[str | None]:
+        ticker = backtest.universe_snapshot[0]
+        return [row.get("action") for row in run_backtest(backtest).results["tickers"][ticker]["lines"][0]["daily"]]
+
+    def _kpi_trade_count(self, backtest: Backtest) -> int:
+        ticker = backtest.universe_snapshot[0]
+        result = run_backtest_kpi_only(backtest)
+        return int(result[ticker]["lines"][0]["final"]["N"] or 0)
+
+    def _count_dailybar_queries(self, func) -> int:
+        with CaptureQueriesContext(connection) as ctx:
+            func()
+        return sum("core_dailybar" in query["sql"].lower() for query in ctx.captured_queries)
+
+    def test_no_active_trend_filters_keeps_behavior_identical(self):
+        baseline = self._create_backtest()
+        same = self._create_backtest(settings={TREND_FILTER_OPERATOR_KEY: "AND"})
+        self.assertEqual(self._actions(baseline), self._actions(same))
+
+    def test_legacy_buy_gm_filter_remains_unchanged(self):
+        signal_lines = [{
+            "trading_model": "LATCH_STATEFUL",
+            "buy": ["Af", "SPVa_basse"],
+            "buy_logic": "AND",
+            "sell": [],
+            "buy_gm_filter": "GM_POS",
+        }]
+        baseline = self._create_backtest(signal_lines=copy.deepcopy(signal_lines))
+        with_trend_defaults = self._create_backtest(
+            signal_lines=copy.deepcopy(signal_lines),
+            settings={TREND_FILTER_OPERATOR_KEY: "AND"},
+        )
+        self.assertEqual(self._actions(baseline), self._actions(with_trend_defaults))
+
+    def test_legacy_sell_gm_filter_remains_unchanged(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "102", "low": "98", "close": "101"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "92", "low": "88", "close": "89"},
+            ],
+        )
+        signal_lines = [{
+            "trading_model": "LEGACY_DAILY",
+            "buy": ["Af"],
+            "sell": ["Bf"],
+            "buy_logic": "AND",
+            "sell_logic": "OR",
+            "sell_gm_filter": "GM_NEG",
+        }]
+        baseline = self._create_backtest(signal_lines=copy.deepcopy(signal_lines), alerts_by_offset={0: "Af", 1: "Bf"})
+        same = self._create_backtest(
+            signal_lines=copy.deepcopy(signal_lines),
+            alerts_by_offset={0: "Af", 1: "Bf"},
+            settings={TREND_FILTER_OPERATOR_KEY: "AND"},
+        )
+        self.assertEqual(self._actions(baseline), self._actions(same))
+
+    def test_legacy_daily_mode_remains_unchanged_without_new_filters(self):
+        signal_lines = [{
+            "trading_model": "LEGACY_DAILY",
+            "buy": ["Af"],
+            "sell": ["Bf"],
+            "buy_logic": "AND",
+            "sell_logic": "OR",
+        }]
+        baseline = self._create_backtest(signal_lines=copy.deepcopy(signal_lines), alerts_by_offset={0: "Af", 2: "Bf"})
+        same = self._create_backtest(
+            signal_lines=copy.deepcopy(signal_lines),
+            alerts_by_offset={0: "Af", 2: "Bf"},
+            settings={TREND_FILTER_OPERATOR_KEY: "OR"},
+        )
+        self.assertEqual(self._actions(baseline), self._actions(same))
+
+    def test_benchmark_formula_uses_same_p_convention_as_daily_metric(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "10", "high": "20", "low": "0", "close": "10"},
+                {"date": self.start + timedelta(days=1), "open": "20", "high": "40", "low": "0", "close": "20"},
+            ],
+        )
+        cache = preload_benchmark_price_cache(
+            symbols=[self.spy],
+            scenario=self.scenario,
+            start_date=self.start,
+            end_date=self.start + timedelta(days=1),
+        )
+        self.assertEqual(cache["SPY"]["values"], [Decimal("10"), Decimal("20")])
+
+    def test_classification_uses_same_thresholds_as_existing_gm(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "10", "high": "10", "low": "10", "close": "10"},
+                {"date": self.start + timedelta(days=1), "open": "10.005", "high": "10.005", "low": "10.005", "close": "10.005"},
+                {"date": self.start + timedelta(days=2), "open": "9.99", "high": "9.99", "low": "9.99", "close": "9.99"},
+            ],
+        )
+        cache = preload_benchmark_price_cache(
+            symbols=[self.spy],
+            scenario=self.scenario,
+            start_date=self.start,
+            end_date=self.start + timedelta(days=2),
+        )
+        neutral = evaluate_trend_filters_for_symbol(
+            symbol=self.symbol,
+            settings={TREND_FILTER_GM_MARKET_KEY: "GM_NEU"},
+            as_of=self.start + timedelta(days=1),
+            nglobal=1,
+            gm_current_regime=None,
+            benchmark_cache_by_ticker=cache,
+        )
+        negative = evaluate_trend_filters_for_symbol(
+            symbol=self.symbol,
+            settings={TREND_FILTER_GM_MARKET_KEY: "GM_NEG"},
+            as_of=self.start + timedelta(days=2),
+            nglobal=1,
+            gm_current_regime=None,
+            benchmark_cache_by_ticker=cache,
+        )
+        self.assertTrue(neutral["passed"])
+        self.assertTrue(negative["passed"])
+
+    def test_gm_market_passes_when_benchmark_trend_matches(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_gm_current_uses_existing_gm_regime_without_changing_legacy_computation(self):
+        bt = self._create_backtest(settings={TREND_FILTER_GM_CURRENT_KEY: "GM_POS"})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_without_legacy_buy_gm_filter_trend_gm_current_still_applies(self):
+        bt = self._create_backtest(settings={TREND_FILTER_GM_CURRENT_KEY: "GM_NEG"})
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_form_normalization_moves_legacy_buy_gm_filter_to_gm_current(self):
+        legacy = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LEGACY_DAILY",
+                "buy": ["Af", "SPVa_basse"],
+                "buy_logic": "AND",
+                "sell": ["Bf"],
+                "buy_gm_filter": "GM_POS",
+                "sell_gm_filter": "GM_NEG",
+            }],
+            settings={},
+        )
+        form = BacktestForm(
+            data={
+                "name": legacy.name,
+                "description": legacy.description,
+                "scenario": str(self.scenario.id),
+                "start_date": legacy.start_date,
+                "end_date": legacy.end_date,
+                "capital_total": legacy.capital_total,
+                "capital_per_ticker": legacy.capital_per_ticker,
+                "capital_mode": legacy.capital_mode,
+                "ratio_threshold": legacy.ratio_threshold,
+                "include_all_tickers": "on",
+                "signal_lines": json.dumps(legacy.signal_lines),
+                "warmup_days": legacy.warmup_days,
+                "close_positions_at_end": "",
+            },
+            instance=legacy,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        saved = form.save()
+        self.assertEqual(saved.settings[TREND_FILTER_GM_CURRENT_KEY], "GM_POS")
+        self.assertEqual(saved.signal_lines[0]["buy_gm_filter"], "IGNORE")
+        self.assertEqual(saved.signal_lines[0]["sell_gm_filter"], "IGNORE")
+        self.assertIn("BUY", {action for action in self._actions(saved) if action})
+
+    def test_legacy_buy_gm_filter_suppresses_duplicate_trend_gm_current_in_full_backtest(self):
+        signal_lines = [{
+            "trading_model": "LATCH_STATEFUL",
+            "buy": ["Af", "SPVa_basse"],
+            "buy_logic": "AND",
+            "sell": [],
+            "buy_gm_filter": "GM_POS",
+        }]
+        bt = self._create_backtest(
+            signal_lines=signal_lines,
+            settings={TREND_FILTER_GM_CURRENT_KEY: "GM_NEG"},
+        )
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_legacy_buy_gm_filter_suppresses_duplicate_trend_gm_current_in_kpi_only_path(self):
+        signal_lines = [{
+            "trading_model": "LATCH_STATEFUL",
+            "buy": ["Af", "SPVa_basse"],
+            "buy_logic": "AND",
+            "sell": [],
+            "buy_gm_filter": "GM_POS",
+        }]
+        bt = self._create_backtest(
+            signal_lines=signal_lines,
+            settings={TREND_FILTER_GM_CURRENT_KEY: "GM_NEG"},
+            close_positions_at_end=True,
+        )
+        self.assertEqual(self._kpi_trade_count(bt), 1)
+
+    def test_legacy_buy_gm_filter_still_combines_with_gm_market(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        signal_lines = [{
+            "trading_model": "LATCH_STATEFUL",
+            "buy": ["Af", "SPVa_basse"],
+            "buy_logic": "AND",
+            "sell": [],
+            "buy_gm_filter": "GM_POS",
+        }]
+        bt = self._create_backtest(
+            signal_lines=signal_lines,
+            settings={TREND_FILTER_GM_CURRENT_KEY: "GM_NEG", TREND_FILTER_GM_MARKET_KEY: "GM_POS"},
+        )
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_legacy_buy_gm_filter_still_combines_with_gm_sector(self):
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        signal_lines = [{
+            "trading_model": "LATCH_STATEFUL",
+            "buy": ["Af", "SPVa_basse"],
+            "buy_logic": "AND",
+            "sell": [],
+            "buy_gm_filter": "GM_POS",
+        }]
+        bt = self._create_backtest(
+            signal_lines=signal_lines,
+            settings={TREND_FILTER_GM_CURRENT_KEY: "GM_NEG", TREND_FILTER_GM_SECTOR_KEY: "GM_POS"},
+        )
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_gm_market_blocks_when_benchmark_trend_does_not_match(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"})
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_gm_sector_passes_when_sector_trend_matches(self):
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(settings={TREND_FILTER_GM_SECTOR_KEY: "GM_POS"})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_gm_sector_blocks_when_sector_trend_does_not_match(self):
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        bt = self._create_backtest(settings={TREND_FILTER_GM_SECTOR_KEY: "GM_POS"})
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_and_operator_requires_all_active_filters(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        bt = self._create_backtest(settings={
+            TREND_FILTER_OPERATOR_KEY: "AND",
+            TREND_FILTER_GM_MARKET_KEY: "GM_POS",
+            TREND_FILTER_GM_SECTOR_KEY: "GM_POS",
+        })
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_or_operator_allows_one_pass_one_fail(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        bt = self._create_backtest(settings={
+            TREND_FILTER_OPERATOR_KEY: "OR",
+            TREND_FILTER_GM_MARKET_KEY: "GM_POS",
+            TREND_FILTER_GM_SECTOR_KEY: "GM_POS",
+        })
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_or_operator_allows_one_pass_one_missing(self):
+        symbol = Symbol.objects.create(ticker="NOUS", exchange="", country="", sector="Technology", active=True)
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(
+            symbol=symbol,
+            settings={
+                TREND_FILTER_OPERATOR_KEY: "OR",
+                TREND_FILTER_GM_MARKET_KEY: "GM_POS",
+                TREND_FILTER_GM_SECTOR_KEY: "GM_POS",
+            },
+        )
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_or_operator_fails_when_all_active_filters_fail_or_missing(self):
+        symbol = Symbol.objects.create(ticker="FAIL", exchange="", country="", sector="", active=True)
+        bt = self._create_backtest(
+            symbol=symbol,
+            settings={
+                TREND_FILTER_OPERATOR_KEY: "OR",
+                TREND_FILTER_GM_MARKET_KEY: "GM_POS",
+                TREND_FILTER_GM_SECTOR_KEY: "GM_POS",
+            },
+        )
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_missing_market_mapping_blocks_and(self):
+        symbol = Symbol.objects.create(ticker="INTL", exchange="", country="", sector="Technology", active=True)
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(
+            symbol=symbol,
+            settings={
+                TREND_FILTER_OPERATOR_KEY: "AND",
+                TREND_FILTER_GM_MARKET_KEY: "GM_POS",
+                TREND_FILTER_GM_SECTOR_KEY: "GM_POS",
+            },
+        )
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_missing_benchmark_data_and_insufficient_lookback_block(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"})
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_uses_latest_available_observation_without_future_leakage(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=2), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"})
+        actions = self._actions(bt)
+        self.assertIsNone(actions[1])
+        self.assertEqual(actions[2], "SELL+BUY" if actions[2] == "SELL+BUY" else "BUY")
+
+    def test_trend_filters_are_buy_only_and_do_not_force_sell(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+                {"date": self.start + timedelta(days=2), "open": "90", "high": "90", "low": "90", "close": "90"},
+                {"date": self.start + timedelta(days=3), "open": "80", "high": "80", "low": "80", "close": "80"},
+            ],
+        )
+        bt = self._create_backtest(
+            settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"},
+            alerts_by_offset={0: "Af", 1: "SPVa_basse"},
+            close_positions_at_end=False,
+        )
+        actions = self._actions(bt)
+        self.assertIn("BUY", actions)
+        self.assertNotIn("SELL", {action for action in actions if action})
+
+    def test_trend_filters_do_not_reset_latch_state(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+                {"date": self.start + timedelta(days=2), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(
+            settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"},
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["A1", "C1"],
+                "buy_logic": "AND",
+                "sell": [],
+            }],
+            prices=["10", "10", "10"],
+            alerts_by_offset={0: "A1", 1: "C1"},
+            close_positions_at_end=False,
+        )
+        actions = self._actions(bt)
+        self.assertIsNone(actions[1])
+        self.assertEqual(actions[2], "BUY")
+
+    def test_price_and_market_cap_filters_remain_and_gates_with_trend_filters(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(
+            settings={
+                TREND_FILTER_GM_MARKET_KEY: "GM_POS",
+                "min_price": "100",
+                "market_cap_min": "1000",
+            },
+        )
+        HistoricalMarketCap.objects.create(
+            symbol=bt._test_symbol,
+            date=self.start + timedelta(days=1),
+            market_cap=Decimal("2000"),
+            provider="eodhd",
+        )
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
+    def test_trend_filters_apply_to_kpi_only_path(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(
+            settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"},
+            close_positions_at_end=True,
+        )
+        self.assertEqual(self._kpi_trade_count(bt), 1)
+
+    @patch("core.services.provider_twelvedata.TwelveDataClient.time_series_daily")
+    @patch("core.services.provider_eodhd.EODHDClient.fetch_historical_market_cap")
+    def test_no_provider_calls_are_made_during_simulation(self, market_cap_mock, twelvedata_mock):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"})
+        run_backtest(bt)
+        run_backtest_kpi_only(bt)
+        market_cap_mock.assert_not_called()
+        twelvedata_mock.assert_not_called()
+
+    def test_benchmark_preload_uses_bounded_dailybar_queries(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start + timedelta(days=i), "open": str(100 + i), "high": str(100 + i), "low": str(100 + i), "close": str(100 + i)}
+                for i in range(5)
+            ],
+        )
+        bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"}, prices=["10", "11", "12", "13", "14"])
+        query_count = self._count_dailybar_queries(lambda: run_backtest(bt))
+        self.assertGreater(query_count, 1)
+        self.assertLessEqual(query_count, 2)
+
+    def test_no_benchmark_preload_when_no_trend_filter_is_active(self):
+        bt = self._create_backtest()
+        query_count = self._count_dailybar_queries(lambda: run_backtest(bt))
+        self.assertEqual(query_count, 1)

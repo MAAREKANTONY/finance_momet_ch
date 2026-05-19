@@ -1,9 +1,19 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from core.models import DailyMetric, HistoricalMarketCap, Symbol
+from core.services.trend_filters import (
+    active_trend_filter_keys,
+    collect_distinct_benchmark_tickers,
+    evaluate_trend_filters_for_symbol,
+    normalize_trend_filter_settings,
+    preload_benchmark_price_cache,
+    summarize_benchmark_usage,
+    trend_return_from_cache,
+)
 
 
 _SIGNAL_SERIES_FIELDS = {
@@ -77,6 +87,15 @@ def _decimal_str(value: Any) -> str | None:
         return format(dec.normalize(), "f")
     except Exception:
         return str(dec)
+
+
+def _to_decimal_or_none(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value))
+    except Exception:
+        return None
 
 
 def _build_markers(daily: list[dict[str, Any]]) -> list[dict[str, str]]:
@@ -157,6 +176,119 @@ def _build_market_cap_payload(*, backtest, symbol: Symbol | None, dates: list[st
     }
 
 
+def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[str], portfolio_daily: list[dict[str, Any]] | None):
+    settings = dict(getattr(backtest, "settings", {}) or {})
+    if not active_trend_filter_keys(settings) or not dates:
+        return None
+
+    normalized = normalize_trend_filter_settings(settings)
+    gm_values_by_date = {
+        str((row or {}).get("date") or ""): None if (row or {}).get("avg_global_nglobal") in (None, "") else str((row or {}).get("avg_global_nglobal"))
+        for row in (portfolio_daily or [])
+        if (row or {}).get("date")
+    }
+    # Reuse the backend evaluator by passing the actual regime at each date.
+    # The evaluator only needs the selected date's current GM regime, while
+    # diagnostics need the full current-GM curve, so we keep both forms here.
+    from core.services.global_momentum import regime_for_value
+
+    gm_regime_by_date = {
+        row_date: regime_for_value(_to_decimal_or_none(gm_value))
+        for row_date, gm_value in gm_values_by_date.items()
+    }
+
+    universe_tickers = []
+    raw_universe = getattr(backtest, "universe_snapshot", None) or []
+    if isinstance(raw_universe, list):
+        for item in raw_universe:
+            if isinstance(item, dict):
+                ticker = item.get("ticker") or item.get("symbol") or item.get("code")
+                if ticker:
+                    universe_tickers.append(str(ticker))
+            elif item:
+                universe_tickers.append(str(item))
+    universe_symbols = list(Symbol.objects.filter(ticker__in=universe_tickers).order_by("ticker", "id"))
+
+    benchmark_tickers = sorted(collect_distinct_benchmark_tickers(universe_symbols, settings))
+    benchmark_symbols_by_ticker: dict[str, Symbol] = {}
+    for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
+        benchmark_symbols_by_ticker.setdefault(benchmark_symbol.ticker, benchmark_symbol)
+    benchmark_cache = preload_benchmark_price_cache(
+        symbols=list(benchmark_symbols_by_ticker.values()),
+        scenario=backtest.scenario,
+        start_date=date.fromisoformat(dates[0]),
+        end_date=date.fromisoformat(dates[-1]),
+    )
+
+    evaluated = evaluate_trend_filters_for_symbol(
+        symbol=symbol,
+        settings=settings,
+        as_of=date.fromisoformat(dates[-1]),
+        nglobal=int(getattr(backtest.scenario, "nglobal", 20) or 20),
+        gm_current_regime=gm_regime_by_date.get(dates[-1]),
+        benchmark_cache_by_ticker=benchmark_cache,
+    )
+
+    filters = evaluated["filters"]
+
+    def _series_payload(key: str, *, values: list[str | None], benchmark_ticker: str | None = None):
+        payload = filters.get(key) or {}
+        return {
+            "label": payload.get("label") or key,
+            "filter_code": payload.get("filter_code"),
+            "benchmark_ticker": benchmark_ticker or payload.get("benchmark_ticker"),
+            "values": values,
+            "status": payload.get("status"),
+            "reason": payload.get("reason"),
+        }
+
+    market_benchmark_ticker = (filters.get("trend_filter_gm_market") or {}).get("benchmark_ticker")
+    sector_benchmark_ticker = (filters.get("trend_filter_gm_sector") or {}).get("benchmark_ticker")
+    nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
+
+    return {
+        "operator": normalized["trend_filter_operator"],
+        "zero_line": "0",
+        "current": _series_payload(
+            "trend_filter_gm_current",
+            values=[gm_values_by_date.get(row_date) for row_date in dates],
+        ),
+        "market": _series_payload(
+            "trend_filter_gm_market",
+            benchmark_ticker=market_benchmark_ticker,
+            values=[
+                _decimal_str(
+                    trend_return_from_cache(
+                        benchmark_cache.get(market_benchmark_ticker),
+                        as_of=date.fromisoformat(row_date),
+                        nglobal=nglobal,
+                    )
+                )
+                if market_benchmark_ticker
+                else None
+                for row_date in dates
+            ],
+        ),
+        "sector": _series_payload(
+            "trend_filter_gm_sector",
+            benchmark_ticker=sector_benchmark_ticker,
+            values=[
+                _decimal_str(
+                    trend_return_from_cache(
+                        benchmark_cache.get(sector_benchmark_ticker),
+                        as_of=date.fromisoformat(row_date),
+                        nglobal=nglobal,
+                    )
+                )
+                if sector_benchmark_ticker
+                else None
+                for row_date in dates
+            ],
+        ),
+        "universe": summarize_benchmark_usage(symbols=universe_symbols, settings=settings),
+    }
+
+
 def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, line: dict[str, Any] | None,
                                    daily: list[dict[str, Any]] | None, portfolio_daily: list[dict[str, Any]] | None):
     if not line or not daily:
@@ -206,6 +338,12 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         "slope_threshold_basse": _decimal_str(getattr(backtest.scenario, "slope_threshold_basse", None)),
     }
     market_cap = _build_market_cap_payload(backtest=backtest, symbol=symbol, dates=dates)
+    trend_filters = _build_trend_filter_payload(
+        backtest=backtest,
+        symbol=symbol,
+        dates=dates,
+        portfolio_daily=portfolio_daily,
+    )
 
     return {
         "ticker": ticker,
@@ -216,6 +354,7 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         "markers": _build_markers(daily),
         "signal_series": signal_series,
         "gm": gm,
+        "trend_filters": trend_filters,
         "market_cap": market_cap,
         "thresholds": thresholds,
     }

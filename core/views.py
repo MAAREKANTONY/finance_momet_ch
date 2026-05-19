@@ -58,6 +58,7 @@ from .forms import (
 )
 from .backtest_row_projection import augment_tradable_projection_row
 from .services.provider_twelvedata import TwelveDataClient
+from .services.symbol_enrichment import enrich_symbols_metadata
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
@@ -394,6 +395,37 @@ def symbols_page(request):
     return render(request, "symbols.html", {"symbols": symbols, "manual_form": manual_form})
 
 
+def _flash_symbol_enrichment_messages(request, totals: dict, *, bulk_label: str | None = None) -> None:
+    details = list(totals.get("per_symbol") or [])
+    if bulk_label:
+        messages.info(
+            request,
+            (
+                f"{bulk_label}: processed={totals.get('processed', 0)} "
+                f"updated={totals.get('updated', 0)} unchanged={totals.get('unchanged', 0)} "
+                f"skipped={totals.get('skipped', 0)} errors={totals.get('errors', 0)}."
+            ),
+        )
+        for detail in details[:10]:
+            if detail.get("error"):
+                level = messages.warning if detail.get("skipped") else messages.warning
+                level(request, f"{detail['symbol']}: {detail['error']}")
+        return
+
+    if not details:
+        return
+    detail = details[0]
+    if detail.get("error"):
+        messages.warning(request, f"{detail['symbol']}: metadata update failed ({detail['error']}).")
+    elif detail.get("updated_fields"):
+        messages.info(
+            request,
+            f"{detail['symbol']}: metadata updated ({', '.join(detail['updated_fields'])}).",
+        )
+    else:
+        messages.info(request, f"{detail['symbol']}: metadata unchanged.")
+
+
 @login_required
 @require_POST
 def symbol_add(request):
@@ -435,6 +467,7 @@ def symbol_add(request):
             obj.scenarios.add(default_scenario)
 
         messages.success(request, f"Ajouté: {ticker} {('('+exchange+')') if exchange else ''}")
+        _flash_symbol_enrichment_messages(request, enrich_symbols_metadata([obj], only_missing=True))
         return redirect("symbols_page")
 
     form = SymbolManualForm(request.POST)
@@ -446,6 +479,7 @@ def symbol_add(request):
         if chosen:
             sym.scenarios.set(chosen)
         messages.success(request, f"Ajouté: {sym}")
+        _flash_symbol_enrichment_messages(request, enrich_symbols_metadata([sym], only_missing=True))
     else:
         messages.error(request, "Erreur: symbole invalide.")
     return redirect("symbols_page")
@@ -465,6 +499,31 @@ def symbol_toggle_active(request, pk: int):
 def symbol_delete(request, pk: int):
     sym = get_object_or_404(Symbol, pk=pk)
     sym.delete()
+    return redirect("symbols_page")
+
+
+@login_required
+@require_POST
+def symbol_update_metadata(request, pk: int):
+    sym = get_object_or_404(Symbol, pk=pk)
+    _flash_symbol_enrichment_messages(request, enrich_symbols_metadata([sym], only_missing=True))
+    return redirect("symbols_page")
+
+
+@login_required
+@require_POST
+def symbols_update_missing_metadata(request):
+    blank_filter = (
+        Q(name="")
+        | Q(exchange="")
+        | Q(country="")
+        | Q(currency="")
+        | Q(sector="")
+        | Q(instrument_type="")
+    )
+    qs = Symbol.objects.filter(active=True).filter(blank_filter).order_by("ticker", "exchange")
+    totals = enrich_symbols_metadata(qs, only_missing=True)
+    _flash_symbol_enrichment_messages(request, totals, bulk_label="Metadata update")
     return redirect("symbols_page")
 
 

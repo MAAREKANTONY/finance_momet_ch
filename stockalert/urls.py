@@ -22,7 +22,9 @@ urlpatterns = [
     path("symbols/", views.symbols_page, name="symbols_page"),
     path("symbols/add/", views.symbol_add, name="symbol_add"),
     path("symbols/import/", views.symbols_import, name="symbols_import"),
+    path("symbols/update-missing-metadata/", views.symbols_update_missing_metadata, name="symbols_update_missing_metadata"),
     path("symbols/<int:pk>/scenarios/", views.symbol_scenarios_edit, name="symbol_scenarios_edit"),
+    path("symbols/<int:pk>/update-metadata/", views.symbol_update_metadata, name="symbol_update_metadata"),
     path("symbols/<int:pk>/toggle/", views.symbol_toggle_active, name="symbol_toggle"),
     path("symbols/<int:pk>/delete/", views.symbol_delete, name="symbol_delete"),
     # Game Scenarios (Scénario de Jeu)

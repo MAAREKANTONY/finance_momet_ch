@@ -1,0 +1,27 @@
+<div class="field" style="margin-top:12px;">
+  <label>Trend Filters</label>
+  <div class="muted">BUY-only filters combined separately from signal logic.</div>
+</div>
+
+<div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+  <div>
+    <label for="{{ form.trend_filter_operator.id_for_label }}">Combine Trend Filters With</label><br>
+    {{ form.trend_filter_operator }}
+    {% if form.trend_filter_operator.errors %}<div class="error">{{ form.trend_filter_operator.errors }}</div>{% endif %}
+  </div>
+  <div>
+    <label for="{{ form.trend_filter_gm_current.id_for_label }}">GM current</label><br>
+    {{ form.trend_filter_gm_current }}
+    {% if form.trend_filter_gm_current.errors %}<div class="error">{{ form.trend_filter_gm_current.errors }}</div>{% endif %}
+  </div>
+  <div>
+    <label for="{{ form.trend_filter_gm_market.id_for_label }}">GM_market</label><br>
+    {{ form.trend_filter_gm_market }}
+    {% if form.trend_filter_gm_market.errors %}<div class="error">{{ form.trend_filter_gm_market.errors }}</div>{% endif %}
+  </div>
+  <div>
+    <label for="{{ form.trend_filter_gm_sector.id_for_label }}">GM_sector</label><br>
+    {{ form.trend_filter_gm_sector }}
+    {% if form.trend_filter_gm_sector.errors %}<div class="error">{{ form.trend_filter_gm_sector.errors }}</div>{% endif %}
+  </div>
+</div>
