@@ -58,6 +58,7 @@ from .forms import (
 )
 from .backtest_row_projection import augment_tradable_projection_row
 from .services.provider_twelvedata import TwelveDataClient
+from .services.benchmark_etf_sync import format_benchmark_sync_summary, sync_benchmark_etfs_for_symbols
 from .services.symbol_enrichment import enrich_symbols_metadata
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
@@ -426,6 +427,19 @@ def _flash_symbol_enrichment_messages(request, totals: dict, *, bulk_label: str 
         messages.info(request, f"{detail['symbol']}: metadata unchanged.")
 
 
+def _flash_benchmark_sync_messages(request, totals: dict, *, label: str) -> None:
+    benchmark_tickers = list(totals.get("benchmark_tickers") or [])
+    summary = format_benchmark_sync_summary(totals, label=label)
+    if benchmark_tickers:
+        summary += f" ({', '.join(benchmark_tickers)})"
+    messages.info(request, summary)
+
+    enrichment = totals.get("enrichment") or {}
+    for detail in (enrichment.get("per_symbol") or [])[:10]:
+        if detail.get("error"):
+            messages.warning(request, f"{detail['symbol']}: benchmark metadata update failed ({detail['error']}).")
+
+
 @login_required
 @require_POST
 def symbol_add(request):
@@ -468,6 +482,14 @@ def symbol_add(request):
 
         messages.success(request, f"Ajouté: {ticker} {('('+exchange+')') if exchange else ''}")
         _flash_symbol_enrichment_messages(request, enrich_symbols_metadata([obj], only_missing=True))
+        try:
+            _flash_benchmark_sync_messages(
+                request,
+                sync_benchmark_etfs_for_symbols([obj], skip_ohlc=True),
+                label="Benchmark ETFs ensured",
+            )
+        except Exception as exc:
+            messages.warning(request, f"Benchmark ETF ensure failed for {obj.ticker}: {exc}")
         return redirect("symbols_page")
 
     form = SymbolManualForm(request.POST)
@@ -480,6 +502,14 @@ def symbol_add(request):
             sym.scenarios.set(chosen)
         messages.success(request, f"Ajouté: {sym}")
         _flash_symbol_enrichment_messages(request, enrich_symbols_metadata([sym], only_missing=True))
+        try:
+            _flash_benchmark_sync_messages(
+                request,
+                sync_benchmark_etfs_for_symbols([sym], skip_ohlc=True),
+                label="Benchmark ETFs ensured",
+            )
+        except Exception as exc:
+            messages.warning(request, f"Benchmark ETF ensure failed for {sym.ticker}: {exc}")
     else:
         messages.error(request, "Erreur: symbole invalide.")
     return redirect("symbols_page")
@@ -524,6 +554,30 @@ def symbols_update_missing_metadata(request):
     qs = Symbol.objects.filter(active=True).filter(blank_filter).order_by("ticker", "exchange")
     totals = enrich_symbols_metadata(qs, only_missing=True)
     _flash_symbol_enrichment_messages(request, totals, bulk_label="Metadata update")
+    return redirect("symbols_page")
+
+
+@login_required
+@require_POST
+def symbols_ensure_benchmark_etfs(request):
+    symbols = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
+    try:
+        totals = sync_benchmark_etfs_for_symbols(symbols, skip_ohlc=True)
+        _flash_benchmark_sync_messages(request, totals, label="Benchmark ETFs ensured")
+    except Exception as exc:
+        messages.warning(request, f"Benchmark ETF ensure failed: {exc}")
+    return redirect("symbols_page")
+
+
+@login_required
+@require_POST
+def symbols_sync_benchmark_etfs(request):
+    symbols = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
+    try:
+        totals = sync_benchmark_etfs_for_symbols(symbols, skip_ohlc=False)
+        _flash_benchmark_sync_messages(request, totals, label="Benchmark ETFs synced")
+    except Exception as exc:
+        messages.warning(request, f"Benchmark ETF sync failed: {exc}")
     return redirect("symbols_page")
 
 

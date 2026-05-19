@@ -17,6 +17,7 @@ from .services.calculations import compute_for_symbol_scenario
 from .services.global_momentum import build_global_momentum_regime_by_date, GLOBAL_MOMENTUM_CODES
 from .services.calculations_fast import compute_full_for_symbol_scenario
 from .services.market_cap_sync import sync_market_caps_for_symbols
+from .services.benchmark_etf_sync import format_benchmark_sync_summary, sync_benchmark_etfs_for_symbols
 from .job_tracking import JobCancelled, JobCheckpointPulse, JobKilled, job_checkpoint, mark_job_running
 from .job_status_sync import sync_related_state_for_terminal_job
 from .excel_utils import append_excel_row
@@ -491,8 +492,14 @@ def fetch_daily_bars_task():
     max_years = Scenario.objects.filter(active=True).order_by("-history_years").values_list("history_years", flat=True).first() or 2
     outputsize = desired_outputsize_years(int(max_years))
 
+    benchmark_summary = ""
+    if bool(getattr(settings, "ENABLE_DAILY_BENCHMARK_ETF_SYNC", False)):
+        benchmark_totals = sync_benchmark_etfs_for_symbols(symbols, skip_ohlc=False)
+        benchmark_summary = " " + format_benchmark_sync_summary(benchmark_totals, label="benchmark_sync")
+        symbols = Symbol.objects.filter(active=True).all()
+
     stats = _fetch_daily_bars_for_symbols(symbol_qs=symbols, outputsize=outputsize)
-    return f"ok outputsize={outputsize} symbols={stats.get('symbols')} bars={stats.get('bars')}"
+    return f"ok outputsize={outputsize} symbols={stats.get('symbols')} bars={stats.get('bars')}{benchmark_summary}"
 
 @shared_task
 def compute_metrics_task(recompute_all: bool = False, *, job: ProcessingJob | None = None, task_request=None):
@@ -1182,6 +1189,13 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
         max_study_days = GameScenario.objects.filter(active=True).order_by("-study_days").values_list("study_days", flat=True).first() or 0
         outputsize = max(desired_outputsize_years(int(max_years)), min(5000, int(max_study_days) + 400) if max_study_days else 0)
         outputsize = max(260, min(5000, int(outputsize)))
+
+        if bool(getattr(settings, "ENABLE_DAILY_BENCHMARK_ETF_SYNC", False)):
+            job.message = "Step 1/4: Ensure + sync benchmark ETFs"
+            job.save(update_fields=["message"])
+            benchmark_totals = sync_benchmark_etfs_for_symbols(symbols, skip_ohlc=False)
+            _append_job_message(job, format_benchmark_sync_summary(benchmark_totals, label="benchmark_sync"))
+            symbols = Symbol.objects.filter(active=True).order_by("ticker")
 
         job.message = f"Step 1/4: Fetch OHLC (delta) outputsize={outputsize}"
         job.save(update_fields=["message"])

@@ -8,6 +8,14 @@
     {% csrf_token %}
     <button class="btn" type="submit">Update missing metadata</button>
   </form>
+  <form method="post" action="{% url 'symbols_ensure_benchmark_etfs' %}" style="display:inline;">
+    {% csrf_token %}
+    <button class="btn" type="submit">Ensure benchmark ETFs</button>
+  </form>
+  <form method="post" action="{% url 'symbols_sync_benchmark_etfs' %}" style="display:inline;">
+    {% csrf_token %}
+    <button class="btn" type="submit">Sync benchmark ETFs</button>
+  </form>
 </div>
 
 <div class="grid2">
