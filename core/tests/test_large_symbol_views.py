@@ -276,11 +276,14 @@ class SymbolMetadataViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertIn("Update missing metadata", body)
+        self.assertIn("Ensure benchmark ETFs", body)
+        self.assertIn("Sync benchmark ETFs", body)
         self.assertIn(reverse("symbol_update_metadata", args=[symbol.id]), body)
         self.assertIn("Update metadata", body)
 
     @patch("core.views.enrich_symbols_metadata")
-    def test_web_symbol_add_calls_enrichment_service(self, enrich_mock):
+    @patch("core.views.sync_benchmark_etfs_for_symbols")
+    def test_web_symbol_add_calls_enrichment_service(self, benchmark_mock, enrich_mock):
         enrich_mock.return_value = {
             "processed": 1,
             "updated": 1,
@@ -288,6 +291,14 @@ class SymbolMetadataViewTests(TestCase):
             "skipped": 0,
             "errors": 0,
             "per_symbol": [{"symbol": "AAPL", "updated_fields": ["name"], "error": "", "skipped": False}],
+        }
+        benchmark_mock.return_value = {
+            "source_symbols": 1,
+            "benchmark_tickers": ["SPY"],
+            "created": 1,
+            "existing": 0,
+            "ohlc": None,
+            "enrichment": {"per_symbol": []},
         }
 
         response = self.client.post(reverse("symbol_add"), {"ticker": "AAPL"})
@@ -298,15 +309,26 @@ class SymbolMetadataViewTests(TestCase):
         self.assertEqual(len(passed_symbols), 1)
         self.assertEqual(passed_symbols[0].ticker, "AAPL")
         self.assertEqual(enrich_mock.call_args.kwargs["only_missing"], True)
+        benchmark_mock.assert_called_once()
+        self.assertEqual(benchmark_mock.call_args.kwargs["skip_ohlc"], True)
 
+    @patch("core.views.sync_benchmark_etfs_for_symbols")
     @patch("core.services.symbol_enrichment.TwelveDataClient.fetch_symbol_metadata")
-    def test_web_symbol_add_fills_missing_metadata(self, metadata_mock):
+    def test_web_symbol_add_fills_missing_metadata(self, metadata_mock, benchmark_mock):
         metadata_mock.return_value = {
             "name": "Apple Inc.",
             "country": "United States",
             "currency": "USD",
             "sector": "Technology",
             "instrument_type": "Common Stock",
+        }
+        benchmark_mock.return_value = {
+            "source_symbols": 1,
+            "benchmark_tickers": ["SPY", "XLK"],
+            "created": 2,
+            "existing": 0,
+            "ohlc": None,
+            "enrichment": {"per_symbol": []},
         }
 
         response = self.client.post(reverse("symbol_add"), {"ticker": "AAPL", "exchange": "NASDAQ"}, follow=True)
@@ -319,12 +341,21 @@ class SymbolMetadataViewTests(TestCase):
         self.assertEqual(symbol.sector, "Technology")
         self.assertEqual(symbol.instrument_type, "Common Stock")
 
+    @patch("core.views.sync_benchmark_etfs_for_symbols")
     @patch("core.services.symbol_enrichment.TwelveDataClient.fetch_symbol_metadata")
-    def test_web_symbol_add_does_not_overwrite_user_entered_values(self, metadata_mock):
+    def test_web_symbol_add_does_not_overwrite_user_entered_values(self, metadata_mock, benchmark_mock):
         metadata_mock.return_value = {
             "name": "Apple Inc.",
             "exchange": "NASDAQ",
             "country": "United States",
+        }
+        benchmark_mock.return_value = {
+            "source_symbols": 1,
+            "benchmark_tickers": ["SPY"],
+            "created": 1,
+            "existing": 0,
+            "ohlc": None,
+            "enrichment": {"per_symbol": []},
         }
 
         self.client.post(
@@ -337,8 +368,9 @@ class SymbolMetadataViewTests(TestCase):
         self.assertEqual(symbol.name, "Custom Name")
         self.assertEqual(symbol.country, "France")
 
+    @patch("core.views.sync_benchmark_etfs_for_symbols")
     @patch("core.views.enrich_symbols_metadata")
-    def test_web_symbol_add_still_creates_symbol_if_enrichment_fails(self, enrich_mock):
+    def test_web_symbol_add_still_creates_symbol_if_enrichment_fails(self, enrich_mock, benchmark_mock):
         enrich_mock.return_value = {
             "processed": 1,
             "updated": 0,
@@ -346,6 +378,14 @@ class SymbolMetadataViewTests(TestCase):
             "skipped": 0,
             "errors": 1,
             "per_symbol": [{"symbol": "AAPL", "updated_fields": [], "error": "provider exploded", "skipped": False}],
+        }
+        benchmark_mock.return_value = {
+            "source_symbols": 1,
+            "benchmark_tickers": ["SPY"],
+            "created": 1,
+            "existing": 0,
+            "ohlc": None,
+            "enrichment": {"per_symbol": []},
         }
 
         response = self.client.post(reverse("symbol_add"), {"ticker": "AAPL"}, follow=True)
@@ -355,8 +395,9 @@ class SymbolMetadataViewTests(TestCase):
         messages = list(response.context["messages"])
         self.assertTrue(any("metadata update failed" in str(m) for m in messages))
 
+    @patch("core.views.sync_benchmark_etfs_for_symbols")
     @patch("core.views.enrich_symbols_metadata")
-    def test_add_via_search_flow_also_triggers_enrichment(self, enrich_mock):
+    def test_add_via_search_flow_also_triggers_enrichment(self, enrich_mock, benchmark_mock):
         enrich_mock.return_value = {
             "processed": 1,
             "updated": 1,
@@ -364,6 +405,14 @@ class SymbolMetadataViewTests(TestCase):
             "skipped": 0,
             "errors": 0,
             "per_symbol": [{"symbol": "AAPL:NASDAQ", "updated_fields": ["sector"], "error": "", "skipped": False}],
+        }
+        benchmark_mock.return_value = {
+            "source_symbols": 1,
+            "benchmark_tickers": ["SPY"],
+            "created": 1,
+            "existing": 0,
+            "ohlc": None,
+            "enrichment": {"per_symbol": []},
         }
 
         response = self.client.post(
@@ -380,6 +429,52 @@ class SymbolMetadataViewTests(TestCase):
 
         self.assertEqual(response.status_code, 302)
         self.assertTrue(enrich_mock.called)
+        self.assertTrue(benchmark_mock.called)
+
+    @patch("core.views.sync_benchmark_etfs_for_symbols")
+    @patch("core.views.enrich_symbols_metadata")
+    def test_symbol_add_calls_benchmark_ensure_with_skip_ohlc_true(self, enrich_mock, benchmark_mock):
+        enrich_mock.return_value = {
+            "processed": 1,
+            "updated": 0,
+            "unchanged": 1,
+            "skipped": 0,
+            "errors": 0,
+            "per_symbol": [{"symbol": "AAPL", "updated_fields": [], "error": "", "skipped": False}],
+        }
+        benchmark_mock.return_value = {
+            "source_symbols": 1,
+            "benchmark_tickers": ["SPY", "XLK"],
+            "created": 2,
+            "existing": 0,
+            "ohlc": None,
+            "enrichment": {"per_symbol": []},
+        }
+
+        response = self.client.post(reverse("symbol_add"), {"ticker": "AAPL", "country": "US", "sector": "Technology"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(benchmark_mock.called)
+        self.assertEqual(benchmark_mock.call_args.kwargs["skip_ohlc"], True)
+
+    @patch("core.views.sync_benchmark_etfs_for_symbols", side_effect=RuntimeError("bench fail"))
+    @patch("core.views.enrich_symbols_metadata")
+    def test_symbol_add_still_succeeds_if_benchmark_ensure_fails(self, enrich_mock, benchmark_mock):
+        enrich_mock.return_value = {
+            "processed": 1,
+            "updated": 0,
+            "unchanged": 1,
+            "skipped": 0,
+            "errors": 0,
+            "per_symbol": [{"symbol": "AAPL", "updated_fields": [], "error": "", "skipped": False}],
+        }
+
+        response = self.client.post(reverse("symbol_add"), {"ticker": "AAPL"}, follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(Symbol.objects.filter(ticker="AAPL").exists())
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Benchmark ETF ensure failed" in str(m) for m in messages))
 
     @patch("core.views.enrich_symbols_metadata")
     def test_per_symbol_update_button_calls_enrichment(self, enrich_mock):
@@ -450,14 +545,54 @@ class SymbolMetadataViewTests(TestCase):
         messages = list(response.context["messages"])
         self.assertTrue(any("Metadata update: processed=1 updated=1" in str(m) for m in messages))
 
+    @patch("core.views.sync_benchmark_etfs_for_symbols")
+    def test_ensure_benchmark_button_calls_service_with_skip_ohlc_true(self, benchmark_mock):
+        Symbol.objects.create(ticker="AAPL", exchange="NASDAQ", country="US", sector="Technology", active=True)
+        benchmark_mock.return_value = {
+            "source_symbols": 1,
+            "benchmark_tickers": ["SPY", "XLK"],
+            "created": 2,
+            "existing": 0,
+            "ohlc": None,
+            "enrichment": {"per_symbol": []},
+        }
+
+        response = self.client.post(reverse("symbols_ensure_benchmark_etfs"), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(benchmark_mock.called)
+        self.assertEqual(benchmark_mock.call_args.kwargs["skip_ohlc"], True)
+
+    @patch("core.views.sync_benchmark_etfs_for_symbols")
+    def test_sync_benchmark_button_calls_service_with_skip_ohlc_false(self, benchmark_mock):
+        Symbol.objects.create(ticker="AAPL", exchange="NASDAQ", country="US", sector="Technology", active=True)
+        benchmark_mock.return_value = {
+            "source_symbols": 1,
+            "benchmark_tickers": ["SPY", "XLK"],
+            "created": 2,
+            "existing": 0,
+            "ohlc": {"symbols": 2, "bars": 50},
+            "enrichment": {"per_symbol": []},
+        }
+
+        response = self.client.post(reverse("symbols_sync_benchmark_etfs"), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(benchmark_mock.called)
+        self.assertEqual(benchmark_mock.call_args.kwargs["skip_ohlc"], False)
+
     def test_get_to_update_endpoints_not_allowed(self):
         symbol = Symbol.objects.create(ticker="AAPL", exchange="NASDAQ", active=True)
 
         response_single = self.client.get(reverse("symbol_update_metadata", args=[symbol.id]))
         response_bulk = self.client.get(reverse("symbols_update_missing_metadata"))
+        response_ensure = self.client.get(reverse("symbols_ensure_benchmark_etfs"))
+        response_sync = self.client.get(reverse("symbols_sync_benchmark_etfs"))
 
         self.assertEqual(response_single.status_code, 405)
         self.assertEqual(response_bulk.status_code, 405)
+        self.assertEqual(response_ensure.status_code, 405)
+        self.assertEqual(response_sync.status_code, 405)
 
     def test_backtest_edit_view_normalizes_existing_signal_lines_json(self):
         signal_lines = [

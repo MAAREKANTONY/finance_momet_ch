@@ -256,6 +256,7 @@ class SchedulerConfigurationTests(TestCase):
 
 class DailySystemRefreshTaskTests(TestCase):
     @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_benchmark_etfs_for_symbols")
     @patch("core.tasks.sync_market_caps_for_symbols")
     @patch("core.tasks._compute_metrics_for_scenario")
     @patch("core.tasks._fetch_daily_bars_for_symbols")
@@ -264,6 +265,7 @@ class DailySystemRefreshTaskTests(TestCase):
         mock_fetch,
         mock_compute,
         mock_sync_caps,
+        mock_benchmark_sync,
         mock_redis_from_url,
     ):
         from core import tasks as core_tasks
@@ -274,6 +276,10 @@ class DailySystemRefreshTaskTests(TestCase):
         sc.symbols.set([sym])
 
         mock_redis_from_url.return_value.set.return_value = True
+        mock_benchmark_sync.return_value = {
+            "source_symbols": 1, "benchmark_tickers": ["SPY"], "created": 1, "existing": 0,
+            "dry_run": False, "skip_enrichment": False, "skip_ohlc": False, "ohlc": {"symbols": 1, "bars": 1}, "enrichment": None, "per_symbol": [],
+        }
         mock_fetch.side_effect = lambda **kwargs: call_order.append("fetch") or {"symbols": 1, "bars": 1}
         mock_sync_caps.side_effect = lambda *args, **kwargs: call_order.append("market_caps") or {
             "fetched": 1, "inserted": 0, "updated": 0, "existing": 1, "skipped": 0, "errors": 0, "per_symbol": []
@@ -283,10 +289,12 @@ class DailySystemRefreshTaskTests(TestCase):
         result = core_tasks.daily_system_refresh_job_task.run()
 
         self.assertEqual(call_order, ["fetch", "market_caps", "compute"])
+        mock_benchmark_sync.assert_not_called()
         self.assertIn("market_caps_fetched=1", result)
 
     @override_settings(EODHD_MARKET_CAP_SYNC_START_DATE="2020-01-01")
     @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_benchmark_etfs_for_symbols")
     @patch("core.tasks.sync_market_caps_for_symbols")
     @patch("core.tasks._compute_metrics_for_scenario", return_value={"symbols": 0, "rows": 0, "full": False})
     @patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 0, "bars": 0})
@@ -295,6 +303,7 @@ class DailySystemRefreshTaskTests(TestCase):
         mock_fetch,
         mock_compute,
         mock_sync_caps,
+        mock_benchmark_sync,
         mock_redis_from_url,
     ):
         from core import tasks as core_tasks
@@ -306,6 +315,10 @@ class DailySystemRefreshTaskTests(TestCase):
         sc.symbols.set([sym_a, sym_b])
 
         mock_redis_from_url.return_value.set.return_value = True
+        mock_benchmark_sync.return_value = {
+            "source_symbols": 2, "benchmark_tickers": ["SPY"], "created": 1, "existing": 0,
+            "dry_run": False, "skip_enrichment": False, "skip_ohlc": False, "ohlc": {"symbols": 1, "bars": 1}, "enrichment": None, "per_symbol": [],
+        }
         mock_sync_caps.return_value = {
             "fetched": 0, "inserted": 0, "updated": 0, "existing": 0, "skipped": 0, "errors": 0, "per_symbol": []
         }
@@ -318,6 +331,7 @@ class DailySystemRefreshTaskTests(TestCase):
         self.assertEqual(args[2], timezone.now().date())
 
     @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_benchmark_etfs_for_symbols")
     @patch("core.tasks.sync_market_caps_for_symbols")
     @patch("core.tasks._compute_metrics_for_scenario", return_value={"symbols": 0, "rows": 0, "full": False})
     @patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 0, "bars": 0})
@@ -326,6 +340,7 @@ class DailySystemRefreshTaskTests(TestCase):
         mock_fetch,
         mock_compute,
         mock_sync_caps,
+        mock_benchmark_sync,
         mock_redis_from_url,
     ):
         from core import tasks as core_tasks
@@ -335,6 +350,10 @@ class DailySystemRefreshTaskTests(TestCase):
         sc.symbols.set([sym])
 
         mock_redis_from_url.return_value.set.return_value = True
+        mock_benchmark_sync.return_value = {
+            "source_symbols": 1, "benchmark_tickers": ["SPY"], "created": 1, "existing": 0,
+            "dry_run": False, "skip_enrichment": False, "skip_ohlc": False, "ohlc": {"symbols": 1, "bars": 1}, "enrichment": None, "per_symbol": [],
+        }
         mock_sync_caps.return_value = {
             "fetched": 1, "inserted": 0, "updated": 0, "existing": 0, "skipped": 0, "errors": 2, "per_symbol": []
         }
@@ -344,12 +363,14 @@ class DailySystemRefreshTaskTests(TestCase):
         self.assertIn("market_caps_errors=2", result)
 
     @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_benchmark_etfs_for_symbols")
     @patch("core.tasks.sync_market_caps_for_symbols", side_effect=RuntimeError("eodhd down"))
     @patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 0, "bars": 0})
     def test_daily_refresh_fails_on_fatal_market_cap_sync_exception(
         self,
         mock_fetch,
         mock_sync_caps,
+        mock_benchmark_sync,
         mock_redis_from_url,
     ):
         from core import tasks as core_tasks
@@ -359,6 +380,10 @@ class DailySystemRefreshTaskTests(TestCase):
         sc.symbols.set([sym])
 
         mock_redis_from_url.return_value.set.return_value = True
+        mock_benchmark_sync.return_value = {
+            "source_symbols": 1, "benchmark_tickers": ["SPY"], "created": 1, "existing": 0,
+            "dry_run": False, "skip_enrichment": False, "skip_ohlc": False, "ohlc": {"symbols": 1, "bars": 1}, "enrichment": None, "per_symbol": [],
+        }
         job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.COMPUTE_METRICS, status=ProcessingJob.Status.PENDING)
 
         with self.assertRaises(RuntimeError):
@@ -367,6 +392,91 @@ class DailySystemRefreshTaskTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.FAILED)
         self.assertIn("eodhd down", job.error)
+
+    @override_settings(ENABLE_DAILY_BENCHMARK_ETF_SYNC=True)
+    @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_benchmark_etfs_for_symbols")
+    @patch("core.tasks.sync_market_caps_for_symbols")
+    @patch("core.tasks._compute_metrics_for_scenario")
+    @patch("core.tasks._fetch_daily_bars_for_symbols")
+    def test_daily_refresh_calls_shared_benchmark_service_when_flag_enabled(
+        self,
+        mock_fetch,
+        mock_compute,
+        mock_sync_caps,
+        mock_benchmark_sync,
+        mock_redis_from_url,
+    ):
+        from core import tasks as core_tasks
+
+        call_order = []
+        sym = Symbol.objects.create(ticker="AAA", exchange="NYSE", country="US", sector="Technology", active=True)
+        sc = Scenario.objects.create(name="Scenario Refresh Bench", active=True, history_years=2)
+        sc.symbols.set([sym])
+
+        mock_redis_from_url.return_value.set.return_value = True
+        mock_benchmark_sync.side_effect = lambda *args, **kwargs: call_order.append("benchmark") or {
+            "source_symbols": 1, "benchmark_tickers": ["SPY", "XLK"], "created": 2, "existing": 0,
+            "dry_run": False, "skip_enrichment": False, "skip_ohlc": False, "ohlc": {"symbols": 2, "bars": 50}, "enrichment": None, "per_symbol": [],
+        }
+        mock_fetch.side_effect = lambda **kwargs: call_order.append("fetch") or {"symbols": 3, "bars": 99}
+        mock_sync_caps.side_effect = lambda *args, **kwargs: call_order.append("market_caps") or {
+            "fetched": 1, "inserted": 0, "updated": 0, "existing": 1, "skipped": 0, "errors": 0, "per_symbol": []
+        }
+        mock_compute.side_effect = lambda **kwargs: call_order.append("compute") or {"symbols": 1, "rows": 1, "full": False}
+
+        core_tasks.daily_system_refresh_job_task.run()
+
+        self.assertEqual(call_order, ["benchmark", "fetch", "market_caps", "compute"])
+        mock_benchmark_sync.assert_called_once()
+        self.assertEqual(mock_benchmark_sync.call_args.kwargs["skip_ohlc"], False)
+
+    @override_settings(ENABLE_DAILY_BENCHMARK_ETF_SYNC=False)
+    @patch("redis.Redis.from_url")
+    @patch("core.tasks.sync_benchmark_etfs_for_symbols")
+    @patch("core.tasks.sync_market_caps_for_symbols", return_value={"fetched": 0, "inserted": 0, "updated": 0, "existing": 0, "skipped": 0, "errors": 0, "per_symbol": []})
+    @patch("core.tasks._compute_metrics_for_scenario", return_value={"symbols": 0, "rows": 0, "full": False})
+    @patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 0, "bars": 0})
+    def test_daily_refresh_does_not_call_benchmark_service_when_flag_disabled(
+        self,
+        mock_fetch,
+        mock_compute,
+        mock_sync_caps,
+        mock_benchmark_sync,
+        mock_redis_from_url,
+    ):
+        from core import tasks as core_tasks
+
+        sym = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)
+        sc = Scenario.objects.create(name="Scenario Refresh Bench Off", active=True, history_years=2)
+        sc.symbols.set([sym])
+
+        mock_redis_from_url.return_value.set.return_value = True
+
+        core_tasks.daily_system_refresh_job_task.run()
+
+        mock_benchmark_sync.assert_not_called()
+
+    @override_settings(ENABLE_DAILY_BENCHMARK_ETF_SYNC=True)
+    @patch("core.tasks.sync_benchmark_etfs_for_symbols")
+    @patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 1, "bars": 10})
+    def test_fetch_daily_bars_task_calls_benchmark_service_before_normal_refresh(self, mock_fetch, mock_benchmark_sync):
+        from core import tasks as core_tasks
+
+        call_order = []
+        Symbol.objects.create(ticker="AAA", exchange="NYSE", country="US", sector="Technology", active=True)
+        Scenario.objects.create(name="Scenario Fetch Bench", active=True, history_years=2)
+
+        mock_benchmark_sync.side_effect = lambda *args, **kwargs: call_order.append("benchmark") or {
+            "source_symbols": 1, "benchmark_tickers": ["SPY", "XLK"], "created": 2, "existing": 0,
+            "dry_run": False, "skip_enrichment": False, "skip_ohlc": False, "ohlc": {"symbols": 2, "bars": 50}, "enrichment": None, "per_symbol": [],
+        }
+        mock_fetch.side_effect = lambda **kwargs: call_order.append("fetch") or {"symbols": 3, "bars": 10}
+
+        result = core_tasks.fetch_daily_bars_task()
+
+        self.assertEqual(call_order, ["benchmark", "fetch"])
+        self.assertIn("benchmark_sync", result)
 
 
 class CleanupStaleProcessingJobsTaskTests(TestCase):
