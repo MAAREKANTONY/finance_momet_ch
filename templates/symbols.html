@@ -4,6 +4,10 @@
 
 <div class="row" style="gap:10px; align-items:center; margin-bottom:10px; flex-wrap:wrap;">
   <a class="btn" href="{% url 'symbols_import' %}">Importer tickers (CSV/Excel)</a>
+  <form method="post" action="{% url 'symbols_update_missing_metadata' %}" style="display:inline;">
+    {% csrf_token %}
+    <button class="btn" type="submit">Update missing metadata</button>
+  </form>
 </div>
 
 <div class="grid2">
@@ -52,6 +56,10 @@
           <td>{% if s.active %}✅{% else %}—{% endif %}</td>
           <td>
             <a href="{% url 'symbol_scenarios_edit' s.id %}">Scénarios</a>&nbsp;|&nbsp;
+            <form method="post" action="{% url 'symbol_update_metadata' s.id %}" style="display:inline;">
+              {% csrf_token %}
+              <button class="btn" type="submit">Update metadata</button>
+            </form>
             <form method="post" action="{% url 'symbol_toggle' s.id %}" style="display:inline;">
               {% csrf_token %}
               <button class="btn" type="submit">{% if s.active %}Désactiver{% else %}Activer{% endif %}</button>

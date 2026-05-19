@@ -376,6 +376,54 @@
   </div>
   {% endif %}
 
+  {% if diagnostic_chart_payload.trend_filters %}
+  <div style="margin-bottom:8px;">
+    <h4 style="margin:0 0 8px 0;">BUY-only Trend Filters</h4>
+    <div class="muted" style="margin-bottom:8px;">
+      <div>Operator: <b>{{ diagnostic_chart_payload.trend_filters.operator }}</b></div>
+      {% if diagnostic_chart_payload.trend_filters.universe.sector_warning %}
+      <div>{{ diagnostic_chart_payload.trend_filters.universe.sector_warning }}</div>
+      {% endif %}
+    </div>
+    {% if diagnostic_chart_payload.trend_filters.current.filter_code != "IGNORE" %}
+    <div style="margin-bottom:18px;">
+      <div class="muted" style="margin-bottom:8px;">
+        <b>{{ diagnostic_chart_payload.trend_filters.current.label }}</b> : {{ diagnostic_chart_payload.trend_filters.current.filter_code }}
+      </div>
+      <canvas id="diagnosticTrendCurrentChart" height="110"></canvas>
+    </div>
+    {% endif %}
+    {% if diagnostic_chart_payload.trend_filters.market.filter_code != "IGNORE" %}
+    <div style="margin-bottom:18px;">
+      <div class="muted" style="margin-bottom:8px;">
+        <b>{{ diagnostic_chart_payload.trend_filters.market.label }}</b> : {{ diagnostic_chart_payload.trend_filters.market.filter_code }}
+        {% if diagnostic_chart_payload.trend_filters.market.benchmark_ticker %}
+          <span style="margin-left:10px;">benchmark {{ diagnostic_chart_payload.trend_filters.market.benchmark_ticker }}</span>
+        {% endif %}
+        {% if diagnostic_chart_payload.trend_filters.market.reason %}
+          <span style="margin-left:10px; color:#92400e;">{{ diagnostic_chart_payload.trend_filters.market.reason }}</span>
+        {% endif %}
+      </div>
+      <canvas id="diagnosticTrendMarketChart" height="110"></canvas>
+    </div>
+    {% endif %}
+    {% if diagnostic_chart_payload.trend_filters.sector.filter_code != "IGNORE" %}
+    <div style="margin-bottom:18px;">
+      <div class="muted" style="margin-bottom:8px;">
+        <b>{{ diagnostic_chart_payload.trend_filters.sector.label }}</b> : {{ diagnostic_chart_payload.trend_filters.sector.filter_code }}
+        {% if diagnostic_chart_payload.trend_filters.sector.benchmark_ticker %}
+          <span style="margin-left:10px;">benchmark {{ diagnostic_chart_payload.trend_filters.sector.benchmark_ticker }}</span>
+        {% endif %}
+        {% if diagnostic_chart_payload.trend_filters.sector.reason %}
+          <span style="margin-left:10px; color:#92400e;">{{ diagnostic_chart_payload.trend_filters.sector.reason }}</span>
+        {% endif %}
+      </div>
+      <canvas id="diagnosticTrendSectorChart" height="110"></canvas>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {% if diagnostic_chart_payload.market_cap %}
   <div style="margin-bottom:8px;">
     <h4 style="margin:0 0 8px 0;">Historical Market Cap</h4>
@@ -1021,6 +1069,79 @@
           }
         }
       });
+    }
+
+    function buildTrendChart(canvasId, trendPayload, yTitle) {
+      const trendCanvas = document.getElementById(canvasId);
+      if (!trendCanvas || !trendPayload) return;
+      const trendValues = (trendPayload.values || []).map((v) => {
+        const n = toNumber(v);
+        return n === null ? null : n * 100;
+      });
+      new Chart(trendCanvas.getContext("2d"), {
+        data: {
+          labels,
+          datasets: [
+            {
+              type: "line",
+              label: "Ligne zéro",
+              data: labels.map(() => 0),
+              borderColor: colors.ZERO,
+              backgroundColor: colors.ZERO,
+              borderDash: [5, 5],
+              pointRadius: 0,
+              spanGaps: true,
+            },
+            {
+              type: "line",
+              label: trendPayload.label,
+              data: trendValues,
+              borderColor: colors.GM,
+              backgroundColor: colors.GM,
+              spanGaps: true,
+              tension: 0.2,
+              pointRadius: 0,
+            },
+            ...["BUY", "SELL", "FORCED_SELL"].map((markerType) => ({
+              type: "scatter",
+              label: markerType,
+              data: buildMarkerSeriesFromValues(markerType, trendValues),
+              borderColor: colors[markerType],
+              backgroundColor: colors[markerType],
+              showLine: false,
+              pointRadius: 8,
+              pointHoverRadius: 9,
+              pointStyle: pointStyles[markerType],
+              rotation: pointRotations[markerType],
+            })),
+          ]
+        },
+        options: {
+          responsive: true,
+          spanGaps: true,
+          scales: {
+            y: { type: "linear", position: "left", title: { display: true, text: yTitle } },
+          }
+        }
+      });
+    }
+
+    if (payload.trend_filters) {
+      buildTrendChart(
+        "diagnosticTrendCurrentChart",
+        payload.trend_filters.current,
+        "GM current (%)"
+      );
+      buildTrendChart(
+        "diagnosticTrendMarketChart",
+        payload.trend_filters.market,
+        "GM_market (%)"
+      );
+      buildTrendChart(
+        "diagnosticTrendSectorChart",
+        payload.trend_filters.sector,
+        "GM_sector (%)"
+      );
     }
   }
 </script>

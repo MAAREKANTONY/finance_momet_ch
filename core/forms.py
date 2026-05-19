@@ -35,14 +35,37 @@ GLOBAL_REGIME_FILTER_CHOICES = [
 ]
 
 GLOBAL_REGIME_FILTER_CODES = {code for code, _label in GLOBAL_REGIME_FILTER_CHOICES}
+SUPPORTED_TREND_GM_CURRENT_CODES = {"GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR_NEU", "GM_NEG_OR_NEU"}
 
 MARKET_CAP_MIN_KEY = "market_cap_min"
 MARKET_CAP_MAX_KEY = "market_cap_max"
 MARKET_CAP_MISSING_POLICY_KEY = "market_cap_missing_policy"
 MARKET_CAP_POLICY_BLOCK = "BLOCK"
 MARKET_CAP_POLICY_ALLOW = "ALLOW"
+TREND_FILTER_CHOICES = [
+    ("IGNORE", "Ignore"),
+    ("GM_POS", "GM positive"),
+    ("GM_NEG", "GM negative"),
+    ("GM_NEU", "GM neutral"),
+]
+LEGACY_TREND_FILTER_CHOICES = [
+    ("GM_POS_OR_NEU", "GM positive or neutral (legacy)"),
+    ("GM_NEG_OR_NEU", "GM negative or neutral (legacy)"),
+]
+TREND_FILTER_OPERATOR_CHOICES = [
+    ("AND", "ALL / AND"),
+    ("OR", "ANY / OR"),
+]
 
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
+from .services.trend_filters import (
+    TREND_FILTER_GM_CURRENT_KEY,
+    TREND_FILTER_GM_MARKET_KEY,
+    TREND_FILTER_GM_SECTOR_KEY,
+    TREND_FILTER_OPERATOR_KEY,
+    normalize_trend_filter_code,
+    normalize_trend_filter_operator,
+)
 from .trading_model_config import (
     TRADING_MODEL_LATCH_STATEFUL,
     resolve_trading_model,
@@ -124,6 +147,33 @@ def _clean_signal_lines_json(value):
         if buy or sell or payload["buy_gm_filter"] != "IGNORE" or payload["sell_gm_filter"] != "IGNORE":
             cleaned.append(payload)
     return cleaned
+
+
+def _normalize_legacy_gm_for_trend_filters(signal_lines, trend_filter_gm_current):
+    normalized_current = normalize_trend_filter_code(trend_filter_gm_current)
+    normalized_lines = []
+    for item in signal_lines or []:
+        if not isinstance(item, dict):
+            continue
+        payload = dict(item)
+        legacy_buy = _normalize_global_regime_filter(payload.get("buy_gm_filter"))
+        if normalized_current == "IGNORE" and legacy_buy in SUPPORTED_TREND_GM_CURRENT_CODES:
+            normalized_current = legacy_buy
+        payload["buy_gm_filter"] = "IGNORE"
+        payload["buy_gm_operator"] = "AND"
+        payload["sell_gm_filter"] = "IGNORE"
+        payload["sell_gm_operator"] = "AND"
+        normalized_lines.append(payload)
+    return normalized_lines, normalized_current
+
+
+def _ensure_legacy_trend_choice(field, value):
+    code = str(value or "").strip().upper()
+    if code not in {choice[0] for choice in LEGACY_TREND_FILTER_CHOICES}:
+        return
+    existing = {choice[0] for choice in field.choices}
+    if code not in existing:
+        field.choices = list(field.choices) + [choice for choice in LEGACY_TREND_FILTER_CHOICES if choice[0] == code]
 class AlertDefinitionForm(forms.ModelForm):
     """CRUD form for user-defined alert definitions.
 
@@ -555,6 +605,15 @@ class BacktestForm(forms.ModelForm):
         label="If Market Cap Missing",
         help_text="What to do when no historical market capitalization exists at or before the BUY date.",
     )
+    trend_filter_operator = forms.ChoiceField(
+        required=False,
+        choices=TREND_FILTER_OPERATOR_CHOICES,
+        initial="AND",
+        label="Combine Trend Filters With",
+    )
+    trend_filter_gm_current = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM current")
+    trend_filter_gm_market = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM_market")
+    trend_filter_gm_sector = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM_sector")
 
     class Meta:
         model = Backtest
@@ -574,6 +633,10 @@ class BacktestForm(forms.ModelForm):
             "market_cap_min",
             "market_cap_max",
             "market_cap_missing_policy",
+            "trend_filter_operator",
+            "trend_filter_gm_current",
+            "trend_filter_gm_market",
+            "trend_filter_gm_sector",
             "signal_lines",
             "warmup_days",
             "close_positions_at_end",
@@ -595,6 +658,25 @@ class BacktestForm(forms.ModelForm):
             self.fields["market_cap_missing_policy"].initial = (
                 settings.get(MARKET_CAP_MISSING_POLICY_KEY) or MARKET_CAP_POLICY_BLOCK
             )
+            self.fields["trend_filter_operator"].initial = normalize_trend_filter_operator(settings.get(TREND_FILTER_OPERATOR_KEY))
+            self.fields["trend_filter_gm_current"].initial = normalize_trend_filter_code(settings.get(TREND_FILTER_GM_CURRENT_KEY))
+            self.fields["trend_filter_gm_market"].initial = normalize_trend_filter_code(settings.get(TREND_FILTER_GM_MARKET_KEY))
+            self.fields["trend_filter_gm_sector"].initial = normalize_trend_filter_code(settings.get(TREND_FILTER_GM_SECTOR_KEY))
+        if not self.is_bound:
+            initial_signal_lines = self.initial.get("signal_lines", getattr(self.instance, "signal_lines", None) or [])
+            normalized_lines, normalized_current = _normalize_legacy_gm_for_trend_filters(
+                initial_signal_lines,
+                self.fields["trend_filter_gm_current"].initial,
+            )
+            self.initial["signal_lines"] = normalized_lines
+            self.fields["signal_lines"].initial = normalized_lines
+            self.fields["trend_filter_gm_current"].initial = normalized_current
+        current_trend_choice = (
+            self.data.get(self.add_prefix("trend_filter_gm_current"))
+            if self.is_bound
+            else self.fields["trend_filter_gm_current"].initial
+        )
+        _ensure_legacy_trend_choice(self.fields["trend_filter_gm_current"], current_trend_choice)
 
     def clean_signal_lines(self):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
@@ -619,6 +701,15 @@ class BacktestForm(forms.ModelForm):
         market_cap_min = self.cleaned_data.get("market_cap_min")
         market_cap_max = self.cleaned_data.get("market_cap_max")
         market_cap_missing_policy = self.cleaned_data.get("market_cap_missing_policy") or MARKET_CAP_POLICY_BLOCK
+        trend_filter_operator = normalize_trend_filter_operator(self.cleaned_data.get("trend_filter_operator"))
+        trend_filter_gm_current = normalize_trend_filter_code(self.cleaned_data.get("trend_filter_gm_current"))
+        trend_filter_gm_market = normalize_trend_filter_code(self.cleaned_data.get("trend_filter_gm_market"))
+        trend_filter_gm_sector = normalize_trend_filter_code(self.cleaned_data.get("trend_filter_gm_sector"))
+        normalized_signal_lines, trend_filter_gm_current = _normalize_legacy_gm_for_trend_filters(
+            self.cleaned_data.get("signal_lines") or [],
+            trend_filter_gm_current,
+        )
+        obj.signal_lines = normalized_signal_lines
         if min_price is None:
             settings.pop("min_price", None)
         else:
@@ -639,6 +730,25 @@ class BacktestForm(forms.ModelForm):
             settings.pop(MARKET_CAP_MISSING_POLICY_KEY, None)
         else:
             settings[MARKET_CAP_MISSING_POLICY_KEY] = market_cap_missing_policy
+        if all(code == "IGNORE" for code in (trend_filter_gm_current, trend_filter_gm_market, trend_filter_gm_sector)):
+            settings.pop(TREND_FILTER_OPERATOR_KEY, None)
+            settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
+            settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
+            settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
+        else:
+            settings[TREND_FILTER_OPERATOR_KEY] = trend_filter_operator
+            if trend_filter_gm_current == "IGNORE":
+                settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
+            else:
+                settings[TREND_FILTER_GM_CURRENT_KEY] = trend_filter_gm_current
+            if trend_filter_gm_market == "IGNORE":
+                settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
+            else:
+                settings[TREND_FILTER_GM_MARKET_KEY] = trend_filter_gm_market
+            if trend_filter_gm_sector == "IGNORE":
+                settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
+            else:
+                settings[TREND_FILTER_GM_SECTOR_KEY] = trend_filter_gm_sector
         obj.settings = settings
         if commit:
             obj.save()
@@ -683,6 +793,15 @@ class GameScenarioForm(forms.ModelForm):
         label="If Market Cap Missing",
         help_text="What to do when no historical market capitalization exists at or before the BUY date.",
     )
+    trend_filter_operator = forms.ChoiceField(
+        required=False,
+        choices=TREND_FILTER_OPERATOR_CHOICES,
+        initial="AND",
+        label="Combine Trend Filters With",
+    )
+    trend_filter_gm_current = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM current")
+    trend_filter_gm_market = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM_market")
+    trend_filter_gm_sector = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM_sector")
 
     class Meta:
         from .models import GameScenario
@@ -716,6 +835,10 @@ class GameScenarioForm(forms.ModelForm):
             "market_cap_min",
             "market_cap_max",
             "market_cap_missing_policy",
+            "trend_filter_operator",
+            "trend_filter_gm_current",
+            "trend_filter_gm_market",
+            "trend_filter_gm_sector",
             "signal_lines",
             "warmup_days",
             "close_positions_at_end",
@@ -741,6 +864,25 @@ class GameScenarioForm(forms.ModelForm):
             self.fields["market_cap_missing_policy"].initial = (
                 settings.get(MARKET_CAP_MISSING_POLICY_KEY) or MARKET_CAP_POLICY_BLOCK
             )
+            self.fields["trend_filter_operator"].initial = normalize_trend_filter_operator(settings.get(TREND_FILTER_OPERATOR_KEY))
+            self.fields["trend_filter_gm_current"].initial = normalize_trend_filter_code(settings.get(TREND_FILTER_GM_CURRENT_KEY))
+            self.fields["trend_filter_gm_market"].initial = normalize_trend_filter_code(settings.get(TREND_FILTER_GM_MARKET_KEY))
+            self.fields["trend_filter_gm_sector"].initial = normalize_trend_filter_code(settings.get(TREND_FILTER_GM_SECTOR_KEY))
+        if not self.is_bound:
+            initial_signal_lines = self.initial.get("signal_lines", getattr(self.instance, "signal_lines", None) or [])
+            normalized_lines, normalized_current = _normalize_legacy_gm_for_trend_filters(
+                initial_signal_lines,
+                self.fields["trend_filter_gm_current"].initial,
+            )
+            self.initial["signal_lines"] = normalized_lines
+            self.fields["signal_lines"].initial = normalized_lines
+            self.fields["trend_filter_gm_current"].initial = normalized_current
+        current_trend_choice = (
+            self.data.get(self.add_prefix("trend_filter_gm_current"))
+            if self.is_bound
+            else self.fields["trend_filter_gm_current"].initial
+        )
+        _ensure_legacy_trend_choice(self.fields["trend_filter_gm_current"], current_trend_choice)
 
     def clean_signal_lines(self):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
@@ -765,6 +907,15 @@ class GameScenarioForm(forms.ModelForm):
         market_cap_min = self.cleaned_data.get("market_cap_min")
         market_cap_max = self.cleaned_data.get("market_cap_max")
         market_cap_missing_policy = self.cleaned_data.get("market_cap_missing_policy") or MARKET_CAP_POLICY_BLOCK
+        trend_filter_operator = normalize_trend_filter_operator(self.cleaned_data.get("trend_filter_operator"))
+        trend_filter_gm_current = normalize_trend_filter_code(self.cleaned_data.get("trend_filter_gm_current"))
+        trend_filter_gm_market = normalize_trend_filter_code(self.cleaned_data.get("trend_filter_gm_market"))
+        trend_filter_gm_sector = normalize_trend_filter_code(self.cleaned_data.get("trend_filter_gm_sector"))
+        normalized_signal_lines, trend_filter_gm_current = _normalize_legacy_gm_for_trend_filters(
+            self.cleaned_data.get("signal_lines") or [],
+            trend_filter_gm_current,
+        )
+        obj.signal_lines = normalized_signal_lines
         if min_price is None:
             settings.pop("min_price", None)
         else:
@@ -785,6 +936,25 @@ class GameScenarioForm(forms.ModelForm):
             settings.pop(MARKET_CAP_MISSING_POLICY_KEY, None)
         else:
             settings[MARKET_CAP_MISSING_POLICY_KEY] = market_cap_missing_policy
+        if all(code == "IGNORE" for code in (trend_filter_gm_current, trend_filter_gm_market, trend_filter_gm_sector)):
+            settings.pop(TREND_FILTER_OPERATOR_KEY, None)
+            settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
+            settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
+            settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
+        else:
+            settings[TREND_FILTER_OPERATOR_KEY] = trend_filter_operator
+            if trend_filter_gm_current == "IGNORE":
+                settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
+            else:
+                settings[TREND_FILTER_GM_CURRENT_KEY] = trend_filter_gm_current
+            if trend_filter_gm_market == "IGNORE":
+                settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
+            else:
+                settings[TREND_FILTER_GM_MARKET_KEY] = trend_filter_gm_market
+            if trend_filter_gm_sector == "IGNORE":
+                settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
+            else:
+                settings[TREND_FILTER_GM_SECTOR_KEY] = trend_filter_gm_sector
         obj.settings = settings
         if commit:
             obj.save()
