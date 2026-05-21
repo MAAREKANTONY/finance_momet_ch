@@ -110,6 +110,30 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             rows = list(loaded["DATA"].iter_rows(values_only=True))
         self.assertIn('["BUY", "SELL"]', rows[1])
 
+    def test_backtest_debug_workbook_handles_large_result_mode_without_daily_rows(self):
+        scenario = SimpleNamespace(name="Scenario X", description="")
+        bt = SimpleNamespace(id=1, name="BT", scenario=scenario, start_date=None, end_date=None, capital_total=0, capital_per_ticker=0, capital_mode="fixed", ratio_threshold=0, include_all_tickers=False, warmup_days=0, close_positions_at_end=False, results={
+            "meta": {"large_result_mode": True, "detailed_daily_rows_omitted": True, "estimated_daily_rows": 900000},
+            "tickers": {
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["SPA"],
+                        "sell": ["SVA"],
+                        "daily": [],
+                        "daily_rows_omitted": True,
+                        "final": {"N": 1, "BT": "0.2"},
+                    }]
+                }
+            }
+        })
+        wb, _ = build_backtest_debug_workbook(bt, ticker="AAA", line=1)
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            loaded = load_workbook(tmp.name, read_only=True)
+            rows = list(loaded["DATA"].iter_rows(values_only=True))
+        self.assertEqual(rows[1][0], "Aucune ligne quotidienne disponible")
+
 
 
 class GameScenarioExportRegressionTests(TestCase):

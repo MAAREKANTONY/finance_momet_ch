@@ -2483,6 +2483,7 @@ def backtest_results(request, pk: int):
     """
     bt = get_object_or_404(Backtest.objects.select_related("scenario"), pk=pk)
     results = bt.results or {}
+    large_result_warning = bool(((results.get("meta") or {}).get("detailed_daily_rows_omitted")))
     tickers_map = results.get("tickers") or {}
 
     if not tickers_map:
@@ -2690,6 +2691,7 @@ def backtest_results(request, pk: int):
             "portfolio_daily": port_daily_for_ui,
             "portfolio_daily_json": json.dumps(port_daily_for_ui),
             "diagnostic_chart_payload": diagnostic_chart_payload,
+            "large_result_warning": large_result_warning,
             "is_truncated": is_truncated,
             "total_daily_count": total_daily_count,
             "ticker_options": ticker_options,

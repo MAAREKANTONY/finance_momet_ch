@@ -137,16 +137,11 @@ def estimate_backtest_daily_result_rows(backtest: Backtest) -> dict[str, int]:
     }
 
 
-def validate_backtest_daily_result_rows_limit(backtest: Backtest) -> dict[str, int]:
+def determine_backtest_result_mode(backtest: Backtest) -> dict[str, int | bool]:
     stats = estimate_backtest_daily_result_rows(backtest)
-    limit = int(getattr(settings, "BACKTEST_MAX_DAILY_ROWS_IN_RESULTS", 1000000) or 0)
-    stats["limit"] = limit
-    if limit > 0 and stats["estimated_daily_rows"] > limit:
-        raise RuntimeError(
-            "Backtest too large for detailed daily result payload. "
-            "Reduce universe/date range or enable large-result mode. "
-            f"(estimated_daily_rows={stats['estimated_daily_rows']}, limit={limit})"
-        )
+    limit = int(getattr(settings, "BACKTEST_DETAILED_DAILY_ROWS_MAX", 500000) or 0)
+    stats["detailed_daily_rows_max"] = limit
+    stats["large_result_mode"] = bool(limit > 0 and stats["estimated_daily_rows"] > limit)
     return stats
 
 def parse_date(s: str) -> date:
@@ -1506,21 +1501,43 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
 
     Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.RUNNING, error_message="")
     try:
-        preflight = validate_backtest_daily_result_rows_limit(bt)
+        preflight = determine_backtest_result_mode(bt)
         preflight_msg = (
             "Backtest preflight: "
             f"symbols={preflight['symbols_count']} "
             f"lines={preflight['signal_line_count']} "
             f"dates={preflight['date_count']} "
             f"estimated_daily_rows={preflight['estimated_daily_rows']} "
-            f"limit={preflight['limit']}"
+            f"detailed_daily_rows_max={preflight['detailed_daily_rows_max']} "
+            f"large_result_mode={'on' if preflight['large_result_mode'] else 'off'}"
         )
         logger.warning("[run_backtest] %s backtest_id=%s", preflight_msg, bt.id)
         job = ProcessingJob.objects.filter(id=job_id).first() if job_id else None
         _append_job_message(job, preflight_msg)
+        engine_mode_msg = (
+            "run_backtest:engine start "
+            f"large_result_mode={'on' if preflight['large_result_mode'] else 'off'}"
+        )
+        logger.warning("[run_backtest] %s backtest_id=%s", engine_mode_msg, bt.id)
+        _append_job_message(job, engine_mode_msg)
         prep_report = prepare_backtest_data(bt)
-        engine_result = engine_run_backtest(bt, checkpoint=(lambda: job_checkpoint(job, checkpoint="run_backtest:engine", task_request=task_request)) if job_id else None)
+        engine_result = engine_run_backtest(
+            bt,
+            checkpoint=(lambda: job_checkpoint(job, checkpoint="run_backtest:engine", task_request=task_request)) if job_id else None,
+            large_result_mode=bool(preflight["large_result_mode"]),
+            estimated_daily_rows=int(preflight["estimated_daily_rows"]),
+        )
         results = engine_result.results
+        logger.warning(
+            "[run_backtest] engine complete backtest_id=%s large_result_mode=%s",
+            bt.id,
+            "on" if preflight["large_result_mode"] else "off",
+        )
+        _append_job_message(
+            job,
+            "run_backtest:engine complete "
+            f"large_result_mode={'on' if preflight['large_result_mode'] else 'off'}",
+        )
 
         # --- Optional (NO-REGRESSION) Parquet storage ---
         # Writes daily series to Parquet *in addition* to existing JSON results.
