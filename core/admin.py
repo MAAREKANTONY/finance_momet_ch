@@ -1,4 +1,8 @@
+import json
+
 from django.contrib import admin
+from django.urls import reverse
+from django.utils.html import format_html
 from .models import (
     Symbol,
     Scenario,
@@ -13,6 +17,17 @@ from .models import (
     Universe,
     Study,
 )
+
+
+def _text_summary(value, *, label: str, preview_chars: int = 160) -> str:
+    text = (value or "").strip()
+    if not text:
+        return f"{label}: no"
+    size = len(text.encode("utf-8", errors="ignore"))
+    preview = text[:preview_chars]
+    if len(text) > preview_chars:
+        preview += "..."
+    return f"{label}: yes | ~{size} bytes | {preview}"
 
 @admin.register(Symbol)
 class SymbolAdmin(admin.ModelAdmin):
@@ -74,6 +89,80 @@ class BacktestAdmin(admin.ModelAdmin):
     list_filter = ("status", "scenario")
     search_fields = ("name", "description")
     date_hierarchy = "created_at"
+    exclude = ("signal_lines", "settings", "universe_snapshot", "results")
+    readonly_fields = (
+        "created_at",
+        "updated_at",
+        "signal_lines_summary",
+        "settings_summary",
+        "universe_snapshot_summary",
+        "results_summary",
+        "results_page_link",
+    )
+    fields = (
+        "name",
+        "description",
+        "scenario",
+        "start_date",
+        "end_date",
+        "capital_total",
+        "capital_per_ticker",
+        "capital_mode",
+        "ratio_threshold",
+        "include_all_tickers",
+        "warmup_days",
+        "close_positions_at_end",
+        "status",
+        "error_message",
+        "created_by",
+        "signal_lines_summary",
+        "settings_summary",
+        "universe_snapshot_summary",
+        "results_summary",
+        "results_page_link",
+        "created_at",
+        "updated_at",
+    )
+
+    @staticmethod
+    def _json_summary(value, *, label: str) -> str:
+        if not value:
+            return f"{label}: no"
+        try:
+            payload = json.dumps(value, ensure_ascii=False)
+            size = len(payload.encode("utf-8"))
+        except Exception:
+            size = 0
+        if isinstance(value, dict):
+            details = f"{len(value)} keys"
+        elif isinstance(value, list):
+            details = f"{len(value)} items"
+        else:
+            details = value.__class__.__name__
+        return f"{label}: yes | {details} | ~{size} bytes"
+
+    @admin.display(description="Signal Lines")
+    def signal_lines_summary(self, obj):
+        return self._json_summary(obj.signal_lines, label="Signal lines")
+
+    @admin.display(description="Settings")
+    def settings_summary(self, obj):
+        return self._json_summary(obj.settings, label="Settings")
+
+    @admin.display(description="Universe Snapshot")
+    def universe_snapshot_summary(self, obj):
+        return self._json_summary(obj.universe_snapshot, label="Universe snapshot")
+
+    @admin.display(description="Results")
+    def results_summary(self, obj):
+        return self._json_summary(obj.results, label="Results")
+
+    @admin.display(description="Results Page")
+    def results_page_link(self, obj):
+        if not obj or not getattr(obj, "pk", None):
+            return "Save first"
+        url = reverse("backtest_results", args=[obj.pk])
+        return format_html('<a href="{}" target="_blank" rel="noopener">Open backtest results</a>', url)
 
 
 @admin.register(ProcessingJob)
@@ -90,6 +179,38 @@ class ProcessingJobAdmin(admin.ModelAdmin):
     list_select_related = ("backtest", "scenario")
     list_per_page = 50
     show_full_result_count = False  # avoids expensive COUNT(*) on large tables
+    exclude = ("message", "error")
+    readonly_fields = (
+        "created_at",
+        "started_at",
+        "finished_at",
+        "heartbeat_at",
+        "last_checkpoint",
+        "worker_hostname",
+        "message_summary",
+        "error_summary",
+    )
+    fields = (
+        "job_type",
+        "status",
+        "task_id",
+        "backtest",
+        "scenario",
+        "game_scenario",
+        "created_by",
+        "output_file",
+        "output_name",
+        "cancel_requested",
+        "kill_requested",
+        "message_summary",
+        "error_summary",
+        "created_at",
+        "started_at",
+        "finished_at",
+        "heartbeat_at",
+        "last_checkpoint",
+        "worker_hostname",
+    )
 
     def get_queryset(self, request):
         qs = super().get_queryset(request)
@@ -99,3 +220,11 @@ class ProcessingJobAdmin(admin.ModelAdmin):
             "backtest__results", "backtest__settings", "backtest__universe_snapshot", "backtest__signal_lines",
             "scenario__description",
         )
+
+    @admin.display(description="Message")
+    def message_summary(self, obj):
+        return _text_summary(obj.message, label="Message")
+
+    @admin.display(description="Error")
+    def error_summary(self, obj):
+        return _text_summary(obj.error, label="Error")
