@@ -31,9 +31,11 @@ import zipfile
 from pathlib import Path
 
 import time
+import logging
 
 
 TRANSIENT_DB_EXCEPTIONS = (OperationalError, InterfaceError)
+logger = logging.getLogger(__name__)
 
 
 def _with_db_retries(fn, *, attempts: int | None = None):
@@ -91,6 +93,61 @@ def _append_job_message(job: ProcessingJob | None, extra: str) -> None:
         _job_save(job, update_fields=["message"])
     except Exception:
         return
+
+
+def _count_weekdays_inclusive(start_d: date | None, end_d: date | None) -> int:
+    if not start_d or not end_d or end_d < start_d:
+        return 0
+    current = start_d
+    count = 0
+    while current <= end_d:
+        if current.weekday() < 5:
+            count += 1
+        current += timedelta(days=1)
+    return count
+
+
+def _backtest_signal_line_count(backtest: Backtest) -> int:
+    signal_lines = getattr(backtest, "signal_lines", None)
+    if isinstance(signal_lines, list) and signal_lines:
+        return len(signal_lines)
+    return 1
+
+
+def _backtest_universe_size(backtest: Backtest) -> int:
+    raw_universe = getattr(backtest, "universe_snapshot", None)
+    if isinstance(raw_universe, list) and raw_universe:
+        return len(raw_universe)
+    try:
+        return int(backtest.scenario.symbols.count())
+    except Exception:
+        return 0
+
+
+def estimate_backtest_daily_result_rows(backtest: Backtest) -> dict[str, int]:
+    symbols_count = _backtest_universe_size(backtest)
+    signal_line_count = _backtest_signal_line_count(backtest)
+    date_count = _count_weekdays_inclusive(getattr(backtest, "start_date", None), getattr(backtest, "end_date", None))
+    estimated_daily_rows = max(0, symbols_count) * max(1, signal_line_count) * max(0, date_count)
+    return {
+        "symbols_count": max(0, symbols_count),
+        "signal_line_count": max(1, signal_line_count),
+        "date_count": max(0, date_count),
+        "estimated_daily_rows": estimated_daily_rows,
+    }
+
+
+def validate_backtest_daily_result_rows_limit(backtest: Backtest) -> dict[str, int]:
+    stats = estimate_backtest_daily_result_rows(backtest)
+    limit = int(getattr(settings, "BACKTEST_MAX_DAILY_ROWS_IN_RESULTS", 1000000) or 0)
+    stats["limit"] = limit
+    if limit > 0 and stats["estimated_daily_rows"] > limit:
+        raise RuntimeError(
+            "Backtest too large for detailed daily result payload. "
+            "Reduce universe/date range or enable large-result mode. "
+            f"(estimated_daily_rows={stats['estimated_daily_rows']}, limit={limit})"
+        )
+    return stats
 
 def parse_date(s: str) -> date:
     return datetime.fromisoformat(s.replace("Z","")).date()
@@ -1449,8 +1506,19 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
 
     Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.RUNNING, error_message="")
     try:
-        prep_report = prepare_backtest_data(bt)
+        preflight = validate_backtest_daily_result_rows_limit(bt)
+        preflight_msg = (
+            "Backtest preflight: "
+            f"symbols={preflight['symbols_count']} "
+            f"lines={preflight['signal_line_count']} "
+            f"dates={preflight['date_count']} "
+            f"estimated_daily_rows={preflight['estimated_daily_rows']} "
+            f"limit={preflight['limit']}"
+        )
+        logger.warning("[run_backtest] %s backtest_id=%s", preflight_msg, bt.id)
         job = ProcessingJob.objects.filter(id=job_id).first() if job_id else None
+        _append_job_message(job, preflight_msg)
+        prep_report = prepare_backtest_data(bt)
         engine_result = engine_run_backtest(bt, checkpoint=(lambda: job_checkpoint(job, checkpoint="run_backtest:engine", task_request=task_request)) if job_id else None)
         results = engine_result.results
 

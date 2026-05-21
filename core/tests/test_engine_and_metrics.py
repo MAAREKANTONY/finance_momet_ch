@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.db import connection
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.test.utils import CaptureQueriesContext
 
 from core.models import Alert, Backtest, DailyBar, DailyMetric, GameScenario, Scenario, Symbol
@@ -24,7 +24,12 @@ from core.services.global_momentum import (
     build_global_momentum_regime_by_date,
     compute_global_momentum_values_by_date,
 )
-from core.tasks import _enrich_alerts_with_global_momentum
+from core.tasks import (
+    _enrich_alerts_with_global_momentum,
+    estimate_backtest_daily_result_rows,
+    run_backtest_task,
+    validate_backtest_daily_result_rows_limit,
+)
 
 
 def apply_signal_events_to_latch_state(state: dict[str, bool], events: set[str]) -> dict[str, bool]:
@@ -1978,3 +1983,76 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(row["ticker"], self.symbol.ticker)
         self.assertTrue(row["ok"], row)
         self.assertIn(row["RATIO_IN_POSITION"], {"40", "40.0"})
+
+
+class BacktestLargeResultGuardTests(TestCase):
+    def setUp(self):
+        self.symbol = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)
+        self.scenario = Scenario.objects.create(name="Scenario Guard", active=True)
+
+    def test_backtest_daily_result_rows_estimate_uses_universe_lines_and_weekdays(self):
+        start = date(2024, 1, 1)  # Monday
+        end = date(2024, 1, 7)    # Sunday => 5 weekdays
+        other = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        bt = Backtest.objects.create(
+            name="Estimate Rows",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=end,
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}, {"buy": ["C1"], "sell": ["D1"]}],
+            universe_snapshot=[self.symbol.ticker, other.ticker],
+        )
+
+        stats = estimate_backtest_daily_result_rows(bt)
+
+        self.assertEqual(stats["symbols_count"], 2)
+        self.assertEqual(stats["signal_line_count"], 2)
+        self.assertEqual(stats["date_count"], 5)
+        self.assertEqual(stats["estimated_daily_rows"], 20)
+
+    @override_settings(BACKTEST_MAX_DAILY_ROWS_IN_RESULTS=10)
+    def test_large_backtest_guard_fails_fast_before_prepare_or_engine(self):
+        start = date(2024, 1, 1)
+        end = date(2024, 1, 31)
+        other = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        bt = Backtest.objects.create(
+            name="Guarded Large Backtest",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=end,
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker, other.ticker],
+        )
+
+        with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock, \
+             patch("core.services.backtesting.engine.run_backtest") as engine_mock:
+            with self.assertRaises(RuntimeError) as ctx:
+                run_backtest_task(bt.id)
+
+        prep_mock.assert_not_called()
+        engine_mock.assert_not_called()
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.FAILED)
+        self.assertIn("Backtest too large for detailed daily result payload", str(ctx.exception))
+        self.assertIn("estimated_daily_rows=", bt.error_message)
+
+    @override_settings(BACKTEST_MAX_DAILY_ROWS_IN_RESULTS=1000000)
+    def test_small_backtest_guard_allows_run_unchanged(self):
+        bt = Backtest.objects.create(
+            name="Small Backtest",
+            scenario=self.scenario,
+            start_date=date(2024, 1, 1),
+            end_date=date(2024, 1, 5),
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+        )
+
+        result = validate_backtest_daily_result_rows_limit(bt)
+
+        self.assertEqual(result["symbols_count"], 1)
+        self.assertEqual(result["signal_line_count"], 1)
+        self.assertEqual(result["date_count"], 5)
+        self.assertLess(result["estimated_daily_rows"], result["limit"])

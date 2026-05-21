@@ -157,6 +157,7 @@ TWELVEDATA_RATE_LIMIT_KEY_PREFIX = os.getenv("TWELVEDATA_RATE_LIMIT_KEY_PREFIX",
 TWELVEDATA_BACKOFF_SECONDS = int(os.getenv("TWELVEDATA_BACKOFF_SECONDS", "65"))
 TWELVEDATA_MAX_RETRIES = int(os.getenv("TWELVEDATA_MAX_RETRIES", "3"))
 ENABLE_DAILY_BENCHMARK_ETF_SYNC = os.getenv("ENABLE_DAILY_BENCHMARK_ETF_SYNC", "0") == "1"
+BACKTEST_MAX_DAILY_ROWS_IN_RESULTS = int(os.getenv("BACKTEST_MAX_DAILY_ROWS_IN_RESULTS", "1000000"))
 
 # Legacy standalone batch hours are intentionally kept only as deprecated envs
 # for backward compatibility with existing .env files. They are no longer used in
