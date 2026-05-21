@@ -26,9 +26,9 @@ from core.services.global_momentum import (
 )
 from core.tasks import (
     _enrich_alerts_with_global_momentum,
+    determine_backtest_result_mode,
     estimate_backtest_daily_result_rows,
     run_backtest_task,
-    validate_backtest_daily_result_rows_limit,
 )
 
 
@@ -1985,7 +1985,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertIn(row["RATIO_IN_POSITION"], {"40", "40.0"})
 
 
-class BacktestLargeResultGuardTests(TestCase):
+class BacktestLargeResultModeTests(TestCase):
     def setUp(self):
         self.symbol = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)
         self.scenario = Scenario.objects.create(name="Scenario Guard", active=True)
@@ -2011,48 +2011,120 @@ class BacktestLargeResultGuardTests(TestCase):
         self.assertEqual(stats["date_count"], 5)
         self.assertEqual(stats["estimated_daily_rows"], 20)
 
-    @override_settings(BACKTEST_MAX_DAILY_ROWS_IN_RESULTS=10)
-    def test_large_backtest_guard_fails_fast_before_prepare_or_engine(self):
+    @override_settings(BACKTEST_DETAILED_DAILY_ROWS_MAX=9)
+    def test_large_backtest_mode_activates_and_avoids_daily_rows(self):
         start = date(2024, 1, 1)
         end = date(2024, 1, 31)
         other = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        for symbol in (self.symbol, other):
+            prices = ["10", "11", "12", "13", "14"]
+            DailyBar.objects.bulk_create([
+                DailyBar(
+                    symbol=symbol,
+                    date=start + timedelta(days=idx),
+                    open=Decimal(price),
+                    high=Decimal(price),
+                    low=Decimal(price),
+                    close=Decimal(price),
+                    volume=1000,
+                )
+                for idx, price in enumerate(prices)
+            ])
+            DailyMetric.objects.bulk_create([
+                DailyMetric(
+                    symbol=symbol,
+                    scenario=self.scenario,
+                    date=start + timedelta(days=idx),
+                    P=Decimal(price),
+                    ratio_P=Decimal("1"),
+                )
+                for idx, price in enumerate(prices)
+            ])
         bt = Backtest.objects.create(
-            name="Guarded Large Backtest",
+            name="Large Result Backtest",
             scenario=self.scenario,
             start_date=start,
-            end_date=end,
+            end_date=start + timedelta(days=4),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
             include_all_tickers=True,
             signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
             universe_snapshot=[self.symbol.ticker, other.ticker],
+            close_positions_at_end=True,
         )
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1"),
+            Alert(symbol=other, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=other, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1"),
+        ])
 
-        with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock, \
-             patch("core.services.backtesting.engine.run_backtest") as engine_mock:
-            with self.assertRaises(RuntimeError) as ctx:
-                run_backtest_task(bt.id)
+        prep_report = SimpleNamespace(did_fetch_bars=False, did_compute_metrics=False, notes=[])
+        with patch("core.services.backtesting.prep.prepare_backtest_data", return_value=prep_report) as prep_mock:
+            run_backtest_task(bt.id)
 
-        prep_mock.assert_not_called()
-        engine_mock.assert_not_called()
+        prep_mock.assert_called_once()
         bt.refresh_from_db()
-        self.assertEqual(bt.status, Backtest.Status.FAILED)
-        self.assertIn("Backtest too large for detailed daily result payload", str(ctx.exception))
-        self.assertIn("estimated_daily_rows=", bt.error_message)
+        self.assertEqual(bt.status, Backtest.Status.DONE)
+        meta = bt.results.get("meta") or {}
+        self.assertTrue(meta.get("large_result_mode"))
+        self.assertTrue(meta.get("detailed_daily_rows_omitted"))
+        self.assertEqual(meta.get("estimated_daily_rows"), 10)
+        ticker_lines = bt.results["tickers"][self.symbol.ticker]["lines"][0]
+        self.assertEqual(ticker_lines["daily"], [])
+        self.assertTrue(ticker_lines["daily_rows_omitted"])
+        self.assertEqual(int(ticker_lines["final"]["N"]), 1)
+        self.assertEqual(Decimal(ticker_lines["final"]["PNL_AMOUNT"]), Decimal("20"))
+        self.assertEqual(bt.results["portfolio"]["daily"][-1]["date"], str(start + timedelta(days=4)))
 
-    @override_settings(BACKTEST_MAX_DAILY_ROWS_IN_RESULTS=1000000)
-    def test_small_backtest_guard_allows_run_unchanged(self):
+    @override_settings(BACKTEST_DETAILED_DAILY_ROWS_MAX=1000000)
+    def test_small_backtest_keeps_detailed_rows(self):
+        start = date(2024, 1, 1)
+        DailyBar.objects.bulk_create([
+            DailyBar(
+                symbol=self.symbol,
+                date=start + timedelta(days=i),
+                open=Decimal(v),
+                high=Decimal(v),
+                low=Decimal(v),
+                close=Decimal(v),
+                volume=1000,
+            )
+            for i, v in enumerate(["10", "11", "12"])
+        ])
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal(v), ratio_P=Decimal("1"))
+            for i, v in enumerate(["10", "11", "12"])
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=2), alerts="B1"),
+        ])
         bt = Backtest.objects.create(
             name="Small Backtest",
             scenario=self.scenario,
-            start_date=date(2024, 1, 1),
-            end_date=date(2024, 1, 5),
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
             include_all_tickers=True,
             signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
             universe_snapshot=[self.symbol.ticker],
+            close_positions_at_end=True,
         )
 
-        result = validate_backtest_daily_result_rows_limit(bt)
+        result = determine_backtest_result_mode(bt)
 
         self.assertEqual(result["symbols_count"], 1)
         self.assertEqual(result["signal_line_count"], 1)
-        self.assertEqual(result["date_count"], 5)
-        self.assertLess(result["estimated_daily_rows"], result["limit"])
+        self.assertEqual(result["date_count"], 3)
+        self.assertLess(result["estimated_daily_rows"], result["detailed_daily_rows_max"])
+        self.assertFalse(result["large_result_mode"])
+
+        engine_result = run_backtest(bt, large_result_mode=False, estimated_daily_rows=result["estimated_daily_rows"]).results
+        line = engine_result["tickers"][self.symbol.ticker]["lines"][0]
+        self.assertFalse(engine_result["meta"]["large_result_mode"])
+        self.assertFalse(engine_result["meta"]["detailed_daily_rows_omitted"])
+        self.assertEqual(len(line["daily"]), 3)

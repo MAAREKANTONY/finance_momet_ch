@@ -1251,6 +1251,81 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("max_drawdown_amount", body)
         self.assertIn("Filtre GM achat : <b>GM positif</b>", body)
 
+    def test_backtest_results_renders_large_result_mode_warning_without_daily_rows(self):
+        bt = Backtest.objects.create(
+            name="BT Large Mode",
+            scenario=self.scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            results={
+                "meta": {
+                    "start_date": "2024-01-01",
+                    "end_date": "2024-01-31",
+                    "large_result_mode": True,
+                    "detailed_daily_rows_omitted": True,
+                    "estimated_daily_rows": 900000,
+                },
+                "tickers": {
+                    self.symbol.ticker: {
+                        "lines": [{
+                            "line_index": 1,
+                            "buy": ["A1"],
+                            "sell": ["B1"],
+                            "daily": [],
+                            "daily_rows_omitted": True,
+                            "final": {
+                                "N": 1,
+                                "S_G_N": "0.5",
+                                "BT": "0.5",
+                                "PNL_AMOUNT": "50",
+                                "FINAL_EQUITY": "150",
+                                "AVG_TRADE_AMOUNT": "50",
+                                "TOTAL_GAIN_AMOUNT": "50",
+                                "TOTAL_LOSS_AMOUNT": "0",
+                                "PROFIT_FACTOR_AMOUNT": None,
+                                "WIN_TRADES": 1,
+                                "LOSS_TRADES": 0,
+                                "WIN_RATE_AMOUNT": "100",
+                                "MAX_GAIN_AMOUNT": "50",
+                                "MAX_LOSS_AMOUNT": None,
+                                "TRADABLE_DAYS": 3,
+                                "TRADABLE_DAYS_NOT_IN_POSITION": 2,
+                                "TRADABLE_DAYS_IN_POSITION_CLOSED": 1,
+                                "BMJ": "0.1",
+                                "BMD": "0.2",
+                            },
+                        }]
+                    }
+                },
+                "portfolio": {
+                    "kpi": {
+                        "TOTAL_PNL_AMOUNT": "50",
+                        "FINAL_EQUITY": "1050",
+                        "TOTAL_GAIN_AMOUNT": "50",
+                        "TOTAL_LOSS_AMOUNT": "0",
+                        "AVG_TRADE_AMOUNT": "50",
+                        "TOTAL_TRADES": 1,
+                        "WIN_RATE_AMOUNT": "100",
+                        "max_drawdown_amount": "0",
+                    },
+                    "daily": [],
+                },
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Large backtest mode", body)
+        self.assertIn("Detailed per-day ticker diagnostics were omitted for this large backtest.", body)
+
     def test_backtest_results_portfolio_recomputes_bt_from_equity_and_invested(self):
         bt = Backtest.objects.create(
             name="BT View Recomputed BT",

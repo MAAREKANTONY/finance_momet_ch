@@ -85,15 +85,23 @@ def offload_daily_series_if_needed(backtest: Any, results: Dict[str, Any], max_m
     if not isinstance(results, dict):
         return results
 
+    meta = results.setdefault("meta", {})
+    if meta.get("detailed_daily_rows_omitted"):
+        meta["daily_offload"] = {
+            "enabled": False,
+            "reason": "detailed_daily_rows_omitted",
+            "threshold_mb": max_mb or int(os.environ.get("BACKTEST_RESULTS_MAX_DB_MB", DEFAULT_MAX_DB_PAYLOAD_MB)),
+        }
+        return results
+
     threshold_mb = max_mb or int(os.environ.get("BACKTEST_RESULTS_MAX_DB_MB", DEFAULT_MAX_DB_PAYLOAD_MB))
     threshold_bytes = threshold_mb * 1024 * 1024
 
     payload_bytes = estimate_json_bytes(results)
-    results.setdefault("meta", {})
-    results["meta"]["results_bytes_estimate"] = payload_bytes
+    meta["results_bytes_estimate"] = payload_bytes
 
     if payload_bytes and payload_bytes <= threshold_bytes:
-        results["meta"]["daily_offload"] = {
+        meta["daily_offload"] = {
             "enabled": False,
             "reason": "below_threshold",
             "threshold_mb": threshold_mb,
@@ -102,7 +110,7 @@ def offload_daily_series_if_needed(backtest: Any, results: Dict[str, Any], max_m
 
     tickers_block = results.get("tickers") or {}
     if not isinstance(tickers_block, dict) or not tickers_block:
-        results["meta"]["daily_offload"] = {
+        meta["daily_offload"] = {
             "enabled": False,
             "reason": "no_tickers_block",
             "threshold_mb": threshold_mb,
@@ -152,7 +160,7 @@ def offload_daily_series_if_needed(backtest: Any, results: Dict[str, Any], max_m
                 # If offload fails, keep legacy behaviour for that line to avoid losing data
                 continue
 
-    results["meta"]["daily_offload"] = {
+    meta["daily_offload"] = {
         "enabled": True,
         "backend": "json.gz",
         "threshold_mb": threshold_mb,
@@ -162,7 +170,7 @@ def offload_daily_series_if_needed(backtest: Any, results: Dict[str, Any], max_m
     }
 
     # Re-estimate size after offload (diagnostic)
-    results["meta"]["results_bytes_estimate_after"] = estimate_json_bytes(results)
+    meta["results_bytes_estimate_after"] = estimate_json_bytes(results)
 
     return results
 

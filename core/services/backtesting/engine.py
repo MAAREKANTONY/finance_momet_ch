@@ -819,7 +819,13 @@ def _build_global_momentum_regime_from_values(
     return out
 
 
-def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
+def run_backtest(
+    backtest: Backtest,
+    checkpoint=None,
+    *,
+    large_result_mode: bool = False,
+    estimated_daily_rows: int | None = None,
+) -> BacktestEngineResult:
 
     """
     Feature 4:
@@ -831,6 +837,12 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
     def _checkpoint():
         if checkpoint is not None:
             checkpoint()
+
+    def _append_daily_row(st: dict[str, Any], row: dict[str, Any]) -> dict[str, Any] | None:
+        if large_result_mode:
+            return None
+        st["daily_rows"].append(row)
+        return row
 
     # Universe
     raw_universe = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
@@ -1154,7 +1166,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             price_by_date = tdata["price_by_date"]
             if d not in price_by_date:
                 ratio_pct, ratio_raw = _ratio_values_for_tradability(tdata["metrics"].get(d))
-                st["daily_rows"].append({
+                _append_daily_row(st, {
                     "date": str(d),
                     "price_close": None,
                     "ratio_P": None if ratio_raw is None else str(ratio_raw),
@@ -1288,7 +1300,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             BMJ = None if nb == 0 else (BT / Decimal(nb))
             BMD = None if bmd_days == 0 else (BT / Decimal(bmd_days))
 
-            st["daily_rows"].append({
+            _append_daily_row(st, {
                 "date": str(d),
                 "price_close": str(close_d),
                 "ratio_P": None if ratio_raw is None else str(ratio_raw),
@@ -1481,15 +1493,8 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             price_by_date = tdata["price_by_date"]
             if d not in price_by_date:
                 continue
-            if not st["daily_rows"]:
-                continue
-            last = st["daily_rows"][-1]
-            is_tradable = bool(last.get("tradable"))
-            try:
-                shares_eod = int(last.get("shares") or 0)
-            except Exception:
-                shares_eod = 0
-            in_position_eod = shares_eod > 0
+            is_tradable, _ratio_pct, _ratio_raw = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
+            in_position_eod = bool(st.get("shares") or 0) > 0
 
             if is_tradable:
                 st["tradable_days"] += 1
@@ -1502,22 +1507,24 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
 
             # Keep legacy keys for compatibility, but values now match the clarified
             # UI names (TRADABLE_DAYS_NOT_IN_POSITION / TRADABLE_DAYS_IN_POSITION_CLOSED).
-            last["TRADABLE_DAYS"] = tradable_days
-            last["TRADABLE_DAYS_NOT_IN_POSITION"] = not_in_pos_days
-            last["TRADABLE_DAYS_IN_POSITION_CLOSED"] = in_pos_days
-            last["NB_JOUR_OUVRES"] = not_in_pos_days
-            last["BUY_DAYS_CLOSED"] = in_pos_days
-            if tradable_days > 0:
-                last["RATIO_NOT_IN_POSITION"] = str((Decimal(not_in_pos_days) / Decimal(tradable_days)) * Decimal("100"))
-                last["RATIO_IN_POSITION"] = str((Decimal(in_pos_days) / Decimal(tradable_days)) * Decimal("100"))
-            else:
-                last["RATIO_NOT_IN_POSITION"] = None
-                last["RATIO_IN_POSITION"] = None
+            if st["daily_rows"]:
+                last = st["daily_rows"][-1]
+                last["TRADABLE_DAYS"] = tradable_days
+                last["TRADABLE_DAYS_NOT_IN_POSITION"] = not_in_pos_days
+                last["TRADABLE_DAYS_IN_POSITION_CLOSED"] = in_pos_days
+                last["NB_JOUR_OUVRES"] = not_in_pos_days
+                last["BUY_DAYS_CLOSED"] = in_pos_days
+                if tradable_days > 0:
+                    last["RATIO_NOT_IN_POSITION"] = str((Decimal(not_in_pos_days) / Decimal(tradable_days)) * Decimal("100"))
+                    last["RATIO_IN_POSITION"] = str((Decimal(in_pos_days) / Decimal(tradable_days)) * Decimal("100"))
+                else:
+                    last["RATIO_NOT_IN_POSITION"] = None
+                    last["RATIO_IN_POSITION"] = None
 
-            # Recompute BMJ/BMD display values using the clarified denominators.
-            BT = _to_dec(last.get("BT")) or Decimal("0")
-            last["BMJ"] = None if not_in_pos_days == 0 else str(BT / Decimal(not_in_pos_days))
-            last["BMD"] = None if in_pos_days == 0 else str(BT / Decimal(in_pos_days))
+                # Recompute BMJ/BMD display values using the clarified denominators.
+                BT = _to_dec(last.get("BT")) or Decimal("0")
+                last["BMJ"] = None if not_in_pos_days == 0 else str(BT / Decimal(not_in_pos_days))
+                last["BMD"] = None if in_pos_days == 0 else str(BT / Decimal(in_pos_days))
 
         # 4) Portfolio daily snapshot (end-of-day)
         _snapshot_portfolio(d)
@@ -1623,7 +1630,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 rows[-1]["BUY_DAYS_CLOSED"] = bmd_days
                 # Ensure tradable day counters remain consistent after mutating EOD shares.
                 _recompute_tradable_counters_from_rows(st)
-            else:
+            elif rows:
                 N = st["trade_count"]
                 S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
                 BT = st["sum_g"]
@@ -1681,6 +1688,9 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
             "signal_lines": signal_lines,
             "global_cash_end": None if global_cash is None else str(global_cash),
             "engine_version": "5.2.3",
+            "large_result_mode": bool(large_result_mode),
+            "detailed_daily_rows_omitted": bool(large_result_mode),
+            "estimated_daily_rows": estimated_daily_rows,
         },
         "tickers": {},
     }
@@ -1732,6 +1742,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                 "sell_gm_filter": st["sell_gm_filter"],
                 "sell_gm_operator": st["sell_gm_operator"],
                 "allocated": st["allocated"],
+                "daily_rows_omitted": bool(large_result_mode),
                 "final": {
                     "N": N,
                     "S_G_N": None if S_G_N is None else str(S_G_N),
@@ -1761,7 +1772,7 @@ def run_backtest(backtest: Backtest, checkpoint=None) -> BacktestEngineResult:
                     "WIN_RATE_AMOUNT": None if win_rate_amount is None else str(win_rate_amount),
                     "FINAL_EQUITY": str(Decimal(st.get("cash_ticker") or 0) + Decimal(st.get("bank") or 0)),
                 },
-                "daily": st["daily_rows"],
+                "daily": [] if large_result_mode else st["daily_rows"],
             })
         results["tickers"][ticker] = tentry
 

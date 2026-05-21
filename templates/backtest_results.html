@@ -20,6 +20,15 @@
   </div>
 </div>
 
+{% if large_result_warning %}
+<div class="card" style="border-left:4px solid #92400e;">
+  <div style="font-weight:600; color:#92400e; margin-bottom:6px;">Large backtest mode</div>
+  <div class="muted">
+    Detailed per-day ticker diagnostics were omitted for this large backtest.
+  </div>
+</div>
+{% endif %}
+
 <style>
   details.acc { padding: 0; }
   details.acc > summary.acc-summary {
@@ -456,6 +465,11 @@
 <details class="card acc" open data-acc-key="daily">
 <summary class="acc-summary"><span class="acc-title">Données journalières {% if is_truncated %}(dernières 200 lignes){% endif %}</span></summary>
 <div class="acc-body">
+  {% if large_result_warning and not daily %}
+  <div class="muted" style="margin-bottom:10px; color:#92400e;">
+    Detailed per-day ticker diagnostics were omitted for this large backtest.
+  </div>
+  {% endif %}
 <div style="overflow:auto; max-height:560px;">
     <table>
       <thead>
