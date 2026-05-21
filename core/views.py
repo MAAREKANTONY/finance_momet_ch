@@ -63,7 +63,7 @@ from .services.symbol_enrichment import enrich_symbols_metadata
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
-from .services.backtesting.diagnostic import build_diagnostic_chart_payload
+from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
 from .excel_utils import append_excel_row
 from .job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
 from .services.derived_data import (
@@ -2513,6 +2513,13 @@ def backtest_results(request, pk: int):
         daily = load_daily_from_line(line or {})
     except Exception:
         daily = (line or {}).get("daily") or []
+    if large_result_warning and not daily and line:
+        daily = build_backtest_ticker_diagnostic_on_demand(
+            backtest=bt,
+            ticker=ticker,
+            line_index=line_index,
+            line=line,
+        )
     final = (line or {}).get("final") or {}
 
     # --- UI-only metrics mapping (NO engine changes, additive only) ---

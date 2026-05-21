@@ -844,6 +844,27 @@ def run_backtest(
         st["daily_rows"].append(row)
         return row
 
+    def _record_line_event(
+        st: dict[str, Any],
+        *,
+        as_of: date,
+        action: str,
+        price_close: Decimal | None = None,
+        action_g: Decimal | None = None,
+        action_pnl_amount: Decimal | None = None,
+    ) -> None:
+        event = {
+            "date": str(as_of),
+            "action": str(action),
+        }
+        if price_close is not None:
+            event["price_close"] = str(price_close)
+        if action_g is not None:
+            event["action_G"] = str(action_g)
+        if action_pnl_amount is not None:
+            event["action_PNL_AMOUNT"] = str(action_pnl_amount)
+        st.setdefault("events", []).append(event)
+
     # Universe
     raw_universe = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
     tickers: list[str] = []
@@ -1046,6 +1067,7 @@ def run_backtest(
                 "signal_latch_last_date": None,
                 "_sold_today": False,
                 "daily_rows": [],
+                "events": [],
             }
 
     # Warmup phase: reconstruct persistent states before the real backtest period.
@@ -1280,6 +1302,14 @@ def run_backtest(
                 _do_sell(f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}")
             if G_today is not None:
                 st["_sold_today"] = True
+                _record_line_event(
+                    st,
+                    as_of=d,
+                    action="SELL",
+                    price_close=close_d,
+                    action_g=G_today,
+                    action_pnl_amount=pnl_amount_today,
+                )
 
             # record daily row (we may update with buy action later, but keep as dict to mutate)
             N = st["trade_count"]
@@ -1470,6 +1500,7 @@ def run_backtest(
                 _reset_trade_signal_memory(st)
 
             logs.append(f"{ticker}[L{li+1}] BUY signal {_compose_condition_label(buy_codes, st['buy_logic'], st['buy_gm_filter'], st['buy_gm_operator'])} on {d} close={close_d} shares={shares} cash_left={st['cash_ticker']}")
+            _record_line_event(st, as_of=d, action="BUY", price_close=close_d)
 
             # mutate last daily row to add action
             if st["daily_rows"]:
@@ -1601,6 +1632,14 @@ def run_backtest(
                 continue
             G_today, pnl_amount_today = closed
             logs.append(f"{ticker}[L{li+1}] FORCED SELL on {last_date} close={close_d} G={G_today}")
+            _record_line_event(
+                st,
+                as_of=last_date,
+                action="FORCED_SELL",
+                price_close=close_d,
+                action_g=G_today,
+                action_pnl_amount=pnl_amount_today,
+            )
 
             # Update last daily row for that ticker/line
             # Find last row with that date (if any), else append
@@ -1743,6 +1782,7 @@ def run_backtest(
                 "sell_gm_operator": st["sell_gm_operator"],
                 "allocated": st["allocated"],
                 "daily_rows_omitted": bool(large_result_mode),
+                "events": list(st.get("events") or []),
                 "final": {
                     "N": N,
                     "S_G_N": None if S_G_N is None else str(S_G_N),

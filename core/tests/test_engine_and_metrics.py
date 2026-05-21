@@ -2074,6 +2074,13 @@ class BacktestLargeResultModeTests(TestCase):
         ticker_lines = bt.results["tickers"][self.symbol.ticker]["lines"][0]
         self.assertEqual(ticker_lines["daily"], [])
         self.assertTrue(ticker_lines["daily_rows_omitted"])
+        self.assertEqual(
+            ticker_lines["events"],
+            [
+                {"date": str(start), "action": "BUY", "price_close": "10.000000"},
+                {"date": str(start + timedelta(days=2)), "action": "SELL", "price_close": "12.000000", "action_G": "0.2", "action_PNL_AMOUNT": "20.000000"},
+            ],
+        )
         self.assertEqual(int(ticker_lines["final"]["N"]), 1)
         self.assertEqual(Decimal(ticker_lines["final"]["PNL_AMOUNT"]), Decimal("20"))
         self.assertEqual(bt.results["portfolio"]["daily"][-1]["date"], str(start + timedelta(days=4)))

@@ -4,7 +4,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from core.models import DailyMetric, HistoricalMarketCap, Symbol
+from core.models import Alert, DailyBar, DailyMetric, HistoricalMarketCap, Symbol
 from core.services.trend_filters import (
     active_trend_filter_keys,
     collect_distinct_benchmark_tickers,
@@ -70,6 +70,70 @@ _MARKET_CAP_PROVIDER = "eodhd"
 _MARKET_CAP_MIN_KEY = "market_cap_min"
 _MARKET_CAP_MAX_KEY = "market_cap_max"
 _MARKET_CAP_MISSING_POLICY_KEY = "market_cap_missing_policy"
+
+
+def _alerts_set(alerts_str: str) -> set[str]:
+    if not alerts_str:
+        return set()
+    return {a.strip() for a in str(alerts_str).split(",") if a.strip()}
+
+
+def _build_action_by_date_from_events(events: list[dict[str, Any]] | None) -> dict[str, str]:
+    actions_by_date: dict[str, list[str]] = {}
+    for event in events or []:
+        row_date = str((event or {}).get("date") or "").strip()
+        action = str((event or {}).get("action") or "").strip().upper()
+        if not row_date or not action:
+            continue
+        actions_by_date.setdefault(row_date, []).append(action)
+    return {row_date: "+".join(parts) for row_date, parts in actions_by_date.items()}
+
+
+def build_backtest_ticker_diagnostic_on_demand(*, backtest, ticker: str, line_index: int, line: dict[str, Any] | None) -> list[dict[str, Any]]:
+    symbol = _find_symbol_for_ticker(backtest, ticker)
+    if symbol is None:
+        return []
+
+    start_date = getattr(backtest, "start_date", None)
+    end_date = getattr(backtest, "end_date", None)
+    if not start_date or not end_date:
+        return []
+
+    bar_rows = list(
+        DailyBar.objects
+        .filter(symbol=symbol, date__gte=start_date, date__lte=end_date)
+        .order_by("date")
+        .values("date", "close")
+    )
+    if not bar_rows:
+        return []
+
+    dates = [row["date"] for row in bar_rows]
+    metric_rows = {
+        row["date"]: row
+        for row in DailyMetric.objects.filter(symbol=symbol, scenario=backtest.scenario, date__in=dates).values("date", "ratio_P")
+    }
+    alert_rows = {
+        row["date"]: _alerts_set(row.get("alerts") or "")
+        for row in Alert.objects.filter(symbol=symbol, scenario=backtest.scenario, date__in=dates).values("date", "alerts")
+    }
+    actions_by_date = _build_action_by_date_from_events((line or {}).get("events") or [])
+
+    daily: list[dict[str, Any]] = []
+    for row in bar_rows:
+        row_date = row["date"]
+        metric_row = metric_rows.get(row_date) or {}
+        ratio_raw = _to_decimal_or_none(metric_row.get("ratio_P"))
+        row_date_str = str(row_date)
+        daily.append({
+            "date": row_date_str,
+            "price_close": None if row.get("close") in (None, "") else str(row.get("close")),
+            "ratio_P": None if ratio_raw is None else str(ratio_raw),
+            "ratio_P_pct": None if ratio_raw is None else str(ratio_raw),
+            "alerts": sorted(list(alert_rows.get(row_date, set()))),
+            "action": actions_by_date.get(row_date_str),
+        })
+    return daily
 
 
 def _metric_series_value(metric_row: dict[str, Any] | None, series_key: str) -> str | None:

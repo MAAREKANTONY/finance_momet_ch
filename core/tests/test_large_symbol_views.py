@@ -6,7 +6,7 @@ from django.test import Client, TestCase
 from django.urls import reverse
 import json
 
-from core.models import Backtest, BacktestPortfolioKPI, DailyBar, DailyMetric, GameScenario, HistoricalMarketCap, ProcessingJob, Scenario, Study, Symbol, Universe
+from core.models import Alert, Backtest, BacktestPortfolioKPI, DailyBar, DailyMetric, GameScenario, HistoricalMarketCap, ProcessingJob, Scenario, Study, Symbol, Universe
 
 
 class LargeSymbolFormViewTests(TestCase):
@@ -1324,7 +1324,105 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertIn("Large backtest mode", body)
-        self.assertIn("Detailed per-day ticker diagnostics were omitted for this large backtest.", body)
+        self.assertIn("Large mode: detailed diagnostics are loaded on demand.", body)
+
+    @patch("core.services.provider_twelvedata.TwelveDataClient.time_series_daily", side_effect=AssertionError("no provider call expected"))
+    @patch("core.services.provider_eodhd.EODHDClient.fetch_historical_market_cap", side_effect=AssertionError("no provider call expected"))
+    def test_backtest_results_large_mode_builds_on_demand_diagnostic_from_local_data(self, _market_cap_mock, _td_mock):
+        self._create_metric(self.symbol, "2024-01-02", P="100", Kf2bis="99", ratio_P="0.5")
+        self._create_metric(self.symbol, "2024-01-03", P="101", Kf2bis="100", ratio_P="0.6")
+        self._create_metric(self.symbol, "2024-01-04", P="102", Kf2bis="101", ratio_P="0.7")
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date="2024-01-03", alerts="Af")
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date="2024-01-04", alerts="Bf")
+        self._add_bar(self.symbol, "2024-01-02", "10")
+        self._add_bar(self.symbol, "2024-01-03", "11")
+        self._add_bar(self.symbol, "2024-01-04", "12")
+
+        self.scenario.nglobal = 1
+        self.scenario.save(update_fields=["nglobal"])
+        self.symbol.sector = "Technology"
+        self.symbol.country = "US"
+        self.symbol.save(update_fields=["sector", "country"])
+        spy = Symbol.objects.create(ticker="SPY", exchange="NYSE", country="US", active=True)
+        xlk = Symbol.objects.create(ticker="XLK", exchange="NYSE", country="US", sector="Technology", active=True)
+        self._add_bar(spy, "2024-01-02", "100")
+        self._add_bar(spy, "2024-01-03", "110")
+        self._add_bar(spy, "2024-01-04", "121")
+        self._add_bar(xlk, "2024-01-02", "200")
+        self._add_bar(xlk, "2024-01-03", "220")
+        self._add_bar(xlk, "2024-01-04", "242")
+
+        bt = Backtest.objects.create(
+            name="BT Large Mode On Demand",
+            scenario=self.scenario,
+            start_date="2024-01-02",
+            end_date="2024-01-04",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            universe_snapshot=[self.symbol.ticker],
+            settings={
+                "trend_filter_operator": "AND",
+                "trend_filter_gm_current": "GM_POS",
+                "trend_filter_gm_market": "GM_POS",
+                "trend_filter_gm_sector": "GM_POS",
+            },
+            results={
+                "meta": {
+                    "start_date": "2024-01-02",
+                    "end_date": "2024-01-04",
+                    "large_result_mode": True,
+                    "detailed_daily_rows_omitted": True,
+                    "estimated_daily_rows": 900000,
+                },
+                "tickers": {
+                    self.symbol.ticker: {
+                        "lines": [{
+                            "line_index": 1,
+                            "buy": ["Af"],
+                            "sell": ["Bf"],
+                            "daily": [],
+                            "daily_rows_omitted": True,
+                            "events": [
+                                {"date": "2024-01-03", "action": "BUY", "price_close": "11"},
+                                {"date": "2024-01-04", "action": "SELL", "price_close": "12", "action_G": "0.1"},
+                            ],
+                            "final": {"N": 1, "BT": "0.1"},
+                        }]
+                    }
+                },
+                "portfolio": {
+                    "kpi": {},
+                    "daily": [
+                        {"date": "2024-01-02", "avg_global_nglobal": None},
+                        {"date": "2024-01-03", "avg_global_nglobal": "0.2"},
+                        {"date": "2024-01-04", "avg_global_nglobal": "0.3"},
+                    ],
+                },
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]), {"ticker": "AAA", "line": 1})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.context["diagnostic_chart_payload"]
+        daily = response.context["daily"]
+        self.assertEqual([row["date"] for row in daily], ["2024-01-02", "2024-01-03", "2024-01-04"])
+        self.assertEqual([row["price_close"] for row in daily], ["10.000000", "11.000000", "12.000000"])
+        self.assertEqual(daily[1]["alerts"], ["Af"])
+        self.assertEqual(daily[2]["alerts"], ["Bf"])
+        self.assertEqual(daily[1]["action"], "BUY")
+        self.assertEqual(daily[2]["action"], "SELL")
+        self.assertEqual(payload["markers"], [{"date": "2024-01-03", "type": "BUY"}, {"date": "2024-01-04", "type": "SELL"}])
+        self.assertIn("P", payload["signal_series"])
+        self.assertIn("Kf2bis", payload["signal_series"])
+        self.assertEqual(payload["trend_filters"]["current"]["values"], [None, "0.2", "0.3"])
+        self.assertEqual(payload["trend_filters"]["market"]["benchmark_ticker"], "SPY")
+        self.assertEqual(payload["trend_filters"]["sector"]["benchmark_ticker"], "XLK")
+        body = response.content.decode()
+        self.assertIn("Large mode: detailed diagnostics are loaded on demand.", body)
 
     def test_backtest_results_portfolio_recomputes_bt_from_equity_and_invested(self):
         bt = Backtest.objects.create(
