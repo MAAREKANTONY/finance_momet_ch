@@ -182,24 +182,28 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
 
     pulse = JobCheckpointPulse(job, every_n=1, every_seconds=20, task_request=task_request, base_label="fetch_bars")
 
+    def _should_retry_without_exchange(sym) -> bool:
+        return str(getattr(sym, "instrument_type", "") or "").strip().upper() == "ETF"
+
     for idx, sym in enumerate(symbols, start=1):
         # Cooperative cancel/kill + heartbeat
         pulse.hit(checkpoint=f"symbol {idx}/{len(symbols)} {sym.ticker}", force=True)
         exchange = sym.exchange or getattr(settings, "DEFAULT_EXCHANGE", "")
-        try:
-            # Delta fetch by default: if we already have bars, only request dates after the last stored bar.
-            # This avoids re-downloading years of history each day.
-            start_date = None
-            if not force_full:
-                last_date = DailyBar.objects.filter(symbol=sym).aggregate(Max("date")).get("date__max")
-                if last_date:
-                    start = last_date + timedelta(days=1)
-                    if start <= today:
-                        start_date = start.isoformat()
-                    else:
-                        # Already up to date.
-                        continue
+        # Delta fetch by default: if we already have bars, only request dates after the last stored bar.
+        # This avoids re-downloading years of history each day.
+        start_date = None
+        if not force_full:
+            last_date = DailyBar.objects.filter(symbol=sym).aggregate(Max("date")).get("date__max")
+            if last_date:
+                start = last_date + timedelta(days=1)
+                if start <= today:
+                    start_date = start.isoformat()
+                else:
+                    # Already up to date.
+                    continue
 
+        values = None
+        try:
             values = client.time_series_daily(
                 sym.ticker,
                 exchange=exchange,
@@ -207,8 +211,34 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
                 start_date=start_date,
             )
         except Exception as e:
-            print(f"[fetch] error {sym}: {e}")
-            continue
+            if exchange and _should_retry_without_exchange(sym):
+                logger.warning("[fetch] exchange-qualified fetch failed for ETF %s:%s (%s); retrying ticker-only", sym.ticker, exchange, e)
+                try:
+                    values = client.time_series_daily(
+                        sym.ticker,
+                        exchange="",
+                        outputsize=outputsize,
+                        start_date=start_date,
+                    )
+                except Exception as fallback_error:
+                    print(f"[fetch] error {sym}: {fallback_error}")
+                    continue
+            else:
+                print(f"[fetch] error {sym}: {e}")
+                continue
+
+        if not values and exchange and _should_retry_without_exchange(sym):
+            logger.warning("[fetch] no bars returned for ETF %s:%s; retrying ticker-only", sym.ticker, exchange)
+            try:
+                values = client.time_series_daily(
+                    sym.ticker,
+                    exchange="",
+                    outputsize=outputsize,
+                    start_date=start_date,
+                )
+            except Exception as fallback_error:
+                print(f"[fetch] error {sym}: {fallback_error}")
+                continue
 
         if not values:
             continue
