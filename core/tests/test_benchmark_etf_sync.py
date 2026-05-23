@@ -6,8 +6,9 @@ from unittest.mock import patch
 from django.core.management import call_command
 from django.test import TestCase
 
-from core.models import Symbol
+from core.models import DailyBar, Symbol
 from core.services.benchmark_etf_sync import required_benchmark_tickers_for_symbols, sync_benchmark_etfs_for_symbols
+from core.tasks import _fetch_daily_bars_for_symbols
 
 
 class BenchmarkEtfSyncServiceTests(TestCase):
@@ -101,6 +102,69 @@ class BenchmarkEtfSyncServiceTests(TestCase):
         tickers = required_benchmark_tickers_for_symbols(Symbol.objects.filter(active=True).only("ticker", "exchange", "country", "sector"))
 
         self.assertEqual(tickers, {"SPY", "XLK"})
+
+    @patch("core.tasks.TwelveDataClient.time_series_daily")
+    def test_etf_fetch_falls_back_to_ticker_only_when_exchange_fetch_returns_empty(self, time_series_mock):
+        etf = Symbol.objects.create(
+            ticker="XLK",
+            exchange="NYSE ARCA",
+            country="US",
+            instrument_type="ETF",
+            active=True,
+        )
+        time_series_mock.side_effect = [
+            [],
+            [{"datetime": "2024-01-02", "open": "10", "high": "11", "low": "9", "close": "10.5", "volume": "1000"}],
+        ]
+
+        stats = _fetch_daily_bars_for_symbols(symbol_qs=[etf], outputsize=30)
+
+        self.assertEqual(stats["bars"], 1)
+        self.assertEqual(DailyBar.objects.filter(symbol=etf).count(), 1)
+        first_call = time_series_mock.call_args_list[0]
+        second_call = time_series_mock.call_args_list[1]
+        self.assertEqual(first_call.args[0], "XLK")
+        self.assertEqual(first_call.kwargs["exchange"], "NYSE ARCA")
+        self.assertEqual(second_call.kwargs["exchange"], "")
+
+    @patch("core.tasks.TwelveDataClient.time_series_daily")
+    def test_normal_stock_fetch_behavior_is_unchanged_without_ticker_only_fallback(self, time_series_mock):
+        stock = Symbol.objects.create(
+            ticker="MSFT",
+            exchange="NASDAQ",
+            country="US",
+            instrument_type="Common Stock",
+            active=True,
+        )
+        time_series_mock.return_value = []
+
+        stats = _fetch_daily_bars_for_symbols(symbol_qs=[stock], outputsize=30)
+
+        self.assertEqual(stats["bars"], 0)
+        self.assertEqual(time_series_mock.call_count, 1)
+        self.assertEqual(time_series_mock.call_args.kwargs["exchange"], "NASDAQ")
+
+    @patch("core.services.benchmark_etf_sync.enrich_symbols_metadata")
+    @patch("core.tasks.TwelveDataClient.time_series_daily")
+    def test_sync_benchmark_etfs_inserts_sector_etf_bars_when_ticker_only_succeeds(self, time_series_mock, enrich_mock):
+        enrich_mock.return_value = {"updated": 0, "processed": 2, "unchanged": 2, "skipped": 0, "errors": 0, "per_symbol": []}
+
+        def _fake_values(symbol, exchange="", outputsize=10, start_date=None, end_date=None):
+            if symbol == "SPY":
+                return [{"datetime": "2024-01-02", "open": "100", "high": "101", "low": "99", "close": "100.5", "volume": "1000"}]
+            if symbol == "XLK" and exchange == "NYSE ARCA":
+                return []
+            if symbol == "XLK" and exchange == "":
+                return [{"datetime": "2024-01-02", "open": "10", "high": "11", "low": "9", "close": "10.5", "volume": "1000"}]
+            return []
+
+        time_series_mock.side_effect = _fake_values
+
+        totals = sync_benchmark_etfs_for_symbols([self.us_symbol], skip_ohlc=False)
+
+        xlk = Symbol.objects.get(ticker="XLK")
+        self.assertEqual(DailyBar.objects.filter(symbol=xlk).count(), 1)
+        self.assertEqual(totals["ohlc"]["bars"], 2)
 
 
 class BenchmarkEtfSyncCommandTests(TestCase):
