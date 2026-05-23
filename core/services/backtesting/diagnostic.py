@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+from bisect import bisect_right
 from datetime import date
 from decimal import Decimal
 from typing import Any
 
 from core.models import Alert, DailyBar, DailyMetric, HistoricalMarketCap, Symbol
+from core.services.market_cap import preload_market_cap_series
 from core.services.trend_filters import (
     active_trend_filter_keys,
     collect_distinct_benchmark_tickers,
@@ -89,7 +91,25 @@ def _build_action_by_date_from_events(events: list[dict[str, Any]] | None) -> di
     return {row_date: "+".join(parts) for row_date, parts in actions_by_date.items()}
 
 
+def _market_cap_at_or_before_from_series(series: list[tuple[date, Decimal]] | None, as_of: date) -> Decimal | None:
+    if not series or not as_of:
+        return None
+    dates = [row_date for row_date, _market_cap in series]
+    idx = bisect_right(dates, as_of) - 1
+    if idx < 0:
+        return None
+    return series[idx][1]
+
+
 def build_backtest_ticker_diagnostic_on_demand(*, backtest, ticker: str, line_index: int, line: dict[str, Any] | None) -> list[dict[str, Any]]:
+    from core.services.backtesting.engine import (
+        _buy_tradability_for_day,
+        _market_cap_bounds_from_settings,
+        _market_cap_filter_enabled,
+        _market_cap_missing_policy_from_settings,
+        _price_bounds_from_settings,
+    )
+
     symbol = _find_symbol_for_ticker(backtest, ticker)
     if symbol is None:
         return []
@@ -117,7 +137,30 @@ def build_backtest_ticker_diagnostic_on_demand(*, backtest, ticker: str, line_in
         row["date"]: _alerts_set(row.get("alerts") or "")
         for row in Alert.objects.filter(symbol=symbol, scenario=backtest.scenario, date__in=dates).values("date", "alerts")
     }
-    actions_by_date = _build_action_by_date_from_events((line or {}).get("events") or [])
+    event_rows = list((line or {}).get("events") or [])
+    actions_by_date = _build_action_by_date_from_events(event_rows)
+    events_by_date: dict[str, list[dict[str, Any]]] = {}
+    for event in event_rows:
+        row_date_str = str((event or {}).get("date") or "").strip()
+        if row_date_str:
+            events_by_date.setdefault(row_date_str, []).append(event)
+
+    settings = dict(getattr(backtest, "settings", {}) or {})
+    include_all = bool(getattr(backtest, "include_all_tickers", False))
+    ratio_threshold = _to_decimal_or_none(getattr(backtest, "ratio_threshold", None)) or Decimal("0")
+    min_price, max_price = _price_bounds_from_settings(settings)
+    min_market_cap, max_market_cap = _market_cap_bounds_from_settings(settings)
+    market_cap_missing_policy = _market_cap_missing_policy_from_settings(settings)
+    market_cap_filter_enabled = _market_cap_filter_enabled(min_market_cap, max_market_cap)
+    market_cap_series = []
+    if market_cap_filter_enabled and getattr(symbol, "id", None):
+        market_cap_series = preload_market_cap_series([symbol], date.min, end_date).get(symbol.id, [])
+
+    shares_open = False
+    trade_count = 0
+    sum_g = Decimal("0")
+    tradable_days = 0
+    tradable_days_in_position = 0
 
     daily: list[dict[str, Any]] = []
     for row in bar_rows:
@@ -125,13 +168,71 @@ def build_backtest_ticker_diagnostic_on_demand(*, backtest, ticker: str, line_in
         metric_row = metric_rows.get(row_date) or {}
         ratio_raw = _to_decimal_or_none(metric_row.get("ratio_P"))
         row_date_str = str(row_date)
+        action_g = None
+        action_pnl_amount = None
+        day_events = events_by_date.get(row_date_str, [])
+        for event in day_events:
+            action = str((event or {}).get("action") or "").strip().upper()
+            if action == "BUY":
+                shares_open = True
+            elif action in {"SELL", "FORCED_SELL"}:
+                shares_open = False
+                g_value = _to_decimal_or_none((event or {}).get("action_G"))
+                pnl_value = _to_decimal_or_none((event or {}).get("action_PNL_AMOUNT"))
+                if g_value is not None:
+                    sum_g += g_value
+                    trade_count += 1
+                    action_g = str(g_value)
+                if pnl_value is not None:
+                    action_pnl_amount = str(pnl_value)
+
+        market_cap_value = _market_cap_at_or_before_from_series(market_cap_series, row_date) if market_cap_filter_enabled else None
+        tradable, ratio_pct, _ratio_raw = _buy_tradability_for_day(
+            price_value=row.get("close"),
+            ratio_p_val=metric_row.get("ratio_P"),
+            market_cap_value=market_cap_value,
+            include_all=include_all,
+            ratio_threshold=ratio_threshold,
+            min_price=min_price,
+            max_price=max_price,
+            min_market_cap=min_market_cap,
+            max_market_cap=max_market_cap,
+            market_cap_missing_policy=market_cap_missing_policy,
+        )
+        if tradable:
+            tradable_days += 1
+            if shares_open:
+                tradable_days_in_position += 1
+        not_in_position_days = max(0, tradable_days - tradable_days_in_position)
+        bt_value = sum_g
+        s_g_n = None if trade_count == 0 else (sum_g / Decimal(trade_count))
+        bmj = None if not_in_position_days == 0 else (bt_value / Decimal(not_in_position_days))
+        bmd = None if tradable_days_in_position == 0 else (bt_value / Decimal(tradable_days_in_position))
+
         daily.append({
             "date": row_date_str,
             "price_close": None if row.get("close") in (None, "") else str(row.get("close")),
             "ratio_P": None if ratio_raw is None else str(ratio_raw),
-            "ratio_P_pct": None if ratio_raw is None else str(ratio_raw),
+            "ratio_P_pct": None if ratio_pct is None else str(ratio_pct),
+            "tradable": tradable,
             "alerts": sorted(list(alert_rows.get(row_date, set()))),
             "action": actions_by_date.get(row_date_str),
+            "action_G": action_g,
+            "action_PNL_AMOUNT": action_pnl_amount,
+            "forced_close": "FORCED_SELL" in str(actions_by_date.get(row_date_str) or ""),
+            "shares": 1 if shares_open else 0,
+            "N": trade_count,
+            "S_G_N": None if s_g_n is None else str(s_g_n),
+            "BT": str(bt_value),
+            "TRADABLE_DAYS": tradable_days,
+            "TRADABLE_DAYS_NOT_IN_POSITION": not_in_position_days,
+            "TRADABLE_DAYS_IN_POSITION_CLOSED": tradable_days_in_position,
+            "NB_JOUR_OUVRES": not_in_position_days,
+            "BMJ": None if bmj is None else str(bmj),
+            "BMD": None if bmd is None else str(bmd),
+            "BUY_DAYS_CLOSED": tradable_days_in_position,
+            "RATIO_NOT_IN_POSITION": None if tradable_days == 0 else str((Decimal(not_in_position_days) / Decimal(tradable_days)) * Decimal("100")),
+            "RATIO_IN_POSITION": None if tradable_days == 0 else str((Decimal(tradable_days_in_position) / Decimal(tradable_days)) * Decimal("100")),
         })
     return daily
 

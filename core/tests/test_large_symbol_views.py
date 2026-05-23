@@ -1409,8 +1409,13 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         payload = response.context["diagnostic_chart_payload"]
         daily = response.context["daily"]
+        self.assertEqual(bt.results["tickers"][self.symbol.ticker]["lines"][0]["daily"], [])
         self.assertEqual([row["date"] for row in daily], ["2024-01-02", "2024-01-03", "2024-01-04"])
         self.assertEqual([row["price_close"] for row in daily], ["10.000000", "11.000000", "12.000000"])
+        self.assertEqual([row["shares"] for row in daily], [0, 1, 0])
+        self.assertEqual([row["BT"] for row in daily], ["0", "0", "0.1"])
+        self.assertEqual([row["BMJ"] for row in daily], ["0", "0", "0.05"])
+        self.assertEqual([row["BMD"] for row in daily], [None, "0", "0.1"])
         self.assertEqual(daily[1]["alerts"], ["Af"])
         self.assertEqual(daily[2]["alerts"], ["Bf"])
         self.assertEqual(daily[1]["action"], "BUY")
