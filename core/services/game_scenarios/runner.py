@@ -10,6 +10,7 @@ from core.job_tracking import JobCancelled, JobCheckpointPulse, JobKilled
 from core.models import Backtest, DailyBar, DailyMetric, GameScenario, Scenario, Symbol, ProcessingJob
 from core.services.backtesting.engine import run_backtest_kpi_only
 from core.services.metrics_depth import check_metrics_depth
+from core.services.game_scenarios.sync import sync_game_engine_scenario
 
 
 def _compute_avg_slope_for_ticker(*, scenario_id: int, symbol_id: int, end_d: date) -> str | None:
@@ -30,32 +31,7 @@ def _compute_avg_slope_for_ticker(*, scenario_id: int, symbol_id: int, end_d: da
 
 
 def _sync_engine_scenario(game: GameScenario) -> Scenario:
-    sc = game.engine_scenario
-    if sc is None:
-        sc = Scenario(
-            name=f"[GAME] {game.name}",
-            description=f"Auto-generated scenario for GameScenario #{game.id}",
-            active=False,
-            is_default=False,
-        )
-
-    for f in [
-        "a", "b", "c", "d", "e",
-        "n1", "n2",
-        "npente", "slope_threshold", "npente_basse", "slope_threshold_basse", "nglobal",
-    ]:
-        setattr(sc, f, getattr(game, f))
-
-    sc.name = f"[GAME] {game.name}"
-    sc.description = f"Auto-generated scenario for GameScenario #{game.id}"
-    sc.active = False
-    sc.is_default = False
-    sc.save()
-
-    if game.engine_scenario_id != sc.id:
-        game.engine_scenario = sc
-        game.save(update_fields=["engine_scenario", "updated_at"])
-    return sc
+    return sync_game_engine_scenario(game)
 
 
 GameJobCancelled = JobCancelled

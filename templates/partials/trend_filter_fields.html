@@ -1,11 +1,12 @@
 <div class="field" style="margin-top:12px;">
-  <label>Trend Filters</label>
-  <div class="muted">BUY-only filters combined separately from signal logic.</div>
+  <label>Filtres de tendance</label>
+  <div class="muted">Les filtres de tendance s'appliquent uniquement aux achats.</div>
+  <div class="muted">Les filtres de tendance sont évalués séparément de la logique des signaux.</div>
 </div>
 
 <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
   <div>
-    <label for="{{ form.trend_filter_operator.id_for_label }}">Combine Trend Filters With</label><br>
+    <label for="{{ form.trend_filter_operator.id_for_label }}">Combiner les filtres de tendance avec</label><br>
     {{ form.trend_filter_operator }}
     {% if form.trend_filter_operator.errors %}<div class="error">{{ form.trend_filter_operator.errors }}</div>{% endif %}
   </div>

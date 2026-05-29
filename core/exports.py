@@ -103,8 +103,8 @@ def build_scenario_workbook_write_only(
         append_excel_row(ws, [
             f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
             f"| N1={scenario.n1} N2={scenario.n2} "
-            f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil={getattr(scenario,'slope_threshold',None)} "
-            f"| SUM_SLOPE_BASSE/SLOPE_VRAI_BASSE: Npente_basse={getattr(scenario,'npente_basse',None)} seuil_basse={getattr(scenario,'slope_threshold_basse',None)} "
+            f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil_achat={getattr(scenario,'slope_threshold',None)} seuil_vente={getattr(scenario,'slope_sell_threshold',None)} "
+            f"| SUM_SLOPE_BASSE/SLOPE_VRAI_BASSE: Npente_basse={getattr(scenario,'npente_basse',None)} seuil_basse_achat={getattr(scenario,'slope_threshold_basse',None)} seuil_basse_vente={getattr(scenario,'slope_sell_threshold_basse',None)} "
             f"| history_years={scenario.history_years}"
         ])
         append_excel_row(ws, [f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])

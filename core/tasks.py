@@ -17,6 +17,7 @@ from .services.calculations import compute_for_symbol_scenario
 from .services.global_momentum import build_global_momentum_regime_by_date, GLOBAL_MOMENTUM_CODES
 from .services.calculations_fast import compute_full_for_symbol_scenario
 from .services.market_cap_sync import sync_market_caps_for_symbols
+from .services.game_scenarios.sync import sync_game_engine_scenario
 from .services.benchmark_etf_sync import format_benchmark_sync_summary, sync_benchmark_etfs_for_symbols
 from .job_tracking import JobCancelled, JobCheckpointPulse, JobKilled, job_checkpoint, mark_job_running
 from .job_status_sync import sync_related_state_for_terminal_job
@@ -479,7 +480,7 @@ def _indicator_params_from_scenario_like(obj) -> dict:
         # Kf3
         "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
         # SUM_SLOPE / SPa-SPv
-        "npente", "slope_threshold", "npente_basse", "slope_threshold_basse",
+        "npente", "slope_threshold", "slope_sell_threshold", "npente_basse", "slope_threshold_basse", "slope_sell_threshold_basse",
         # V line
         "m_v",
     ]
@@ -1186,37 +1187,9 @@ def run_game_scenario_task(game_id: int, force_fetch: bool = False, force_recomp
 def _ensure_game_engine_scenario(game: GameScenario) -> Scenario:
     """Create/update the internal Scenario used by a GameScenario.
 
-    Duplicates the logic from game runner to avoid circular imports.
+    Kept as a local wrapper for existing task call sites.
     """
-    sc = game.engine_scenario
-    if sc is None:
-        sc = Scenario(
-            name=f"[GAME] {game.name}",
-            description=f"Auto-generated scenario for GameScenario #{game.id}",
-            active=False,
-            is_default=False,
-        )
-
-    for f in [
-        "a", "b", "c", "d", "e", "vc", "fl",
-        "n1", "n2", "n3", "n4",
-        "n5", "k2j", "cr",
-        "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
-        "npente", "slope_threshold", "npente_basse", "slope_threshold_basse",
-        "m_v",
-    ]:
-        setattr(sc, f, getattr(game, f))
-
-    sc.name = f"[GAME] {game.name}"
-    sc.description = f"Auto-generated scenario for GameScenario #{game.id}"
-    sc.active = False
-    sc.is_default = False
-    sc.save()
-
-    if game.engine_scenario_id != sc.id:
-        game.engine_scenario = sc
-        game.save(update_fields=["engine_scenario", "updated_at"])
-    return sc
+    return sync_game_engine_scenario(game)
 
 
 @shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})

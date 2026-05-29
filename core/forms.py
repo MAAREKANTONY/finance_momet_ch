@@ -74,6 +74,31 @@ from .trading_model_config import (
 from .widgets import SymbolPickerWidget
 
 
+def _configure_slope_threshold_fields(form):
+    field_config = {
+        "slope_threshold": (
+            "Seuil de déclenchement achat",
+            "Utilisé par SPa/SPVa.",
+        ),
+        "slope_sell_threshold": (
+            "Seuil de déclenchement vente",
+            "Utilisé par SPv/SPVv. Si vide, le seuil d'achat est réutilisé. Le seuil de vente permet de sortir plus tôt ou plus tard que le seuil d'achat.",
+        ),
+        "slope_threshold_basse": (
+            "Seuil de déclenchement achat — pente basse",
+            "Utilisé par SPa_basse/SPVa_basse.",
+        ),
+        "slope_sell_threshold_basse": (
+            "Seuil de déclenchement vente — pente basse",
+            "Utilisé par SPv_basse/SPVv_basse. Si vide, le seuil d'achat est réutilisé. Le seuil de vente permet de sortir plus tôt ou plus tard que le seuil d'achat.",
+        ),
+    }
+    for field_name, (label, help_text) in field_config.items():
+        if field_name in form.fields:
+            form.fields[field_name].label = label
+            form.fields[field_name].help_text = help_text
+
+
 
 
 def _normalize_signal_code_list(value):
@@ -278,8 +303,10 @@ class ScenarioForm(forms.ModelForm):
             "n2",
             "npente",
             "slope_threshold",
+            "slope_sell_threshold",
             "npente_basse",
             "slope_threshold_basse",
+            "slope_sell_threshold_basse",
             "nglobal",
             "history_years",
             "active",
@@ -315,6 +342,7 @@ class ScenarioForm(forms.ModelForm):
         if selected_symbols:
             self.fields["symbols"].initial = selected_symbols
         _configure_symbol_picker(self.fields["symbols"], selected_symbols)
+        _configure_slope_threshold_fields(self)
 
 
 class UniverseForm(forms.ModelForm):
@@ -497,8 +525,10 @@ class StudyScenarioForm(forms.ModelForm):
             "n2",
             "npente",
             "slope_threshold",
+            "slope_sell_threshold",
             "npente_basse",
             "slope_threshold_basse",
+            "slope_sell_threshold_basse",
             "nglobal",
             "history_years",
             "symbols",
@@ -525,6 +555,7 @@ class StudyScenarioForm(forms.ModelForm):
         if selected_symbols:
             self.fields["symbols"].initial = selected_symbols
         _configure_symbol_picker(self.fields["symbols"], selected_symbols)
+        _configure_slope_threshold_fields(self)
 
 
 class EmailRecipientForm(forms.ModelForm):
@@ -609,7 +640,7 @@ class BacktestForm(forms.ModelForm):
         required=False,
         choices=TREND_FILTER_OPERATOR_CHOICES,
         initial="AND",
-        label="Combine Trend Filters With",
+        label="Combiner les filtres de tendance avec",
     )
     trend_filter_gm_current = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM current")
     trend_filter_gm_market = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM_market")
@@ -797,7 +828,7 @@ class GameScenarioForm(forms.ModelForm):
         required=False,
         choices=TREND_FILTER_OPERATOR_CHOICES,
         initial="AND",
-        label="Combine Trend Filters With",
+        label="Combiner les filtres de tendance avec",
     )
     trend_filter_gm_current = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM current")
     trend_filter_gm_market = forms.ChoiceField(required=False, choices=TREND_FILTER_CHOICES, initial="IGNORE", label="GM_market")
@@ -815,8 +846,10 @@ class GameScenarioForm(forms.ModelForm):
             "tradability_threshold",
             "npente",
             "slope_threshold",
+            "slope_sell_threshold",
             "npente_basse",
             "slope_threshold_basse",
+            "slope_sell_threshold_basse",
             "nglobal",
             "presence_threshold_pct",
             "email_recipients",
@@ -883,6 +916,7 @@ class GameScenarioForm(forms.ModelForm):
             else self.fields["trend_filter_gm_current"].initial
         )
         _ensure_legacy_trend_choice(self.fields["trend_filter_gm_current"], current_trend_choice)
+        _configure_slope_threshold_fields(self)
 
     def clean_signal_lines(self):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))

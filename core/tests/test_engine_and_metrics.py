@@ -19,15 +19,20 @@ from core.services.backtesting.engine import (
 )
 from core.services.calculations import compute_for_symbol_scenario
 from core.services.calculations_fast import compute_full_for_symbol_scenario
+from core.services.derived_data import game_impactful_changes, scenario_impactful_changes
 from core.services.game_scenarios.runner import run_game_scenario_now
+from core.services.game_scenarios.runner import _sync_engine_scenario
+from core.services.game_scenarios.sync import GAME_RUNTIME_SCENARIO_FIELDS, sync_game_engine_scenario
 from core.services.global_momentum import (
     build_global_momentum_regime_by_date,
     compute_global_momentum_values_by_date,
 )
 from core.tasks import (
     _enrich_alerts_with_global_momentum,
+    _ensure_game_engine_scenario,
     determine_backtest_result_mode,
     estimate_backtest_daily_result_rows,
+    indicator_signature,
     run_backtest_task,
 )
 
@@ -92,6 +97,48 @@ class EngineAndMetricsRegressionTests(TestCase):
             )
         DailyBar.objects.bulk_create(bars)
         return [b.date for b in bars]
+
+    def _compute_alerts_with_slow_path(self, scenario: Scenario, closes: list[str]) -> list[str]:
+        symbol = Symbol.objects.create(ticker=f"SLOW{Symbol.objects.count():04d}", exchange="NYSE", active=True)
+        dates = self._create_bars_for_symbol(symbol, closes)
+        for trading_date in dates:
+            compute_for_symbol_scenario(symbol, scenario, trading_date)
+        return list(
+            Alert.objects.filter(symbol=symbol, scenario=scenario)
+            .order_by("date")
+            .values_list("alerts", flat=True)
+        )
+
+    def _compute_alert_map_with_slow_path(self, scenario: Scenario, closes: list[str]) -> dict[date, str]:
+        symbol = Symbol.objects.create(ticker=f"SLOMAP{Symbol.objects.count():04d}", exchange="NYSE", active=True)
+        dates = self._create_bars_for_symbol(symbol, closes)
+        for trading_date in dates:
+            compute_for_symbol_scenario(symbol, scenario, trading_date)
+        return {
+            row.date: row.alerts
+            for row in Alert.objects.filter(symbol=symbol, scenario=scenario).order_by("date")
+        }
+
+    def _compute_alerts_with_fast_path(self, scenario: Scenario, closes: list[str]) -> list[str]:
+        symbol = Symbol.objects.create(ticker=f"FAST{Symbol.objects.count():04d}", exchange="NYSE", active=True)
+        self._create_bars_for_symbol(symbol, closes)
+        bars = list(DailyBar.objects.filter(symbol=symbol).order_by("date"))
+        compute_full_for_symbol_scenario(symbol=symbol, scenario=scenario, bars=bars)
+        return list(
+            Alert.objects.filter(symbol=symbol, scenario=scenario)
+            .order_by("date")
+            .values_list("alerts", flat=True)
+        )
+
+    def _compute_alert_map_with_fast_path(self, scenario: Scenario, closes: list[str]) -> dict[date, str]:
+        symbol = Symbol.objects.create(ticker=f"FSTMAP{Symbol.objects.count():04d}", exchange="NYSE", active=True)
+        self._create_bars_for_symbol(symbol, closes)
+        bars = list(DailyBar.objects.filter(symbol=symbol).order_by("date"))
+        compute_full_for_symbol_scenario(symbol=symbol, scenario=scenario, bars=bars)
+        return {
+            row.date: row.alerts
+            for row in Alert.objects.filter(symbol=symbol, scenario=scenario).order_by("date")
+        }
 
     def _create_latch_routing_fixture(self, *, start: date | None = None) -> date:
         start = start or date(2024, 8, 1)
@@ -849,6 +896,187 @@ class EngineAndMetricsRegressionTests(TestCase):
             ]:
                 self.assertEqual(getattr(inc, field), getattr(full, field), f"Mismatch on {field} @ {d}")
         self.assertEqual(inc_alerts, full_alerts)
+
+    def test_null_sell_threshold_preserves_historical_slope_alerts(self):
+        scenario = Scenario.objects.create(
+            name="Slope Null Sell",
+            active=True,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=1,
+            slope_threshold=Decimal("0.10"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.10"),
+            nglobal=2,
+            history_years=2,
+        )
+
+        slow_alerts = self._compute_alerts_with_slow_path(scenario, ["100", "112", "120.96"])
+        fast_alerts = self._compute_alerts_with_fast_path(scenario, ["100", "112", "120.96"])
+
+        self.assertEqual(slow_alerts, ["SPv,SPVv,SPv_basse,SPVv_basse"])
+        self.assertEqual(fast_alerts, slow_alerts)
+
+    def test_explicit_sell_threshold_changes_spv_and_spvv_only(self):
+        scenario = Scenario.objects.create(
+            name="Slope Explicit Sell",
+            active=True,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=1,
+            slope_threshold=Decimal("0.10"),
+            slope_sell_threshold=Decimal("0.05"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.10"),
+            nglobal=2,
+            history_years=2,
+        )
+
+        slow_alerts = self._compute_alerts_with_slow_path(scenario, ["100", "112", "120.96"])
+        fast_alerts = self._compute_alerts_with_fast_path(scenario, ["100", "112", "120.96"])
+
+        self.assertEqual(slow_alerts, ["SPv_basse,SPVv_basse"])
+        self.assertEqual(fast_alerts, slow_alerts)
+
+    def test_explicit_low_sell_threshold_changes_spv_basse_and_spvv_basse(self):
+        scenario = Scenario.objects.create(
+            name="Slope Explicit Low Sell",
+            active=True,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=1,
+            slope_threshold=Decimal("0.10"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.10"),
+            slope_sell_threshold_basse=Decimal("0.05"),
+            nglobal=2,
+            history_years=2,
+        )
+
+        slow_alerts = self._compute_alerts_with_slow_path(scenario, ["100", "112", "120.96"])
+        fast_alerts = self._compute_alerts_with_fast_path(scenario, ["100", "112", "120.96"])
+
+        self.assertEqual(slow_alerts, ["SPv,SPVv"])
+        self.assertEqual(fast_alerts, slow_alerts)
+
+    def test_scenario_impactful_changes_detect_sell_threshold_updates(self):
+        diff = scenario_impactful_changes(
+            instance=self.scenario,
+            cleaned_data={
+                "slope_sell_threshold": Decimal("0.03"),
+                "slope_sell_threshold_basse": Decimal("0.01"),
+            },
+        )
+        self.assertIn("slope_sell_threshold", diff)
+        self.assertIn("slope_sell_threshold_basse", diff)
+
+    def test_game_impactful_changes_detect_sell_threshold_updates(self):
+        game = GameScenario.objects.create(
+            name="Game impact",
+            active=True,
+            study_days=1000,
+            tradability_threshold=Decimal("0"),
+            npente=100,
+            slope_threshold=Decimal("0.1"),
+            npente_basse=20,
+            slope_threshold_basse=Decimal("0.02"),
+            nglobal=20,
+            presence_threshold_pct=Decimal("30"),
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=5,
+            n2=3,
+            capital_total=Decimal("10000"),
+            capital_per_ticker=Decimal("1000"),
+            capital_mode="FIXED",
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+        )
+        diff = game_impactful_changes(
+            instance=game,
+            cleaned_data={
+                "slope_sell_threshold": Decimal("0.03"),
+                "slope_sell_threshold_basse": Decimal("0.01"),
+            },
+        )
+        self.assertIn("slope_sell_threshold", diff)
+        self.assertIn("slope_sell_threshold_basse", diff)
+
+    def test_indicator_signature_changes_when_sell_thresholds_change(self):
+        base = indicator_signature(self.scenario)
+        self.scenario.slope_sell_threshold = Decimal("0.05")
+        sell_main = indicator_signature(self.scenario)
+        self.scenario.slope_sell_threshold_basse = Decimal("0.01")
+        sell_low = indicator_signature(self.scenario)
+
+        self.assertNotEqual(base, sell_main)
+        self.assertNotEqual(sell_main, sell_low)
+
+    def test_explicit_sell_threshold_full_cycle_buy_then_sell(self):
+        scenario = Scenario.objects.create(
+            name="Slope Full Cycle",
+            active=True,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=1,
+            slope_threshold=Decimal("0.10"),
+            slope_sell_threshold=Decimal("0.05"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.10"),
+            slope_sell_threshold_basse=Decimal("0.05"),
+            nglobal=2,
+            history_years=2,
+        )
+
+        closes = ["100", "104", "116.48", "125.7984", "130.830336"]
+        slow_map = self._compute_alert_map_with_slow_path(scenario, closes)
+        fast_map = self._compute_alert_map_with_fast_path(scenario, closes)
+
+        day_buy = date(2024, 1, 3)
+        day_middle = date(2024, 1, 4)
+        day_sell = date(2024, 1, 5)
+
+        for alerts in (slow_map.get(day_buy, ""), fast_map.get(day_buy, "")):
+            self.assertIn("SPa", alerts)
+            self.assertIn("SPVa", alerts)
+            self.assertIn("SPa_basse", alerts)
+            self.assertIn("SPVa_basse", alerts)
+            self.assertNotIn("SPv", alerts)
+            self.assertNotIn("SPVv", alerts)
+
+        for alerts in (slow_map.get(day_middle, ""), fast_map.get(day_middle, "")):
+            self.assertNotIn("SPv", alerts)
+            self.assertNotIn("SPVv", alerts)
+            self.assertNotIn("SPv_basse", alerts)
+            self.assertNotIn("SPVv_basse", alerts)
+
+        for alerts in (slow_map.get(day_sell, ""), fast_map.get(day_sell, "")):
+            self.assertIn("SPv", alerts)
+            self.assertIn("SPVv", alerts)
+            self.assertIn("SPv_basse", alerts)
+            self.assertIn("SPVv_basse", alerts)
 
     def test_global_momentum_values_and_regimes_are_computed_per_date(self):
         metrics_by_ticker = {
@@ -1983,6 +2211,112 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(row["ticker"], self.symbol.ticker)
         self.assertTrue(row["ok"], row)
         self.assertIn(row["RATIO_IN_POSITION"], {"40", "40.0"})
+
+    def test_game_runner_keeps_tradability_semantics_on_buy_threshold_only(self):
+        game = GameScenario.objects.create(
+            name="Daily Game Sell Threshold",
+            active=True,
+            study_days=30,
+            tradability_threshold=Decimal("0.3"),
+            presence_threshold_pct=Decimal("30"),
+            npente=100,
+            slope_threshold=Decimal("0.1"),
+            slope_sell_threshold=Decimal("0.5"),
+            npente_basse=20,
+            slope_threshold_basse=Decimal("0.02"),
+            slope_sell_threshold_basse=Decimal("0.01"),
+            nglobal=20,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=5,
+            n2=3,
+            capital_total=Decimal("10000"),
+            capital_per_ticker=Decimal("1000"),
+            capital_mode="FIXED",
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+        )
+        self._create_bars_for_symbol(self.symbol, ["10", "11", "12"])
+
+        fake_depth = SimpleNamespace(needs_full_recompute=lambda: False, missing_symbol_ids=[], total_symbols=1)
+        fake_out = {
+            self.symbol.ticker: {
+                "best_bmd": "0.004",
+                "lines": [
+                    {"final": {"BMD": "0.004", "TRADABLE_DAYS": 10, "TRADABLE_DAYS_IN_POSITION_CLOSED": 4}}
+                ],
+            }
+        }
+        with patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 1, "bars": 0}), \
+             patch("core.tasks._compute_metrics_for_scenario", return_value={"symbols": 1, "rows": 0}), \
+             patch("core.services.game_scenarios.runner.check_metrics_depth", return_value=fake_depth), \
+             patch("core.services.game_scenarios.runner.run_backtest_kpi_only", return_value=fake_out), \
+             patch("core.services.game_scenarios.runner._compute_avg_slope_for_ticker", return_value="0.2"):
+            run_game_scenario_now(game.id)
+
+        game.refresh_from_db()
+        row = game.today_results["rows"][0]
+        self.assertTrue(row["ok"], row)
+        self.assertEqual(game.engine_scenario.slope_sell_threshold, Decimal("0.50000000"))
+        self.assertEqual(game.engine_scenario.slope_sell_threshold_basse, Decimal("0.01000000"))
+
+    def test_game_runtime_scenario_sync_helper_is_authoritative_for_both_call_paths(self):
+        common = dict(
+            name="Game Sync Equivalence",
+            active=True,
+            study_days=1000,
+            tradability_threshold=Decimal("0"),
+            presence_threshold_pct=Decimal("30"),
+            npente=100,
+            slope_threshold=Decimal("0.10"),
+            slope_sell_threshold=Decimal("0.05"),
+            npente_basse=20,
+            slope_threshold_basse=Decimal("0.02"),
+            slope_sell_threshold_basse=Decimal("0.01"),
+            nglobal=20,
+            a=Decimal("1"),
+            b=Decimal("2"),
+            c=Decimal("3"),
+            d=Decimal("4"),
+            e=Decimal("5"),
+            vc=Decimal("0.40"),
+            fl=Decimal("0.60"),
+            n1=5,
+            n2=3,
+            n3=7,
+            n4=9,
+            n5=100,
+            k2j=10,
+            cr=Decimal("10"),
+            n5f3=80,
+            crf3=Decimal("12"),
+            nampL3=70,
+            baseL3=Decimal("0.03"),
+            periodeL3=90,
+            m_v=Decimal("1.25"),
+            capital_total=Decimal("10000"),
+            capital_per_ticker=Decimal("1000"),
+            capital_mode="FIXED",
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+        )
+        game_runner = GameScenario.objects.create(**common)
+        game_task = GameScenario.objects.create(**common)
+
+        sc_from_helper = sync_game_engine_scenario(game_runner)
+        sc_from_runner_wrapper = _sync_engine_scenario(game_runner)
+        sc_from_task_wrapper = _ensure_game_engine_scenario(game_task)
+
+        for field_name in GAME_RUNTIME_SCENARIO_FIELDS:
+            self.assertEqual(getattr(sc_from_helper, field_name), getattr(game_runner, field_name), field_name)
+            self.assertEqual(getattr(sc_from_runner_wrapper, field_name), getattr(sc_from_helper, field_name), field_name)
+            self.assertEqual(getattr(sc_from_task_wrapper, field_name), getattr(sc_from_helper, field_name), field_name)
+
+        self.assertEqual(sc_from_runner_wrapper.name, f"[GAME] {game_runner.name}")
+        self.assertEqual(sc_from_task_wrapper.name, f"[GAME] {game_task.name}")
+        self.assertEqual(sc_from_runner_wrapper.description, f"Auto-generated scenario for GameScenario #{game_runner.id}")
+        self.assertEqual(sc_from_task_wrapper.description, f"Auto-generated scenario for GameScenario #{game_task.id}")
 
 
 class BacktestLargeResultModeTests(TestCase):

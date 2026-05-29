@@ -387,9 +387,9 @@
 
   {% if diagnostic_chart_payload.trend_filters %}
   <div style="margin-bottom:8px;">
-    <h4 style="margin:0 0 8px 0;">BUY-only Trend Filters</h4>
+    <h4 style="margin:0 0 8px 0;">Filtres de tendance (achat uniquement)</h4>
     <div class="muted" style="margin-bottom:8px;">
-      <div>Operator: <b>{{ diagnostic_chart_payload.trend_filters.operator }}</b></div>
+      <div>Opérateur : <b>{{ diagnostic_chart_payload.trend_filters.operator }}</b></div>
       {% if diagnostic_chart_payload.trend_filters.universe.sector_warning %}
       <div>{{ diagnostic_chart_payload.trend_filters.universe.sector_warning }}</div>
       {% endif %}
@@ -887,7 +887,9 @@
       const hasMainSlopeSeries = slopeSeriesKeys.some((key) => ["SUM_SLOPE", "SLOPE_VRAI"].includes(key) && (payload.signal_series || {})[key]);
       const hasLowerSlopeSeries = slopeSeriesKeys.some((key) => ["SUM_SLOPE_BASSE", "SLOPE_VRAI_BASSE"].includes(key) && (payload.signal_series || {})[key]);
       const slopeThreshold = toNumber(thresholds.slope_threshold);
+      const slopeSellThreshold = toNumber(thresholds.slope_sell_threshold);
       const slopeThresholdBasse = toNumber(thresholds.slope_threshold_basse);
+      const slopeSellThresholdBasse = toNumber(thresholds.slope_sell_threshold_basse);
       if (hasMainSlopeSeries && slopeThreshold !== null) {
         slopeDatasets.push({
           type: "line",
@@ -900,6 +902,18 @@
           spanGaps: true,
         });
       }
+      if (hasMainSlopeSeries && slopeSellThreshold !== null && slopeSellThreshold !== slopeThreshold) {
+        slopeDatasets.push({
+          type: "line",
+          label: "Seuil pente vente",
+          data: labels.map(() => slopeSellThreshold),
+          borderColor: "#0f766e",
+          backgroundColor: "#0f766e",
+          borderDash: [2, 4],
+          pointRadius: 0,
+          spanGaps: true,
+        });
+      }
       if (hasLowerSlopeSeries && slopeThresholdBasse !== null) {
         slopeDatasets.push({
           type: "line",
@@ -908,6 +922,18 @@
           borderColor: "#64748b",
           backgroundColor: "#64748b",
           borderDash: [3, 4],
+          pointRadius: 0,
+          spanGaps: true,
+        });
+      }
+      if (hasLowerSlopeSeries && slopeSellThresholdBasse !== null && slopeSellThresholdBasse !== slopeThresholdBasse) {
+        slopeDatasets.push({
+          type: "line",
+          label: "Seuil pente basse vente",
+          data: labels.map(() => slopeSellThresholdBasse),
+          borderColor: "#115e59",
+          backgroundColor: "#115e59",
+          borderDash: [2, 3],
           pointRadius: 0,
           spanGaps: true,
         });

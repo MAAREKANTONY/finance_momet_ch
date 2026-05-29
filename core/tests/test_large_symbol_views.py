@@ -167,6 +167,14 @@ class LargeSymbolFormViewTests(TestCase):
         response = self.client.get(reverse("scenario_create"))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
+        self.assertIn("1. Modèle de prix", body)
+        self.assertIn("2. Fenêtres d’indicateurs", body)
+        self.assertIn("3. Fenêtres de pente &amp; régime", body)
+        self.assertIn("4. Historique &amp; calcul", body)
+        self.assertIn("5. Contrôles avancés des indicateurs", body)
+        self.assertIn("Le scénario = le modèle d’indicateurs.", body)
+        self.assertIn("Seuil de déclenchement vente", body)
+        self.assertIn("Seuil de déclenchement vente — pente basse", body)
         self.assertIn("Ajouter tous les résultats", body)
         self.assertIn("Appliquer un univers existant", body)
         self.assertIn("Recherche dans la sélection", body)
@@ -198,6 +206,34 @@ class LargeSymbolFormViewTests(TestCase):
             self.assertIn(sym.ticker, body)
         self.assertIn('server-selected-bootstrap', body)
 
+    def test_scenario_duplicate_preserves_sell_threshold_values(self):
+        scenario = Scenario.objects.create(
+            name="Slope Duplicate",
+            active=True,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=5,
+            n2=3,
+            npente=100,
+            slope_threshold=0.1,
+            slope_sell_threshold=0.05,
+            npente_basse=20,
+            slope_threshold_basse=0.02,
+            slope_sell_threshold_basse=0.01,
+            nglobal=20,
+            history_years=2,
+        )
+        response = self.client.get(reverse("scenario_duplicate", args=[scenario.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn('name="slope_sell_threshold"', body)
+        self.assertIn('value="0.05', body)
+        self.assertIn('name="slope_sell_threshold_basse"', body)
+        self.assertIn('value="0.01', body)
+
     def test_backtest_create_view_hides_legacy_gm_controls_and_keeps_trend_filters(self):
         scenario = Scenario.objects.create(
             name="Scenario GM UI",
@@ -209,7 +245,15 @@ class LargeSymbolFormViewTests(TestCase):
         response = self.client.get(reverse("backtest_create"))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Trend Filters", body)
+        self.assertIn("1. Périmètre / Période", body)
+        self.assertIn("2. Signaux d’entrée &amp; de sortie", body)
+        self.assertIn("3. Conditions de marché", body)
+        self.assertIn("4. Filtres de tradabilité &amp; risque", body)
+        self.assertIn("5. Capital &amp; exécution", body)
+        self.assertIn("Un signal est un déclencheur", body)
+        self.assertIn("Un filtre est une condition bloquante", body)
+        self.assertIn("Les filtres de tendance s'appliquent uniquement aux achats", body)
+        self.assertIn("Filtres de tendance", body)
         self.assertIn("GM_market", body)
         self.assertIn("GM_sector", body)
         self.assertNotIn('data-role="buy_gm_filter"', body)
@@ -255,8 +299,8 @@ class LargeSymbolFormViewTests(TestCase):
         response = self.client.get(reverse("backtest_create"))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Trend Filters", body)
-        self.assertIn("Combine Trend Filters With", body)
+        self.assertIn("Filtres de tendance", body)
+        self.assertIn("Combiner les filtres de tendance avec", body)
         self.assertIn("GM_market", body)
         self.assertIn("GM_sector", body)
 
@@ -638,6 +682,11 @@ class SymbolMetadataViewTests(TestCase):
         }]
         self.assertEqual(response.context["signal_lines_json"], json.dumps(normalized_signal_lines))
         body = response.content.decode()
+        self.assertIn("1. Périmètre / Période", body)
+        self.assertIn("2. Signaux d’entrée &amp; de sortie", body)
+        self.assertIn("3. Conditions de marché", body)
+        self.assertIn("4. Filtres de tradabilité &amp; risque", body)
+        self.assertIn("5. Capital &amp; exécution", body)
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertIn('"buy_gm_filter": "IGNORE"', body)
@@ -864,11 +913,11 @@ class SymbolMetadataViewTests(TestCase):
         )
         response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
         body = response.content.decode()
-        self.assertIn("Trend filters operator", body)
+        self.assertIn("Opérateur des filtres de tendance", body)
         self.assertIn("GM current", body)
         self.assertIn("GM_market", body)
         self.assertIn("GM_sector", body)
-        self.assertIn("GM_market and GM_sector require local OHLC data for benchmark ETFs such as SPY, XLK, XLF, etc.", body)
+        self.assertIn("GM_market et GM_sector nécessitent des données OHLC locales pour les ETF de benchmark tels que SPY, XLK, XLF, etc.", body)
         self.assertIn("GM positif", body)
         self.assertIn("GM négatif", body)
         self.assertIn("GM neutre", body)
@@ -877,7 +926,17 @@ class SymbolMetadataViewTests(TestCase):
         response = self.client.get(reverse("game_scenario_create"))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Trend Filters", body)
+        self.assertIn("1. Périmètre / Période", body)
+        self.assertIn("2. Signaux d’entrée &amp; de sortie", body)
+        self.assertIn("3. Conditions de marché", body)
+        self.assertIn("4. Filtres de tradabilité &amp; risque", body)
+        self.assertIn("5. Capital &amp; exécution", body)
+        self.assertIn("6. Avancé / Diagnostic", body)
+        self.assertIn("Un signal est un déclencheur", body)
+        self.assertIn("Un filtre est une condition bloquante", body)
+        self.assertIn("Filtres de tendance", body)
+        self.assertIn("Seuil de déclenchement vente", body)
+        self.assertIn("Seuil de déclenchement vente — pente basse", body)
         self.assertIn("GM_market", body)
         self.assertIn("GM_sector", body)
         self.assertNotIn('data-role="buy_gm_filter"', body)
@@ -906,8 +965,8 @@ class SymbolMetadataViewTests(TestCase):
         response = self.client.get(reverse("game_scenario_create"))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Trend Filters", body)
-        self.assertIn("Combine Trend Filters With", body)
+        self.assertIn("Filtres de tendance", body)
+        self.assertIn("Combiner les filtres de tendance avec", body)
         self.assertIn("GM_market", body)
         self.assertIn("GM_sector", body)
 
@@ -941,6 +1000,12 @@ class SymbolMetadataViewTests(TestCase):
         }]
         self.assertEqual(response.context["signal_lines_json"], json.dumps(normalized_signal_lines))
         body = response.content.decode()
+        self.assertIn("1. Périmètre / Période", body)
+        self.assertIn("2. Signaux d’entrée &amp; de sortie", body)
+        self.assertIn("3. Conditions de marché", body)
+        self.assertIn("4. Filtres de tradabilité &amp; risque", body)
+        self.assertIn("5. Capital &amp; exécution", body)
+        self.assertIn("6. Avancé / Diagnostic", body)
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertIn('"buy_gm_filter": "IGNORE"', body)
@@ -1038,11 +1103,11 @@ class SymbolMetadataViewTests(TestCase):
         )
         response = self.client.get(reverse("game_scenario_detail", args=[game.pk]))
         body = response.content.decode()
-        self.assertIn("Trend filters operator", body)
+        self.assertIn("Opérateur des filtres de tendance", body)
         self.assertIn("GM current", body)
         self.assertIn("GM_market", body)
         self.assertIn("GM_sector", body)
-        self.assertIn("GM_market and GM_sector require local OHLC data for benchmark ETFs such as SPY, XLK, XLF, etc.", body)
+        self.assertIn("GM_market et GM_sector nécessitent des données OHLC locales pour les ETF de benchmark tels que SPY, XLK, XLF, etc.", body)
         self.assertIn("GM positif", body)
         self.assertIn("GM négatif", body)
         self.assertIn("GM neutre", body)
@@ -1693,6 +1758,9 @@ class BacktestResultsRenderTests(TestCase):
                 self.assertTrue(expected_keys.issubset(set(payload["signal_series"].keys())))
 
     def test_backtest_results_diagnostic_payload_exposes_slope_thresholds(self):
+        self.scenario.slope_sell_threshold = Decimal("0.05")
+        self.scenario.slope_sell_threshold_basse = Decimal("0.01")
+        self.scenario.save(update_fields=["slope_sell_threshold", "slope_sell_threshold_basse"])
         bt = self._build_diagnostic_backtest(
             signal_lines=[{"buy": ["SPVa_basse"], "sell": ["SPVv_basse"]}],
             ticker_lines={
@@ -1705,7 +1773,9 @@ class BacktestResultsRenderTests(TestCase):
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         payload = response.context["diagnostic_chart_payload"]
         self.assertEqual(payload["thresholds"]["slope_threshold"], str(self.scenario.slope_threshold))
+        self.assertEqual(payload["thresholds"]["slope_sell_threshold"], str(self.scenario.slope_sell_threshold))
         self.assertEqual(payload["thresholds"]["slope_threshold_basse"], str(self.scenario.slope_threshold_basse))
+        self.assertEqual(payload["thresholds"]["slope_sell_threshold_basse"], str(self.scenario.slope_sell_threshold_basse))
 
     def test_backtest_results_diagnostic_slope_panel_contains_main_threshold_line(self):
         bt = self._build_diagnostic_backtest(
@@ -1720,6 +1790,7 @@ class BacktestResultsRenderTests(TestCase):
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         body = response.content.decode()
         self.assertIn('label: "Seuil pente"', body)
+        self.assertIn('label: "Seuil pente vente"', body)
 
     def test_backtest_results_diagnostic_slope_panel_appears_for_slope_signals(self):
         bt = self._build_diagnostic_backtest(
@@ -1736,6 +1807,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("Signaux de pente / oscillateurs", body)
         self.assertIn('id="diagnosticSlopeChart"', body)
         self.assertIn('label: "Seuil pente basse"', body)
+        self.assertIn('label: "Seuil pente basse vente"', body)
         self.assertIn('label: "Ligne zéro"', body)
         self.assertIn('data: buildMarkerSeriesFromValues(markerType, firstSlopeValues)', body)
 
@@ -2027,7 +2099,7 @@ class BacktestResultsRenderTests(TestCase):
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("BUY-only Trend Filters", body)
+        self.assertIn("Filtres de tendance (achat uniquement)", body)
         self.assertIn("GM current", body)
         self.assertIn("GM_market", body)
         self.assertIn("GM_sector", body)

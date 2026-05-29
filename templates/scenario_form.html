@@ -6,16 +6,149 @@
   <form method="post" id="scenario-form">
     {% csrf_token %}
 
-    {% for field in form %}
-      {% if field.name != "symbols" %}
+    {% if form.non_field_errors %}<div class="error">{{ form.non_field_errors }}</div>{% endif %}
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">1. Modèle de prix</h3>
+      <p class="muted">Le scénario = le modèle d’indicateurs. Cette section définit comment le prix d’étude est construit à partir de l’OHLC avant toute évaluation de signal ou de filtre.</p>
+
+      <p>
+        {{ form.name.label_tag }}<br/>
+        {{ form.name }}
+        {% for error in form.name.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+      </p>
+      <p>
+        {{ form.description.label_tag }}<br/>
+        {{ form.description }}
+        {% for error in form.description.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+      </p>
+      <p>
+        {{ form.is_default.label_tag }}<br/>
+        {{ form.is_default }}
+        {% for error in form.is_default.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+      </p>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
         <p>
-          {{ field.label_tag }}<br/>
-          {{ field }}
-          {% if field.help_text %}<br/><small class="muted">{{ field.help_text }}</small>{% endif %}
-          {% for error in field.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+          {{ form.a.label_tag }}<br/>
+          {{ form.a }}
+          {% for error in form.a.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
         </p>
-      {% endif %}
-    {% endfor %}
+        <p>
+          {{ form.b.label_tag }}<br/>
+          {{ form.b }}
+          {% for error in form.b.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.c.label_tag }}<br/>
+          {{ form.c }}
+          {% for error in form.c.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.d.label_tag }}<br/>
+          {{ form.d }}
+          {% for error in form.d.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.e.label_tag }}<br/>
+          {{ form.e }}
+          {% for error in form.e.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+      </div>
+      <p class="muted" style="margin-top:0;">P = (a*F + b*H + c*L + d*O)/(a+b+c+d)</p>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">2. Fenêtres d’indicateurs</h3>
+      <p class="muted">Les fenêtres d’indicateurs contrôlent le lookback utilisé par les séries de déclenchement. Ces lignes dérivées sont ensuite consommées par les signaux dans les Backtests et Games.</p>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <p>
+          {{ form.n1.label_tag }}<br/>
+          {{ form.n1 }}
+          {% for error in form.n1.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.n2.label_tag }}<br/>
+          {{ form.n2 }}
+          {% for error in form.n2.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">3. Fenêtres de pente &amp; régime</h3>
+      <p class="muted">Les conditions de marché utilisent ensuite l’état dérivé du benchmark ou du régime global. Ces fenêtres pilotent les calculs de pente et de GM current, mais ne déclenchent pas elles-mêmes les trades.</p>
+      <p class="muted">Modifier ces seuils change la génération des alertes SPa/SPv/SPVa/SPVv. Après modification, il faut recalculer les alertes/indicateurs puis relancer les backtests et Games concernés.</p>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <p>
+          {{ form.npente.label_tag }}<br/>
+          {{ form.npente }}
+          {% for error in form.npente.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.slope_threshold.label_tag }}<br/>
+          {{ form.slope_threshold }}
+          {% if form.slope_threshold.help_text %}<br/><span class="muted">{{ form.slope_threshold.help_text }}</span>{% endif %}
+          {% for error in form.slope_threshold.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.slope_sell_threshold.label_tag }}<br/>
+          {{ form.slope_sell_threshold }}
+          {% if form.slope_sell_threshold.help_text %}<br/><span class="muted">{{ form.slope_sell_threshold.help_text }}</span>{% endif %}
+          {% for error in form.slope_sell_threshold.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.npente_basse.label_tag }}<br/>
+          {{ form.npente_basse }}
+          {% for error in form.npente_basse.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.slope_threshold_basse.label_tag }}<br/>
+          {{ form.slope_threshold_basse }}
+          {% if form.slope_threshold_basse.help_text %}<br/><span class="muted">{{ form.slope_threshold_basse.help_text }}</span>{% endif %}
+          {% for error in form.slope_threshold_basse.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.slope_sell_threshold_basse.label_tag }}<br/>
+          {{ form.slope_sell_threshold_basse }}
+          {% if form.slope_sell_threshold_basse.help_text %}<br/><span class="muted">{{ form.slope_sell_threshold_basse.help_text }}</span>{% endif %}
+          {% for error in form.slope_sell_threshold_basse.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.nglobal.label_tag }}<br/>
+          {{ form.nglobal }}
+          {% for error in form.nglobal.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">4. Historique &amp; calcul</h3>
+      <p class="muted">L’exécution s’appuie ensuite sur cet historique calculé. Plus d’historique améliore la reconstruction d’état, mais augmente le coût de pré-calcul.</p>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <p>
+          {{ form.history_years.label_tag }}<br/>
+          {{ form.history_years }}
+          {% for error in form.history_years.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.active.label_tag }}<br/>
+          {{ form.active }}
+          {% for error in form.active.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+      </div>
+      <p class="muted" style="margin-top:0;">Historique: l'app récupère environ <strong>260 * history_years</strong> jours de trading par ticker.</p>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">5. Contrôles avancés des indicateurs</h3>
+      <p class="muted">Les contrôles avancés affinent le comportement des indicateurs. Garde-les stables sauf si tu modifies volontairement le modèle d’indicateurs utilisé par les futurs signaux et filtres.</p>
+      <p class="muted">Un signal est un déclencheur, un filtre est une condition bloquante / porte d’entrée, une condition de marché correspond à un benchmark ou un régime global, et l’exécution définit ensuite comment les positions sont ouvertes et clôturées.</p>
+      <p class="muted">Aide disponible sur les indicateurs actifs : P, K1..K4, Kf, SUM_SLOPE et SLOPE_VRAI.</p>
+    </div>
 
   <div id="server-selected-bootstrap" style="display:none;">{{ form.symbols }}</div>
     {% for error in form.symbols.errors %}<p class="error">{{ error }}</p>{% endfor %}
@@ -143,9 +276,6 @@
     <a class="btn" href="{% url 'scenarios_page' %}">Annuler</a>
   </form>
 </div>
-<p class="muted">P = (a*F + b*H + c*L + d*O)/(a+b+c+d)</p>
-<p class="muted">Historique: l'app récupère environ <strong>260 * history_years</strong> jours de trading par ticker.</p>
-<p class="muted">Aide disponible sur les indicateurs actifs : P, K1..K4, Kf, SUM_SLOPE et SLOPE_VRAI.</p>
 
 <script>
 (function(){
