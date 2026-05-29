@@ -161,7 +161,9 @@ def build_backtest_debug_workbook(bt: Backtest, ticker: str = '', line: str | in
     append_excel_row(ws_formulas, ['Scenario parameter', 'Value'])
     for field in [
         'a', 'b', 'c', 'd', 'e', 'vc', 'fl', 'n1', 'n2', 'n3', 'n4', 'n5', 'k2j', 'cr',
-        'n5f3', 'crf3', 'npente', 'nglobal', 'slope_threshold', 'npente_basse', 'slope_threshold_basse',
+        'n5f3', 'crf3', 'npente', 'nglobal',
+        'slope_threshold', 'slope_sell_threshold',
+        'npente_basse', 'slope_threshold_basse', 'slope_sell_threshold_basse',
     ]:
         if hasattr(scenario, field):
             _append_kv(ws_formulas, field, getattr(scenario, field))

@@ -58,6 +58,40 @@ class SymbolPickerFormTests(TestCase):
         self.assertEqual(payload[0]["ticker"], "MSFT")
         self.assertEqual(payload[0]["sector"], "Software")
 
+    def test_scenario_form_renders_sell_threshold_fields(self):
+        form = ScenarioForm()
+        self.assertIn("slope_sell_threshold", form.fields)
+        self.assertIn("slope_sell_threshold_basse", form.fields)
+        self.assertEqual(form.fields["slope_sell_threshold"].label, "Seuil de déclenchement vente")
+        self.assertIn("Si vide, le seuil d'achat est réutilisé.", form.fields["slope_sell_threshold"].help_text)
+
+    def test_scenario_form_saves_explicit_sell_thresholds(self):
+        form = ScenarioForm(data={
+            "name": "Scenario sell thresholds",
+            "description": "test",
+            "a": "1",
+            "b": "1",
+            "c": "1",
+            "d": "1",
+            "e": "1",
+            "n1": "5",
+            "n2": "3",
+            "npente": "100",
+            "slope_threshold": "0.1",
+            "slope_sell_threshold": "0.05",
+            "npente_basse": "20",
+            "slope_threshold_basse": "0.02",
+            "slope_sell_threshold_basse": "0.01",
+            "nglobal": "20",
+            "history_years": "2",
+            "active": "on",
+            "symbols": f"{self.sym1.id}",
+        })
+        self.assertTrue(form.is_valid(), form.errors)
+        scenario = form.save()
+        self.assertEqual(str(scenario.slope_sell_threshold), "0.05")
+        self.assertEqual(str(scenario.slope_sell_threshold_basse), "0.01")
+
     def test_game_scenario_form_cleans_signal_lines(self):
         form = GameScenarioForm(
             data={
@@ -94,6 +128,51 @@ class SymbolPickerFormTests(TestCase):
         cleaned = form.cleaned_data["signal_lines"]
         self.assertEqual(cleaned[0]["buy_gm_filter"], "GM_POS")
         self.assertEqual(cleaned[0]["buy_gm_operator"], "OR")
+
+    def test_game_scenario_form_renders_sell_threshold_fields(self):
+        form = GameScenarioForm()
+        self.assertIn("slope_sell_threshold", form.fields)
+        self.assertIn("slope_sell_threshold_basse", form.fields)
+        self.assertEqual(form.fields["slope_sell_threshold_basse"].label, "Seuil de déclenchement vente — pente basse")
+
+    def test_game_scenario_form_saves_explicit_sell_thresholds(self):
+        form = GameScenarioForm(
+            data={
+                "name": "Game sell thresholds",
+                "description": "",
+                "active": "on",
+                "study_days": "1000",
+                "tradability_threshold": "0",
+                "npente": "100",
+                "slope_threshold": "0.1",
+                "slope_sell_threshold": "0.05",
+                "npente_basse": "20",
+                "slope_threshold_basse": "0.02",
+                "slope_sell_threshold_basse": "0.01",
+                "nglobal": "20",
+                "presence_threshold_pct": "30",
+                "email_recipients": "",
+                "a": "1",
+                "b": "1",
+                "c": "1",
+                "d": "1",
+                "e": "1",
+                "n1": "5",
+                "n2": "3",
+                "capital_total": "10000",
+                "capital_per_ticker": "1000",
+                "capital_mode": "FIXED",
+                "signal_lines": json.dumps([
+                    {"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}
+                ]),
+                "warmup_days": "30",
+                "close_positions_at_end": "on",
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        game = form.save()
+        self.assertEqual(str(game.slope_sell_threshold), "0.05")
+        self.assertEqual(str(game.slope_sell_threshold_basse), "0.01")
 
     def test_backtest_form_rejects_invalid_price_range(self):
         scenario = Scenario.objects.create(name="Price Range", active=True)

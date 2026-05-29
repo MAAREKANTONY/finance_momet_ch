@@ -43,7 +43,7 @@
   {% endif %}
   {% if obj.settings.trend_filter_gm_current or obj.settings.trend_filter_gm_market or obj.settings.trend_filter_gm_sector %}
     <p>
-      <b>Trend filters operator:</b> {{ obj.settings.trend_filter_operator|default:"AND" }}
+      <b>Opérateur des filtres de tendance:</b> {{ obj.settings.trend_filter_operator|default:"AND" }}
       &nbsp; | &nbsp;
       <b>GM current:</b> {{ obj.settings.trend_filter_gm_current|default:"IGNORE"|gm_filter_business_label }}
       &nbsp; | &nbsp;
@@ -51,7 +51,7 @@
       &nbsp; | &nbsp;
       <b>GM_sector:</b> {{ obj.settings.trend_filter_gm_sector|default:"IGNORE"|gm_filter_business_label }}
     </p>
-    <p class="muted">GM_market and GM_sector require local OHLC data for benchmark ETFs such as SPY, XLK, XLF, etc.</p>
+    <p class="muted">GM_market et GM_sector nécessitent des données OHLC locales pour les ETF de benchmark tels que SPY, XLK, XLF, etc.</p>
   {% endif %}
   {% if obj.last_run_message %}<p class="muted">{{ obj.last_run_message }}</p>{% endif %}
 

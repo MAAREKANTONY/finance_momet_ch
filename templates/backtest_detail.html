@@ -50,7 +50,7 @@
         {% endif %}
         {% if bt.settings.trend_filter_gm_current or bt.settings.trend_filter_gm_market or bt.settings.trend_filter_gm_sector %}
           <tr>
-            <th>Trend filters operator</th>
+            <th>Opérateur des filtres de tendance</th>
             <td>{{ bt.settings.trend_filter_operator|default:"AND" }}</td>
           </tr>
           <tr>
@@ -66,8 +66,8 @@
             <td>{{ bt.settings.trend_filter_gm_sector|default:"IGNORE"|gm_filter_business_label }}</td>
           </tr>
           <tr>
-            <th>Trend filters note</th>
-            <td class="muted">GM_market and GM_sector require local OHLC data for benchmark ETFs such as SPY, XLK, XLF, etc.</td>
+            <th>Note sur les filtres de tendance</th>
+            <td class="muted">GM_market et GM_sector nécessitent des données OHLC locales pour les ETF de benchmark tels que SPY, XLK, XLF, etc.</td>
           </tr>
         {% endif %}
         <tr><th>Lignes de signaux (achat / vente)</th><td>

@@ -119,13 +119,11 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
             content = self._template(template_name)
             self.assertIn("Prix minimum", content)
             self.assertIn("Prix maximum", content)
-            self.assertIn("Une action ne pourra être achetée que si son prix du jour est compris dans cette plage.", content)
-            self.assertIn("Ce filtre s'applique uniquement à l'achat.", content)
-            self.assertIn("La vente reste toujours possible.", content)
+            self.assertIn("Un BUY est autorisé uniquement si le prix du jour reste dans cette plage.", content)
+            self.assertIn("Ce contrôle de risque s’applique uniquement au BUY. Le SELL reste possible.", content)
         game_content = self._template("game_scenario_form.html")
-        self.assertIn("Une action ne pourra être achetée que si son prix du jour est compris dans cette plage.", game_content)
-        self.assertIn("Ce filtre s'applique uniquement à l'achat.", game_content)
-        self.assertIn("La vente reste toujours possible.", game_content)
+        self.assertIn("Un BUY est autorisé uniquement si le prix du jour reste dans cette plage.", game_content)
+        self.assertIn("Ce contrôle de risque s’applique uniquement au BUY. Le SELL reste possible.", game_content)
 
     def test_price_range_labels_are_rendered_in_detail_pages(self):
         for template_name in ("backtest_detail.html", "game_scenario_detail.html"):

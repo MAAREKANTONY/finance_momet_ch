@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 from typing import Iterable, List, Tuple
 
 from core.models import Alert, DailyMetric
+from core.services.slope_thresholds import cross_down, cross_up, effective_sell_threshold
 
 
 def D(x) -> Decimal | None:
@@ -40,7 +41,15 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
     npente = int(getattr(scenario, "npente", 100) or 100)
     npente_basse = int(getattr(scenario, "npente_basse", 20) or 20)
     slope_threshold = D(getattr(scenario, "slope_threshold", D("0.1")))
+    slope_sell_threshold = effective_sell_threshold(
+        slope_threshold,
+        D(getattr(scenario, "slope_sell_threshold", None)),
+    )
     slope_threshold_basse = D(getattr(scenario, "slope_threshold_basse", D("0.02")))
+    slope_sell_threshold_basse = effective_sell_threshold(
+        slope_threshold_basse,
+        D(getattr(scenario, "slope_sell_threshold_basse", None)),
+    )
 
     prior_P = deque(maxlen=max(1, n1))
     prior_M = deque(maxlen=max(1, n2))
@@ -200,29 +209,25 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
                 elif prev_p > prev_kf and cur_p < cur_kf:
                     day_alerts.append("Bf")
 
-        if prev_sum_slope is not None and sum_slope is not None and slope_threshold is not None:
-            if prev_sum_slope < slope_threshold and sum_slope > slope_threshold:
-                day_alerts.append("SPa")
-            elif prev_sum_slope > slope_threshold and sum_slope < slope_threshold:
-                day_alerts.append("SPv")
+        if cross_up(prev_sum_slope, sum_slope, slope_threshold):
+            day_alerts.append("SPa")
+        elif cross_down(prev_sum_slope, sum_slope, slope_sell_threshold):
+            day_alerts.append("SPv")
 
-        if prev_slope_vrai is not None and slope_vrai is not None and slope_threshold is not None:
-            if prev_slope_vrai < slope_threshold and slope_vrai > slope_threshold:
-                day_alerts.append("SPVa")
-            elif prev_slope_vrai > slope_threshold and slope_vrai < slope_threshold:
-                day_alerts.append("SPVv")
+        if cross_up(prev_slope_vrai, slope_vrai, slope_threshold):
+            day_alerts.append("SPVa")
+        elif cross_down(prev_slope_vrai, slope_vrai, slope_sell_threshold):
+            day_alerts.append("SPVv")
 
-        if prev_sum_slope_basse is not None and sum_slope_basse is not None and slope_threshold_basse is not None:
-            if prev_sum_slope_basse < slope_threshold_basse and sum_slope_basse > slope_threshold_basse:
-                day_alerts.append("SPa_basse")
-            elif prev_sum_slope_basse > slope_threshold_basse and sum_slope_basse < slope_threshold_basse:
-                day_alerts.append("SPv_basse")
+        if cross_up(prev_sum_slope_basse, sum_slope_basse, slope_threshold_basse):
+            day_alerts.append("SPa_basse")
+        elif cross_down(prev_sum_slope_basse, sum_slope_basse, slope_sell_threshold_basse):
+            day_alerts.append("SPv_basse")
 
-        if prev_slope_vrai_basse is not None and slope_vrai_basse is not None and slope_threshold_basse is not None:
-            if prev_slope_vrai_basse < slope_threshold_basse and slope_vrai_basse > slope_threshold_basse:
-                day_alerts.append("SPVa_basse")
-            elif prev_slope_vrai_basse > slope_threshold_basse and slope_vrai_basse < slope_threshold_basse:
-                day_alerts.append("SPVv_basse")
+        if cross_up(prev_slope_vrai_basse, slope_vrai_basse, slope_threshold_basse):
+            day_alerts.append("SPVa_basse")
+        elif cross_down(prev_slope_vrai_basse, slope_vrai_basse, slope_sell_threshold_basse):
+            day_alerts.append("SPVv_basse")
 
         if day_alerts:
             alerts.append(Alert(symbol=symbol, scenario=scenario, date=trading_date, alerts=",".join(day_alerts)))

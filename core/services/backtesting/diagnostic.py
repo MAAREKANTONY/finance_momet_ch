@@ -500,7 +500,9 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
 
     thresholds = {
         "slope_threshold": _decimal_str(getattr(backtest.scenario, "slope_threshold", None)),
+        "slope_sell_threshold": _decimal_str(getattr(backtest.scenario, "slope_sell_threshold", None)),
         "slope_threshold_basse": _decimal_str(getattr(backtest.scenario, "slope_threshold_basse", None)),
+        "slope_sell_threshold_basse": _decimal_str(getattr(backtest.scenario, "slope_sell_threshold_basse", None)),
     }
     market_cap = _build_market_cap_payload(backtest=backtest, symbol=symbol, dates=dates)
     trend_filters = _build_trend_filter_payload(

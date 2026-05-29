@@ -1,5 +1,6 @@
 from decimal import Decimal, InvalidOperation
 from core.models import DailyBar, DailyMetric, Alert
+from core.services.slope_thresholds import cross_down, cross_up, effective_sell_threshold
 
 def D(x) -> Decimal:
     if x is None:
@@ -183,44 +184,50 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
         prev_kf = D(getattr(prev_metric, "Kf2bis", None))
         cur_kf = D(getattr(metric, "Kf2bis", None))
 
-        cross_up = (
+        price_cross_up = (
             prev_p is not None and cur_p is not None and prev_kf is not None and cur_kf is not None
             and (prev_p < prev_kf) and (cur_p > cur_kf)
         )
-        cross_down = (
+        price_cross_down = (
             prev_p is not None and cur_p is not None and prev_kf is not None and cur_kf is not None
             and (prev_p > prev_kf) and (cur_p < cur_kf)
         )
-        if cross_up:
+        if price_cross_up:
             alerts.append("Af")
-        if cross_down:
+        if price_cross_down:
             alerts.append("Bf")
     except Exception:
         pass
 
-    # SUM_SLOPE alerts (SPa/SPv) based on crossing the configured slope threshold
+    # BUY slope alerts use the BUY threshold. SELL alerts fall back to the BUY threshold
+    # when no explicit SELL threshold is configured, preserving historical behavior.
     try:
         prev_sum_slope = D(getattr(prev_metric, "sum_slope", None))
         cur_sum_slope = D(getattr(metric, "sum_slope", None))
-        slope_threshold = D(getattr(scenario, "slope_threshold", None))
-        if prev_sum_slope is not None and cur_sum_slope is not None and slope_threshold is not None:
-            if (prev_sum_slope < slope_threshold) and (cur_sum_slope > slope_threshold):
-                alerts.append("SPa")
-            elif (prev_sum_slope > slope_threshold) and (cur_sum_slope < slope_threshold):
-                alerts.append("SPv")
+        buy_threshold = D(getattr(scenario, "slope_threshold", None))
+        sell_threshold = effective_sell_threshold(
+            buy_threshold,
+            D(getattr(scenario, "slope_sell_threshold", None)),
+        )
+        if cross_up(prev_sum_slope, cur_sum_slope, buy_threshold):
+            alerts.append("SPa")
+        elif cross_down(prev_sum_slope, cur_sum_slope, sell_threshold):
+            alerts.append("SPv")
     except Exception:
         pass
 
-    # SLOPE_VRAI alerts (SPVa/SPVv) based on crossing the configured slope threshold
     try:
         prev_slope_vrai = D(getattr(prev_metric, "slope_vrai", None))
         cur_slope_vrai = D(getattr(metric, "slope_vrai", None))
-        slope_threshold = D(getattr(scenario, "slope_threshold", None))
-        if prev_slope_vrai is not None and cur_slope_vrai is not None and slope_threshold is not None:
-            if (prev_slope_vrai < slope_threshold) and (cur_slope_vrai > slope_threshold):
-                alerts.append("SPVa")
-            elif (prev_slope_vrai > slope_threshold) and (cur_slope_vrai < slope_threshold):
-                alerts.append("SPVv")
+        buy_threshold = D(getattr(scenario, "slope_threshold", None))
+        sell_threshold = effective_sell_threshold(
+            buy_threshold,
+            D(getattr(scenario, "slope_sell_threshold", None)),
+        )
+        if cross_up(prev_slope_vrai, cur_slope_vrai, buy_threshold):
+            alerts.append("SPVa")
+        elif cross_down(prev_slope_vrai, cur_slope_vrai, sell_threshold):
+            alerts.append("SPVv")
     except Exception:
         pass
 
@@ -228,12 +235,15 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     try:
         prev_sum_slope_basse = D(getattr(prev_metric, "sum_slope_basse", None))
         cur_sum_slope_basse = D(getattr(metric, "sum_slope_basse", None))
-        slope_threshold_basse = D(getattr(scenario, "slope_threshold_basse", None))
-        if prev_sum_slope_basse is not None and cur_sum_slope_basse is not None and slope_threshold_basse is not None:
-            if (prev_sum_slope_basse < slope_threshold_basse) and (cur_sum_slope_basse > slope_threshold_basse):
-                alerts.append("SPa_basse")
-            elif (prev_sum_slope_basse > slope_threshold_basse) and (cur_sum_slope_basse < slope_threshold_basse):
-                alerts.append("SPv_basse")
+        buy_threshold_basse = D(getattr(scenario, "slope_threshold_basse", None))
+        sell_threshold_basse = effective_sell_threshold(
+            buy_threshold_basse,
+            D(getattr(scenario, "slope_sell_threshold_basse", None)),
+        )
+        if cross_up(prev_sum_slope_basse, cur_sum_slope_basse, buy_threshold_basse):
+            alerts.append("SPa_basse")
+        elif cross_down(prev_sum_slope_basse, cur_sum_slope_basse, sell_threshold_basse):
+            alerts.append("SPv_basse")
     except Exception:
         pass
 
@@ -241,12 +251,15 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     try:
         prev_slope_vrai_basse = D(getattr(prev_metric, "slope_vrai_basse", None))
         cur_slope_vrai_basse = D(getattr(metric, "slope_vrai_basse", None))
-        slope_threshold_basse = D(getattr(scenario, "slope_threshold_basse", None))
-        if prev_slope_vrai_basse is not None and cur_slope_vrai_basse is not None and slope_threshold_basse is not None:
-            if (prev_slope_vrai_basse < slope_threshold_basse) and (cur_slope_vrai_basse > slope_threshold_basse):
-                alerts.append("SPVa_basse")
-            elif (prev_slope_vrai_basse > slope_threshold_basse) and (cur_slope_vrai_basse < slope_threshold_basse):
-                alerts.append("SPVv_basse")
+        buy_threshold_basse = D(getattr(scenario, "slope_threshold_basse", None))
+        sell_threshold_basse = effective_sell_threshold(
+            buy_threshold_basse,
+            D(getattr(scenario, "slope_sell_threshold_basse", None)),
+        )
+        if cross_up(prev_slope_vrai_basse, cur_slope_vrai_basse, buy_threshold_basse):
+            alerts.append("SPVa_basse")
+        elif cross_down(prev_slope_vrai_basse, cur_slope_vrai_basse, sell_threshold_basse):
+            alerts.append("SPVv_basse")
     except Exception:
         pass
 

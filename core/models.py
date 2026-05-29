@@ -125,7 +125,14 @@ class Scenario(models.Model):
         max_digits=18,
         decimal_places=8,
         default=Decimal("0.1"),
-        help_text="Seuil de pente utilisé par SPa/SPv et SPVa/SPVv (ratio brut, ex: 0.1 = 10%).",
+        help_text="Seuil de déclenchement achat utilisé par SPa/SPVa (ratio brut, ex: 0.1 = 10%).",
+    )
+    slope_sell_threshold = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        null=True,
+        blank=True,
+        help_text="Seuil de déclenchement vente utilisé par SPv/SPVv. Si vide, le seuil d'achat est réutilisé.",
     )
     npente_basse = models.PositiveIntegerField(
         default=20,
@@ -135,7 +142,14 @@ class Scenario(models.Model):
         max_digits=18,
         decimal_places=8,
         default=Decimal("0.02"),
-        help_text="Seuil de pente basse utilisé par SPa_basse/SPv_basse et SPVa_basse/SPVv_basse (ratio brut, ex: 0.02 = 2%).",
+        help_text="Seuil de déclenchement achat — pente basse, utilisé par SPa_basse/SPVa_basse (ratio brut, ex: 0.02 = 2%).",
+    )
+    slope_sell_threshold_basse = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        null=True,
+        blank=True,
+        help_text="Seuil de déclenchement vente — pente basse, utilisé par SPv_basse/SPVv_basse. Si vide, le seuil d'achat est réutilisé.",
     )
     nglobal = models.PositiveIntegerField(
         default=20,
@@ -329,7 +343,14 @@ class GameScenario(models.Model):
         max_digits=18,
         decimal_places=8,
         default=Decimal("0.1"),
-        help_text="Seuil de pente utilisé à la fois pour la tradabilité du Game, SPa/SPv et SPVa/SPVv (ratio brut, ex: 0.1 = 10%).",
+        help_text="Seuil de déclenchement achat utilisé à la fois pour la tradabilité du Game, SPa et SPVa (ratio brut, ex: 0.1 = 10%).",
+    )
+    slope_sell_threshold = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        null=True,
+        blank=True,
+        help_text="Seuil de déclenchement vente utilisé par SPv/SPVv. Si vide, le seuil d'achat est réutilisé. N'affecte pas la tradabilité du Game.",
     )
     npente_basse = models.PositiveIntegerField(
         default=20,
@@ -339,7 +360,14 @@ class GameScenario(models.Model):
         max_digits=18,
         decimal_places=8,
         default=Decimal("0.02"),
-        help_text="Seuil de pente basse utilisé par SPa_basse/SPv_basse et SPVa_basse/SPVv_basse (ratio brut, ex: 0.02 = 2%).",
+        help_text="Seuil de déclenchement achat — pente basse, utilisé par SPa_basse/SPVa_basse (ratio brut, ex: 0.02 = 2%).",
+    )
+    slope_sell_threshold_basse = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        null=True,
+        blank=True,
+        help_text="Seuil de déclenchement vente — pente basse, utilisé par SPv_basse/SPVv_basse. Si vide, le seuil d'achat est réutilisé.",
     )
     nglobal = models.PositiveIntegerField(
         default=20,

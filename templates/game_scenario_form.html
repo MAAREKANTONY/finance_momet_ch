@@ -7,73 +7,248 @@
   {% csrf_token %}
 
   <div class="card">
-    {% for field in form.visible_fields %}
-      {% if field.name == 'signal_lines' %}
-        <div class="field" style="margin-top:16px;">
-          <label>Lignes de signaux (achat / vente)</label>
-          <div class="muted">Chaque ligne peut contenir 1 à N conditions BUY et 1 à N conditions SELL. Utilise les cases à cocher pour le multi-sélecteur et les boutons radio pour choisir la logique ET ou OU. Par défaut : BUY=ET, SELL=OU.</div>
+    {% if form.non_field_errors %}<div class="error">{{ form.non_field_errors }}</div>{% endif %}
 
-          <div class="card" style="margin-top:10px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
-            <div style="flex:1;">
-              <strong>Résumé de la stratégie</strong>
-              <div id="strategy-summary" class="muted" style="margin-top:6px;">—</div>
-            </div>
-            <div class="muted" style="white-space:nowrap;">
-              <span title="Utilise les signaux actifs du moteur nettoyé.">ℹ️</span>
-            </div>
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">1. Périmètre / Période</h3>
+      <p class="muted">Le GameScenario combine un modèle d’indicateurs avec des règles de trading pour le run quotidien du jeu. Cette section fixe l’horizon d’étude et le périmètre des candidats.</p>
+
+      <div class="field">
+        <label for="{{ form.name.id_for_label }}">{{ form.name.label }}</label>
+        {{ form.name }}
+        {% if form.name.errors %}<div class="error">{{ form.name.errors }}</div>{% endif %}
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label for="{{ form.description.id_for_label }}">{{ form.description.label }}</label>
+        {{ form.description }}
+        {% if form.description.errors %}<div class="error">{{ form.description.errors }}</div>{% endif %}
+      </div>
+      <div class="field" style="margin-top:12px;">
+        <label for="{{ form.active.id_for_label }}">{{ form.active.label }}</label>
+        {{ form.active }}
+        {% if form.active.errors %}<div class="error">{{ form.active.errors }}</div>{% endif %}
+      </div>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div class="field">
+          <label for="{{ form.study_days.id_for_label }}">{{ form.study_days.label }}</label>
+          {{ form.study_days }}
+          {% if form.study_days.help_text %}<div class="muted">{{ form.study_days.help_text }}</div>{% endif %}
+          {% if form.study_days.errors %}<div class="error">{{ form.study_days.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.tradability_threshold.id_for_label }}">{{ form.tradability_threshold.label }}</label>
+          {{ form.tradability_threshold }}
+          {% if form.tradability_threshold.help_text %}<div class="muted">{{ form.tradability_threshold.help_text }}</div>{% endif %}
+          {% if form.tradability_threshold.errors %}<div class="error">{{ form.tradability_threshold.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.presence_threshold_pct.id_for_label }}">{{ form.presence_threshold_pct.label }}</label>
+          {{ form.presence_threshold_pct }}
+          {% if form.presence_threshold_pct.help_text %}<div class="muted">{{ form.presence_threshold_pct.help_text }}</div>{% endif %}
+          {% if form.presence_threshold_pct.errors %}<div class="error">{{ form.presence_threshold_pct.errors }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:12px;">
+        <label for="{{ form.email_recipients.id_for_label }}">{{ form.email_recipients.label }}</label>
+        {{ form.email_recipients }}
+        {% if form.email_recipients.help_text %}<div class="muted">{{ form.email_recipients.help_text }}</div>{% endif %}
+        {% if form.email_recipients.errors %}<div class="error">{{ form.email_recipients.errors }}</div>{% endif %}
+      </div>
+
+      <div class="field" style="margin-top:12px;">
+        <label for="{{ form.warmup_days.id_for_label }}">{{ form.warmup_days.label }}</label>
+        {{ form.warmup_days }}
+          <div class="muted">L’état d’exécution est reconstruit avant la fenêtre visible du jeu afin que les modèles progressifs et latchés démarrent dans un état réaliste.</div>
+        {% if form.warmup_days.errors %}<div class="error">{{ form.warmup_days.errors }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">2. Signaux d’entrée &amp; de sortie</h3>
+      <p class="muted">Un signal est un déclencheur : il définit quand une configuration BUY ou SELL devient vraie. Les filtres et conditions de marché ci-dessous peuvent encore bloquer un BUY après déclenchement d’un signal.</p>
+
+      <div class="field" style="margin-top:16px;">
+        <label>Lignes de signaux (achat / vente)</label>
+        <div class="muted">Chaque ligne peut combiner 1..N conditions BUY et 1..N conditions SELL. Par défaut : BUY = ET, SELL = OU. Le mode d’exécution contrôle comment les positions sont ouvertes et clôturées dans le temps.</div>
+
+        <div class="card" style="margin-top:10px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
+          <div style="flex:1;">
+            <strong>Résumé de la stratégie</strong>
+            <div id="strategy-summary" class="muted" style="margin-top:6px;">—</div>
           </div>
-
-          <!-- Hidden JSON field bound to Django form -->
-          <input type="hidden" name="signal_lines" id="id_signal_lines" value='{{ signal_lines_json|escapejs }}' />
-
-          <table style="margin-top:8px;">
-            <thead>
-              <tr>
-                <th style="width:60px;">#</th>
-                <th style="width:200px;">MODE</th>
-                <th style="width:190px;">Mode de déclenchement</th>
-                <th>Achat</th>
-                <th>Vente</th>
-                <th style="width:120px;">Action</th>
-              </tr>
-            </thead>
-            <tbody id="signal-lines-body"></tbody>
-          </table>
-
-          <button type="button" class="btn" id="add-line" style="margin-top:8px;">+ Ajouter une ligne</button>
-
-          {% if field.errors %}<div class="error" style="margin-top:8px;">{{ field.errors }}</div>{% endif %}
+          <div class="muted" style="white-space:nowrap;">
+            <span title="Utilise les signaux actifs du moteur nettoyé.">ℹ️</span>
+          </div>
         </div>
-      {% elif field.name == 'market_cap_min' %}
-        {% include "partials/market_cap_filter_fields.html" %}
-      {% elif field.name == 'trend_filter_operator' %}
-        {% include "partials/trend_filter_fields.html" %}
-      {% elif field.name == 'trend_filter_gm_current' or field.name == 'trend_filter_gm_market' or field.name == 'trend_filter_gm_sector' %}
-      {% elif field.name == 'market_cap_max' or field.name == 'market_cap_missing_policy' %}
-      {% else %}
-        <div class="field" style="margin-top:12px;">
-          <label for="{{ field.id_for_label }}">
-            {% if field.name == 'min_price' %}
-              Prix minimum
-            {% elif field.name == 'max_price' %}
-              Prix maximum
-            {% else %}
-              {{ field.label }}
-            {% endif %}
-          </label>
-          {{ field }}
-          {% if field.name == 'min_price' %}
-            <div class="muted">Une action ne pourra être achetée que si son prix du jour est compris dans cette plage.</div>
-            <div class="muted">Ce filtre s'applique uniquement à l'achat.</div>
-          {% elif field.name == 'max_price' %}
-            <div class="muted">La vente reste toujours possible.</div>
-          {% elif field.help_text %}
-            <div class="muted">{{ field.help_text }}</div>
-          {% endif %}
-          {% if field.errors %}<div class="error">{{ field.errors }}</div>{% endif %}
+
+        <input type="hidden" name="signal_lines" id="id_signal_lines" value='{{ signal_lines_json|escapejs }}' />
+
+        <table style="margin-top:8px;">
+          <thead>
+            <tr>
+              <th style="width:60px;">#</th>
+              <th style="width:200px;">MODE</th>
+              <th style="width:190px;">Mode de déclenchement</th>
+              <th>Achat</th>
+              <th>Vente</th>
+              <th style="width:120px;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="signal-lines-body"></tbody>
+        </table>
+
+        <button type="button" class="btn" id="add-line" style="margin-top:8px;">+ Ajouter une ligne</button>
+
+        {% if form.signal_lines.errors %}<div class="error" style="margin-top:8px;">{{ form.signal_lines.errors }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">3. Conditions de marché</h3>
+      <p class="muted">Une condition de marché est un régime global ou un benchmark servant de porte d’entrée. Les filtres de tendance s'appliquent uniquement aux achats et ne déclenchent jamais de SELL.</p>
+      {% include "partials/trend_filter_fields.html" %}
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">4. Filtres de tradabilité &amp; risque</h3>
+      <p class="muted">Un filtre est une condition bloquante, une porte d’entrée. Les contrôles de risque et de tradabilité déterminent si un symbole est éligible au BUY après déclenchement des signaux.</p>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div class="field">
+          <label for="{{ form.min_price.id_for_label }}">Prix minimum</label>
+          {{ form.min_price }}
+          <div class="muted">Un BUY est autorisé uniquement si le prix du jour reste dans cette plage.</div>
+          {% if form.min_price.errors %}<div class="error">{{ form.min_price.errors }}</div>{% endif %}
         </div>
-      {% endif %}
-    {% endfor %}
+        <div class="field">
+          <label for="{{ form.max_price.id_for_label }}">Prix maximum</label>
+          {{ form.max_price }}
+          <div class="muted">Ce contrôle de risque s’applique uniquement au BUY. Le SELL reste possible.</div>
+          {% if form.max_price.errors %}<div class="error">{{ form.max_price.errors }}</div>{% endif %}
+        </div>
+      </div>
+
+      {% include "partials/market_cap_filter_fields.html" %}
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">5. Capital &amp; exécution</h3>
+      <p class="muted">L’exécution définit comment les positions sont ouvertes, dimensionnées, maintenues et clôturées une fois les déclencheurs et filtres validés.</p>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div class="field">
+          <label for="{{ form.capital_total.id_for_label }}">{{ form.capital_total.label }}</label>
+          {{ form.capital_total }}
+          {% if form.capital_total.errors %}<div class="error">{{ form.capital_total.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.capital_per_ticker.id_for_label }}">{{ form.capital_per_ticker.label }}</label>
+          {{ form.capital_per_ticker }}
+          {% if form.capital_per_ticker.errors %}<div class="error">{{ form.capital_per_ticker.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.capital_mode.id_for_label }}">{{ form.capital_mode.label }}</label>
+          {{ form.capital_mode }}
+          {% if form.capital_mode.errors %}<div class="error">{{ form.capital_mode.errors }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:12px;">
+        <label for="{{ form.close_positions_at_end.id_for_label }}">{{ form.close_positions_at_end.label }}</label>
+        {{ form.close_positions_at_end }}
+        <div class="muted">Contrainte de sortie : clôture les positions encore ouvertes à la fin de la fenêtre simulée du jeu.</div>
+        {% if form.close_positions_at_end.errors %}<div class="error">{{ form.close_positions_at_end.errors }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0;">6. Avancé / Diagnostic</h3>
+      <p class="muted">Le scénario = le modèle d’indicateurs. Les champs ci-dessous pilotent les calculs de P, des pentes et de GM current utilisés ensuite par les signaux et conditions de marché.</p>
+      <p class="muted">Un signal est un déclencheur, un filtre est une condition bloquante / porte d’entrée, une condition de marché correspond à un benchmark ou un régime global, un contrôle de risque ajoute une contrainte d’éligibilité ou de sortie, et l’exécution définit comment les positions sont ouvertes, maintenues et clôturées.</p>
+      <p class="muted">Modifier ces seuils change la génération des alertes SPa/SPv/SPVa/SPVv. Après modification, il faut recalculer les alertes/indicateurs puis relancer les backtests et Games concernés. La tradabilité du Game continue d’utiliser le seuil de déclenchement achat.</p>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div class="field">
+          <label for="{{ form.a.id_for_label }}">{{ form.a.label }}</label>
+          {{ form.a }}
+          {% if form.a.errors %}<div class="error">{{ form.a.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.b.id_for_label }}">{{ form.b.label }}</label>
+          {{ form.b }}
+          {% if form.b.errors %}<div class="error">{{ form.b.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.c.id_for_label }}">{{ form.c.label }}</label>
+          {{ form.c }}
+          {% if form.c.errors %}<div class="error">{{ form.c.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.d.id_for_label }}">{{ form.d.label }}</label>
+          {{ form.d }}
+          {% if form.d.errors %}<div class="error">{{ form.d.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.e.id_for_label }}">{{ form.e.label }}</label>
+          {{ form.e }}
+          {% if form.e.errors %}<div class="error">{{ form.e.errors }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <div class="field">
+          <label for="{{ form.n1.id_for_label }}">{{ form.n1.label }}</label>
+          {{ form.n1 }}
+          {% if form.n1.errors %}<div class="error">{{ form.n1.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.n2.id_for_label }}">{{ form.n2.label }}</label>
+          {{ form.n2 }}
+          {% if form.n2.errors %}<div class="error">{{ form.n2.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.npente.id_for_label }}">{{ form.npente.label }}</label>
+          {{ form.npente }}
+          {% if form.npente.errors %}<div class="error">{{ form.npente.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.slope_threshold.id_for_label }}">{{ form.slope_threshold.label }}</label>
+          {{ form.slope_threshold }}
+          {% if form.slope_threshold.help_text %}<div class="muted">{{ form.slope_threshold.help_text }}</div>{% endif %}
+          {% if form.slope_threshold.errors %}<div class="error">{{ form.slope_threshold.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.slope_sell_threshold.id_for_label }}">{{ form.slope_sell_threshold.label }}</label>
+          {{ form.slope_sell_threshold }}
+          {% if form.slope_sell_threshold.help_text %}<div class="muted">{{ form.slope_sell_threshold.help_text }}</div>{% endif %}
+          {% if form.slope_sell_threshold.errors %}<div class="error">{{ form.slope_sell_threshold.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.npente_basse.id_for_label }}">{{ form.npente_basse.label }}</label>
+          {{ form.npente_basse }}
+          {% if form.npente_basse.errors %}<div class="error">{{ form.npente_basse.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.slope_threshold_basse.id_for_label }}">{{ form.slope_threshold_basse.label }}</label>
+          {{ form.slope_threshold_basse }}
+          {% if form.slope_threshold_basse.help_text %}<div class="muted">{{ form.slope_threshold_basse.help_text }}</div>{% endif %}
+          {% if form.slope_threshold_basse.errors %}<div class="error">{{ form.slope_threshold_basse.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.slope_sell_threshold_basse.id_for_label }}">{{ form.slope_sell_threshold_basse.label }}</label>
+          {{ form.slope_sell_threshold_basse }}
+          {% if form.slope_sell_threshold_basse.help_text %}<div class="muted">{{ form.slope_sell_threshold_basse.help_text }}</div>{% endif %}
+          {% if form.slope_sell_threshold_basse.errors %}<div class="error">{{ form.slope_sell_threshold_basse.errors }}</div>{% endif %}
+        </div>
+        <div class="field">
+          <label for="{{ form.nglobal.id_for_label }}">{{ form.nglobal.label }}</label>
+          {{ form.nglobal }}
+          {% if form.nglobal.errors %}<div class="error">{{ form.nglobal.errors }}</div>{% endif %}
+        </div>
+      </div>
+    </div>
   </div>
 
   <button class="btn" type="submit">Enregistrer</button>

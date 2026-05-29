@@ -10,134 +10,167 @@
   {% csrf_token %}
 
   <div class="card">
-    <div class="field">
-      <label for="{{ form.name.id_for_label }}">Nom</label><br>
-      {{ form.name }}
-      {% if form.name.errors %}<div class="error">{{ form.name.errors }}</div>{% endif %}
-    </div>
+    {% if form.non_field_errors %}<div class="error">{{ form.non_field_errors }}</div>{% endif %}
 
-    <div class="field" style="margin-top:12px;">
-      <label for="{{ form.description.id_for_label }}">Description</label><br>
-      {{ form.description }}
-      {% if form.description.errors %}<div class="error">{{ form.description.errors }}</div>{% endif %}
-    </div>
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">1. Périmètre / Période</h3>
+      <p class="muted">Définis la fenêtre du backtest et le scénario utilisé pour construire l’état des indicateurs. Cette section fixe le périmètre du run, sans changer la logique d’exécution.</p>
 
-    <div class="field" style="margin-top:12px;">
-      <label for="{{ form.scenario.id_for_label }}">Scénario</label><br>
-      {{ form.scenario }}
-      {% if form.scenario.errors %}<div class="error">{{ form.scenario.errors }}</div>{% endif %}
-    </div>
+      <div class="field">
+        <label for="{{ form.name.id_for_label }}">Nom</label><br>
+        {{ form.name }}
+        {% if form.name.errors %}<div class="error">{{ form.name.errors }}</div>{% endif %}
+      </div>
 
-    <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
-      <div>
-        <label for="{{ form.start_date.id_for_label }}">Date début</label><br>
-        {{ form.start_date }}
-        {% if form.start_date.errors %}<div class="error">{{ form.start_date.errors }}</div>{% endif %}
+      <div class="field" style="margin-top:12px;">
+        <label for="{{ form.description.id_for_label }}">Description</label><br>
+        {{ form.description }}
+        {% if form.description.errors %}<div class="error">{{ form.description.errors }}</div>{% endif %}
       </div>
-      <div>
-        <label for="{{ form.end_date.id_for_label }}">Date fin</label><br>
-        {{ form.end_date }}
-        {% if form.end_date.errors %}<div class="error">{{ form.end_date.errors }}</div>{% endif %}
-      </div>
-      <div>
-        <label for="{{ form.warmup_days.id_for_label }}">Période de warmup (jours)</label><br>
-        {{ form.warmup_days }}
-        <div class="muted">Nombre de jours calendaires calculés avant la période réelle pour reconstruire les états.</div>
-        {% if form.warmup_days.errors %}<div class="error">{{ form.warmup_days.errors }}</div>{% endif %}
-      </div>
-    </div>
 
-    <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
-      <div>
-        <label for="{{ form.capital_total.id_for_label }}">Capital total (CP)</label><br>
-        {{ form.capital_total }}
-        <div class="muted">0 = infini</div>
-        {% if form.capital_total.errors %}<div class="error">{{ form.capital_total.errors }}</div>{% endif %}
+      <div class="field" style="margin-top:12px;">
+        <label for="{{ form.scenario.id_for_label }}">Scénario</label><br>
+        {{ form.scenario }}
+        <div class="muted">Le scénario = le modèle d’indicateurs. Il définit comment P, les pentes et GM current sont calculés avant l’application des règles de trading.</div>
+        {% if form.scenario.errors %}<div class="error">{{ form.scenario.errors }}</div>{% endif %}
       </div>
-      <div>
-        <label for="{{ form.capital_per_ticker.id_for_label }}">Capital par action (CT)</label><br>
-        {{ form.capital_per_ticker }}
-        {% if form.capital_per_ticker.errors %}<div class="error">{{ form.capital_per_ticker.errors }}</div>{% endif %}
-      </div>
-      <div>
-        <label for="{{ form.capital_mode.id_for_label }}">Mode capital</label><br>
-        {{ form.capital_mode }}
-        <div class="muted">Reinvest = CT évolue avec gains/pertes (mode actuel). Fixed = CT reste constant à chaque BUY.</div>
-        {% if form.capital_mode.errors %}<div class="error">{{ form.capital_mode.errors }}</div>{% endif %}
-      </div>
-      <div>
-        <label for="{{ form.ratio_threshold.id_for_label }}">Seuil ratio_p (X %)</label><br>
-        {{ form.ratio_threshold }}
-        {% if form.ratio_threshold.errors %}<div class="error">{{ form.ratio_threshold.errors }}</div>{% endif %}
-      </div>
-    </div>
 
-    <div class="field" style="margin-top:10px;">
-      <label for="{{ form.include_all_tickers.id_for_label }}">
-        {{ form.include_all_tickers }} Backtest pour toutes les actions du scénario (ignore ratio_p &gt;= X)
-      </label>
-      {% if form.include_all_tickers.errors %}<div class="error">{{ form.include_all_tickers.errors }}</div>{% endif %}
-    </div>
-
-    <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
-      <div>
-        <label for="{{ form.min_price.id_for_label }}">Prix minimum</label><br>
-        {{ form.min_price }}
-        <div class="muted">Une action ne pourra être achetée que si son prix du jour est compris dans cette plage.</div>
-        {% if form.min_price.errors %}<div class="error">{{ form.min_price.errors }}</div>{% endif %}
-      </div>
-      <div>
-        <label for="{{ form.max_price.id_for_label }}">Prix maximum</label><br>
-        {{ form.max_price }}
-        <div class="muted">Ce filtre s'applique uniquement à l'achat. La vente reste toujours possible.</div>
-        {% if form.max_price.errors %}<div class="error">{{ form.max_price.errors }}</div>{% endif %}
-      </div>
-    </div>
-
-    {% include "partials/market_cap_filter_fields.html" %}
-    {% include "partials/trend_filter_fields.html" %}
-
-    <div class="field" style="margin-top:16px;">
-      <label>Lignes de signaux (achat / vente)</label>
-      <div class="muted">Chaque ligne peut contenir 1 à N conditions BUY et 1 à N conditions SELL. Utilise les cases à cocher pour le multi-sélecteur et les boutons radio pour choisir la logique ET ou OU. Par défaut : BUY=ET, SELL=OU.</div>
-
-      <div class="card" style="margin-top:10px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
-        <div style="flex:1;">
-          <strong>Résumé de la stratégie</strong>
-          <div id="strategy-summary" class="muted" style="margin-top:6px;">—</div>
+      <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+        <div>
+          <label for="{{ form.start_date.id_for_label }}">Date début</label><br>
+          {{ form.start_date }}
+          {% if form.start_date.errors %}<div class="error">{{ form.start_date.errors }}</div>{% endif %}
         </div>
-        <div class="muted" style="white-space:nowrap;">
-          <span title="Mode spécial : la vente est calculée dynamiquement à partir de K1f (voir option).">ℹ️</span>
+        <div>
+          <label for="{{ form.end_date.id_for_label }}">Date fin</label><br>
+          {{ form.end_date }}
+          {% if form.end_date.errors %}<div class="error">{{ form.end_date.errors }}</div>{% endif %}
+        </div>
+        <div>
+          <label for="{{ form.warmup_days.id_for_label }}">Période de warmup (jours)</label><br>
+          {{ form.warmup_days }}
+          <div class="muted">L’état d’exécution est reconstruit avant la fenêtre visible afin que les modèles progressifs et latchés démarrent dans un état réaliste.</div>
+          {% if form.warmup_days.errors %}<div class="error">{{ form.warmup_days.errors }}</div>{% endif %}
         </div>
       </div>
-
-      <!-- Hidden JSON field bound to Django form -->
-      <input type="hidden" name="signal_lines" id="id_signal_lines" value='{{ signal_lines_json|escapejs }}' />
-
-      <table style="margin-top:8px;">
-        <thead>
-          <tr>
-            <th style="width:60px;">#</th>
-            <th style="width:200px;">MODE</th>
-            <th style="width:190px;">Mode de déclenchement</th>
-            <th>Achat</th>
-            <th>Vente</th>
-            <th style="width:120px;">Action</th>
-          </tr>
-        </thead>
-        <tbody id="signal-lines-body"></tbody>
-      </table>
-
-      <button type="button" class="btn" id="add-line" style="margin-top:8px;">+ Ajouter une ligne</button>
-
-      {% if form.signal_lines.errors %}<div class="error" style="margin-top:8px;">{{ form.signal_lines.errors }}</div>{% endif %}
     </div>
 
-    <div class="field" style="margin-top:16px;">
-      <label for="{{ form.close_positions_at_end.id_for_label }}">
-        {{ form.close_positions_at_end }} Clôturer les positions à la fin (recommandé)
-      </label>
-      {% if form.close_positions_at_end.errors %}<div class="error">{{ form.close_positions_at_end.errors }}</div>{% endif %}
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">2. Signaux d’entrée &amp; de sortie</h3>
+      <p class="muted">Un signal est un déclencheur : il définit quand une configuration BUY ou SELL devient vraie. Les filtres et conditions de marché ci-dessous peuvent encore bloquer un BUY même si les signaux sont valides.</p>
+
+      <div class="field" style="margin-top:16px;">
+        <label>Lignes de signaux (achat / vente)</label>
+        <div class="muted">Chaque ligne peut combiner 1..N conditions BUY et 1..N conditions SELL. Par défaut : BUY = ET, SELL = OU. Le mode d’exécution contrôle comment les positions sont ouvertes et clôturées dans le temps.</div>
+
+        <div class="card" style="margin-top:10px; padding:10px; display:flex; gap:10px; align-items:flex-start;">
+          <div style="flex:1;">
+            <strong>Résumé de la stratégie</strong>
+            <div id="strategy-summary" class="muted" style="margin-top:6px;">—</div>
+          </div>
+          <div class="muted" style="white-space:nowrap;">
+            <span title="Mode spécial : la vente est calculée dynamiquement à partir de K1f (voir option).">ℹ️</span>
+          </div>
+        </div>
+
+        <input type="hidden" name="signal_lines" id="id_signal_lines" value='{{ signal_lines_json|escapejs }}' />
+
+        <table style="margin-top:8px;">
+          <thead>
+            <tr>
+              <th style="width:60px;">#</th>
+              <th style="width:200px;">MODE</th>
+              <th style="width:190px;">Mode de déclenchement</th>
+              <th>Achat</th>
+              <th>Vente</th>
+              <th style="width:120px;">Action</th>
+            </tr>
+          </thead>
+          <tbody id="signal-lines-body"></tbody>
+        </table>
+
+        <button type="button" class="btn" id="add-line" style="margin-top:8px;">+ Ajouter une ligne</button>
+
+        {% if form.signal_lines.errors %}<div class="error" style="margin-top:8px;">{{ form.signal_lines.errors }}</div>{% endif %}
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">3. Conditions de marché</h3>
+      <p class="muted">Une condition de marché est un régime global ou un benchmark servant de porte d’entrée. Les filtres de tendance s'appliquent uniquement aux achats et ne déclenchent jamais de SELL.</p>
+      {% include "partials/trend_filter_fields.html" %}
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">4. Filtres de tradabilité &amp; risque</h3>
+      <p class="muted">Un filtre est une condition bloquante, une porte d’entrée. Les contrôles de risque et de tradabilité déterminent si un symbole est éligible au BUY après déclenchement des signaux.</p>
+
+      <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+        <div>
+          <label for="{{ form.ratio_threshold.id_for_label }}">Seuil ratio_p (X %)</label><br>
+          {{ form.ratio_threshold }}
+          <div class="muted">Seuil d’éligibilité utilisé sauf si tu choisis explicitement d’ignorer le filtre de tradabilité.</div>
+          {% if form.ratio_threshold.errors %}<div class="error">{{ form.ratio_threshold.errors }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:10px;">
+        <label for="{{ form.include_all_tickers.id_for_label }}">
+          {{ form.include_all_tickers }} Backtest pour toutes les actions du scénario (ignore ratio_p &gt;= X)
+        </label>
+        <div class="muted">Note de risque : cela retire la condition bloquante liée au ratio, mais ne contourne ni les filtres de tendance, ni les filtres de prix, ni les filtres de market cap.</div>
+        {% if form.include_all_tickers.errors %}<div class="error">{{ form.include_all_tickers.errors }}</div>{% endif %}
+      </div>
+
+      <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+        <div>
+          <label for="{{ form.min_price.id_for_label }}">Prix minimum</label><br>
+          {{ form.min_price }}
+          <div class="muted">Un BUY est autorisé uniquement si le prix du jour reste dans cette plage.</div>
+          {% if form.min_price.errors %}<div class="error">{{ form.min_price.errors }}</div>{% endif %}
+        </div>
+        <div>
+          <label for="{{ form.max_price.id_for_label }}">Prix maximum</label><br>
+          {{ form.max_price }}
+          <div class="muted">Ce contrôle de risque s’applique uniquement au BUY. Le SELL reste possible.</div>
+          {% if form.max_price.errors %}<div class="error">{{ form.max_price.errors }}</div>{% endif %}
+        </div>
+      </div>
+
+      {% include "partials/market_cap_filter_fields.html" %}
+    </div>
+
+    <div class="card">
+      <h3 style="margin-top:0;">5. Capital &amp; exécution</h3>
+      <p class="muted">L’exécution définit comment les positions sont ouvertes, dimensionnées, maintenues et clôturées une fois les déclencheurs et filtres validés.</p>
+
+      <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
+        <div>
+          <label for="{{ form.capital_total.id_for_label }}">Capital total (CP)</label><br>
+          {{ form.capital_total }}
+          <div class="muted">0 = infini</div>
+          {% if form.capital_total.errors %}<div class="error">{{ form.capital_total.errors }}</div>{% endif %}
+        </div>
+        <div>
+          <label for="{{ form.capital_per_ticker.id_for_label }}">Capital par action (CT)</label><br>
+          {{ form.capital_per_ticker }}
+          {% if form.capital_per_ticker.errors %}<div class="error">{{ form.capital_per_ticker.errors }}</div>{% endif %}
+        </div>
+        <div>
+          <label for="{{ form.capital_mode.id_for_label }}">Mode capital</label><br>
+          {{ form.capital_mode }}
+          <div class="muted">Reinvest = CT évolue avec les gains/pertes. Fixed = CT reste constant à chaque BUY.</div>
+          {% if form.capital_mode.errors %}<div class="error">{{ form.capital_mode.errors }}</div>{% endif %}
+        </div>
+      </div>
+
+      <div class="field" style="margin-top:16px;">
+        <label for="{{ form.close_positions_at_end.id_for_label }}">
+          {{ form.close_positions_at_end }} Clôturer les positions à la fin (recommandé)
+        </label>
+        <div class="muted">Contrainte de sortie : clôture les positions encore ouvertes à la fin de la période sélectionnée.</div>
+        {% if form.close_positions_at_end.errors %}<div class="error">{{ form.close_positions_at_end.errors }}</div>{% endif %}
+      </div>
     </div>
   </div>
 
