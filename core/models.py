@@ -151,6 +151,18 @@ class Scenario(models.Model):
         blank=True,
         help_text="Seuil de déclenchement vente — pente basse, utilisé par SPv_basse/SPVv_basse. Si vide, le seuil d'achat est réutilisé.",
     )
+    recent_high_drawdown_lookback_days = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Protection anti-chute : nombre de jours de cotation précédents utilisés pour calculer le plus haut récent. Le jour courant est exclu.",
+    )
+    recent_high_drawdown_max_drop_pct = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        null=True,
+        blank=True,
+        help_text="Protection anti-chute : pourcentage maximal de baisse autorisé par rapport au plus haut récent (ratio brut, ex: -0.10 = -10%).",
+    )
     nglobal = models.PositiveIntegerField(
         default=20,
         help_text="Nombre de jours utilisés pour la courbe globale moyenne des rendements.",
@@ -368,6 +380,18 @@ class GameScenario(models.Model):
         null=True,
         blank=True,
         help_text="Seuil de déclenchement vente — pente basse, utilisé par SPv_basse/SPVv_basse. Si vide, le seuil d'achat est réutilisé.",
+    )
+    recent_high_drawdown_lookback_days = models.PositiveIntegerField(
+        null=True,
+        blank=True,
+        help_text="Protection anti-chute : nombre de jours de cotation précédents utilisés pour calculer le plus haut récent. Le jour courant est exclu.",
+    )
+    recent_high_drawdown_max_drop_pct = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        null=True,
+        blank=True,
+        help_text="Protection anti-chute : pourcentage maximal de baisse autorisé par rapport au plus haut récent (ratio brut, ex: -0.10 = -10%). N'affecte la tradabilité du Game que via les alertes si utilisé dans les signaux.",
     )
     nglobal = models.PositiveIntegerField(
         default=20,

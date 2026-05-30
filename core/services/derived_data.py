@@ -25,6 +25,7 @@ SCENARIO_IMPACT_FIELDS = (
     "n5", "k2j", "cr",
     "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
     "npente", "slope_threshold", "slope_sell_threshold", "npente_basse", "slope_threshold_basse", "slope_sell_threshold_basse",
+    "recent_high_drawdown_lookback_days", "recent_high_drawdown_max_drop_pct",
     "nglobal", "m_v", "history_years", "active",
 )
 
@@ -39,6 +40,7 @@ BACKTEST_IMPACT_FIELDS = (
 GAME_IMPACT_FIELDS = (
     "study_days", "active",
     "tradability_threshold", "npente", "slope_threshold", "slope_sell_threshold", "npente_basse", "slope_threshold_basse", "slope_sell_threshold_basse",
+    "recent_high_drawdown_lookback_days", "recent_high_drawdown_max_drop_pct",
     "nglobal", "presence_threshold_pct",
     "a", "b", "c", "d", "e", "vc", "fl",
     "n1", "n2", "n3", "n4",

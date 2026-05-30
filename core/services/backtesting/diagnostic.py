@@ -7,6 +7,10 @@ from typing import Any
 
 from core.models import Alert, DailyBar, DailyMetric, HistoricalMarketCap, Symbol
 from core.services.market_cap import preload_market_cap_series
+from core.services.recent_high_drawdown import (
+    compute_recent_high_drawdown_condition,
+    normalize_recent_high_drawdown_params,
+)
 from core.services.trend_filters import (
     active_trend_filter_keys,
     collect_distinct_benchmark_tickers,
@@ -131,7 +135,7 @@ def build_backtest_ticker_diagnostic_on_demand(*, backtest, ticker: str, line_in
     dates = [row["date"] for row in bar_rows]
     metric_rows = {
         row["date"]: row
-        for row in DailyMetric.objects.filter(symbol=symbol, scenario=backtest.scenario, date__in=dates).values("date", "ratio_P")
+        for row in DailyMetric.objects.filter(symbol=symbol, scenario=backtest.scenario, date__in=dates).values("date", "ratio_P", "P")
     }
     alert_rows = {
         row["date"]: _alerts_set(row.get("alerts") or "")
@@ -161,11 +165,14 @@ def build_backtest_ticker_diagnostic_on_demand(*, backtest, ticker: str, line_in
     sum_g = Decimal("0")
     tradable_days = 0
     tradable_days_in_position = 0
+    rhd_lookback_days, rhd_max_drop_pct = normalize_recent_high_drawdown_params(backtest.scenario)
+    prior_reference_prices: list[Decimal] = []
 
     daily: list[dict[str, Any]] = []
     for row in bar_rows:
         row_date = row["date"]
         metric_row = metric_rows.get(row_date) or {}
+        reference_price = _to_decimal_or_none(metric_row.get("P"))
         ratio_raw = _to_decimal_or_none(metric_row.get("ratio_P"))
         row_date_str = str(row_date)
         action_g = None
@@ -203,6 +210,12 @@ def build_backtest_ticker_diagnostic_on_demand(*, backtest, ticker: str, line_in
             tradable_days += 1
             if shares_open:
                 tradable_days_in_position += 1
+        rhd_state = compute_recent_high_drawdown_condition(
+            previous_prices=prior_reference_prices,
+            current_price=reference_price,
+            lookback_days=rhd_lookback_days,
+            max_drop_pct=rhd_max_drop_pct,
+        )
         not_in_position_days = max(0, tradable_days - tradable_days_in_position)
         bt_value = sum_g
         s_g_n = None if trade_count == 0 else (sum_g / Decimal(trade_count))
@@ -212,9 +225,14 @@ def build_backtest_ticker_diagnostic_on_demand(*, backtest, ticker: str, line_in
         daily.append({
             "date": row_date_str,
             "price_close": None if row.get("close") in (None, "") else str(row.get("close")),
+            "reference_price": None if reference_price is None else str(reference_price),
             "ratio_P": None if ratio_raw is None else str(ratio_raw),
             "ratio_P_pct": None if ratio_pct is None else str(ratio_pct),
             "tradable": tradable,
+            "recent_high_drawdown_enabled": rhd_state["enabled"],
+            "recent_high_drawdown_passed": rhd_state["passed"],
+            "recent_high_drawdown_recent_high": None if rhd_state["recent_high"] is None else str(rhd_state["recent_high"]),
+            "recent_high_drawdown_threshold_price": None if rhd_state["threshold_price"] is None else str(rhd_state["threshold_price"]),
             "alerts": sorted(list(alert_rows.get(row_date, set()))),
             "action": actions_by_date.get(row_date_str),
             "action_G": action_g,
@@ -234,6 +252,8 @@ def build_backtest_ticker_diagnostic_on_demand(*, backtest, ticker: str, line_in
             "RATIO_NOT_IN_POSITION": None if tradable_days == 0 else str((Decimal(not_in_position_days) / Decimal(tradable_days)) * Decimal("100")),
             "RATIO_IN_POSITION": None if tradable_days == 0 else str((Decimal(tradable_days_in_position) / Decimal(tradable_days)) * Decimal("100")),
         })
+        if reference_price is not None:
+            prior_reference_prices.append(reference_price)
     return daily
 
 
@@ -511,6 +531,33 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         dates=dates,
         portfolio_daily=portfolio_daily,
     )
+    rhd_lookback_days, rhd_max_drop_pct = normalize_recent_high_drawdown_params(backtest.scenario)
+    recent_high_drawdown = None
+    if rhd_lookback_days is not None and rhd_max_drop_pct is not None:
+        prior_prices: list[Any] = []
+        rhd_passed: list[bool] = []
+        rhd_recent_high: list[str | None] = []
+        rhd_thresholds: list[str | None] = []
+        for date_value in dates:
+            current_reference_price = _metric_series_value(metrics_by_date.get(date_value), "P")
+            rhd_state = compute_recent_high_drawdown_condition(
+                previous_prices=prior_prices,
+                current_price=current_reference_price,
+                lookback_days=rhd_lookback_days,
+                max_drop_pct=rhd_max_drop_pct,
+            )
+            rhd_passed.append(bool(rhd_state["passed"]))
+            rhd_recent_high.append(_decimal_str(rhd_state["recent_high"]))
+            rhd_thresholds.append(_decimal_str(rhd_state["threshold_price"]))
+            if current_reference_price not in (None, ""):
+                prior_prices.append(current_reference_price)
+        recent_high_drawdown = {
+            "lookback_days": rhd_lookback_days,
+            "max_drop_pct": _decimal_str(rhd_max_drop_pct),
+            "passed": rhd_passed,
+            "recent_high": rhd_recent_high,
+            "threshold_price": rhd_thresholds,
+        }
 
     return {
         "ticker": ticker,
@@ -523,5 +570,6 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         "gm": gm,
         "trend_filters": trend_filters,
         "market_cap": market_cap,
+        "recent_high_drawdown": recent_high_drawdown,
         "thresholds": thresholds,
     }

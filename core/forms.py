@@ -20,6 +20,8 @@ BACKTEST_SIGNAL_CHOICES = [
     ("SPv_basse", "SPv_basse (SUM_SLOPE_BASSE croise le seuil de pente basse vers le bas)"),
     ("SPVa_basse", "SPVa_basse (SLOPE_VRAI_BASSE croise le seuil de pente basse vers le haut)"),
     ("SPVv_basse", "SPVv_basse (SLOPE_VRAI_BASSE croise le seuil de pente basse vers le bas)"),
+    ("RHD_OK", "Protection / risque — RHD_OK (Prix proche du plus haut récent / Anti-chute OK)"),
+    ("RHD_FAIL", "Protection / risque — RHD_FAIL (Prix sous le seuil anti-chute)"),
     ("GM_POS", "GM_POS (momentum global positif)"),
     ("GM_NEG", "GM_NEG (momentum global négatif)"),
     ("GM_NEU", "GM_NEU (momentum global neutre)"),
@@ -91,6 +93,23 @@ def _configure_slope_threshold_fields(form):
         "slope_sell_threshold_basse": (
             "Seuil de déclenchement vente — pente basse",
             "Utilisé par SPv_basse/SPVv_basse. Si vide, le seuil d'achat est réutilisé. Le seuil de vente permet de sortir plus tôt ou plus tard que le seuil d'achat.",
+        ),
+    }
+    for field_name, (label, help_text) in field_config.items():
+        if field_name in form.fields:
+            form.fields[field_name].label = label
+            form.fields[field_name].help_text = help_text
+
+
+def _configure_recent_high_drawdown_fields(form):
+    field_config = {
+        "recent_high_drawdown_lookback_days": (
+            "Fenêtre du plus haut récent",
+            "Nombre de jours de cotation précédents utilisés pour calculer le plus haut récent. Le jour courant est exclu du calcul.",
+        ),
+        "recent_high_drawdown_max_drop_pct": (
+            "Chute maximale autorisée",
+            "Pourcentage maximal de baisse autorisé par rapport au plus haut récent. Exemple : -10 % signifie que le BUY reste autorisé tant que le prix du jour reste au-dessus de 90 % du plus haut récent.",
         ),
     }
     for field_name, (label, help_text) in field_config.items():
@@ -307,6 +326,8 @@ class ScenarioForm(forms.ModelForm):
             "npente_basse",
             "slope_threshold_basse",
             "slope_sell_threshold_basse",
+            "recent_high_drawdown_lookback_days",
+            "recent_high_drawdown_max_drop_pct",
             "nglobal",
             "history_years",
             "active",
@@ -343,6 +364,7 @@ class ScenarioForm(forms.ModelForm):
             self.fields["symbols"].initial = selected_symbols
         _configure_symbol_picker(self.fields["symbols"], selected_symbols)
         _configure_slope_threshold_fields(self)
+        _configure_recent_high_drawdown_fields(self)
 
 
 class UniverseForm(forms.ModelForm):
@@ -529,6 +551,8 @@ class StudyScenarioForm(forms.ModelForm):
             "npente_basse",
             "slope_threshold_basse",
             "slope_sell_threshold_basse",
+            "recent_high_drawdown_lookback_days",
+            "recent_high_drawdown_max_drop_pct",
             "nglobal",
             "history_years",
             "symbols",
@@ -556,6 +580,7 @@ class StudyScenarioForm(forms.ModelForm):
             self.fields["symbols"].initial = selected_symbols
         _configure_symbol_picker(self.fields["symbols"], selected_symbols)
         _configure_slope_threshold_fields(self)
+        _configure_recent_high_drawdown_fields(self)
 
 
 class EmailRecipientForm(forms.ModelForm):
@@ -850,6 +875,8 @@ class GameScenarioForm(forms.ModelForm):
             "npente_basse",
             "slope_threshold_basse",
             "slope_sell_threshold_basse",
+            "recent_high_drawdown_lookback_days",
+            "recent_high_drawdown_max_drop_pct",
             "nglobal",
             "presence_threshold_pct",
             "email_recipients",
@@ -917,6 +944,7 @@ class GameScenarioForm(forms.ModelForm):
         )
         _ensure_legacy_trend_choice(self.fields["trend_filter_gm_current"], current_trend_choice)
         _configure_slope_threshold_fields(self)
+        _configure_recent_high_drawdown_fields(self)
 
     def clean_signal_lines(self):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))

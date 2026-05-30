@@ -34,6 +34,16 @@
           <th>Prix maximum d'achat</th>
           <td>{{ bt.settings.max_price|default:"aucune borne maximum" }}</td>
         </tr>
+        <tr>
+          <th>Protection anti-chute</th>
+          <td>
+            {% if bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
+              fenêtre {{ bt.scenario.recent_high_drawdown_lookback_days }} j précédents, chute max {{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}
+            {% else %}
+              désactivée
+            {% endif %}
+          </td>
+        </tr>
         {% if bt.settings.market_cap_min or bt.settings.market_cap_max %}
           <tr>
             <th>Min Market Cap</th>

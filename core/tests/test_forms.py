@@ -62,8 +62,11 @@ class SymbolPickerFormTests(TestCase):
         form = ScenarioForm()
         self.assertIn("slope_sell_threshold", form.fields)
         self.assertIn("slope_sell_threshold_basse", form.fields)
+        self.assertIn("recent_high_drawdown_lookback_days", form.fields)
+        self.assertIn("recent_high_drawdown_max_drop_pct", form.fields)
         self.assertEqual(form.fields["slope_sell_threshold"].label, "Seuil de déclenchement vente")
         self.assertIn("Si vide, le seuil d'achat est réutilisé.", form.fields["slope_sell_threshold"].help_text)
+        self.assertEqual(form.fields["recent_high_drawdown_lookback_days"].label, "Fenêtre du plus haut récent")
 
     def test_scenario_form_saves_explicit_sell_thresholds(self):
         form = ScenarioForm(data={
@@ -82,6 +85,8 @@ class SymbolPickerFormTests(TestCase):
             "npente_basse": "20",
             "slope_threshold_basse": "0.02",
             "slope_sell_threshold_basse": "0.01",
+            "recent_high_drawdown_lookback_days": "10",
+            "recent_high_drawdown_max_drop_pct": "-0.10",
             "nglobal": "20",
             "history_years": "2",
             "active": "on",
@@ -91,6 +96,8 @@ class SymbolPickerFormTests(TestCase):
         scenario = form.save()
         self.assertEqual(str(scenario.slope_sell_threshold), "0.05")
         self.assertEqual(str(scenario.slope_sell_threshold_basse), "0.01")
+        self.assertEqual(scenario.recent_high_drawdown_lookback_days, 10)
+        self.assertEqual(str(scenario.recent_high_drawdown_max_drop_pct), "-0.10")
 
     def test_game_scenario_form_cleans_signal_lines(self):
         form = GameScenarioForm(
@@ -133,7 +140,10 @@ class SymbolPickerFormTests(TestCase):
         form = GameScenarioForm()
         self.assertIn("slope_sell_threshold", form.fields)
         self.assertIn("slope_sell_threshold_basse", form.fields)
+        self.assertIn("recent_high_drawdown_lookback_days", form.fields)
+        self.assertIn("recent_high_drawdown_max_drop_pct", form.fields)
         self.assertEqual(form.fields["slope_sell_threshold_basse"].label, "Seuil de déclenchement vente — pente basse")
+        self.assertEqual(form.fields["recent_high_drawdown_max_drop_pct"].label, "Chute maximale autorisée")
 
     def test_game_scenario_form_saves_explicit_sell_thresholds(self):
         form = GameScenarioForm(
@@ -149,6 +159,8 @@ class SymbolPickerFormTests(TestCase):
                 "npente_basse": "20",
                 "slope_threshold_basse": "0.02",
                 "slope_sell_threshold_basse": "0.01",
+                "recent_high_drawdown_lookback_days": "10",
+                "recent_high_drawdown_max_drop_pct": "-0.10",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",
@@ -173,6 +185,8 @@ class SymbolPickerFormTests(TestCase):
         game = form.save()
         self.assertEqual(str(game.slope_sell_threshold), "0.05")
         self.assertEqual(str(game.slope_sell_threshold_basse), "0.01")
+        self.assertEqual(game.recent_high_drawdown_lookback_days, 10)
+        self.assertEqual(str(game.recent_high_drawdown_max_drop_pct), "-0.10")
 
     def test_backtest_form_rejects_invalid_price_range(self):
         scenario = Scenario.objects.create(name="Price Range", active=True)

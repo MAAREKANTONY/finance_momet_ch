@@ -125,7 +125,27 @@
     </div>
 
     <div class="card" style="margin-bottom:16px;">
-      <h3 style="margin-top:0;">4. Historique &amp; calcul</h3>
+      <h3 style="margin-top:0;">4. Protection anti-chute</h3>
+      <p class="muted">Cette protection compare le prix du jour au plus haut observé sur les X jours de cotation précédents. Le BUY est autorisé si le prix reste au-dessus du seuil défini. Si la condition devient fausse alors qu’une position est ouverte, le SELL est déclenché. Ce n’est pas un stop-loss basé sur le prix d’achat, mais une protection par rapport au plus haut récent.</p>
+
+      <div style="display:flex; gap:12px; flex-wrap:wrap;">
+        <p>
+          {{ form.recent_high_drawdown_lookback_days.label_tag }}<br/>
+          {{ form.recent_high_drawdown_lookback_days }}
+          {% if form.recent_high_drawdown_lookback_days.help_text %}<br/><span class="muted">{{ form.recent_high_drawdown_lookback_days.help_text }}</span>{% endif %}
+          {% for error in form.recent_high_drawdown_lookback_days.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.recent_high_drawdown_max_drop_pct.label_tag }}<br/>
+          {{ form.recent_high_drawdown_max_drop_pct }}
+          {% if form.recent_high_drawdown_max_drop_pct.help_text %}<br/><span class="muted">{{ form.recent_high_drawdown_max_drop_pct.help_text }}</span>{% endif %}
+          {% for error in form.recent_high_drawdown_max_drop_pct.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+      </div>
+    </div>
+
+    <div class="card" style="margin-bottom:16px;">
+      <h3 style="margin-top:0;">5. Historique &amp; calcul</h3>
       <p class="muted">L’exécution s’appuie ensuite sur cet historique calculé. Plus d’historique améliore la reconstruction d’état, mais augmente le coût de pré-calcul.</p>
 
       <div style="display:flex; gap:12px; flex-wrap:wrap;">
@@ -144,7 +164,7 @@
     </div>
 
     <div class="card" style="margin-bottom:16px;">
-      <h3 style="margin-top:0;">5. Contrôles avancés des indicateurs</h3>
+      <h3 style="margin-top:0;">6. Contrôles avancés des indicateurs</h3>
       <p class="muted">Les contrôles avancés affinent le comportement des indicateurs. Garde-les stables sauf si tu modifies volontairement le modèle d’indicateurs utilisé par les futurs signaux et filtres.</p>
       <p class="muted">Un signal est un déclencheur, un filtre est une condition bloquante / porte d’entrée, une condition de marché correspond à un benchmark ou un régime global, et l’exécution définit ensuite comment les positions sont ouvertes et clôturées.</p>
       <p class="muted">Aide disponible sur les indicateurs actifs : P, K1..K4, Kf, SUM_SLOPE et SLOPE_VRAI.</p>

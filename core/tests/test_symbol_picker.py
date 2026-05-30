@@ -133,6 +133,18 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
             self.assertIn("aucune borne minimum", content)
             self.assertIn("aucune borne maximum", content)
 
+    def test_anti_drop_copy_is_rendered_in_forms_and_help_page(self):
+        scenario_content = self._template("scenario_form.html")
+        self.assertIn("Protection anti-chute", scenario_content)
+        self.assertIn("Cette protection compare le prix du jour au plus haut observé", scenario_content)
+        game_content = self._template("game_scenario_form.html")
+        self.assertIn("Protection anti-chute", game_content)
+        help_content = self._template("help_indicators.html")
+        self.assertIn("Protection anti-chute / Distance au plus haut récent", help_content)
+        self.assertIn("Le jour courant est exclu du calcul", help_content)
+        self.assertIn("Ce n’est pas un stop-loss basé sur le prix d’achat", help_content)
+        self.assertIn("RHD_OK / RHD_FAIL", help_content)
+
     def test_edit_templates_do_not_serialize_signal_lines_on_initial_load(self):
         for template_name in ("backtest_edit.html", "game_scenario_form.html"):
             content = self._template(template_name)
