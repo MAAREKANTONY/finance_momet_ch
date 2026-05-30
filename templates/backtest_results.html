@@ -7,6 +7,9 @@
     Scénario: <b>{{ bt.scenario.name }}</b> • Période: <b>{{ results.meta.start_date }}</b> → <b>{{ results.meta.end_date }}</b>
     <br/>
     Éligibilité: <b>{% if bt.include_all_tickers %}tous les tickers du scénario (ignore ratio_p ≥ X){% else %}ratio_p ≥ X{% endif %}</b>
+    {% if bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
+      <br/>Protection anti-chute: <b>{{ bt.scenario.recent_high_drawdown_lookback_days }} jours précédents</b> • <b>{{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}</b>
+    {% endif %}
   </div>
   <div style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
     <a class="btn" href="{% url 'backtest_detail' bt.id %}">← Retour</a>
@@ -360,6 +363,9 @@
   <div class="muted" style="margin-bottom:12px;">
     <div>Visualisation dédiée au ticker et à la ligne sélectionnés.</div>
     <div>Les marqueurs BUY / SELL / FORCED_SELL sont tracés directement sur le panneau prix.</div>
+    {% if diagnostic_chart_payload.recent_high_drawdown %}
+    <div>La protection anti-chute affiche le seuil calculé à partir du plus haut récent sur {{ diagnostic_chart_payload.recent_high_drawdown.lookback_days }} jours précédents.</div>
+    {% endif %}
   </div>
 
   <div style="margin-bottom:18px;">
@@ -827,6 +833,20 @@
         pointRadius: 0,
       });
     });
+
+    if (payload.recent_high_drawdown) {
+      priceDatasets.push({
+        type: "line",
+        label: "Seuil anti-chute",
+        data: (payload.recent_high_drawdown.threshold_price || []).map(toNumber),
+        borderColor: "#f59e0b",
+        backgroundColor: "#f59e0b",
+        borderDash: [8, 4],
+        spanGaps: true,
+        tension: 0.2,
+        pointRadius: 0,
+      });
+    }
 
     ["BUY", "SELL", "FORCED_SELL"].forEach((markerType) => {
       priceDatasets.push({

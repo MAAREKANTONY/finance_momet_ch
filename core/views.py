@@ -240,9 +240,10 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
         append_excel_row(ws, [f"Description: {scenario.description}"])
         append_excel_row(ws, [
             f"Vars: a={scenario.a} b={scenario.b} c={scenario.c} d={scenario.d} e={scenario.e} "
-                        f"| N1={scenario.n1} N2={scenario.n2} "
+            f"| N1={scenario.n1} N2={scenario.n2} "
             f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil_achat={getattr(scenario,'slope_threshold',None)} seuil_vente={getattr(scenario,'slope_sell_threshold',None)} "
             f"| SUM_SLOPE_BASSE/SLOPE_VRAI_BASSE: Npente_basse={getattr(scenario,'npente_basse',None)} seuil_basse_achat={getattr(scenario,'slope_threshold_basse',None)} seuil_basse_vente={getattr(scenario,'slope_sell_threshold_basse',None)} "
+            f"| Protection anti-chute: fenêtre={getattr(scenario,'recent_high_drawdown_lookback_days',None)} chute_max={getattr(scenario,'recent_high_drawdown_max_drop_pct',None)} "
             f"| history_years={scenario.history_years}"
         ])
         append_excel_row(ws, [f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
@@ -1065,6 +1066,8 @@ def _clone_scenario_for_study(*, study_name: str, created_by, source: Scenario |
             npente_basse=getattr(source, "npente_basse", 20),
             slope_threshold_basse=getattr(source, "slope_threshold_basse", 0.02),
             slope_sell_threshold_basse=getattr(source, "slope_sell_threshold_basse", None),
+            recent_high_drawdown_lookback_days=getattr(source, "recent_high_drawdown_lookback_days", None),
+            recent_high_drawdown_max_drop_pct=getattr(source, "recent_high_drawdown_max_drop_pct", None),
             nglobal=getattr(source, "nglobal", 20),
             history_years=source.history_years,
             active=True,
@@ -1501,6 +1504,8 @@ def scenario_duplicate(request, pk: int):
             "npente_basse": getattr(source, "npente_basse", 20),
             "slope_threshold_basse": getattr(source, "slope_threshold_basse", 0.02),
             "slope_sell_threshold_basse": getattr(source, "slope_sell_threshold_basse", None),
+            "recent_high_drawdown_lookback_days": getattr(source, "recent_high_drawdown_lookback_days", None),
+            "recent_high_drawdown_max_drop_pct": getattr(source, "recent_high_drawdown_max_drop_pct", None),
             "nglobal": getattr(source, "nglobal", 20),
             "history_years": source.history_years,
             "active": source.active,
@@ -2837,6 +2842,8 @@ def _build_backtest_workbook_full(bt):
         ("SUM_SLOPE_BASSE Npente", getattr(bt.scenario, "npente_basse", None) if bt.scenario_id else None),
         ("SUM_SLOPE_BASSE seuil achat", getattr(bt.scenario, "slope_threshold_basse", None) if bt.scenario_id else None),
         ("SUM_SLOPE_BASSE seuil vente", getattr(bt.scenario, "slope_sell_threshold_basse", None) if bt.scenario_id else None),
+        ("Protection anti-chute fenêtre", getattr(bt.scenario, "recent_high_drawdown_lookback_days", None) if bt.scenario_id else None),
+        ("Protection anti-chute chute max", getattr(bt.scenario, "recent_high_drawdown_max_drop_pct", None) if bt.scenario_id else None),
     ]
     for k, v in settings_rows:
         append_excel_row(ws, [k, v])
@@ -3203,6 +3210,8 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ("SUM_SLOPE_BASSE Npente", getattr(bt.scenario, "npente_basse", None) if bt.scenario_id else None),
         ("SUM_SLOPE_BASSE seuil achat", getattr(bt.scenario, "slope_threshold_basse", None) if bt.scenario_id else None),
         ("SUM_SLOPE_BASSE seuil vente", getattr(bt.scenario, "slope_sell_threshold_basse", None) if bt.scenario_id else None),
+        ("Protection anti-chute fenêtre", getattr(bt.scenario, "recent_high_drawdown_lookback_days", None) if bt.scenario_id else None),
+        ("Protection anti-chute chute max", getattr(bt.scenario, "recent_high_drawdown_max_drop_pct", None) if bt.scenario_id else None),
     ]
     for k, v in rows:
         append_excel_row(ws, [k, v])

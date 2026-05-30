@@ -131,6 +131,25 @@
       </div>
 
       {% include "partials/market_cap_filter_fields.html" %}
+
+      <div class="card" style="margin-top:16px;">
+        <h4 style="margin-top:0;">Protection anti-chute</h4>
+        <p class="muted">Cette protection compare le prix du jour au plus haut observé sur les X jours de cotation précédents. Le BUY est autorisé si le prix reste au-dessus du seuil défini. Si la condition devient fausse alors qu’une position est ouverte, le SELL est déclenché. Ce n’est pas un stop-loss basé sur le prix d’achat, mais une protection par rapport au plus haut récent.</p>
+        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+          <div class="field">
+            <label for="{{ form.recent_high_drawdown_lookback_days.id_for_label }}">{{ form.recent_high_drawdown_lookback_days.label }}</label>
+            {{ form.recent_high_drawdown_lookback_days }}
+            {% if form.recent_high_drawdown_lookback_days.help_text %}<div class="muted">{{ form.recent_high_drawdown_lookback_days.help_text }}</div>{% endif %}
+            {% if form.recent_high_drawdown_lookback_days.errors %}<div class="error">{{ form.recent_high_drawdown_lookback_days.errors }}</div>{% endif %}
+          </div>
+          <div class="field">
+            <label for="{{ form.recent_high_drawdown_max_drop_pct.id_for_label }}">{{ form.recent_high_drawdown_max_drop_pct.label }}</label>
+            {{ form.recent_high_drawdown_max_drop_pct }}
+            {% if form.recent_high_drawdown_max_drop_pct.help_text %}<div class="muted">{{ form.recent_high_drawdown_max_drop_pct.help_text }}</div>{% endif %}
+            {% if form.recent_high_drawdown_max_drop_pct.errors %}<div class="error">{{ form.recent_high_drawdown_max_drop_pct.errors }}</div>{% endif %}
+          </div>
+        </div>
+      </div>
     </div>
 
     <div class="card" style="margin-bottom:16px;">

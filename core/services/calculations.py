@@ -1,5 +1,9 @@
 from decimal import Decimal, InvalidOperation
 from core.models import DailyBar, DailyMetric, Alert
+from core.services.recent_high_drawdown import (
+    compute_recent_high_drawdown_condition,
+    normalize_recent_high_drawdown_params,
+)
 from core.services.slope_thresholds import cross_down, cross_up, effective_sell_threshold
 
 def D(x) -> Decimal:
@@ -196,6 +200,29 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
             alerts.append("Af")
         if price_cross_down:
             alerts.append("Bf")
+    except Exception:
+        pass
+
+    try:
+        rhd_lookback_days, rhd_max_drop_pct = normalize_recent_high_drawdown_params(scenario)
+        if rhd_lookback_days is not None and rhd_max_drop_pct is not None:
+            prior_p_desc = list(prior_metrics.values_list("P", flat=True)[: (rhd_lookback_days + 1)])
+            current_rhd = compute_recent_high_drawdown_condition(
+                previous_prices=list(reversed(prior_p_desc[:rhd_lookback_days])),
+                current_price=getattr(metric, "P", None),
+                lookback_days=rhd_lookback_days,
+                max_drop_pct=rhd_max_drop_pct,
+            )
+            prev_rhd = compute_recent_high_drawdown_condition(
+                previous_prices=list(reversed(prior_p_desc[1 : rhd_lookback_days + 1])),
+                current_price=getattr(prev_metric, "P", None),
+                lookback_days=rhd_lookback_days,
+                max_drop_pct=rhd_max_drop_pct,
+            )
+            if (not prev_rhd["passed"]) and current_rhd["passed"]:
+                alerts.append("RHD_OK")
+            elif prev_rhd["passed"] and (not current_rhd["passed"]):
+                alerts.append("RHD_FAIL")
     except Exception:
         pass
 

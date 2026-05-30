@@ -27,6 +27,7 @@ from core.services.global_momentum import (
     build_global_momentum_regime_by_date,
     compute_global_momentum_values_by_date,
 )
+from core.services.recent_high_drawdown import compute_recent_high_drawdown_condition
 from core.tasks import (
     _enrich_alerts_with_global_momentum,
     _ensure_game_engine_scenario,
@@ -1029,6 +1030,165 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertNotEqual(base, sell_main)
         self.assertNotEqual(sell_main, sell_low)
 
+    def test_recent_high_drawdown_helper_true_case(self):
+        state = compute_recent_high_drawdown_condition(
+            previous_prices=["95", "100", "92", "91", "90", "88", "87", "86", "85", "84"],
+            current_price="91",
+            lookback_days=10,
+            max_drop_pct=Decimal("-0.10"),
+        )
+        self.assertTrue(state["enabled"])
+        self.assertTrue(state["sufficient_history"])
+        self.assertTrue(state["passed"])
+        self.assertEqual(state["recent_high"], Decimal("100"))
+        self.assertEqual(state["threshold_price"], Decimal("90.00"))
+
+    def test_recent_high_drawdown_helper_false_case(self):
+        state = compute_recent_high_drawdown_condition(
+            previous_prices=["95", "100", "92", "91", "90", "88", "87", "86", "85", "84"],
+            current_price="89",
+            lookback_days=10,
+            max_drop_pct=Decimal("-0.10"),
+        )
+        self.assertTrue(state["enabled"])
+        self.assertTrue(state["sufficient_history"])
+        self.assertFalse(state["passed"])
+        self.assertEqual(state["recent_high"], Decimal("100"))
+        self.assertEqual(state["threshold_price"], Decimal("90.00"))
+
+    def test_recent_high_drawdown_excludes_current_day_from_recent_high(self):
+        state = compute_recent_high_drawdown_condition(
+            previous_prices=["95", "100", "92", "91", "90", "88", "87", "86", "85", "84"],
+            current_price="120",
+            lookback_days=10,
+            max_drop_pct=Decimal("-0.10"),
+        )
+        self.assertEqual(state["recent_high"], Decimal("100"))
+        self.assertEqual(state["threshold_price"], Decimal("90.00"))
+        self.assertTrue(state["passed"])
+
+    def test_recent_high_drawdown_returns_false_when_history_is_insufficient(self):
+        state = compute_recent_high_drawdown_condition(
+            previous_prices=["95", "100"],
+            current_price="99",
+            lookback_days=3,
+            max_drop_pct=Decimal("-0.10"),
+        )
+        self.assertTrue(state["enabled"])
+        self.assertFalse(state["sufficient_history"])
+        self.assertFalse(state["passed"])
+        self.assertIsNone(state["recent_high"])
+        self.assertIsNone(state["threshold_price"])
+
+    def test_recent_high_drawdown_disabled_by_default_produces_no_alerts(self):
+        scenario = Scenario.objects.create(
+            name="RHD Disabled",
+            active=True,
+            a=1,
+            b=0,
+            c=0,
+            d=0,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=1,
+            slope_threshold=Decimal("0.10"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.10"),
+            nglobal=2,
+            history_years=2,
+        )
+        slow_map = self._compute_alert_map_with_slow_path(scenario, ["100", "100", "110", "105", "95", "108"])
+        fast_map = self._compute_alert_map_with_fast_path(scenario, ["100", "100", "110", "105", "95", "108"])
+        for alerts in list(slow_map.values()) + list(fast_map.values()):
+            self.assertNotIn("RHD_OK", alerts or "")
+            self.assertNotIn("RHD_FAIL", alerts or "")
+
+    def test_recent_high_drawdown_alerts_are_generated_in_slow_and_fast_paths(self):
+        scenario = Scenario.objects.create(
+            name="RHD Alerts",
+            active=True,
+            a=1,
+            b=0,
+            c=0,
+            d=0,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=1,
+            slope_threshold=Decimal("0.10"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.10"),
+            recent_high_drawdown_lookback_days=2,
+            recent_high_drawdown_max_drop_pct=Decimal("-0.10"),
+            nglobal=2,
+            history_years=2,
+        )
+        closes = ["100", "100", "110", "105", "95", "108"]
+        slow_map = self._compute_alert_map_with_slow_path(scenario, closes)
+        fast_map = self._compute_alert_map_with_fast_path(scenario, closes)
+
+        self.assertIn("RHD_OK", slow_map[date(2024, 1, 3)])
+        self.assertNotIn("RHD_FAIL", slow_map.get(date(2024, 1, 4), ""))
+        self.assertIn("RHD_FAIL", slow_map[date(2024, 1, 5)])
+        self.assertIn("RHD_OK", slow_map[date(2024, 1, 6)])
+        self.assertEqual(slow_map, fast_map)
+
+    def test_scenario_impactful_changes_detect_recent_high_drawdown_updates(self):
+        diff = scenario_impactful_changes(
+            instance=self.scenario,
+            cleaned_data={
+                "recent_high_drawdown_lookback_days": 10,
+                "recent_high_drawdown_max_drop_pct": Decimal("-0.10"),
+            },
+        )
+        self.assertIn("recent_high_drawdown_lookback_days", diff)
+        self.assertIn("recent_high_drawdown_max_drop_pct", diff)
+
+    def test_game_impactful_changes_detect_recent_high_drawdown_updates(self):
+        game = GameScenario.objects.create(
+            name="Game impact RHD",
+            active=True,
+            study_days=1000,
+            tradability_threshold=Decimal("0"),
+            npente=100,
+            slope_threshold=Decimal("0.1"),
+            npente_basse=20,
+            slope_threshold_basse=Decimal("0.02"),
+            nglobal=20,
+            presence_threshold_pct=Decimal("30"),
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=5,
+            n2=3,
+            capital_total=Decimal("10000"),
+            capital_per_ticker=Decimal("1000"),
+            capital_mode="FIXED",
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+        )
+        diff = game_impactful_changes(
+            instance=game,
+            cleaned_data={
+                "recent_high_drawdown_lookback_days": 10,
+                "recent_high_drawdown_max_drop_pct": Decimal("-0.10"),
+            },
+        )
+        self.assertIn("recent_high_drawdown_lookback_days", diff)
+        self.assertIn("recent_high_drawdown_max_drop_pct", diff)
+
+    def test_indicator_signature_changes_when_recent_high_drawdown_changes(self):
+        base = indicator_signature(self.scenario)
+        self.scenario.recent_high_drawdown_lookback_days = 10
+        lookback_signature = indicator_signature(self.scenario)
+        self.scenario.recent_high_drawdown_max_drop_pct = Decimal("-0.10")
+        threshold_signature = indicator_signature(self.scenario)
+
+        self.assertNotEqual(base, lookback_signature)
+        self.assertNotEqual(lookback_signature, threshold_signature)
+
     def test_explicit_sell_threshold_full_cycle_buy_then_sell(self):
         scenario = Scenario.objects.create(
             name="Slope Full Cycle",
@@ -1077,6 +1237,129 @@ class EngineAndMetricsRegressionTests(TestCase):
             self.assertIn("SPVv", alerts)
             self.assertIn("SPv_basse", alerts)
             self.assertIn("SPVv_basse", alerts)
+
+    def test_backtest_with_recent_high_drawdown_alone_enters_and_exits(self):
+        scenario = Scenario.objects.create(
+            name="BT RHD Alone",
+            active=True,
+            a=1,
+            b=0,
+            c=0,
+            d=0,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=1,
+            slope_threshold=Decimal("0.10"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.10"),
+            recent_high_drawdown_lookback_days=2,
+            recent_high_drawdown_max_drop_pct=Decimal("-0.10"),
+            nglobal=2,
+            history_years=2,
+        )
+        start = date(2024, 1, 1)
+        symbol = Symbol.objects.create(ticker="RHDALONE", exchange="NYSE", active=True)
+        self._create_bars_for_symbol(symbol, ["100", "100", "110", "105", "95", "108"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(
+                symbol=symbol,
+                scenario=scenario,
+                date=start + timedelta(days=i),
+                P=Decimal(v),
+                ratio_P=Decimal("1"),
+            )
+            for i, v in enumerate(["100", "100", "110", "105", "95", "108"])
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=symbol, scenario=scenario, date=start + timedelta(days=2), alerts="RHD_OK"),
+            Alert(symbol=symbol, scenario=scenario, date=start + timedelta(days=4), alerts="RHD_FAIL"),
+        ])
+        bt = Backtest.objects.create(
+            name="RHD Alone",
+            scenario=scenario,
+            start_date=start,
+            end_date=start + timedelta(days=5),
+            capital_total=Decimal("10000"),
+            capital_per_ticker=Decimal("1000"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LEGACY_DAILY", "buy": ["RHD_OK"], "sell": ["RHD_FAIL"]}],
+            universe_snapshot=[symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+        results = run_backtest(bt).results
+        daily = results["tickers"][symbol.ticker]["lines"][0]["daily"]
+        actions = [row["action"] for row in daily if row.get("action")]
+        self.assertIn("BUY", actions, daily)
+        self.assertIn("SELL", actions, daily)
+        self.assertLess(actions.index("BUY"), actions.index("SELL"))
+        self.assertEqual(results["tickers"][symbol.ticker]["lines"][0]["final"]["N"], 1)
+
+    def test_backtest_with_recent_high_drawdown_and_existing_state_condition_requires_both(self):
+        scenario = Scenario.objects.create(
+            name="BT RHD Combined",
+            active=True,
+            a=1,
+            b=0,
+            c=0,
+            d=0,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=1,
+            slope_threshold=Decimal("0.10"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.10"),
+            recent_high_drawdown_lookback_days=2,
+            recent_high_drawdown_max_drop_pct=Decimal("-0.10"),
+            nglobal=2,
+            history_years=2,
+        )
+        start = date(2024, 2, 1)
+        symbol = Symbol.objects.create(ticker="RHDCOMB", exchange="NYSE", active=True)
+        self._create_bars_for_symbol(symbol, ["100", "100", "110", "109", "95", "108"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(
+                symbol=symbol,
+                scenario=scenario,
+                date=start + timedelta(days=i),
+                P=Decimal(v),
+                ratio_P=Decimal("1"),
+            )
+            for i, v in enumerate(["100", "100", "110", "109", "95", "108"])
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=symbol, scenario=scenario, date=start + timedelta(days=2), alerts="RHD_OK,A1"),
+            Alert(symbol=symbol, scenario=scenario, date=start + timedelta(days=4), alerts="RHD_FAIL"),
+        ])
+        bt = Backtest.objects.create(
+            name="RHD Combined",
+            scenario=scenario,
+            start_date=start,
+            end_date=start + timedelta(days=5),
+            capital_total=Decimal("10000"),
+            capital_per_ticker=Decimal("1000"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{
+                "trading_model": "LEGACY_DAILY",
+                "buy": ["RHD_OK", "A1"],
+                "buy_logic": "AND",
+                "sell": ["RHD_FAIL", "B1"],
+                "sell_logic": "OR",
+            }],
+            universe_snapshot=[symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+        results = run_backtest(bt).results
+        daily = results["tickers"][symbol.ticker]["lines"][0]["daily"]
+        actions = [row["action"] for row in daily if row.get("action")]
+        self.assertIn("BUY", actions, daily)
+        self.assertIn("SELL", actions, daily)
+        self.assertLess(actions.index("BUY"), actions.index("SELL"))
 
     def test_global_momentum_values_and_regimes_are_computed_per_date(self):
         metrics_by_ticker = {

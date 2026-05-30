@@ -31,6 +31,7 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             npente=None, nglobal=None,
             slope_threshold=None, slope_sell_threshold=None,
             npente_basse=None, slope_threshold_basse=None, slope_sell_threshold_basse=None,
+            recent_high_drawdown_lookback_days=None, recent_high_drawdown_max_drop_pct=None,
         )
         results = {
             "tickers": {
@@ -115,6 +116,19 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertTrue(any("SUM_SLOPE_BASSE seuil achat | 0.02" in row for row in flat))
         self.assertTrue(any("SUM_SLOPE_BASSE seuil vente | 0.01" in row for row in flat))
 
+    def test_build_backtest_workbook_full_summary_includes_recent_high_drawdown_settings(self):
+        bt = self._make_backtest_stub()
+        bt.scenario.recent_high_drawdown_lookback_days = 10
+        bt.scenario.recent_high_drawdown_max_drop_pct = "-0.10"
+        wb, _ = _build_backtest_workbook_full(bt)
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            loaded = load_workbook(tmp.name, read_only=True)
+            rows = list(loaded["Settings"].iter_rows(values_only=True))
+        flat = [" | ".join("" if cell is None else str(cell) for cell in row) for row in rows]
+        self.assertTrue(any("Protection anti-chute fenêtre | 10" in row for row in flat))
+        self.assertTrue(any("Protection anti-chute chute max | -0.10" in row for row in flat))
+
     def test_backtest_debug_workbook_serializes_nested_daily_values(self):
         scenario = SimpleNamespace(name="Scenario X", description="")
         bt = SimpleNamespace(id=1, name="BT", scenario=scenario, start_date=None, end_date=None, capital_total=0, capital_per_ticker=0, capital_mode="fixed", ratio_threshold=0, include_all_tickers=False, warmup_days=0, close_positions_at_end=False, results={
@@ -190,8 +204,37 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             loaded = load_workbook(tmp.name, read_only=True)
             rows = list(loaded["FORMULAS"].iter_rows(values_only=True))
         flat = [" | ".join("" if cell is None else str(cell) for cell in row) for row in rows]
-        self.assertTrue(any("slope_sell_threshold | 0.05" in row for row in flat))
-        self.assertTrue(any("slope_sell_threshold_basse | 0.01" in row for row in flat))
+        self.assertTrue(any("Seuil de pente vente | 0.05" in row for row in flat))
+        self.assertTrue(any("Seuil de pente basse vente | 0.01" in row for row in flat))
+
+    def test_backtest_debug_workbook_lists_recent_high_drawdown_fields_when_present(self):
+        scenario = SimpleNamespace(
+            name="Scenario X",
+            description="",
+            recent_high_drawdown_lookback_days=10,
+            recent_high_drawdown_max_drop_pct="-0.10",
+        )
+        bt = SimpleNamespace(id=1, name="BT", scenario=scenario, start_date=None, end_date=None, capital_total=0, capital_per_ticker=0, capital_mode="fixed", ratio_threshold=0, include_all_tickers=False, warmup_days=0, close_positions_at_end=False, results={
+            "tickers": {
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["RHD_OK"],
+                        "sell": ["RHD_FAIL"],
+                        "daily": [],
+                        "final": {},
+                    }]
+                }
+            }
+        })
+        wb, _ = build_backtest_debug_workbook(bt, ticker="AAA", line=1)
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            loaded = load_workbook(tmp.name, read_only=True)
+            rows = list(loaded["FORMULAS"].iter_rows(values_only=True))
+        flat = [" | ".join("" if cell is None else str(cell) for cell in row) for row in rows]
+        self.assertTrue(any("Fenêtre du plus haut récent | 10" in row for row in flat))
+        self.assertTrue(any("Chute maximale autorisée | -0.10" in row for row in flat))
 
 
 
@@ -201,13 +244,25 @@ class GameScenarioExportRegressionTests(TestCase):
         from core.models import GameScenario, ProcessingJob
         from core.tasks import export_game_scenario_xlsx_task
 
-        game = GameScenario.objects.create(name='G1', today_results={'ticker': 'AF', 'ok': True})
+        game = GameScenario.objects.create(
+            name='G1',
+            today_results={'ticker': 'AF', 'ok': True},
+            recent_high_drawdown_lookback_days=10,
+            recent_high_drawdown_max_drop_pct='-0.10',
+        )
         job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.EXPORT_GAME_SCENARIO_XLSX, status=ProcessingJob.Status.PENDING)
 
-        with patch('core.tasks._job_export_path', return_value='/tmp/game_scenario_test.xlsx'):
-            result = export_game_scenario_xlsx_task.run(job_id=job.id, game_scenario_id=game.id)
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            with patch('core.tasks._job_export_path', return_value=tmp.name):
+                result = export_game_scenario_xlsx_task.run(job_id=job.id, game_scenario_id=game.id)
 
-        self.assertEqual(result, '/tmp/game_scenario_test.xlsx')
+            loaded = load_workbook(tmp.name, read_only=True)
+            game_rows = list(loaded["Game"].iter_rows(values_only=True))
+        flat = [" | ".join("" if cell is None else str(cell) for cell in row) for row in game_rows]
+
+        self.assertEqual(result, tmp.name)
         job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.DONE)
-        self.assertEqual(job.output_file, '/tmp/game_scenario_test.xlsx')
+        self.assertEqual(job.output_file, tmp.name)
+        self.assertTrue(any("Fenêtre du plus haut récent | 10" in row for row in flat))
+        self.assertTrue(any("Chute maximale autorisée | -0.1" in row or "Chute maximale autorisée | -0.10" in row for row in flat))

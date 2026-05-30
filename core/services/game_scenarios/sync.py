@@ -10,6 +10,7 @@ GAME_RUNTIME_SCENARIO_FIELDS = (
     "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
     "npente", "slope_threshold", "slope_sell_threshold",
     "npente_basse", "slope_threshold_basse", "slope_sell_threshold_basse",
+    "recent_high_drawdown_lookback_days", "recent_high_drawdown_max_drop_pct",
     "nglobal", "m_v",
 )
 

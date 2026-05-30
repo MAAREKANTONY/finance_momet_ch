@@ -170,11 +170,15 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn("1. Modèle de prix", body)
         self.assertIn("2. Fenêtres d’indicateurs", body)
         self.assertIn("3. Fenêtres de pente &amp; régime", body)
-        self.assertIn("4. Historique &amp; calcul", body)
-        self.assertIn("5. Contrôles avancés des indicateurs", body)
+        self.assertIn("4. Protection anti-chute", body)
+        self.assertIn("5. Historique &amp; calcul", body)
+        self.assertIn("6. Contrôles avancés des indicateurs", body)
         self.assertIn("Le scénario = le modèle d’indicateurs.", body)
         self.assertIn("Seuil de déclenchement vente", body)
         self.assertIn("Seuil de déclenchement vente — pente basse", body)
+        self.assertIn("Fenêtre du plus haut récent", body)
+        self.assertIn("Chute maximale autorisée", body)
+        self.assertIn("Cette protection compare le prix du jour au plus haut observé", body)
         self.assertIn("Ajouter tous les résultats", body)
         self.assertIn("Appliquer un univers existant", body)
         self.assertIn("Recherche dans la sélection", body)
@@ -922,6 +926,34 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("GM négatif", body)
         self.assertIn("GM neutre", body)
 
+    def test_backtest_detail_displays_recent_high_drawdown_when_enabled(self):
+        scenario = Scenario.objects.create(
+            name="Scenario Anti Drop Detail",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+            recent_high_drawdown_lookback_days=10,
+            recent_high_drawdown_max_drop_pct=Decimal("-0.10"),
+        )
+        bt = Backtest.objects.create(
+            name="BT Anti Drop Detail",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["RHD_OK"], "sell": ["RHD_FAIL"]}],
+            universe_snapshot=[],
+        )
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+        body = response.content.decode()
+        self.assertIn("Protection anti-chute", body)
+        self.assertIn("fenêtre 10 j précédents", body)
+        self.assertIn("-10.00%", body)
+
     def test_game_scenario_form_hides_legacy_gm_controls_and_keeps_trend_filters(self):
         response = self.client.get(reverse("game_scenario_create"))
         self.assertEqual(response.status_code, 200)
@@ -932,11 +964,14 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("4. Filtres de tradabilité &amp; risque", body)
         self.assertIn("5. Capital &amp; exécution", body)
         self.assertIn("6. Avancé / Diagnostic", body)
+        self.assertIn("Protection anti-chute", body)
         self.assertIn("Un signal est un déclencheur", body)
         self.assertIn("Un filtre est une condition bloquante", body)
         self.assertIn("Filtres de tendance", body)
         self.assertIn("Seuil de déclenchement vente", body)
         self.assertIn("Seuil de déclenchement vente — pente basse", body)
+        self.assertIn("Fenêtre du plus haut récent", body)
+        self.assertIn("Chute maximale autorisée", body)
         self.assertIn("GM_market", body)
         self.assertIn("GM_sector", body)
         self.assertNotIn('data-role="buy_gm_filter"', body)
@@ -1006,6 +1041,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("4. Filtres de tradabilité &amp; risque", body)
         self.assertIn("5. Capital &amp; exécution", body)
         self.assertIn("6. Avancé / Diagnostic", body)
+        self.assertIn("Protection anti-chute", body)
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertIn('"buy_gm_filter": "IGNORE"', body)
@@ -1111,6 +1147,20 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("GM positif", body)
         self.assertIn("GM négatif", body)
         self.assertIn("GM neutre", body)
+
+    def test_game_scenario_detail_displays_recent_high_drawdown_when_enabled(self):
+        game = GameScenario.objects.create(
+            name="Game Anti Drop Detail",
+            active=True,
+            recent_high_drawdown_lookback_days=10,
+            recent_high_drawdown_max_drop_pct=Decimal("-0.10"),
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["RHD_OK"], "sell": ["RHD_FAIL"]}],
+        )
+        response = self.client.get(reverse("game_scenario_detail", args=[game.pk]))
+        body = response.content.decode()
+        self.assertIn("Protection anti-chute", body)
+        self.assertIn("fenêtre 10 j précédents", body)
+        self.assertIn("-10.00%", body)
 
 
 class SymbolCsvSubmissionRegressionTests(TestCase):
@@ -1776,6 +1826,29 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(payload["thresholds"]["slope_sell_threshold"], str(self.scenario.slope_sell_threshold))
         self.assertEqual(payload["thresholds"]["slope_threshold_basse"], str(self.scenario.slope_threshold_basse))
         self.assertEqual(payload["thresholds"]["slope_sell_threshold_basse"], str(self.scenario.slope_sell_threshold_basse))
+
+    def test_backtest_results_diagnostic_payload_exposes_recent_high_drawdown(self):
+        self.scenario.recent_high_drawdown_lookback_days = 2
+        self.scenario.recent_high_drawdown_max_drop_pct = Decimal("-0.10")
+        self.scenario.save(update_fields=["recent_high_drawdown_lookback_days", "recent_high_drawdown_max_drop_pct"])
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["RHD_OK"], "sell": ["RHD_FAIL"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["RHD_OK"], "sell": ["RHD_FAIL"], "daily": [
+                    {"date": "2024-01-02", "price_close": "100", "action": None},
+                    {"date": "2024-01-03", "price_close": "101", "action": "BUY"},
+                    {"date": "2024-01-04", "price_close": "102", "action": "SELL"},
+                ], "final": {}}]},
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["recent_high_drawdown"]["lookback_days"], 2)
+        self.assertEqual(Decimal(payload["recent_high_drawdown"]["max_drop_pct"]), Decimal("-0.10"))
+        self.assertEqual(len(payload["recent_high_drawdown"]["threshold_price"]), len(payload["dates"]))
+        body = response.content.decode()
+        self.assertIn("Seuil anti-chute", body)
+        self.assertIn("La protection anti-chute affiche le seuil calculé à partir du plus haut récent", body)
 
     def test_backtest_results_diagnostic_slope_panel_contains_main_threshold_line(self):
         bt = self._build_diagnostic_backtest(

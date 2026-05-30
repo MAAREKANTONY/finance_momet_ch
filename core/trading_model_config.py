@@ -19,6 +19,7 @@ SIGNAL_LATCH_STATE_PAIRS: tuple[tuple[str, str], ...] = (
     ("SPVA", "SPVV"),
     ("SPA_BASSE", "SPV_BASSE"),
     ("SPVA_BASSE", "SPVV_BASSE"),
+    ("RHD_OK", "RHD_FAIL"),
 )
 
 SIGNAL_LATCH_INVALIDATORS: dict[str, str] = {

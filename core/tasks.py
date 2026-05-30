@@ -481,6 +481,7 @@ def _indicator_params_from_scenario_like(obj) -> dict:
         "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
         # SUM_SLOPE / SPa-SPv
         "npente", "slope_threshold", "slope_sell_threshold", "npente_basse", "slope_threshold_basse", "slope_sell_threshold_basse",
+        "recent_high_drawdown_lookback_days", "recent_high_drawdown_max_drop_pct",
         # V line
         "m_v",
     ]
@@ -2116,6 +2117,8 @@ def export_game_scenario_xlsx_task(self, *, job_id: int, game_scenario_id: int):
             ('capital_total', game.capital_total),
             ('capital_per_ticker', game.capital_per_ticker),
             ('tradability_threshold', game.tradability_threshold),
+            ('Fenêtre du plus haut récent', game.recent_high_drawdown_lookback_days),
+            ('Chute maximale autorisée', game.recent_high_drawdown_max_drop_pct),
             ('presence_threshold_pct', getattr(game, 'presence_threshold_pct', '')),
             ('warmup_days', getattr(game, 'warmup_days', '')),
             ('last_run_at', game.last_run_at.isoformat() if game.last_run_at else ''),

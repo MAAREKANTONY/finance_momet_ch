@@ -158,15 +158,37 @@ def build_backtest_debug_workbook(bt: Backtest, ticker: str = '', line: str | in
 
     scenario = bt.scenario
     ws_formulas.append([])
-    append_excel_row(ws_formulas, ['Scenario parameter', 'Value'])
-    for field in [
-        'a', 'b', 'c', 'd', 'e', 'vc', 'fl', 'n1', 'n2', 'n3', 'n4', 'n5', 'k2j', 'cr',
-        'n5f3', 'crf3', 'npente', 'nglobal',
-        'slope_threshold', 'slope_sell_threshold',
-        'npente_basse', 'slope_threshold_basse', 'slope_sell_threshold_basse',
-    ]:
-        if hasattr(scenario, field):
-            _append_kv(ws_formulas, field, getattr(scenario, field))
+    append_excel_row(ws_formulas, ['Paramètre scénario', 'Valeur'])
+    scenario_fields = [
+        ('a', 'a'),
+        ('b', 'b'),
+        ('c', 'c'),
+        ('d', 'd'),
+        ('e', 'e'),
+        ('vc', 'vc'),
+        ('fl', 'fl'),
+        ('n1', 'n1'),
+        ('n2', 'n2'),
+        ('n3', 'n3'),
+        ('n4', 'n4'),
+        ('n5', 'n5'),
+        ('k2j', 'k2j'),
+        ('cr', 'cr'),
+        ('n5f3', 'n5f3'),
+        ('crf3', 'crf3'),
+        ('npente', 'npente'),
+        ('nglobal', 'nglobal'),
+        ('slope_threshold', 'Seuil de pente achat'),
+        ('slope_sell_threshold', 'Seuil de pente vente'),
+        ('npente_basse', 'npente_basse'),
+        ('slope_threshold_basse', 'Seuil de pente basse achat'),
+        ('slope_sell_threshold_basse', 'Seuil de pente basse vente'),
+        ('recent_high_drawdown_lookback_days', 'Fenêtre du plus haut récent'),
+        ('recent_high_drawdown_max_drop_pct', 'Chute maximale autorisée'),
+    ]
+    for field_name, label in scenario_fields:
+        if hasattr(scenario, field_name):
+            _append_kv(ws_formulas, label, getattr(scenario, field_name))
 
     ws_formulas.append([])
     append_excel_row(ws_formulas, ['Formula', 'Meaning', 'Theory', 'Excel hint'])
