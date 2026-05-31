@@ -6,6 +6,7 @@ from openpyxl import Workbook
 from .backtest_row_projection import augment_tradable_projection_row
 from .excel_utils import append_excel_row
 from .models import Backtest
+from .templatetags.backtest_extras import line_market_conditions_display
 
 
 PREFERRED_DATA_COLUMNS = [
@@ -98,6 +99,7 @@ def get_backtest_debug_payload(bt: Backtest, ticker: str = '', line: str | int |
         'final': final,
         'buy_label': _codes_to_label(selected_line.get('buy')),
         'sell_label': _codes_to_label(selected_line.get('sell')),
+        'line_market_conditions_label': line_market_conditions_display(selected_line),
         'results_meta': results.get('meta') or {},
     }
 
@@ -146,6 +148,7 @@ def build_backtest_debug_workbook(bt: Backtest, ticker: str = '', line: str | in
     _append_kv(ws_formulas, 'Line index', payload['line_index'])
     _append_kv(ws_formulas, 'BUY conditions', payload['buy_label'])
     _append_kv(ws_formulas, 'SELL conditions', payload['sell_label'])
+    _append_kv(ws_formulas, 'Conditions de marché', payload['line_market_conditions_label'])
     _append_kv(ws_formulas, 'Start date', bt.start_date)
     _append_kv(ws_formulas, 'End date', bt.end_date)
     _append_kv(ws_formulas, 'Capital total', bt.capital_total)

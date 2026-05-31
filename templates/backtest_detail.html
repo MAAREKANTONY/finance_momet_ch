@@ -99,9 +99,9 @@
                 {{ line.buy|join:" & " }} <span class="muted">(ET)</span>
               {% endif %}
             {% else %}—{% endif %}
-            {% line_gm_filter_display line "buy" as buy_gm_display %}
-            {% if buy_gm_display and buy_gm_display != "Ignoré" %}
-              <div class="muted" style="margin-top:4px;">Legacy GM filter: {{ buy_gm_display }}</div>
+            {% line_market_conditions_display line as line_market_display %}
+            {% if line_market_display != "Aucune" %}
+              <div class="muted" style="margin-top:4px;">Conditions de marché : {{ line_market_display }}</div>
             {% endif %}
           </td>
           <td>
@@ -115,10 +115,6 @@
                   {{ line.sell|join:" | " }} <span class="muted">(OU)</span>
                 {% endif %}
               {% else %}—{% endif %}
-            {% endif %}
-            {% line_gm_filter_display line "sell" as sell_gm_display %}
-            {% if sell_gm_display and sell_gm_display != "Ignoré" %}
-              <div class="muted" style="margin-top:4px;">Filtre GM vente : {{ sell_gm_display }}</div>
             {% endif %}
           </td>
         </tr>

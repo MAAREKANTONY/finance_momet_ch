@@ -114,3 +114,28 @@ def line_gm_filter_display(line, side: str = "buy") -> str:
         if resolved_model == TRADING_MODEL_LATCH_STATEFUL or code == "IGNORE":
             return ""
     return GM_FILTER_BUSINESS_LABELS.get(code, code)
+
+
+@register.simple_tag
+def line_market_conditions_display(line) -> str:
+    if isinstance(line, dict):
+        current = line.get("buy_market_gm_current", line.get("buy_gm_filter")) or "IGNORE"
+        market = line.get("buy_market_gm_market") or "IGNORE"
+        sector = line.get("buy_market_gm_sector") or "IGNORE"
+        operator = line.get("buy_market_operator") or "AND"
+    else:
+        current = getattr(line, "buy_market_gm_current", getattr(line, "buy_gm_filter", "IGNORE")) or "IGNORE"
+        market = getattr(line, "buy_market_gm_market", "IGNORE") or "IGNORE"
+        sector = getattr(line, "buy_market_gm_sector", "IGNORE") or "IGNORE"
+        operator = getattr(line, "buy_market_operator", "AND") or "AND"
+    parts = []
+    if str(current).upper() != "IGNORE":
+        parts.append(f"GM actuel: {gm_filter_business_label(current)}")
+    if str(market).upper() != "IGNORE":
+        parts.append(f"GM marché: {gm_filter_business_label(market)}")
+    if str(sector).upper() != "IGNORE":
+        parts.append(f"GM secteur: {gm_filter_business_label(sector)}")
+    if not parts:
+        return "Aucune"
+    op_txt = " ET " if str(operator).upper() == "AND" else " OU "
+    return op_txt.join(parts)

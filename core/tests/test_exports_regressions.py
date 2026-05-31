@@ -55,6 +55,7 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
 
     def test_build_backtest_workbook_compact_serializes_list_cells(self):
         bt = self._make_backtest_stub()
+        bt.results["tickers"]["AAA"]["lines"][0]["buy_market_gm_market"] = "GM_POS"
         from core.views import _build_backtest_workbook_compact
         wb, _ = _build_backtest_workbook_compact(bt)
         with NamedTemporaryFile(suffix=".xlsx") as tmp:
@@ -62,17 +63,20 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             loaded = load_workbook(tmp.name, read_only=True)
             rows = list(loaded["Summary"].iter_rows(values_only=True))
         self.assertEqual(rows[1][2], '["SPA", "SPVA"]')
-        self.assertEqual(rows[1][3], '["SVA"]')
+        self.assertEqual(rows[1][3], 'GM marché: GM positif')
+        self.assertEqual(rows[1][4], '["SVA"]')
 
     def test_build_backtest_workbook_full_serializes_list_cells(self):
         bt = self._make_backtest_stub()
+        bt.results["tickers"]["AAA"]["lines"][0]["buy_market_gm_market"] = "GM_POS"
         wb, _ = _build_backtest_workbook_full(bt)
         with NamedTemporaryFile(suffix=".xlsx") as tmp:
             wb.save(tmp.name)
             loaded = load_workbook(tmp.name, read_only=True)
             rows = list(loaded["Summary"].iter_rows(values_only=True))
         self.assertEqual(rows[1][2], '["SPA", "SPVA"]')
-        self.assertEqual(rows[1][3], '["SVA"]')
+        self.assertEqual(rows[1][3], 'GM marché: GM positif')
+        self.assertEqual(rows[1][4], '["SVA"]')
 
     def test_build_backtest_workbook_full_uses_bounded_return_wording_for_global_momentum(self):
         bt = self._make_backtest_stub()
@@ -235,6 +239,32 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         flat = [" | ".join("" if cell is None else str(cell) for cell in row) for row in rows]
         self.assertTrue(any("Fenêtre du plus haut récent | 10" in row for row in flat))
         self.assertTrue(any("Chute maximale autorisée | -0.10" in row for row in flat))
+
+    def test_backtest_debug_workbook_lists_line_market_conditions_when_present(self):
+        scenario = SimpleNamespace(name="Scenario X", description="")
+        bt = SimpleNamespace(id=1, name="BT", scenario=scenario, start_date=None, end_date=None, capital_total=0, capital_per_ticker=0, capital_mode="fixed", ratio_threshold=0, include_all_tickers=False, warmup_days=0, close_positions_at_end=False, results={
+            "tickers": {
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["SPA"],
+                        "buy_market_gm_current": "GM_POS",
+                        "buy_market_gm_market": "GM_NEG",
+                        "buy_market_operator": "AND",
+                        "sell": ["SPVv"],
+                        "daily": [],
+                        "final": {},
+                    }]
+                }
+            }
+        })
+        wb, _ = build_backtest_debug_workbook(bt, ticker="AAA", line=1)
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            loaded = load_workbook(tmp.name, read_only=True)
+            rows = list(loaded["FORMULAS"].iter_rows(values_only=True))
+        flat = [" | ".join("" if cell is None else str(cell) for cell in row) for row in rows]
+        self.assertTrue(any("Conditions de marché | GM actuel: GM positif ET GM marché: GM négatif" in row for row in flat))
 
 
 

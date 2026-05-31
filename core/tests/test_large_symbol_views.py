@@ -681,6 +681,10 @@ class SymbolMetadataViewTests(TestCase):
             **signal_lines[0],
             "buy_gm_filter": "IGNORE",
             "buy_gm_operator": "AND",
+            "buy_market_gm_current": "IGNORE",
+            "buy_market_gm_market": "IGNORE",
+            "buy_market_gm_sector": "IGNORE",
+            "buy_market_operator": "AND",
             "sell_gm_filter": "IGNORE",
             "sell_gm_operator": "AND",
         }]
@@ -694,6 +698,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertIn('"buy_gm_filter": "IGNORE"', body)
+        self.assertIn('"buy_market_gm_current": "IGNORE"', body)
         self.assertIn('<option value="GM_POS" selected>', body)
         self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
         self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
@@ -1030,6 +1035,10 @@ class SymbolMetadataViewTests(TestCase):
             **signal_lines[0],
             "buy_gm_filter": "IGNORE",
             "buy_gm_operator": "AND",
+            "buy_market_gm_current": "IGNORE",
+            "buy_market_gm_market": "IGNORE",
+            "buy_market_gm_sector": "IGNORE",
+            "buy_market_operator": "AND",
             "sell_gm_filter": "IGNORE",
             "sell_gm_operator": "AND",
         }]
@@ -1045,6 +1054,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertIn('"buy_gm_filter": "IGNORE"', body)
+        self.assertIn('"buy_market_gm_current": "IGNORE"', body)
         self.assertIn('<option value="GM_POS" selected>', body)
         self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
         self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
@@ -1364,7 +1374,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("1050", body)
         self.assertIn("TOTAL_PNL_AMOUNT", body)
         self.assertIn("max_drawdown_amount", body)
-        self.assertIn("Filtre GM achat : <b>GM positif</b>", body)
+        self.assertIn("Conditions de marché de la ligne : <b>GM actuel: GM positif</b>", body)
 
     def test_backtest_results_renders_large_result_mode_warning_without_daily_rows(self):
         bt = Backtest.objects.create(

@@ -7,6 +7,7 @@ from unittest.mock import patch
 from django.contrib.auth import get_user_model
 from django.test import Client, TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone
 
 from core.job_launch import JobLaunchOutcome
 from core.models import Backtest, ProcessingJob, Scenario, Symbol
@@ -118,7 +119,7 @@ class SyncMarketCapsJobTaskTests(TestCase):
 
         args, kwargs = mock_sync.call_args
         self.assertEqual(args[1], date(2020, 1, 1))
-        self.assertEqual(args[2], date.today())
+        self.assertEqual(args[2], timezone.now().date())
 
 
 class MarketCapSyncBacktestViewTests(TestCase):
@@ -221,7 +222,7 @@ class MarketCapSyncTriggerPageTests(TestCase):
         )
         self.assertEqual(
             mock_launch.call_args.kwargs["task_kwargs"]["to_date"],
-            date.today().isoformat(),
+            timezone.now().date().isoformat(),
         )
         messages = list(response.context["messages"])
         self.assertTrue(any("Sync Market Caps globale demandée." in str(m) for m in messages))
