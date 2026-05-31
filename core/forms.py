@@ -150,6 +150,16 @@ def _normalize_global_regime_filter(value):
     return code if code in GLOBAL_REGIME_FILTER_CODES else "IGNORE"
 
 
+def _normalize_line_market_conditions(item):
+    legacy_current = _normalize_global_regime_filter(item.get("buy_gm_filter"))
+    return {
+        "buy_market_gm_current": _normalize_global_regime_filter(item.get("buy_market_gm_current", legacy_current)),
+        "buy_market_gm_market": _normalize_global_regime_filter(item.get("buy_market_gm_market")),
+        "buy_market_gm_sector": _normalize_global_regime_filter(item.get("buy_market_gm_sector")),
+        "buy_market_operator": _normalize_logic(item.get("buy_market_operator"), "AND"),
+    }
+
+
 def _clean_signal_lines_json(value):
     if value in (None, ""):
         return []
@@ -178,6 +188,15 @@ def _clean_signal_lines_json(value):
             "sell_gm_filter": _normalize_global_regime_filter(item.get("sell_gm_filter")),
             "sell_gm_operator": _normalize_logic(item.get("sell_gm_operator"), "AND"),
         }
+        payload.update(_normalize_line_market_conditions(item))
+        has_line_market_conditions = any(
+            payload[key] != "IGNORE"
+            for key in ("buy_market_gm_current", "buy_market_gm_market", "buy_market_gm_sector")
+        )
+        if has_line_market_conditions and not buy:
+            raise forms.ValidationError(
+                "Chaque ligne avec des conditions de marché doit contenir au moins un signal BUY."
+            )
         if explicit_trading_model and trading_model == TRADING_MODEL_LATCH_STATEFUL:
             try:
                 validate_explicit_latch_config(
@@ -188,7 +207,13 @@ def _clean_signal_lines_json(value):
                 )
             except ValueError as exc:
                 raise forms.ValidationError(str(exc)) from exc
-        if buy or sell or payload["buy_gm_filter"] != "IGNORE" or payload["sell_gm_filter"] != "IGNORE":
+        if (
+            buy
+            or sell
+            or payload["buy_gm_filter"] != "IGNORE"
+            or payload["sell_gm_filter"] != "IGNORE"
+            or has_line_market_conditions
+        ):
             cleaned.append(payload)
     return cleaned
 
@@ -207,6 +232,10 @@ def _normalize_legacy_gm_for_trend_filters(signal_lines, trend_filter_gm_current
         payload["buy_gm_operator"] = "AND"
         payload["sell_gm_filter"] = "IGNORE"
         payload["sell_gm_operator"] = "AND"
+        payload.setdefault("buy_market_gm_current", "IGNORE")
+        payload.setdefault("buy_market_gm_market", "IGNORE")
+        payload.setdefault("buy_market_gm_sector", "IGNORE")
+        payload.setdefault("buy_market_operator", "AND")
         normalized_lines.append(payload)
     return normalized_lines, normalized_current
 

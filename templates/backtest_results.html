@@ -223,11 +223,8 @@
   </div>
   {% if line %}
     <div class="muted" style="margin-top:12px;">
-      <div>Filtre GM achat : <b>{% line_gm_filter_display line "buy" %}</b></div>
-      {% line_gm_filter_display line "sell" as sell_gm_display %}
-      {% if sell_gm_display %}
-        <div>Filtre GM vente : <b>{{ sell_gm_display }}</b></div>
-      {% endif %}
+      <div>Conditions de marché de la ligne : <b>{% line_market_conditions_display line %}</b></div>
+      <div>Les conditions de marché ne déclenchent pas un achat à elles seules. Elles servent à autoriser ou bloquer l'achat lorsqu'un signal BUY est déjà présent.</div>
     </div>
   {% endif %}
 </div>

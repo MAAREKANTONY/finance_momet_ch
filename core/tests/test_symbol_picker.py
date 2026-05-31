@@ -74,6 +74,41 @@ class SignalLinesCleaningTests(SimpleTestCase):
         self.assertEqual(line["buy_gm_operator"], "AND")
         self.assertNotIn("GM_POS", line["buy"])
 
+    def test_clean_signal_lines_stores_line_market_conditions_separately(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_logic": "AND",
+                "buy_market_gm_current": "GM_POS",
+                "buy_market_gm_market": "GM_NEG",
+                "buy_market_gm_sector": "IGNORE",
+                "buy_market_operator": "OR",
+            }
+        ])
+        self.assertEqual(len(cleaned), 1)
+        line = cleaned[0]
+        self.assertEqual(line["buy"], ["Af"])
+        self.assertEqual(line["buy_market_gm_current"], "GM_POS")
+        self.assertEqual(line["buy_market_gm_market"], "GM_NEG")
+        self.assertEqual(line["buy_market_gm_sector"], "IGNORE")
+        self.assertEqual(line["buy_market_operator"], "OR")
+        self.assertNotIn("GM_POS", line["buy"])
+        self.assertNotIn("GM_NEG", line["buy"])
+
+    def test_clean_signal_lines_rejects_market_conditions_without_buy_signal(self):
+        with self.assertRaises(forms.ValidationError):
+            _clean_signal_lines_json([
+                {
+                    "trading_model": "LATCH_STATEFUL",
+                    "buy": [],
+                    "sell": [],
+                    "buy_market_gm_market": "GM_POS",
+                    "buy_market_operator": "AND",
+                }
+            ])
+
     def test_clean_signal_lines_rejects_gm_as_explicit_progressive_buy_signal(self):
         with self.assertRaises(forms.ValidationError):
             _clean_signal_lines_json([

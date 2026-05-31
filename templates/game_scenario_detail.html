@@ -83,6 +83,10 @@
                     {{ line.buy|join:" & " }} <span class="muted">(ET)</span>
                   {% endif %}
                 {% else %}—{% endif %}
+                {% line_market_conditions_display line as line_market_display %}
+                {% if line_market_display != "Aucune" %}
+                  <div class="muted" style="margin-top:4px;">Conditions de marché : {{ line_market_display }}</div>
+                {% endif %}
               </td>
               <td>
                 {% if line.sell == "AUTO_K1F_UPPER_DOWN_B1F" or line.sell.0 == "AUTO_K1F_UPPER_DOWN_B1F" %}

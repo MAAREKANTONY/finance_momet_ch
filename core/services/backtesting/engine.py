@@ -39,6 +39,10 @@ from core.services.trend_filters import (
     evaluate_trend_filters_for_symbol,
     has_active_trend_filters,
     preload_benchmark_price_cache,
+    TREND_FILTER_GM_CURRENT_KEY,
+    TREND_FILTER_GM_MARKET_KEY,
+    TREND_FILTER_GM_SECTOR_KEY,
+    TREND_FILTER_OPERATOR_KEY,
 )
 from core.trading_model_config import (
     SIGNAL_LATCH_INVALIDATORS,
@@ -292,10 +296,14 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
                 "sell_logic": sell_logic,
                 "buy_gm_filter": _normalize_global_regime_filter(raw.get("buy_gm_filter")),
                 "buy_gm_operator": _normalize_logic(raw.get("buy_gm_operator"), "AND"),
+                "buy_market_gm_current": _normalize_global_regime_filter(raw.get("buy_market_gm_current")),
+                "buy_market_gm_market": _normalize_global_regime_filter(raw.get("buy_market_gm_market")),
+                "buy_market_gm_sector": _normalize_global_regime_filter(raw.get("buy_market_gm_sector")),
+                "buy_market_operator": _normalize_logic(raw.get("buy_market_operator"), "AND"),
                 "sell_gm_filter": sell_gm_filter,
                 "sell_gm_operator": _normalize_logic(raw.get("sell_gm_operator"), "AND"),
             })
-    return out or [{"mode": "standard", "trading_model": TRADING_MODEL_LATCH_STATEFUL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
+    return out or [{"mode": "standard", "trading_model": TRADING_MODEL_LATCH_STATEFUL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "buy_market_gm_current": "IGNORE", "buy_market_gm_market": "IGNORE", "buy_market_gm_sector": "IGNORE", "buy_market_operator": "AND", "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
 
 
 def _match_codes(day_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
@@ -634,6 +642,45 @@ def _compose_condition_label(codes: list[str], logic: str = "AND", gm_filter: An
     return f"({base}){op_txt}{gm_label}"
 
 
+def _line_market_conditions_settings(state_row: dict[str, Any]) -> dict[str, Any]:
+    return {
+        TREND_FILTER_OPERATOR_KEY: _normalize_logic(state_row.get("buy_market_operator"), "AND"),
+        TREND_FILTER_GM_CURRENT_KEY: _normalize_global_regime_filter(state_row.get("buy_market_gm_current")),
+        TREND_FILTER_GM_MARKET_KEY: _normalize_global_regime_filter(state_row.get("buy_market_gm_market")),
+        TREND_FILTER_GM_SECTOR_KEY: _normalize_global_regime_filter(state_row.get("buy_market_gm_sector")),
+    }
+
+
+def _collect_distinct_benchmark_tickers_for_line_market_conditions(
+    symbols: list[Symbol],
+    signal_lines: list[dict[str, Any]] | None,
+) -> set[str]:
+    benchmark_tickers: set[str] = set()
+    for line in signal_lines or []:
+        benchmark_tickers |= collect_distinct_benchmark_tickers(symbols, _line_market_conditions_settings(line))
+    return benchmark_tickers
+
+
+def _line_market_conditions_label(state_row: dict[str, Any]) -> str:
+    settings = _line_market_conditions_settings(state_row)
+    labels = []
+    mapping = (
+        (TREND_FILTER_GM_CURRENT_KEY, "GM actuel"),
+        (TREND_FILTER_GM_MARKET_KEY, "GM marché"),
+        (TREND_FILTER_GM_SECTOR_KEY, "GM secteur"),
+    )
+    for key, label in mapping:
+        code = settings.get(key)
+        if code and code != "IGNORE":
+            labels.append(f"{label}={_global_regime_filter_label(code)}")
+    if not labels:
+        return ""
+    if len(labels) == 1:
+        return labels[0]
+    op_txt = " ET " if settings[TREND_FILTER_OPERATOR_KEY] == "AND" else " OU "
+    return op_txt.join(labels)
+
+
 def _initialize_active_signal_states(active_states: dict[str, bool], metrics_tuple: tuple | None, price_value: Any, *, slope_threshold: Any = None, slope_threshold_basse: Any = None) -> set[str]:
     """Initialize persistent states from the first in-range day values.
 
@@ -935,10 +982,9 @@ def run_backtest(
         if market_cap_filter_enabled
         else {}
     )
-    benchmark_tickers = (
-        sorted(collect_distinct_benchmark_tickers(list(sym_by_ticker.values()), settings))
-        if trend_filters_enabled
-        else []
+    benchmark_tickers = sorted(
+        set(collect_distinct_benchmark_tickers(list(sym_by_ticker.values()), settings))
+        | _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
     )
     benchmark_symbols_by_ticker: dict[str, Symbol] = {}
     if benchmark_tickers:
@@ -951,7 +997,7 @@ def run_backtest(
             start_date=fetch_start_d,
             end_date=end_d,
         )
-        if trend_filters_enabled
+        if benchmark_tickers
         else {}
     )
     for ticker in tickers:
@@ -1019,6 +1065,26 @@ def run_backtest(
             )["passed"]
         )
 
+    def _line_market_conditions_allow_buy(st: dict[str, Any], ticker: str, d, gm_code: str | None) -> bool:
+        line_market_settings = _line_market_conditions_settings(st)
+        active_codes = (
+            line_market_settings[TREND_FILTER_GM_CURRENT_KEY],
+            line_market_settings[TREND_FILTER_GM_MARKET_KEY],
+            line_market_settings[TREND_FILTER_GM_SECTOR_KEY],
+        )
+        if all(code == "IGNORE" for code in active_codes):
+            return True
+        return bool(
+            evaluate_trend_filters_for_symbol(
+                symbol=sym_by_ticker.get(ticker),
+                settings=line_market_settings,
+                as_of=d,
+                nglobal=nglobal,
+                gm_current_regime=gm_code,
+                benchmark_cache_by_ticker=benchmark_price_cache,
+            )["passed"]
+        )
+
     for ticker in data_by_ticker.keys():
         for li, line in enumerate(signal_lines):
             state[(ticker, li)] = {
@@ -1028,6 +1094,12 @@ def run_backtest(
                 "sell_logic": _normalize_logic(line.get("sell_logic"), "OR"),
                 "buy_gm_filter": _normalize_global_regime_filter(line.get("buy_gm_filter")),
                 "buy_gm_operator": _normalize_logic(line.get("buy_gm_operator"), "AND"),
+                "buy_market_gm_current": _normalize_global_regime_filter(
+                    line.get("buy_market_gm_current", line.get("buy_gm_filter"))
+                ),
+                "buy_market_gm_market": _normalize_global_regime_filter(line.get("buy_market_gm_market")),
+                "buy_market_gm_sector": _normalize_global_regime_filter(line.get("buy_market_gm_sector")),
+                "buy_market_operator": _normalize_logic(line.get("buy_market_operator"), "AND"),
                 "sell_gm_filter": _normalize_global_regime_filter(line.get("sell_gm_filter")),
                 "sell_gm_operator": _normalize_logic(line.get("sell_gm_operator"), "AND"),
                 "trading_model": line.get("trading_model"),
@@ -1204,6 +1276,10 @@ def run_backtest(
                     "sell_logic": st["sell_logic"],
                     "buy_gm_filter": st["buy_gm_filter"],
                     "buy_gm_operator": st["buy_gm_operator"],
+                    "buy_market_gm_current": st["buy_market_gm_current"],
+                    "buy_market_gm_market": st["buy_market_gm_market"],
+                    "buy_market_gm_sector": st["buy_market_gm_sector"],
+                    "buy_market_operator": st["buy_market_operator"],
                     "sell_gm_filter": st["sell_gm_filter"],
                     "sell_gm_operator": st["sell_gm_operator"],
                     "action": None,
@@ -1402,6 +1478,8 @@ def run_backtest(
                 continue
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
+            if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                continue
 
             if not st["allocated"]:
                 # Needs CT allocation to be able to buy
@@ -1473,6 +1551,8 @@ def run_backtest(
             if not tradable:
                 continue
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
+                continue
+            if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
                 continue
 
             if not st["allocated"]:
@@ -1779,6 +1859,10 @@ def run_backtest(
                 "sell_logic": st["sell_logic"],
                 "buy_gm_filter": st["buy_gm_filter"],
                 "buy_gm_operator": st["buy_gm_operator"],
+                "buy_market_gm_current": st["buy_market_gm_current"],
+                "buy_market_gm_market": st["buy_market_gm_market"],
+                "buy_market_gm_sector": st["buy_market_gm_sector"],
+                "buy_market_operator": st["buy_market_operator"],
                 "sell_gm_filter": st["sell_gm_filter"],
                 "sell_gm_operator": st["sell_gm_operator"],
                 "allocated": st["allocated"],
@@ -2140,10 +2224,9 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         if market_cap_filter_enabled
         else {}
     )
-    benchmark_tickers = (
-        sorted(collect_distinct_benchmark_tickers(list(sym_by_ticker.values()), settings))
-        if trend_filters_enabled
-        else []
+    benchmark_tickers = sorted(
+        set(collect_distinct_benchmark_tickers(list(sym_by_ticker.values()), settings))
+        | _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
     )
     benchmark_symbols_by_ticker: dict[str, Symbol] = {}
     if benchmark_tickers:
@@ -2156,7 +2239,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             start_date=fetch_start_d,
             end_date=end_d,
         )
-        if trend_filters_enabled
+        if benchmark_tickers
         else {}
     )
 
@@ -2186,6 +2269,12 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 "sell_logic": _normalize_logic(line.get("sell_logic"), "OR"),
                 "buy_gm_filter": _normalize_global_regime_filter(line.get("buy_gm_filter")),
                 "buy_gm_operator": _normalize_logic(line.get("buy_gm_operator"), "AND"),
+                "buy_market_gm_current": _normalize_global_regime_filter(
+                    line.get("buy_market_gm_current", line.get("buy_gm_filter"))
+                ),
+                "buy_market_gm_market": _normalize_global_regime_filter(line.get("buy_market_gm_market")),
+                "buy_market_gm_sector": _normalize_global_regime_filter(line.get("buy_market_gm_sector")),
+                "buy_market_operator": _normalize_logic(line.get("buy_market_operator"), "AND"),
                 "sell_gm_filter": _normalize_global_regime_filter(line.get("sell_gm_filter")),
                 "sell_gm_operator": _normalize_logic(line.get("sell_gm_operator"), "AND"),
                 "trading_model": line.get("trading_model"),
@@ -2251,6 +2340,24 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 gm_current_regime=gm_code,
                 benchmark_cache_by_ticker=benchmark_price_cache,
                 suppress_gm_current=_normalize_global_regime_filter(buy_gm_filter) != "IGNORE",
+            )["passed"]
+        )
+
+    def _line_market_conditions_allow_buy(st: dict[str, Any], ticker: str, d, gm_code: str | None) -> bool:
+        line_market_settings = _line_market_conditions_settings(st)
+        if all(
+            line_market_settings[key] == "IGNORE"
+            for key in (TREND_FILTER_GM_CURRENT_KEY, TREND_FILTER_GM_MARKET_KEY, TREND_FILTER_GM_SECTOR_KEY)
+        ):
+            return True
+        return bool(
+            evaluate_trend_filters_for_symbol(
+                symbol=sym_by_ticker.get(ticker),
+                settings=line_market_settings,
+                as_of=d,
+                nglobal=nglobal,
+                gm_current_regime=gm_code,
+                benchmark_cache_by_ticker=benchmark_price_cache,
             )["passed"]
         )
 
@@ -2387,6 +2494,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 continue
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
+            if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                continue
 
             if not st["allocated"]:
                 if CP_infinite:
@@ -2436,6 +2545,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             if not tradable:
                 continue
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
+                continue
+            if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
                 continue
             if not st["allocated"]:
                 continue
@@ -2521,10 +2632,14 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     "sell": st["sell_codes"],
                     "buy_logic": st["buy_logic"],
                     "sell_logic": st["sell_logic"],
-                    "buy_gm_filter": st["buy_gm_filter"],
-                    "buy_gm_operator": st["buy_gm_operator"],
-                    "sell_gm_filter": st["sell_gm_filter"],
-                    "sell_gm_operator": st["sell_gm_operator"],
+                "buy_gm_filter": st["buy_gm_filter"],
+                "buy_gm_operator": st["buy_gm_operator"],
+                "buy_market_gm_current": st["buy_market_gm_current"],
+                "buy_market_gm_market": st["buy_market_gm_market"],
+                "buy_market_gm_sector": st["buy_market_gm_sector"],
+                "buy_market_operator": st["buy_market_operator"],
+                "sell_gm_filter": st["sell_gm_filter"],
+                "sell_gm_operator": st["sell_gm_operator"],
                     "final": {
                         "N": N,
                         "BT": str(BT),
