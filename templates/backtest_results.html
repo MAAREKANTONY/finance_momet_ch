@@ -388,54 +388,6 @@
   </div>
   {% endif %}
 
-  {% if diagnostic_chart_payload.trend_filters %}
-  <div style="margin-bottom:8px;">
-    <h4 style="margin:0 0 8px 0;">Filtres de tendance (achat uniquement)</h4>
-    <div class="muted" style="margin-bottom:8px;">
-      <div>Opérateur : <b>{{ diagnostic_chart_payload.trend_filters.operator }}</b></div>
-      {% if diagnostic_chart_payload.trend_filters.universe.sector_warning %}
-      <div>{{ diagnostic_chart_payload.trend_filters.universe.sector_warning }}</div>
-      {% endif %}
-    </div>
-    {% if diagnostic_chart_payload.trend_filters.current.filter_code != "IGNORE" %}
-    <div style="margin-bottom:18px;">
-      <div class="muted" style="margin-bottom:8px;">
-        <b>{{ diagnostic_chart_payload.trend_filters.current.label }}</b> : {{ diagnostic_chart_payload.trend_filters.current.filter_code }}
-      </div>
-      <canvas id="diagnosticTrendCurrentChart" height="110"></canvas>
-    </div>
-    {% endif %}
-    {% if diagnostic_chart_payload.trend_filters.market.filter_code != "IGNORE" %}
-    <div style="margin-bottom:18px;">
-      <div class="muted" style="margin-bottom:8px;">
-        <b>{{ diagnostic_chart_payload.trend_filters.market.label }}</b> : {{ diagnostic_chart_payload.trend_filters.market.filter_code }}
-        {% if diagnostic_chart_payload.trend_filters.market.benchmark_ticker %}
-          <span style="margin-left:10px;">benchmark {{ diagnostic_chart_payload.trend_filters.market.benchmark_ticker }}</span>
-        {% endif %}
-        {% if diagnostic_chart_payload.trend_filters.market.reason %}
-          <span style="margin-left:10px; color:#92400e;">{{ diagnostic_chart_payload.trend_filters.market.reason }}</span>
-        {% endif %}
-      </div>
-      <canvas id="diagnosticTrendMarketChart" height="110"></canvas>
-    </div>
-    {% endif %}
-    {% if diagnostic_chart_payload.trend_filters.sector.filter_code != "IGNORE" %}
-    <div style="margin-bottom:18px;">
-      <div class="muted" style="margin-bottom:8px;">
-        <b>{{ diagnostic_chart_payload.trend_filters.sector.label }}</b> : {{ diagnostic_chart_payload.trend_filters.sector.filter_code }}
-        {% if diagnostic_chart_payload.trend_filters.sector.benchmark_ticker %}
-          <span style="margin-left:10px;">benchmark {{ diagnostic_chart_payload.trend_filters.sector.benchmark_ticker }}</span>
-        {% endif %}
-        {% if diagnostic_chart_payload.trend_filters.sector.reason %}
-          <span style="margin-left:10px; color:#92400e;">{{ diagnostic_chart_payload.trend_filters.sector.reason }}</span>
-        {% endif %}
-      </div>
-      <canvas id="diagnosticTrendSectorChart" height="110"></canvas>
-    </div>
-    {% endif %}
-  </div>
-  {% endif %}
-
   {% if diagnostic_chart_payload.market_cap %}
   <div style="margin-bottom:8px;">
     <h4 style="margin:0 0 8px 0;">Historical Market Cap</h4>
@@ -1183,23 +1135,6 @@
       });
     }
 
-    if (payload.trend_filters) {
-      buildTrendChart(
-        "diagnosticTrendCurrentChart",
-        payload.trend_filters.current,
-        "GM current (%)"
-      );
-      buildTrendChart(
-        "diagnosticTrendMarketChart",
-        payload.trend_filters.market,
-        "GM_market (%)"
-      );
-      buildTrendChart(
-        "diagnosticTrendSectorChart",
-        payload.trend_filters.sector,
-        "GM_sector (%)"
-      );
-    }
   }
 </script>
 {% endblock %}

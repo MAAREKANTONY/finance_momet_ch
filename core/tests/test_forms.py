@@ -385,6 +385,52 @@ class SymbolPickerFormTests(TestCase):
         self.assertEqual(obj.settings["trend_filter_gm_sector"], "GM_NEU")
         self.assertEqual(obj.signal_lines[0]["buy_gm_filter"], "IGNORE")
 
+    def test_backtest_form_preserves_legacy_trend_settings_when_fields_are_not_submitted(self):
+        scenario = Scenario.objects.create(name="BT Hidden Trend Filters", active=True)
+        obj = Backtest.objects.create(
+            name="BT hidden trend filters",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-03",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            settings={
+                "trend_filter_operator": "OR",
+                "trend_filter_gm_current": "GM_POS",
+                "trend_filter_gm_market": "GM_NEG",
+                "trend_filter_gm_sector": "GM_NEU",
+            },
+        )
+        form = BacktestForm(
+            data={
+                "name": obj.name,
+                "description": "",
+                "scenario": str(scenario.id),
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-03",
+                "capital_total": "1000",
+                "capital_per_ticker": "100",
+                "capital_mode": "FIXED",
+                "ratio_threshold": "0",
+                "include_all_tickers": "on",
+                "signal_lines": json.dumps([
+                    {"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}
+                ]),
+                "warmup_days": "0",
+                "close_positions_at_end": "on",
+            },
+            instance=obj,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        saved = form.save()
+        self.assertEqual(saved.settings["trend_filter_operator"], "OR")
+        self.assertEqual(saved.settings["trend_filter_gm_current"], "GM_POS")
+        self.assertEqual(saved.settings["trend_filter_gm_market"], "GM_NEG")
+        self.assertEqual(saved.settings["trend_filter_gm_sector"], "GM_NEU")
+
     def test_backtest_form_omits_inert_trend_filter_settings(self):
         scenario = Scenario.objects.create(name="BT Empty Trend Filters", active=True)
         obj = Backtest.objects.create(
@@ -485,9 +531,10 @@ class SymbolPickerFormTests(TestCase):
         )
         self.assertTrue(form.is_valid(), form.errors)
         saved = form.save()
-        self.assertEqual(saved.settings["trend_filter_gm_current"], "GM_POS")
+        self.assertNotIn("trend_filter_gm_current", saved.settings)
         self.assertEqual(saved.signal_lines[0]["buy_gm_filter"], "IGNORE")
         self.assertEqual(saved.signal_lines[0]["buy_gm_operator"], "AND")
+        self.assertEqual(saved.signal_lines[0]["buy_market_gm_current"], "GM_POS")
         self.assertEqual(saved.signal_lines[0]["sell_gm_filter"], "IGNORE")
         self.assertEqual(saved.signal_lines[0]["sell_gm_operator"], "AND")
 
@@ -810,6 +857,56 @@ class SymbolPickerFormTests(TestCase):
         self.assertEqual(obj.settings["trend_filter_gm_sector"], "GM_NEU")
         self.assertEqual(obj.signal_lines[0]["buy_gm_filter"], "IGNORE")
 
+    def test_game_scenario_form_preserves_legacy_trend_settings_when_fields_are_not_submitted(self):
+        obj = GameScenario.objects.create(
+            name="Game hidden trend filters",
+            signal_lines=[{"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}],
+            settings={
+                "trend_filter_operator": "OR",
+                "trend_filter_gm_current": "GM_POS",
+                "trend_filter_gm_market": "GM_NEG",
+                "trend_filter_gm_sector": "GM_NEU",
+            },
+        )
+        form = GameScenarioForm(
+            data={
+                "name": obj.name,
+                "description": "",
+                "active": "on",
+                "study_days": "1000",
+                "tradability_threshold": "0",
+                "npente": "100",
+                "slope_threshold": "0.1",
+                "npente_basse": "20",
+                "slope_threshold_basse": "0.02",
+                "nglobal": "20",
+                "presence_threshold_pct": "30",
+                "email_recipients": "",
+                "a": "1",
+                "b": "1",
+                "c": "1",
+                "d": "1",
+                "e": "1",
+                "n1": "5",
+                "n2": "3",
+                "capital_total": "10000",
+                "capital_per_ticker": "1000",
+                "capital_mode": "FIXED",
+                "signal_lines": json.dumps([
+                    {"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}
+                ]),
+                "warmup_days": "30",
+                "close_positions_at_end": "on",
+            },
+            instance=obj,
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        saved = form.save()
+        self.assertEqual(saved.settings["trend_filter_operator"], "OR")
+        self.assertEqual(saved.settings["trend_filter_gm_current"], "GM_POS")
+        self.assertEqual(saved.settings["trend_filter_gm_market"], "GM_NEG")
+        self.assertEqual(saved.settings["trend_filter_gm_sector"], "GM_NEU")
+
     def test_game_scenario_form_normalizes_legacy_gm_values_on_save(self):
         obj = GameScenario.objects.create(
             name="Game preserve legacy gm",
@@ -864,9 +961,10 @@ class SymbolPickerFormTests(TestCase):
         )
         self.assertTrue(form.is_valid(), form.errors)
         saved = form.save()
-        self.assertEqual(saved.settings["trend_filter_gm_current"], "GM_POS")
+        self.assertNotIn("trend_filter_gm_current", saved.settings)
         self.assertEqual(saved.signal_lines[0]["buy_gm_filter"], "IGNORE")
         self.assertEqual(saved.signal_lines[0]["buy_gm_operator"], "AND")
+        self.assertEqual(saved.signal_lines[0]["buy_market_gm_current"], "GM_POS")
         self.assertEqual(saved.signal_lines[0]["sell_gm_filter"], "IGNORE")
         self.assertEqual(saved.signal_lines[0]["sell_gm_operator"], "AND")
 

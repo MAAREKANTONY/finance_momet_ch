@@ -133,6 +133,11 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
             content = self._template(template_name)
             self.assertIn("trading_model:'LATCH_STATEFUL', buy:['Af']", content)
             self.assertIn("trading_model:'LATCH_STATEFUL', buy:[]", content)
+            self.assertIn(
+                "Les conditions de marché ne déclenchent pas un achat à elles seules. "
+                "Elles autorisent l'achat lorsqu'un signal BUY est toujours actif.",
+                content,
+            )
             self.assertIn('<option value="">Automatique</option>', content)
             self.assertIn(
                 '<option value="LATCH_STATEFUL">Progressif : les conditions peuvent se valider dans le temps</option>',
@@ -143,6 +148,11 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
         content = self._template("game_scenario_form.html")
         self.assertIn("trading_model:'LATCH_STATEFUL', buy:['Af']", content)
         self.assertIn("trading_model:'LATCH_STATEFUL', buy:[]", content)
+        self.assertIn(
+            "Les conditions de marché ne déclenchent pas un achat à elles seules. "
+            "Elles autorisent l'achat lorsqu'un signal BUY est toujours actif.",
+            content,
+        )
         self.assertIn('<option value="">Automatique</option>', content)
         self.assertIn(
             '<option value="LATCH_STATEFUL">Progressif : les conditions peuvent se valider dans le temps</option>',

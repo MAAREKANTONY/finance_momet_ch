@@ -58,28 +58,6 @@
             <td>{{ bt.settings.market_cap_missing_policy|default:"BLOCK" }}</td>
           </tr>
         {% endif %}
-        {% if bt.settings.trend_filter_gm_current or bt.settings.trend_filter_gm_market or bt.settings.trend_filter_gm_sector %}
-          <tr>
-            <th>Opérateur des filtres de tendance</th>
-            <td>{{ bt.settings.trend_filter_operator|default:"AND" }}</td>
-          </tr>
-          <tr>
-            <th>GM current</th>
-            <td>{{ bt.settings.trend_filter_gm_current|default:"IGNORE"|gm_filter_business_label }}</td>
-          </tr>
-          <tr>
-            <th>GM_market</th>
-            <td>{{ bt.settings.trend_filter_gm_market|default:"IGNORE"|gm_filter_business_label }}</td>
-          </tr>
-          <tr>
-            <th>GM_sector</th>
-            <td>{{ bt.settings.trend_filter_gm_sector|default:"IGNORE"|gm_filter_business_label }}</td>
-          </tr>
-          <tr>
-            <th>Note sur les filtres de tendance</th>
-            <td class="muted">GM_market et GM_sector nécessitent des données OHLC locales pour les ETF de benchmark tels que SPY, XLK, XLF, etc.</td>
-          </tr>
-        {% endif %}
         <tr><th>Lignes de signaux (achat / vente)</th><td>
   {% if bt.signal_lines %}
     <table>
