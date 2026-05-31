@@ -97,8 +97,7 @@
 
     <div class="card" style="margin-bottom:16px;">
       <h3 style="margin-top:0;">3. Conditions de marché</h3>
-      <p class="muted">Une condition de marché est un régime global ou un benchmark servant de porte d’entrée. Les filtres de tendance s'appliquent uniquement aux achats et ne déclenchent jamais de SELL.</p>
-      {% include "partials/trend_filter_fields.html" %}
+      <p class="muted">Les conditions de marché se règlent directement dans chaque ligne de signaux BUY.</p>
     </div>
 
     <div class="card" style="margin-bottom:16px;">
@@ -400,7 +399,7 @@
     const marketHelp = document.createElement('div');
     marketHelp.className = 'muted';
     marketHelp.style.marginTop = '4px';
-    marketHelp.textContent = "Les conditions de marché ne déclenchent pas un achat à elles seules. Elles servent à autoriser ou bloquer l'achat lorsqu'un signal BUY est déjà présent.";
+    marketHelp.textContent = "Les conditions de marché ne déclenchent pas un achat à elles seules. Elles autorisent l'achat lorsqu'un signal BUY est toujours actif.";
     const marketFields = document.createElement('div');
     marketFields.style.display = 'grid';
     marketFields.style.gridTemplateColumns = 'repeat(auto-fit, minmax(160px, 1fr))';

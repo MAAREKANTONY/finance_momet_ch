@@ -49,18 +49,6 @@
       <b>Missing Cap Policy:</b> {{ obj.settings.market_cap_missing_policy|default:"BLOCK" }}
     </p>
   {% endif %}
-  {% if obj.settings.trend_filter_gm_current or obj.settings.trend_filter_gm_market or obj.settings.trend_filter_gm_sector %}
-    <p>
-      <b>Opérateur des filtres de tendance:</b> {{ obj.settings.trend_filter_operator|default:"AND" }}
-      &nbsp; | &nbsp;
-      <b>GM current:</b> {{ obj.settings.trend_filter_gm_current|default:"IGNORE"|gm_filter_business_label }}
-      &nbsp; | &nbsp;
-      <b>GM_market:</b> {{ obj.settings.trend_filter_gm_market|default:"IGNORE"|gm_filter_business_label }}
-      &nbsp; | &nbsp;
-      <b>GM_sector:</b> {{ obj.settings.trend_filter_gm_sector|default:"IGNORE"|gm_filter_business_label }}
-    </p>
-    <p class="muted">GM_market et GM_sector nécessitent des données OHLC locales pour les ETF de benchmark tels que SPY, XLK, XLF, etc.</p>
-  {% endif %}
   {% if obj.last_run_message %}<p class="muted">{{ obj.last_run_message }}</p>{% endif %}
 
   <div style="margin-top:12px;">

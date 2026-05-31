@@ -232,7 +232,10 @@ def _normalize_legacy_gm_for_trend_filters(signal_lines, trend_filter_gm_current
         payload["buy_gm_operator"] = "AND"
         payload["sell_gm_filter"] = "IGNORE"
         payload["sell_gm_operator"] = "AND"
-        payload.setdefault("buy_market_gm_current", "IGNORE")
+        line_current = _normalize_global_regime_filter(payload.get("buy_market_gm_current"))
+        if line_current == "IGNORE" and legacy_buy in SUPPORTED_TREND_GM_CURRENT_CODES:
+            line_current = legacy_buy
+        payload["buy_market_gm_current"] = line_current
         payload.setdefault("buy_market_gm_market", "IGNORE")
         payload.setdefault("buy_market_gm_sector", "IGNORE")
         payload.setdefault("buy_market_operator", "AND")
@@ -247,6 +250,22 @@ def _ensure_legacy_trend_choice(field, value):
     existing = {choice[0] for choice in field.choices}
     if code not in existing:
         field.choices = list(field.choices) + [choice for choice in LEGACY_TREND_FILTER_CHOICES if choice[0] == code]
+
+
+def _trend_filter_fields_were_submitted(form) -> bool:
+    if not getattr(form, "is_bound", False):
+        return False
+    return any(
+        form.add_prefix(field_name) in form.data
+        for field_name in (
+            "trend_filter_operator",
+            "trend_filter_gm_current",
+            "trend_filter_gm_market",
+            "trend_filter_gm_sector",
+        )
+    )
+
+
 class AlertDefinitionForm(forms.ModelForm):
     """CRUD form for user-defined alert definitions.
 
@@ -815,25 +834,26 @@ class BacktestForm(forms.ModelForm):
             settings.pop(MARKET_CAP_MISSING_POLICY_KEY, None)
         else:
             settings[MARKET_CAP_MISSING_POLICY_KEY] = market_cap_missing_policy
-        if all(code == "IGNORE" for code in (trend_filter_gm_current, trend_filter_gm_market, trend_filter_gm_sector)):
-            settings.pop(TREND_FILTER_OPERATOR_KEY, None)
-            settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
-            settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
-            settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
-        else:
-            settings[TREND_FILTER_OPERATOR_KEY] = trend_filter_operator
-            if trend_filter_gm_current == "IGNORE":
+        if _trend_filter_fields_were_submitted(self):
+            if all(code == "IGNORE" for code in (trend_filter_gm_current, trend_filter_gm_market, trend_filter_gm_sector)):
+                settings.pop(TREND_FILTER_OPERATOR_KEY, None)
                 settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
-            else:
-                settings[TREND_FILTER_GM_CURRENT_KEY] = trend_filter_gm_current
-            if trend_filter_gm_market == "IGNORE":
                 settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
-            else:
-                settings[TREND_FILTER_GM_MARKET_KEY] = trend_filter_gm_market
-            if trend_filter_gm_sector == "IGNORE":
                 settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
             else:
-                settings[TREND_FILTER_GM_SECTOR_KEY] = trend_filter_gm_sector
+                settings[TREND_FILTER_OPERATOR_KEY] = trend_filter_operator
+                if trend_filter_gm_current == "IGNORE":
+                    settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
+                else:
+                    settings[TREND_FILTER_GM_CURRENT_KEY] = trend_filter_gm_current
+                if trend_filter_gm_market == "IGNORE":
+                    settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
+                else:
+                    settings[TREND_FILTER_GM_MARKET_KEY] = trend_filter_gm_market
+                if trend_filter_gm_sector == "IGNORE":
+                    settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
+                else:
+                    settings[TREND_FILTER_GM_SECTOR_KEY] = trend_filter_gm_sector
         obj.settings = settings
         if commit:
             obj.save()
@@ -1027,25 +1047,26 @@ class GameScenarioForm(forms.ModelForm):
             settings.pop(MARKET_CAP_MISSING_POLICY_KEY, None)
         else:
             settings[MARKET_CAP_MISSING_POLICY_KEY] = market_cap_missing_policy
-        if all(code == "IGNORE" for code in (trend_filter_gm_current, trend_filter_gm_market, trend_filter_gm_sector)):
-            settings.pop(TREND_FILTER_OPERATOR_KEY, None)
-            settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
-            settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
-            settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
-        else:
-            settings[TREND_FILTER_OPERATOR_KEY] = trend_filter_operator
-            if trend_filter_gm_current == "IGNORE":
+        if _trend_filter_fields_were_submitted(self):
+            if all(code == "IGNORE" for code in (trend_filter_gm_current, trend_filter_gm_market, trend_filter_gm_sector)):
+                settings.pop(TREND_FILTER_OPERATOR_KEY, None)
                 settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
-            else:
-                settings[TREND_FILTER_GM_CURRENT_KEY] = trend_filter_gm_current
-            if trend_filter_gm_market == "IGNORE":
                 settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
-            else:
-                settings[TREND_FILTER_GM_MARKET_KEY] = trend_filter_gm_market
-            if trend_filter_gm_sector == "IGNORE":
                 settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
             else:
-                settings[TREND_FILTER_GM_SECTOR_KEY] = trend_filter_gm_sector
+                settings[TREND_FILTER_OPERATOR_KEY] = trend_filter_operator
+                if trend_filter_gm_current == "IGNORE":
+                    settings.pop(TREND_FILTER_GM_CURRENT_KEY, None)
+                else:
+                    settings[TREND_FILTER_GM_CURRENT_KEY] = trend_filter_gm_current
+                if trend_filter_gm_market == "IGNORE":
+                    settings.pop(TREND_FILTER_GM_MARKET_KEY, None)
+                else:
+                    settings[TREND_FILTER_GM_MARKET_KEY] = trend_filter_gm_market
+                if trend_filter_gm_sector == "IGNORE":
+                    settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
+                else:
+                    settings[TREND_FILTER_GM_SECTOR_KEY] = trend_filter_gm_sector
         obj.settings = settings
         if commit:
             obj.save()

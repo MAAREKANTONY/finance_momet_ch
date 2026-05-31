@@ -238,7 +238,7 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn('name="slope_sell_threshold_basse"', body)
         self.assertIn('value="0.01', body)
 
-    def test_backtest_create_view_hides_legacy_gm_controls_and_keeps_trend_filters(self):
+    def test_backtest_create_view_shows_only_line_market_conditions_for_gm(self):
         scenario = Scenario.objects.create(
             name="Scenario GM UI",
             active=True,
@@ -256,10 +256,8 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn("5. Capital &amp; exécution", body)
         self.assertIn("Un signal est un déclencheur", body)
         self.assertIn("Un filtre est une condition bloquante", body)
-        self.assertIn("Les filtres de tendance s'appliquent uniquement aux achats", body)
-        self.assertIn("Filtres de tendance", body)
-        self.assertIn("GM_market", body)
-        self.assertIn("GM_sector", body)
+        self.assertNotIn("Filtres de tendance", body)
+        self.assertNotIn("Combiner les filtres de tendance avec", body)
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertNotIn('data-role="buy_gm_operator"', body)
@@ -292,7 +290,7 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn("BUY is blocked when market cap is unknown.", body)
         self.assertIn("BUY remains allowed when market cap is unknown.", body)
 
-    def test_backtest_create_view_renders_trend_filter_fields(self):
+    def test_backtest_create_view_hides_global_trend_filter_fields(self):
         Scenario.objects.create(
             name="Scenario Trend UI",
             active=True,
@@ -303,10 +301,8 @@ class LargeSymbolFormViewTests(TestCase):
         response = self.client.get(reverse("backtest_create"))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Filtres de tendance", body)
-        self.assertIn("Combiner les filtres de tendance avec", body)
-        self.assertIn("GM_market", body)
-        self.assertIn("GM_sector", body)
+        self.assertNotIn("Filtres de tendance", body)
+        self.assertNotIn("Combiner les filtres de tendance avec", body)
 
 
 class SymbolMetadataViewTests(TestCase):
@@ -681,7 +677,7 @@ class SymbolMetadataViewTests(TestCase):
             **signal_lines[0],
             "buy_gm_filter": "IGNORE",
             "buy_gm_operator": "AND",
-            "buy_market_gm_current": "IGNORE",
+            "buy_market_gm_current": "GM_POS",
             "buy_market_gm_market": "IGNORE",
             "buy_market_gm_sector": "IGNORE",
             "buy_market_operator": "AND",
@@ -698,8 +694,8 @@ class SymbolMetadataViewTests(TestCase):
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertIn('"buy_gm_filter": "IGNORE"', body)
-        self.assertIn('"buy_market_gm_current": "IGNORE"', body)
-        self.assertIn('<option value="GM_POS" selected>', body)
+        self.assertIn('"buy_market_gm_current": "GM_POS"', body)
+        self.assertNotIn('<option value="GM_POS" selected>', body)
         self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
         self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
 
@@ -737,7 +733,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn('value="5000000000"', body)
         self.assertIn('<option value="ALLOW" selected>', body)
 
-    def test_backtest_edit_view_shows_persisted_trend_filter_values(self):
+    def test_backtest_edit_view_hides_persisted_legacy_trend_filter_values(self):
         scenario = Scenario.objects.create(
             name="Scenario Trend Edit",
             active=True,
@@ -766,10 +762,9 @@ class SymbolMetadataViewTests(TestCase):
         response = self.client.get(reverse("backtest_update", args=[bt.pk]))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn('<option value="OR" selected>', body)
-        self.assertIn('<option value="GM_POS" selected>', body)
-        self.assertIn('<option value="GM_NEG" selected>', body)
-        self.assertIn('<option value="GM_NEU" selected>', body)
+        self.assertNotIn("Combiner les filtres de tendance avec", body)
+        self.assertNotIn("GM_market", body)
+        self.assertNotIn("GM_sector", body)
 
     def test_backtest_detail_hides_legacy_buy_gm_filter_after_normalized_save(self):
         signal_lines = [
@@ -825,7 +820,7 @@ class SymbolMetadataViewTests(TestCase):
         )
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("GM current", body)
+        self.assertIn("GM actuel", body)
         self.assertIn("GM positif", body)
         self.assertNotIn("Legacy GM filter:", body)
         self.assertNotIn("Filtre GM vente", body)
@@ -894,7 +889,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("Min Market Cap", response.content.decode())
 
-    def test_backtest_detail_displays_configured_trend_filters(self):
+    def test_backtest_detail_hides_configured_legacy_trend_filters(self):
         scenario = Scenario.objects.create(
             name="Scenario Trend Detail",
             active=True,
@@ -922,14 +917,9 @@ class SymbolMetadataViewTests(TestCase):
         )
         response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
         body = response.content.decode()
-        self.assertIn("Opérateur des filtres de tendance", body)
-        self.assertIn("GM current", body)
-        self.assertIn("GM_market", body)
-        self.assertIn("GM_sector", body)
-        self.assertIn("GM_market et GM_sector nécessitent des données OHLC locales pour les ETF de benchmark tels que SPY, XLK, XLF, etc.", body)
-        self.assertIn("GM positif", body)
-        self.assertIn("GM négatif", body)
-        self.assertIn("GM neutre", body)
+        self.assertNotIn("Opérateur des filtres de tendance", body)
+        self.assertNotIn("GM_market", body)
+        self.assertNotIn("GM_sector", body)
 
     def test_backtest_detail_displays_recent_high_drawdown_when_enabled(self):
         scenario = Scenario.objects.create(
@@ -959,7 +949,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("fenêtre 10 j précédents", body)
         self.assertIn("-10.00%", body)
 
-    def test_game_scenario_form_hides_legacy_gm_controls_and_keeps_trend_filters(self):
+    def test_game_scenario_form_shows_only_line_market_conditions_for_gm(self):
         response = self.client.get(reverse("game_scenario_create"))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
@@ -972,13 +962,12 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("Protection anti-chute", body)
         self.assertIn("Un signal est un déclencheur", body)
         self.assertIn("Un filtre est une condition bloquante", body)
-        self.assertIn("Filtres de tendance", body)
+        self.assertNotIn("Filtres de tendance", body)
+        self.assertNotIn("Combiner les filtres de tendance avec", body)
         self.assertIn("Seuil de déclenchement vente", body)
         self.assertIn("Seuil de déclenchement vente — pente basse", body)
         self.assertIn("Fenêtre du plus haut récent", body)
         self.assertIn("Chute maximale autorisée", body)
-        self.assertIn("GM_market", body)
-        self.assertIn("GM_sector", body)
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertNotIn('data-role="buy_gm_operator"', body)
@@ -1001,14 +990,12 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("Maximum historical company market capitalization allowed for BUY.", body)
         self.assertIn("What to do when no historical market capitalization exists at or before the BUY date.", body)
 
-    def test_game_scenario_create_view_renders_trend_filter_fields(self):
+    def test_game_scenario_create_view_hides_global_trend_filter_fields(self):
         response = self.client.get(reverse("game_scenario_create"))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Filtres de tendance", body)
-        self.assertIn("Combiner les filtres de tendance avec", body)
-        self.assertIn("GM_market", body)
-        self.assertIn("GM_sector", body)
+        self.assertNotIn("Filtres de tendance", body)
+        self.assertNotIn("Combiner les filtres de tendance avec", body)
 
     def test_game_scenario_edit_view_normalizes_existing_signal_lines_json(self):
         signal_lines = [
@@ -1035,7 +1022,7 @@ class SymbolMetadataViewTests(TestCase):
             **signal_lines[0],
             "buy_gm_filter": "IGNORE",
             "buy_gm_operator": "AND",
-            "buy_market_gm_current": "IGNORE",
+            "buy_market_gm_current": "GM_POS",
             "buy_market_gm_market": "IGNORE",
             "buy_market_gm_sector": "IGNORE",
             "buy_market_operator": "AND",
@@ -1054,8 +1041,8 @@ class SymbolMetadataViewTests(TestCase):
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertIn('"buy_gm_filter": "IGNORE"', body)
-        self.assertIn('"buy_market_gm_current": "IGNORE"', body)
-        self.assertIn('<option value="GM_POS" selected>', body)
+        self.assertIn('"buy_market_gm_current": "GM_POS"', body)
+        self.assertNotIn('<option value="GM_POS" selected>', body)
         self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
         self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
 
@@ -1079,7 +1066,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn('value="5000000000"', body)
         self.assertIn('<option value="ALLOW" selected>', body)
 
-    def test_game_scenario_edit_view_shows_persisted_trend_filter_values(self):
+    def test_game_scenario_edit_view_hides_persisted_legacy_trend_filter_values(self):
         game = GameScenario.objects.create(
             name="Game Trend Edit",
             active=True,
@@ -1094,10 +1081,9 @@ class SymbolMetadataViewTests(TestCase):
         response = self.client.get(reverse("game_scenario_edit", args=[game.pk]))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn('<option value="OR" selected>', body)
-        self.assertIn('<option value="GM_POS" selected>', body)
-        self.assertIn('<option value="GM_NEG" selected>', body)
-        self.assertIn('<option value="GM_NEU" selected>', body)
+        self.assertNotIn("Combiner les filtres de tendance avec", body)
+        self.assertNotIn("GM_market", body)
+        self.assertNotIn("GM_sector", body)
 
     def test_game_scenario_detail_displays_configured_market_cap_filter(self):
         game = GameScenario.objects.create(
@@ -1135,7 +1121,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertNotIn("Min Market Cap", response.content.decode())
 
-    def test_game_scenario_detail_displays_configured_trend_filters(self):
+    def test_game_scenario_detail_hides_configured_legacy_trend_filters(self):
         game = GameScenario.objects.create(
             name="Game Trend Detail",
             active=True,
@@ -1149,14 +1135,9 @@ class SymbolMetadataViewTests(TestCase):
         )
         response = self.client.get(reverse("game_scenario_detail", args=[game.pk]))
         body = response.content.decode()
-        self.assertIn("Opérateur des filtres de tendance", body)
-        self.assertIn("GM current", body)
-        self.assertIn("GM_market", body)
-        self.assertIn("GM_sector", body)
-        self.assertIn("GM_market et GM_sector nécessitent des données OHLC locales pour les ETF de benchmark tels que SPY, XLK, XLF, etc.", body)
-        self.assertIn("GM positif", body)
-        self.assertIn("GM négatif", body)
-        self.assertIn("GM neutre", body)
+        self.assertNotIn("Opérateur des filtres de tendance", body)
+        self.assertNotIn("GM_market", body)
+        self.assertNotIn("GM_sector", body)
 
     def test_game_scenario_detail_displays_recent_high_drawdown_when_enabled(self):
         game = GameScenario.objects.create(
@@ -2148,7 +2129,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(payload["trend_filters"]["sector"]["benchmark_ticker"], "XLK")
         self.assertEqual(payload["trend_filters"]["sector"]["values"], [None, "0.1"])
 
-    def test_backtest_results_renders_with_all_trend_filters_configured(self):
+    def test_backtest_results_hides_legacy_trend_filter_diagnostic(self):
         self.scenario.nglobal = 1
         self.scenario.save(update_fields=["nglobal"])
         self.symbol.sector = "Technology"
@@ -2182,10 +2163,10 @@ class BacktestResultsRenderTests(TestCase):
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Filtres de tendance (achat uniquement)", body)
-        self.assertIn("GM current", body)
-        self.assertIn("GM_market", body)
-        self.assertIn("GM_sector", body)
+        self.assertNotIn("Filtres de tendance (achat uniquement)", body)
+        self.assertNotIn("diagnosticTrendCurrentChart", body)
+        self.assertNotIn("diagnosticTrendMarketChart", body)
+        self.assertNotIn("diagnosticTrendSectorChart", body)
 
     def test_backtest_results_diagnostic_payload_warns_on_missing_market_mapping_or_data(self):
         symbol = Symbol.objects.create(ticker="INTL", exchange="", country="", sector="Technology", active=True)
