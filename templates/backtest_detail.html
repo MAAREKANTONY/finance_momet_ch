@@ -35,10 +35,10 @@
           <td>{{ bt.settings.max_price|default:"aucune borne maximum" }}</td>
         </tr>
         <tr>
-          <th>Protection anti-chute</th>
+          <th>Signal anti-chute RHD — Repli depuis haut récent</th>
           <td>
             {% if bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
-              fenêtre {{ bt.scenario.recent_high_drawdown_lookback_days }} j précédents, chute max {{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}
+              fenêtre {{ bt.scenario.recent_high_drawdown_lookback_days }} j précédents hors jour courant, repli max {{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}
             {% else %}
               désactivée
             {% endif %}

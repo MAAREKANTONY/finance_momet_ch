@@ -244,7 +244,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
             f"| N1={scenario.n1} N2={scenario.n2} "
             f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil_achat={getattr(scenario,'slope_threshold',None)} seuil_vente={getattr(scenario,'slope_sell_threshold',None)} "
             f"| SUM_SLOPE_BASSE/SLOPE_VRAI_BASSE: Npente_basse={getattr(scenario,'npente_basse',None)} seuil_basse_achat={getattr(scenario,'slope_threshold_basse',None)} seuil_basse_vente={getattr(scenario,'slope_sell_threshold_basse',None)} "
-            f"| Protection anti-chute: fenêtre={getattr(scenario,'recent_high_drawdown_lookback_days',None)} chute_max={getattr(scenario,'recent_high_drawdown_max_drop_pct',None)} "
+            f"| Signal anti-chute RHD: fenêtre={getattr(scenario,'recent_high_drawdown_lookback_days',None)} repli_max={getattr(scenario,'recent_high_drawdown_max_drop_pct',None)} "
             f"| history_years={scenario.history_years}"
         ])
         append_excel_row(ws, [f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
@@ -2843,8 +2843,10 @@ def _build_backtest_workbook_full(bt):
         ("SUM_SLOPE_BASSE Npente", getattr(bt.scenario, "npente_basse", None) if bt.scenario_id else None),
         ("SUM_SLOPE_BASSE seuil achat", getattr(bt.scenario, "slope_threshold_basse", None) if bt.scenario_id else None),
         ("SUM_SLOPE_BASSE seuil vente", getattr(bt.scenario, "slope_sell_threshold_basse", None) if bt.scenario_id else None),
-        ("Protection anti-chute fenêtre", getattr(bt.scenario, "recent_high_drawdown_lookback_days", None) if bt.scenario_id else None),
-        ("Protection anti-chute chute max", getattr(bt.scenario, "recent_high_drawdown_max_drop_pct", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD fenêtre", getattr(bt.scenario, "recent_high_drawdown_lookback_days", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD repli max", getattr(bt.scenario, "recent_high_drawdown_max_drop_pct", None) if bt.scenario_id else None),
+        ("Nombre d'avertissements", meta.get("warning_count", 0)),
+        ("Avertissements", json.dumps(meta.get("warnings") or [], ensure_ascii=False)),
     ]
     for k, v in settings_rows:
         append_excel_row(ws, [k, v])
@@ -3213,8 +3215,10 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ("SUM_SLOPE_BASSE Npente", getattr(bt.scenario, "npente_basse", None) if bt.scenario_id else None),
         ("SUM_SLOPE_BASSE seuil achat", getattr(bt.scenario, "slope_threshold_basse", None) if bt.scenario_id else None),
         ("SUM_SLOPE_BASSE seuil vente", getattr(bt.scenario, "slope_sell_threshold_basse", None) if bt.scenario_id else None),
-        ("Protection anti-chute fenêtre", getattr(bt.scenario, "recent_high_drawdown_lookback_days", None) if bt.scenario_id else None),
-        ("Protection anti-chute chute max", getattr(bt.scenario, "recent_high_drawdown_max_drop_pct", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD fenêtre", getattr(bt.scenario, "recent_high_drawdown_lookback_days", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD repli max", getattr(bt.scenario, "recent_high_drawdown_max_drop_pct", None) if bt.scenario_id else None),
+        ("Nombre d'avertissements", meta.get("warning_count", 0)),
+        ("Avertissements", json.dumps(meta.get("warnings") or [], ensure_ascii=False)),
     ]
     for k, v in rows:
         append_excel_row(ws, [k, v])

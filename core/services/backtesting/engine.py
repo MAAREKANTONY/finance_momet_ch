@@ -37,7 +37,6 @@ from core.services.market_cap import preload_market_cap_series
 from core.services.trend_filters import (
     collect_distinct_benchmark_tickers,
     evaluate_trend_filters_for_symbol,
-    has_active_trend_filters,
     preload_benchmark_price_cache,
     TREND_FILTER_GM_CURRENT_KEY,
     TREND_FILTER_GM_MARKET_KEY,
@@ -45,17 +44,24 @@ from core.services.trend_filters import (
     TREND_FILTER_OPERATOR_KEY,
 )
 from core.trading_model_config import (
+    SIGNAL_LATCH_OPPOSITES,
+    TRADING_MODEL_AUTO_SELL_VALUES,
+    TRADING_MODEL_EXPLICIT_SELL_VALUES,
     SIGNAL_LATCH_INVALIDATORS,
     SIGNAL_LATCH_STATE_PAIRS,
     SPECIAL_SELL_K1F_UPPER_DOWN_B1F,
-    TRADING_MODEL_LATCH_STATEFUL,
+    TRADING_MODEL_PROGRESSIVE_AUTO_SELL,
+    TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL,
     resolve_trading_model,
     validate_explicit_latch_config,
+    validate_progressive_explicit_sell_config,
 )
 
 GLOBAL_REGIME_FILTER_CODES = {"IGNORE", "GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR_NEU", "GM_NEG_OR_NEU"}
 MARKET_CAP_MISSING_POLICY_ALLOW = "ALLOW"
 MARKET_CAP_MISSING_POLICY_BLOCK = "BLOCK"
+REENTRY_WARNING_WINDOW_DAYS = 1
+REENTRY_WARNING_CODE = "IMMEDIATE_REENTRY"
 
 
 def _to_dec(v) -> Decimal | None:
@@ -267,7 +273,7 @@ def _normalize_global_regime_filter(value: Any) -> str:
 def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
     if not isinstance(signal_lines, list) or not signal_lines:
         default_buy = ["AF"]
-        return [{"mode": "standard", "trading_model": TRADING_MODEL_LATCH_STATEFUL, "buy": default_buy, "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR"}]
+        return [{"mode": "standard", "trading_model": TRADING_MODEL_PROGRESSIVE_AUTO_SELL, "buy": default_buy, "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR"}]
     out: list[dict[str, Any]] = []
     for raw in signal_lines:
         if not isinstance(raw, dict):
@@ -280,8 +286,15 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
             buy_logic = _normalize_logic(raw.get("buy_logic"), "AND")
             sell_logic = _normalize_logic(raw.get("sell_logic"), "OR")
             sell_gm_filter = _normalize_global_regime_filter(raw.get("sell_gm_filter"))
-            if explicit_trading_model and trading_model == TRADING_MODEL_LATCH_STATEFUL:
+            if explicit_trading_model and trading_model in TRADING_MODEL_AUTO_SELL_VALUES:
                 validate_explicit_latch_config(
+                    buy_codes=buy_codes,
+                    buy_logic=buy_logic,
+                    sell_codes=sell_codes,
+                    sell_gm_filter=sell_gm_filter,
+                )
+            if explicit_trading_model and trading_model == TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL:
+                validate_progressive_explicit_sell_config(
                     buy_codes=buy_codes,
                     buy_logic=buy_logic,
                     sell_codes=sell_codes,
@@ -303,7 +316,7 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
                 "sell_gm_filter": sell_gm_filter,
                 "sell_gm_operator": _normalize_logic(raw.get("sell_gm_operator"), "AND"),
             })
-    return out or [{"mode": "standard", "trading_model": TRADING_MODEL_LATCH_STATEFUL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "buy_market_gm_current": "IGNORE", "buy_market_gm_market": "IGNORE", "buy_market_gm_sector": "IGNORE", "buy_market_operator": "AND", "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
+    return out or [{"mode": "standard", "trading_model": TRADING_MODEL_PROGRESSIVE_AUTO_SELL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "buy_market_gm_current": "IGNORE", "buy_market_gm_market": "IGNORE", "buy_market_gm_sector": "IGNORE", "buy_market_operator": "AND", "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
 
 
 def _match_codes(day_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
@@ -395,6 +408,8 @@ def _reset_trade_signal_memory(state_row: dict[str, Any]) -> None:
     state_row["signal_latch_state"] = {}
     state_row["signal_latch_invalidated_today"] = set()
     state_row["signal_latch_last_date"] = None
+    state_row["sell_signal_latch_state"] = {}
+    state_row["sell_signal_latch_last_date"] = None
 
 
 def _retain_non_invalidated_latch_signals_after_sell(
@@ -421,7 +436,21 @@ def _retain_non_invalidated_latch_signals_after_sell(
 
 
 def _line_uses_signal_latch_model(state_row: dict[str, Any]) -> bool:
-    return state_row.get("trading_model") == TRADING_MODEL_LATCH_STATEFUL
+    return state_row.get("trading_model") in (
+        TRADING_MODEL_AUTO_SELL_VALUES | TRADING_MODEL_EXPLICIT_SELL_VALUES
+    )
+
+
+def _line_uses_auto_sell_model(state_row: dict[str, Any]) -> bool:
+    return state_row.get("trading_model") in TRADING_MODEL_AUTO_SELL_VALUES
+
+
+def _line_uses_progressive_explicit_sell_model(state_row: dict[str, Any]) -> bool:
+    return state_row.get("trading_model") == TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL
+
+
+def _line_allows_same_day_reentry(state_row: dict[str, Any]) -> bool:
+    return _line_uses_progressive_explicit_sell_model(state_row)
 
 
 def _apply_signal_events_to_latch_state(
@@ -464,6 +493,54 @@ def _get_signal_latch_day_state(state_row: dict[str, Any], day_alerts: set[str],
     return state_row.get("signal_latch_state") or {}, state_row.get("signal_latch_invalidated_today") or set()
 
 
+def _apply_bidirectional_latch_events_to_state(
+    state: dict[str, bool],
+    required_codes: list[str],
+    events: set[str],
+) -> dict[str, bool]:
+    updated = dict(state or {})
+    normalized_events = {str(code).strip().upper() for code in (events or set()) if str(code).strip()}
+    for code in _normalize_codes(required_codes):
+        opposite = SIGNAL_LATCH_OPPOSITES.get(code)
+        if not opposite:
+            continue
+        code_seen = code in normalized_events
+        opposite_seen = opposite in normalized_events
+        if code_seen and opposite_seen:
+            updated[code] = False
+        elif opposite_seen:
+            updated[code] = False
+        elif code_seen:
+            updated[code] = True
+    return updated
+
+
+def _get_sell_signal_latch_day_state(state_row: dict[str, Any], day_alerts: set[str], as_of_date: date) -> dict[str, bool]:
+    if state_row.get("sell_signal_latch_last_date") != as_of_date:
+        state_row["sell_signal_latch_state"] = _apply_bidirectional_latch_events_to_state(
+            state_row.get("sell_signal_latch_state") or {},
+            state_row.get("sell_codes") or [],
+            day_alerts,
+        )
+        state_row["sell_signal_latch_last_date"] = as_of_date
+    return state_row.get("sell_signal_latch_state") or {}
+
+
+def _signal_latch_sell_ready(state_row: dict[str, Any]) -> bool:
+    sell_codes = _normalize_codes(state_row.get("sell_codes"))
+    if not sell_codes:
+        return False
+    latch_state = state_row.get("sell_signal_latch_state") or {}
+    if _normalize_logic(state_row.get("sell_logic"), "OR") == "OR":
+        return any(bool(latch_state.get(code)) for code in sell_codes)
+    return all(bool(latch_state.get(code)) for code in sell_codes)
+
+
+def _consume_sell_latch_state(state_row: dict[str, Any]) -> None:
+    state_row["sell_signal_latch_state"] = {}
+    state_row["sell_signal_latch_last_date"] = None
+
+
 def _signal_latch_buy_ready(state_row: dict[str, Any], gm_code: str | None) -> bool:
     buy_codes = _normalize_codes(state_row.get("buy_codes"))
     if not buy_codes:
@@ -474,6 +551,79 @@ def _signal_latch_buy_ready(state_row: dict[str, Any], gm_code: str | None) -> b
     if gm_filter == "IGNORE":
         return local_ok
     return local_ok and _gm_filter_match(gm_code, gm_filter)
+
+
+def _format_warning_date(value: Any) -> str | None:
+    if isinstance(value, date):
+        return str(value)
+    if value in (None, ""):
+        return None
+    return str(value)
+
+
+def _arm_reentry_warning_if_needed(state_row: dict[str, Any], *, sell_date: date, ticker: str, line_index: int) -> None:
+    if not _line_uses_progressive_explicit_sell_model(state_row):
+        return
+    if not _signal_latch_buy_ready(state_row, None):
+        return
+    state_row["_reentry_warning_candidate"] = {
+        "sell_date": sell_date,
+        "ticker": ticker,
+        "line_index": line_index,
+        "buy_latch_state": dict(state_row.get("signal_latch_state") or {}),
+    }
+
+
+def _record_reentry_warning_if_needed(state_row: dict[str, Any], *, buy_date: date, ticker: str, line_index: int) -> None:
+    candidate = state_row.get("_reentry_warning_candidate")
+    if not isinstance(candidate, dict):
+        return
+    sell_date = candidate.get("sell_date")
+    if not isinstance(sell_date, date):
+        state_row["_reentry_warning_candidate"] = None
+        return
+    if (buy_date - sell_date).days > REENTRY_WARNING_WINDOW_DAYS:
+        state_row["_reentry_warning_candidate"] = None
+        return
+    warnings = state_row.setdefault("warnings", [])
+    warning = {
+        "code": REENTRY_WARNING_CODE,
+        "title": "Réentrées immédiates détectées",
+        "message": (
+            "Certaines conditions BUY restent actives après déclenchement des conditions SELL. "
+            "Vérifiez que vos conditions SELL invalident naturellement vos conditions BUY."
+        ),
+        "ticker": ticker,
+        "line_index": line_index,
+        "sell_date": _format_warning_date(sell_date),
+        "buy_date": _format_warning_date(buy_date),
+        "window_days": REENTRY_WARNING_WINDOW_DAYS,
+        "buy_latch_state": candidate.get("buy_latch_state") or {},
+    }
+    if warning not in warnings:
+        warnings.append(warning)
+    state_row["_reentry_warning_candidate"] = None
+
+
+def _collect_backtest_warnings(state: dict[tuple[str, int], dict[str, Any]]) -> list[dict[str, Any]]:
+    warnings: list[dict[str, Any]] = []
+    for st in state.values():
+        for warning in st.get("warnings") or []:
+            if warning not in warnings:
+                warnings.append(warning)
+    return warnings
+
+
+def _serialize_warnings(warnings: Any) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for warning in warnings or []:
+        if not isinstance(warning, dict):
+            continue
+        payload = dict(warning)
+        for key in ("sell_date", "buy_date"):
+            payload[key] = _format_warning_date(payload.get(key))
+        out.append(payload)
+    return out
 
 def _close_open_position(
     state_row: dict[str, Any],
@@ -949,7 +1099,7 @@ def run_backtest(
     min_market_cap, max_market_cap = _market_cap_bounds_from_settings(settings)
     market_cap_missing_policy = _market_cap_missing_policy_from_settings(settings)
     market_cap_filter_enabled = _market_cap_filter_enabled(min_market_cap, max_market_cap)
-    trend_filters_enabled = has_active_trend_filters(settings)
+    trend_filters_enabled = False
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
@@ -983,8 +1133,7 @@ def run_backtest(
         else {}
     )
     benchmark_tickers = sorted(
-        set(collect_distinct_benchmark_tickers(list(sym_by_ticker.values()), settings))
-        | _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
+        _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
     )
     benchmark_symbols_by_ticker: dict[str, Symbol] = {}
     if benchmark_tickers:
@@ -1138,6 +1287,10 @@ def run_backtest(
                 "signal_latch_state": {},
                 "signal_latch_invalidated_today": set(),
                 "signal_latch_last_date": None,
+                "sell_signal_latch_state": {},
+                "sell_signal_latch_last_date": None,
+                "warnings": [],
+                "_reentry_warning_candidate": None,
                 "_sold_today": False,
                 "daily_rows": [],
                 "events": [],
@@ -1160,6 +1313,8 @@ def run_backtest(
             _update_and_latched_states(st["and_latched_states"], event_alerts)
             if st["use_signal_latch_model"]:
                 _get_signal_latch_day_state(st, local_event_alerts, d)
+            if _line_uses_progressive_explicit_sell_model(st):
+                _get_sell_signal_latch_day_state(st, local_event_alerts, d)
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
                 st["prev_k"] = tdata["metrics"].get(d)
 
@@ -1322,7 +1477,7 @@ def run_backtest(
             pnl_amount_today = None
             forced_close = False
 
-            def _do_sell(reason: str):
+            def _do_sell(reason: str, *, reset_signal_memory: bool = True):
                 nonlocal G_today, pnl_amount_today
                 closed = _close_open_position(
                     st,
@@ -1330,7 +1485,7 @@ def run_backtest(
                     close_date=d,
                     CT=CT,
                     fixed_capital=fixed_capital,
-                    reset_signal_memory=True,
+                    reset_signal_memory=reset_signal_memory,
                 )
                 if closed is None:
                     return
@@ -1369,7 +1524,16 @@ def run_backtest(
                         if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
                             _do_sell(f"AUTO ({target_key}: K1f cross down)")
 
-            elif st["position_open"] and st["use_signal_latch_model"]:
+            elif st["position_open"] and _line_uses_progressive_explicit_sell_model(st):
+                _get_sell_signal_latch_day_state(st, local_event_alerts, d)
+                if _signal_latch_sell_ready(st):
+                    _do_sell(
+                        f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}",
+                        reset_signal_memory=False,
+                    )
+                    _consume_sell_latch_state(st)
+                    _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
+            elif st["position_open"] and _line_uses_auto_sell_model(st):
                 _latch_state, invalidated_signals = _get_signal_latch_day_state(st, local_event_alerts, d)
                 if invalidated_signals:
                     previous_latch_state = dict(_latch_state or {})
@@ -1455,7 +1619,7 @@ def run_backtest(
             price_by_date = tdata["price_by_date"]
             if d not in price_by_date:
                 continue
-            if st["position_open"] or st.get("_sold_today"):
+            if st["position_open"] or (st.get("_sold_today") and not _line_allows_same_day_reentry(st)):
                 continue
             buy_codes = st["buy_codes"]
             day_alerts_raw = tdata["alerts"].get(d, set())
@@ -1528,7 +1692,7 @@ def run_backtest(
             price_by_date = tdata["price_by_date"]
             if d not in price_by_date:
                 continue
-            if st["position_open"] or st.get("_sold_today"):
+            if st["position_open"] or (st.get("_sold_today") and not _line_allows_same_day_reentry(st)):
                 continue
 
             buy_codes = st["buy_codes"]
@@ -1579,6 +1743,7 @@ def run_backtest(
             st["entry_date"] = d
             if not st["use_signal_latch_model"]:
                 _reset_trade_signal_memory(st)
+            _record_reentry_warning_if_needed(st, buy_date=d, ticker=ticker, line_index=li + 1)
 
             logs.append(f"{ticker}[L{li+1}] BUY signal {_compose_condition_label(buy_codes, st['buy_logic'], st['buy_gm_filter'], st['buy_gm_operator'])} on {d} close={close_d} shares={shares} cash_left={st['cash_ticker']}")
             _record_line_event(st, as_of=d, action="BUY", price_close=close_d)
@@ -1793,6 +1958,8 @@ def run_backtest(
                 })
                 _recompute_tradable_counters_from_rows(st)
 
+    all_warnings = _serialize_warnings(_collect_backtest_warnings(state))
+
     # Build results structure compatible with previous output
     results: dict[str, Any] = {
         "meta": {
@@ -1811,6 +1978,8 @@ def run_backtest(
             "large_result_mode": bool(large_result_mode),
             "detailed_daily_rows_omitted": bool(large_result_mode),
             "estimated_daily_rows": estimated_daily_rows,
+            "warning_count": len(all_warnings),
+            "warnings": all_warnings,
         },
         "tickers": {},
     }
@@ -1865,9 +2034,12 @@ def run_backtest(
                 "buy_market_operator": st["buy_market_operator"],
                 "sell_gm_filter": st["sell_gm_filter"],
                 "sell_gm_operator": st["sell_gm_operator"],
+                "trading_model": st["trading_model"],
                 "allocated": st["allocated"],
                 "daily_rows_omitted": bool(large_result_mode),
                 "events": list(st.get("events") or []),
+                "warning_count": len(st.get("warnings") or []),
+                "warnings": _serialize_warnings(st.get("warnings") or []),
                 "final": {
                     "N": N,
                     "S_G_N": None if S_G_N is None else str(S_G_N),
@@ -2200,7 +2372,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     min_market_cap, max_market_cap = _market_cap_bounds_from_settings(settings)
     market_cap_missing_policy = _market_cap_missing_policy_from_settings(settings)
     market_cap_filter_enabled = _market_cap_filter_enabled(min_market_cap, max_market_cap)
-    trend_filters_enabled = has_active_trend_filters(settings)
+    trend_filters_enabled = False
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
 
@@ -2225,8 +2397,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         else {}
     )
     benchmark_tickers = sorted(
-        set(collect_distinct_benchmark_tickers(list(sym_by_ticker.values()), settings))
-        | _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
+        _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
     )
     benchmark_symbols_by_ticker: dict[str, Symbol] = {}
     if benchmark_tickers:
@@ -2303,6 +2474,10 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 "signal_latch_state": {},
                 "signal_latch_invalidated_today": set(),
                 "signal_latch_last_date": None,
+                "sell_signal_latch_state": {},
+                "sell_signal_latch_last_date": None,
+                "warnings": [],
+                "_reentry_warning_candidate": None,
                 "_sold_today": False,
             }
 
@@ -2378,6 +2553,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             _update_and_latched_states(st["and_latched_states"], event_alerts)
             if st["use_signal_latch_model"]:
                 _get_signal_latch_day_state(st, local_event_alerts, d)
+            if _line_uses_progressive_explicit_sell_model(st):
+                _get_sell_signal_latch_day_state(st, local_event_alerts, d)
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
                 st["prev_k"] = tdata["metrics"].get(d)
 
@@ -2410,7 +2587,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
 
             G_today: Decimal | None = None
 
-            def _do_sell(reason: str):
+            def _do_sell(reason: str, *, reset_signal_memory: bool = True):
                 nonlocal G_today
                 closed = _close_open_position(
                     st,
@@ -2418,7 +2595,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     close_date=d,
                     CT=CT,
                     fixed_capital=fixed_capital,
-                    reset_signal_memory=True,
+                    reset_signal_memory=reset_signal_memory,
                 )
                 if closed is None:
                     return
@@ -2450,7 +2627,16 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                         if _cross_down(k1f_prev, k1f_today, target_prev, target_today):
                             _do_sell(f"AUTO ({target_key}: K1f cross down)")
 
-            elif st["position_open"] and st["use_signal_latch_model"]:
+            elif st["position_open"] and _line_uses_progressive_explicit_sell_model(st):
+                _get_sell_signal_latch_day_state(st, local_event_alerts, d)
+                if _signal_latch_sell_ready(st):
+                    _do_sell(
+                        f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}",
+                        reset_signal_memory=False,
+                    )
+                    _consume_sell_latch_state(st)
+                    _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
+            elif st["position_open"] and _line_uses_auto_sell_model(st):
                 _latch_state, invalidated_signals = _get_signal_latch_day_state(st, local_event_alerts, d)
                 if invalidated_signals:
                     previous_latch_state = dict(_latch_state or {})
@@ -2473,7 +2659,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 continue
             if d not in tdata["price_by_date"]:
                 continue
-            if st["position_open"] or st.get("_sold_today"):
+            if st["position_open"] or (st.get("_sold_today") and not _line_allows_same_day_reentry(st)):
                 continue
             buy_codes = st["buy_codes"]
             local_event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
@@ -2525,7 +2711,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 continue
             if d not in tdata["price_by_date"]:
                 continue
-            if st["position_open"] or st.get("_sold_today"):
+            if st["position_open"] or (st.get("_sold_today") and not _line_allows_same_day_reentry(st)):
                 continue
             buy_codes = st["buy_codes"]
             local_event_alerts = {a.upper() for a in tdata["alerts"].get(d, set())}
@@ -2567,6 +2753,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             st["entry_date"] = d
             if not st["use_signal_latch_model"]:
                 _reset_trade_signal_memory(st)
+            _record_reentry_warning_if_needed(st, buy_date=d, ticker=ticker, line_index=li + 1)
 
         # End-of-day counters
         for (ticker, li), st in state.items():
@@ -2632,14 +2819,17 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     "sell": st["sell_codes"],
                     "buy_logic": st["buy_logic"],
                     "sell_logic": st["sell_logic"],
-                "buy_gm_filter": st["buy_gm_filter"],
-                "buy_gm_operator": st["buy_gm_operator"],
-                "buy_market_gm_current": st["buy_market_gm_current"],
-                "buy_market_gm_market": st["buy_market_gm_market"],
-                "buy_market_gm_sector": st["buy_market_gm_sector"],
-                "buy_market_operator": st["buy_market_operator"],
-                "sell_gm_filter": st["sell_gm_filter"],
-                "sell_gm_operator": st["sell_gm_operator"],
+                    "buy_gm_filter": st["buy_gm_filter"],
+                    "buy_gm_operator": st["buy_gm_operator"],
+                    "buy_market_gm_current": st["buy_market_gm_current"],
+                    "buy_market_gm_market": st["buy_market_gm_market"],
+                    "buy_market_gm_sector": st["buy_market_gm_sector"],
+                    "buy_market_operator": st["buy_market_operator"],
+                    "sell_gm_filter": st["sell_gm_filter"],
+                    "sell_gm_operator": st["sell_gm_operator"],
+                    "trading_model": st["trading_model"],
+                    "warning_count": len(st.get("warnings") or []),
+                    "warnings": _serialize_warnings(st.get("warnings") or []),
                     "final": {
                         "N": N,
                         "BT": str(BT),

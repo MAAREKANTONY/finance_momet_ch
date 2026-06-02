@@ -521,7 +521,7 @@ class TrendFilterEngineTests(TestCase):
         self.assertIn("BUY", actions)
         self.assertNotIn("SELL", actions)
 
-    def test_global_and_line_market_conditions_must_both_pass(self):
+    def test_legacy_global_filter_is_ignored_when_line_market_condition_passes(self):
         self._add_benchmark_fixture(
             self.spy,
             rows=[
@@ -547,15 +547,27 @@ class TrendFilterEngineTests(TestCase):
                 "buy_market_operator": "AND",
             }],
         )
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
     def test_gm_current_uses_existing_gm_regime_without_changing_legacy_computation(self):
         bt = self._create_backtest(settings={TREND_FILTER_GM_CURRENT_KEY: "GM_POS"})
         self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
-    def test_without_legacy_buy_gm_filter_trend_gm_current_still_applies(self):
+    def test_legacy_trend_gm_current_gm_pos_does_not_block_buy_on_gm_neg_day(self):
+        bt = self._create_backtest(
+            settings={TREND_FILTER_GM_CURRENT_KEY: "GM_POS"},
+            prices=["10", "9", "8"],
+            alerts_by_offset={0: "Af", 1: "SPVa_basse"},
+            close_positions_at_end=True,
+        )
+
+        actions = self._actions(bt)
+        self.assertEqual(actions[1], "BUY")
+        self.assertEqual(self._kpi_trade_count(bt), 1)
+
+    def test_legacy_trend_gm_current_is_ignored_at_runtime(self):
         bt = self._create_backtest(settings={TREND_FILTER_GM_CURRENT_KEY: "GM_NEG"})
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
     def test_form_normalization_moves_legacy_buy_gm_filter_to_line_market_condition(self):
         legacy = self._create_backtest(
@@ -624,7 +636,7 @@ class TrendFilterEngineTests(TestCase):
         )
         self.assertEqual(self._kpi_trade_count(bt), 1)
 
-    def test_legacy_buy_gm_filter_still_combines_with_gm_market(self):
+    def test_legacy_global_gm_market_is_ignored_with_legacy_buy_gm_filter(self):
         self._add_benchmark_fixture(
             self.spy,
             rows=[
@@ -643,9 +655,9 @@ class TrendFilterEngineTests(TestCase):
             signal_lines=signal_lines,
             settings={TREND_FILTER_GM_CURRENT_KEY: "GM_NEG", TREND_FILTER_GM_MARKET_KEY: "GM_POS"},
         )
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
-    def test_legacy_buy_gm_filter_still_combines_with_gm_sector(self):
+    def test_legacy_global_gm_sector_is_ignored_with_legacy_buy_gm_filter(self):
         self._add_benchmark_fixture(
             self.xlk,
             rows=[
@@ -664,9 +676,9 @@ class TrendFilterEngineTests(TestCase):
             signal_lines=signal_lines,
             settings={TREND_FILTER_GM_CURRENT_KEY: "GM_NEG", TREND_FILTER_GM_SECTOR_KEY: "GM_POS"},
         )
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
-    def test_gm_market_blocks_when_benchmark_trend_does_not_match(self):
+    def test_legacy_gm_market_does_not_block_when_benchmark_trend_does_not_match(self):
         self._add_benchmark_fixture(
             self.spy,
             rows=[
@@ -675,7 +687,7 @@ class TrendFilterEngineTests(TestCase):
             ],
         )
         bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"})
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
     def test_gm_sector_passes_when_sector_trend_matches(self):
         self._add_benchmark_fixture(
@@ -688,7 +700,7 @@ class TrendFilterEngineTests(TestCase):
         bt = self._create_backtest(settings={TREND_FILTER_GM_SECTOR_KEY: "GM_POS"})
         self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
-    def test_gm_sector_blocks_when_sector_trend_does_not_match(self):
+    def test_legacy_gm_sector_does_not_block_when_sector_trend_does_not_match(self):
         self._add_benchmark_fixture(
             self.xlk,
             rows=[
@@ -697,9 +709,9 @@ class TrendFilterEngineTests(TestCase):
             ],
         )
         bt = self._create_backtest(settings={TREND_FILTER_GM_SECTOR_KEY: "GM_POS"})
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
-    def test_and_operator_requires_all_active_filters(self):
+    def test_legacy_and_operator_does_not_block_buy(self):
         self._add_benchmark_fixture(
             self.spy,
             rows=[
@@ -719,7 +731,7 @@ class TrendFilterEngineTests(TestCase):
             TREND_FILTER_GM_MARKET_KEY: "GM_POS",
             TREND_FILTER_GM_SECTOR_KEY: "GM_POS",
         })
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
     def test_or_operator_allows_one_pass_one_fail(self):
         self._add_benchmark_fixture(
@@ -762,7 +774,7 @@ class TrendFilterEngineTests(TestCase):
         )
         self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
-    def test_or_operator_fails_when_all_active_filters_fail_or_missing(self):
+    def test_legacy_or_operator_does_not_block_when_all_filters_fail_or_missing(self):
         symbol = Symbol.objects.create(ticker="FAIL", exchange="", country="", sector="", active=True)
         bt = self._create_backtest(
             symbol=symbol,
@@ -772,9 +784,9 @@ class TrendFilterEngineTests(TestCase):
                 TREND_FILTER_GM_SECTOR_KEY: "GM_POS",
             },
         )
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
-    def test_missing_market_mapping_blocks_and(self):
+    def test_legacy_missing_market_mapping_does_not_block_buy(self):
         symbol = Symbol.objects.create(ticker="INTL", exchange="", country="", sector="Technology", active=True)
         self._add_benchmark_fixture(
             self.xlk,
@@ -791,9 +803,9 @@ class TrendFilterEngineTests(TestCase):
                 TREND_FILTER_GM_SECTOR_KEY: "GM_POS",
             },
         )
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
-    def test_missing_benchmark_data_and_insufficient_lookback_block(self):
+    def test_legacy_missing_benchmark_data_and_insufficient_lookback_do_not_block(self):
         self._add_benchmark_fixture(
             self.spy,
             rows=[
@@ -801,7 +813,7 @@ class TrendFilterEngineTests(TestCase):
             ],
         )
         bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"})
-        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+        self.assertIn("BUY", {action for action in self._actions(bt) if action})
 
     def test_uses_latest_available_observation_without_future_leakage(self):
         self._add_benchmark_fixture(
@@ -813,8 +825,7 @@ class TrendFilterEngineTests(TestCase):
         )
         bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"})
         actions = self._actions(bt)
-        self.assertIsNone(actions[1])
-        self.assertEqual(actions[2], "SELL+BUY" if actions[2] == "SELL+BUY" else "BUY")
+        self.assertEqual(actions[1], "BUY")
 
     def test_trend_filters_are_buy_only_and_do_not_force_sell(self):
         self._add_benchmark_fixture(
@@ -835,7 +846,7 @@ class TrendFilterEngineTests(TestCase):
         self.assertIn("BUY", actions)
         self.assertNotIn("SELL", {action for action in actions if action})
 
-    def test_trend_filters_do_not_reset_latch_state(self):
+    def test_ignored_legacy_trend_filters_do_not_reset_latch_state(self):
         self._add_benchmark_fixture(
             self.spy,
             rows=[
@@ -857,8 +868,7 @@ class TrendFilterEngineTests(TestCase):
             close_positions_at_end=False,
         )
         actions = self._actions(bt)
-        self.assertIsNone(actions[1])
-        self.assertEqual(actions[2], "BUY")
+        self.assertEqual(actions[1], "BUY")
 
     def test_price_and_market_cap_filters_remain_and_gates_with_trend_filters(self):
         self._add_benchmark_fixture(
@@ -883,7 +893,7 @@ class TrendFilterEngineTests(TestCase):
         )
         self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
 
-    def test_trend_filters_apply_to_kpi_only_path(self):
+    def test_legacy_trend_filters_are_ignored_in_kpi_only_path(self):
         self._add_benchmark_fixture(
             self.spy,
             rows=[
@@ -913,7 +923,7 @@ class TrendFilterEngineTests(TestCase):
         market_cap_mock.assert_not_called()
         twelvedata_mock.assert_not_called()
 
-    def test_benchmark_preload_uses_bounded_dailybar_queries(self):
+    def test_legacy_trend_filter_does_not_preload_benchmark_bars(self):
         self._add_benchmark_fixture(
             self.spy,
             rows=[
@@ -923,8 +933,7 @@ class TrendFilterEngineTests(TestCase):
         )
         bt = self._create_backtest(settings={TREND_FILTER_GM_MARKET_KEY: "GM_POS"}, prices=["10", "11", "12", "13", "14"])
         query_count = self._count_dailybar_queries(lambda: run_backtest(bt))
-        self.assertGreater(query_count, 1)
-        self.assertLessEqual(query_count, 2)
+        self.assertEqual(query_count, 1)
 
     def test_no_benchmark_preload_when_no_trend_filter_is_active(self):
         bt = self._create_backtest()

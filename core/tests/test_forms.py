@@ -143,7 +143,7 @@ class SymbolPickerFormTests(TestCase):
         self.assertIn("recent_high_drawdown_lookback_days", form.fields)
         self.assertIn("recent_high_drawdown_max_drop_pct", form.fields)
         self.assertEqual(form.fields["slope_sell_threshold_basse"].label, "Seuil de déclenchement vente — pente basse")
-        self.assertEqual(form.fields["recent_high_drawdown_max_drop_pct"].label, "Chute maximale autorisée")
+        self.assertEqual(form.fields["recent_high_drawdown_max_drop_pct"].label, "Repli maximal RHD")
 
     def test_game_scenario_form_saves_explicit_sell_thresholds(self):
         form = GameScenarioForm(

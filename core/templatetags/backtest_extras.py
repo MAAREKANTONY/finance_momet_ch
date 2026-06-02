@@ -5,6 +5,8 @@ from decimal import Decimal, InvalidOperation
 from django import template
 
 from core.trading_model_config import (
+    TRADING_MODEL_PROGRESSIVE_AUTO_SELL,
+    TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL,
     TRADING_MODEL_LATCH_STATEFUL,
     TRADING_MODEL_LEGACY_DAILY,
     resolve_trading_model,
@@ -15,8 +17,10 @@ register = template.Library()
 
 
 TRADING_MODEL_BUSINESS_LABELS = {
-    TRADING_MODEL_LEGACY_DAILY: "Déclenchement classique (conditions simultanées)",
-    TRADING_MODEL_LATCH_STATEFUL: "Déclenchement progressif (conditions validées dans le temps)",
+    TRADING_MODEL_LEGACY_DAILY: "Mode legacy classique",
+    TRADING_MODEL_LATCH_STATEFUL: "Progressif avec vente automatique",
+    TRADING_MODEL_PROGRESSIVE_AUTO_SELL: "Progressif avec vente automatique",
+    TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL: "Progressif avec vente explicite",
 }
 
 GM_FILTER_BUSINESS_LABELS = {
@@ -77,13 +81,13 @@ def trading_model_business_label(line) -> str:
     except Exception:
         return "Mode automatique"
 
-    label = TRADING_MODEL_BUSINESS_LABELS.get(resolved_model, "Déclenchement classique (conditions simultanées)")
+    label = TRADING_MODEL_BUSINESS_LABELS.get(resolved_model, "Mode legacy classique")
     if explicit:
         return label
-    if resolved_model == TRADING_MODEL_LATCH_STATEFUL:
-        return "Mode automatique → Déclenchement progressif (recommandé)"
+    if resolved_model in {TRADING_MODEL_LATCH_STATEFUL, TRADING_MODEL_PROGRESSIVE_AUTO_SELL}:
+        return "Mode automatique → Progressif avec vente automatique"
     if resolved_model == TRADING_MODEL_LEGACY_DAILY:
-        return "Mode automatique → Déclenchement classique"
+        return "Mode automatique → Mode legacy classique"
     return f"Mode automatique → {label}"
 
 
@@ -111,7 +115,7 @@ def line_gm_filter_display(line, side: str = "buy") -> str:
     code = str(code).upper()
 
     if side == "sell":
-        if resolved_model == TRADING_MODEL_LATCH_STATEFUL or code == "IGNORE":
+        if resolved_model in {TRADING_MODEL_LATCH_STATEFUL, TRADING_MODEL_PROGRESSIVE_AUTO_SELL} or code == "IGNORE":
             return ""
     return GM_FILTER_BUSINESS_LABELS.get(code, code)
 

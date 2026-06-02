@@ -8,7 +8,7 @@
     <br/>
     Éligibilité: <b>{% if bt.include_all_tickers %}tous les tickers du scénario (ignore ratio_p ≥ X){% else %}ratio_p ≥ X{% endif %}</b>
     {% if bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
-      <br/>Protection anti-chute: <b>{{ bt.scenario.recent_high_drawdown_lookback_days }} jours précédents</b> • <b>{{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}</b>
+      <br/>Signal anti-chute RHD — Repli depuis haut récent: <b>{{ bt.scenario.recent_high_drawdown_lookback_days }} jours précédents hors jour courant</b> • <b>{{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}</b>
     {% endif %}
   </div>
   <div style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
@@ -29,6 +29,24 @@
   <div class="muted">
     Large mode: detailed diagnostics are loaded on demand.
   </div>
+</div>
+{% endif %}
+
+{% if results.meta.warning_count %}
+<div class="card" style="border-left:4px solid #b45309;">
+  <div style="font-weight:600; color:#92400e; margin-bottom:6px;">Réentrées immédiates détectées</div>
+  <div class="muted">
+    Certaines conditions BUY restent actives après déclenchement des conditions SELL.
+    Vérifiez que vos conditions SELL invalident naturellement vos conditions BUY.
+  </div>
+  <ul>
+    {% for warning in results.meta.warnings %}
+      <li>
+        {{ warning.ticker }} L{{ warning.line_index }} :
+        SELL {{ warning.sell_date }} → BUY {{ warning.buy_date }}
+      </li>
+    {% endfor %}
+  </ul>
 </div>
 {% endif %}
 
@@ -361,7 +379,7 @@
     <div>Visualisation dédiée au ticker et à la ligne sélectionnés.</div>
     <div>Les marqueurs BUY / SELL / FORCED_SELL sont tracés directement sur le panneau prix.</div>
     {% if diagnostic_chart_payload.recent_high_drawdown %}
-    <div>La protection anti-chute affiche le seuil calculé à partir du plus haut récent sur {{ diagnostic_chart_payload.recent_high_drawdown.lookback_days }} jours précédents.</div>
+    <div>Le signal anti-chute RHD affiche le seuil calculé à partir du plus haut récent sur {{ diagnostic_chart_payload.recent_high_drawdown.lookback_days }} jours précédents, hors jour courant.</div>
     {% endif %}
   </div>
 
@@ -786,7 +804,7 @@
     if (payload.recent_high_drawdown) {
       priceDatasets.push({
         type: "line",
-        label: "Seuil anti-chute",
+        label: "Seuil RHD",
         data: (payload.recent_high_drawdown.threshold_price || []).map(toNumber),
         borderColor: "#f59e0b",
         backgroundColor: "#f59e0b",
