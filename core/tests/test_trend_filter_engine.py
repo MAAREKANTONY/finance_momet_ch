@@ -521,6 +521,245 @@ class TrendFilterEngineTests(TestCase):
         self.assertIn("BUY", actions)
         self.assertNotIn("SELL", actions)
 
+    def test_gm_sell_market_exit_closes_open_position_without_ticker_sell(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+                {"date": self.start + timedelta(days=2), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_NEG"},
+                },
+            }],
+            prices=["10", "11", "12"],
+            alerts_by_offset={0: "Af"},
+        )
+
+        daily = self._daily(bt)
+        self.assertEqual(daily[0]["action"], "BUY")
+        self.assertEqual(daily[2]["action"], "SELL")
+        self.assertIn("Protection marché GM", daily[2]["action_reason"])
+        self.assertEqual(self._kpi_trade_count(bt), 1)
+
+    def test_gm_sell_market_exit_not_configured_keeps_existing_behavior(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+                {"date": self.start + timedelta(days=2), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+            }],
+            prices=["10", "11", "12"],
+            alerts_by_offset={0: "Af"},
+        )
+        actions = [action for action in self._actions(bt) if action]
+        self.assertEqual(actions, ["BUY"])
+
+    def test_gm_sell_market_exit_configured_but_not_reached_does_not_sell(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+                {"date": self.start + timedelta(days=2), "open": "120", "high": "120", "low": "120", "close": "120"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_NEG"},
+                },
+            }],
+            prices=["10", "11", "12"],
+            alerts_by_offset={0: "Af"},
+        )
+        actions = [action for action in self._actions(bt) if action]
+        self.assertEqual(actions, ["BUY"])
+
+    def test_gm_sell_market_exit_or_operator_allows_one_matching_condition(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+                {"date": self.start + timedelta(days=2), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+                {"date": self.start + timedelta(days=2), "open": "120", "high": "120", "low": "120", "close": "120"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_sell_market_exit_conditions": {
+                    "operator": "OR",
+                    "market": {"mode": "GM_NEG"},
+                    "sector": {"mode": "GM_NEG"},
+                },
+            }],
+            prices=["10", "11", "12"],
+            alerts_by_offset={0: "Af"},
+        )
+        self.assertEqual([action for action in self._actions(bt) if action], ["BUY", "SELL"])
+
+    def test_gm_sell_market_exit_and_operator_requires_all_conditions(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+                {"date": self.start + timedelta(days=2), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+                {"date": self.start + timedelta(days=2), "open": "120", "high": "120", "low": "120", "close": "120"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_NEG"},
+                    "sector": {"mode": "GM_NEG"},
+                },
+            }],
+            prices=["10", "11", "12"],
+            alerts_by_offset={0: "Af"},
+        )
+        self.assertEqual([action for action in self._actions(bt) if action], ["BUY"])
+
+    def test_gm_sell_market_exit_never_sells_without_open_position(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_NEG"},
+                },
+            }],
+            prices=["10", "11"],
+            alerts_by_offset={0: "SPVv"},
+        )
+        self.assertEqual([action for action in self._actions(bt) if action], [])
+
+    def test_gm_sell_market_exit_explicit_threshold_uses_configured_value(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+                {"date": self.start + timedelta(days=2), "open": "105.60", "high": "105.60", "low": "105.60", "close": "105.60"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_NEG", "threshold": "-0.03", "explicit_threshold": True},
+                },
+            }],
+            prices=["10", "11", "12"],
+            alerts_by_offset={0: "Af"},
+        )
+        self.assertEqual([action for action in self._actions(bt) if action], ["BUY", "SELL"])
+
+    def test_gm_buy_explicit_threshold_uses_configured_value(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "103", "high": "103", "low": "103", "close": "103"},
+                {"date": self.start + timedelta(days=2), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_buy_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_POS", "threshold": "0.05", "explicit_threshold": True},
+                },
+            }],
+            prices=["10", "20", "40"],
+            alerts_by_offset={1: "Af"},
+        )
+        daily = self._daily(bt)
+        self.assertIsNone(daily[1]["action"])
+        self.assertEqual(daily[2]["action"], "BUY")
+
+    def test_legacy_line_market_condition_keeps_neutral_band_threshold(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "100.05", "high": "100.05", "low": "100.05", "close": "100.05"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "buy_market_gm_market": "GM_POS",
+            }],
+            prices=["10", "20"],
+            alerts_by_offset={1: "Af"},
+        )
+        self.assertNotIn("BUY", {action for action in self._actions(bt) if action})
+
     def test_legacy_global_filter_is_ignored_when_line_market_condition_passes(self):
         self._add_benchmark_fixture(
             self.spy,

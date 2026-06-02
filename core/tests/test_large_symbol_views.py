@@ -683,8 +683,20 @@ class SymbolMetadataViewTests(TestCase):
             "buy_market_operator": "AND",
             "sell_gm_filter": "IGNORE",
             "sell_gm_operator": "AND",
+            "gm_buy_conditions": {
+                "operator": "AND",
+                "current": {"mode": "POS", "threshold": None, "explicit_threshold": False},
+                "market": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+                "sector": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+            },
+            "gm_sell_market_exit_conditions": {
+                "operator": "AND",
+                "current": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+                "market": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+                "sector": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+            },
         }]
-        self.assertEqual(response.context["signal_lines_json"], json.dumps(normalized_signal_lines))
+        self.assertEqual(json.loads(response.context["signal_lines_json"]), normalized_signal_lines)
         body = response.content.decode()
         self.assertIn("1. Périmètre / Période", body)
         self.assertIn("2. Signaux d’entrée &amp; de sortie", body)
@@ -1028,8 +1040,20 @@ class SymbolMetadataViewTests(TestCase):
             "buy_market_operator": "AND",
             "sell_gm_filter": "IGNORE",
             "sell_gm_operator": "AND",
+            "gm_buy_conditions": {
+                "operator": "AND",
+                "current": {"mode": "POS", "threshold": None, "explicit_threshold": False},
+                "market": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+                "sector": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+            },
+            "gm_sell_market_exit_conditions": {
+                "operator": "AND",
+                "current": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+                "market": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+                "sector": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+            },
         }]
-        self.assertEqual(response.context["signal_lines_json"], json.dumps(normalized_signal_lines))
+        self.assertEqual(json.loads(response.context["signal_lines_json"]), normalized_signal_lines)
         body = response.content.decode()
         self.assertIn("1. Périmètre / Période", body)
         self.assertIn("2. Signaux d’entrée &amp; de sortie", body)

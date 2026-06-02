@@ -97,6 +97,28 @@ class SignalLinesCleaningTests(SimpleTestCase):
         self.assertNotIn("GM_POS", line["buy"])
         self.assertNotIn("GM_NEG", line["buy"])
 
+    def test_clean_signal_lines_stores_gm_sell_market_exit_separately(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "PROGRESSIVE_EXPLICIT_SELL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_sell_market_exit_conditions": {
+                    "operator": "OR",
+                    "market": {"mode": "GM_NEG", "threshold": "-0.03", "explicit_threshold": True},
+                    "sector": {"mode": "GM_NEG"},
+                },
+            }
+        ])
+        self.assertEqual(len(cleaned), 1)
+        line = cleaned[0]
+        self.assertEqual(line["sell_gm_filter"], "IGNORE")
+        self.assertEqual(line["gm_sell_market_exit_conditions"]["operator"], "OR")
+        self.assertEqual(line["gm_sell_market_exit_conditions"]["market"]["mode"], "NEG")
+        self.assertEqual(line["gm_sell_market_exit_conditions"]["market"]["threshold"], "-0.03")
+        self.assertTrue(line["gm_sell_market_exit_conditions"]["market"]["explicit_threshold"])
+        self.assertEqual(line["gm_sell_market_exit_conditions"]["sector"]["mode"], "NEG")
+
     def test_clean_signal_lines_rejects_market_conditions_without_buy_signal(self):
         with self.assertRaises(forms.ValidationError):
             _clean_signal_lines_json([
@@ -161,6 +183,13 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
                 '<option value="PROGRESSIVE_EXPLICIT_SELL">Progressif avec vente explicite</option>',
                 content,
             )
+            self.assertIn("Protection marché GM", content)
+            self.assertIn(
+                "La protection marché GM peut déclencher une vente lorsqu’une position est ouverte, même sans signal de vente ticker.",
+                content,
+            )
+            self.assertIn("Seuil en décimal : 0.03 = 3 %", content)
+            self.assertNotIn('data-role="sell_gm_filter"', content)
 
     def test_new_default_game_lines_use_progressive_auto_sell_model(self):
         content = self._template("game_scenario_form.html")
@@ -180,6 +209,13 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
             '<option value="PROGRESSIVE_EXPLICIT_SELL">Progressif avec vente explicite</option>',
             content,
         )
+        self.assertIn("Protection marché GM", content)
+        self.assertIn(
+            "La protection marché GM peut déclencher une vente lorsqu’une position est ouverte, même sans signal de vente ticker.",
+            content,
+        )
+        self.assertIn("Seuil en décimal : 0.03 = 3 %", content)
+        self.assertNotIn('data-role="sell_gm_filter"', content)
 
     def test_price_range_fields_and_help_text_are_rendered_in_forms(self):
         for template_name in ("backtest_create.html", "backtest_edit.html"):

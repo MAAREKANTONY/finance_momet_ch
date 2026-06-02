@@ -243,6 +243,59 @@ def trend_filter_matches(*, actual_regime: str | None, expected_filter: Any) -> 
     return actual == expected
 
 
+def gm_condition_matches(
+    *,
+    actual_value: Decimal | None,
+    mode: Any,
+    threshold: Decimal | None = None,
+    explicit_threshold: bool = False,
+    neutral_band: Decimal | None = None,
+) -> bool:
+    """Evaluate one GM market condition against a numeric momentum value.
+
+    Legacy GM conditions are regime-based and use the historical neutral band.
+    Explicit-threshold conditions compare directly against the provided threshold.
+    """
+    if actual_value is None:
+        return False
+    mode_text = str(mode or "IGNORE").strip().upper()
+    if mode_text.startswith("GM_"):
+        mode_text = mode_text[3:]
+    if mode_text in {"POSITIVE", "POSITIF"}:
+        mode_text = "POS"
+    elif mode_text in {"NEGATIVE", "NEGATIF"}:
+        mode_text = "NEG"
+    elif mode_text in {"NEUTRAL", "NEUTRE"}:
+        mode_text = "NEU"
+    if mode_text == "IGNORE":
+        return True
+
+    band = _to_dec(neutral_band) or DEFAULT_GLOBAL_MOMENTUM_NEUTRAL_BAND
+    if explicit_threshold:
+        threshold_value = _to_dec(threshold)
+        if threshold_value is None:
+            return False
+        if mode_text == "POS":
+            return actual_value > threshold_value
+        if mode_text == "NEG":
+            return actual_value < threshold_value
+        if mode_text == "NEU":
+            return abs(actual_value) <= abs(threshold_value)
+        return False
+
+    if mode_text == "POS":
+        return actual_value > band
+    if mode_text == "NEG":
+        return actual_value < -band
+    if mode_text == "NEU":
+        return abs(actual_value) <= band
+    if mode_text == "POS_OR_NEU":
+        return actual_value >= -band
+    if mode_text == "NEG_OR_NEU":
+        return actual_value <= band
+    return False
+
+
 def evaluate_trend_filters_for_symbol(
     *,
     symbol: Symbol | None,

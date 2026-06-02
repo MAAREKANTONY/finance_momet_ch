@@ -64,7 +64,8 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             rows = list(loaded["Summary"].iter_rows(values_only=True))
         self.assertEqual(rows[1][2], '["SPA", "SPVA"]')
         self.assertEqual(rows[1][3], 'GM marché: GM positif')
-        self.assertEqual(rows[1][4], '["SVA"]')
+        self.assertEqual(rows[1][4], "Aucune")
+        self.assertEqual(rows[1][5], '["SVA"]')
 
     def test_build_backtest_workbook_full_serializes_list_cells(self):
         bt = self._make_backtest_stub()
@@ -76,7 +77,8 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             rows = list(loaded["Summary"].iter_rows(values_only=True))
         self.assertEqual(rows[1][2], '["SPA", "SPVA"]')
         self.assertEqual(rows[1][3], 'GM marché: GM positif')
-        self.assertEqual(rows[1][4], '["SVA"]')
+        self.assertEqual(rows[1][4], "Aucune")
+        self.assertEqual(rows[1][5], '["SVA"]')
 
     def test_build_backtest_workbook_full_uses_bounded_return_wording_for_global_momentum(self):
         bt = self._make_backtest_stub()
@@ -251,6 +253,10 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
                         "buy_market_gm_current": "GM_POS",
                         "buy_market_gm_market": "GM_NEG",
                         "buy_market_operator": "AND",
+                        "gm_sell_market_exit_conditions": {
+                            "operator": "OR",
+                            "market": {"mode": "GM_NEG", "threshold": "-0.03", "explicit_threshold": True},
+                        },
                         "sell": ["SPVv"],
                         "daily": [],
                         "final": {},
@@ -265,6 +271,7 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             rows = list(loaded["FORMULAS"].iter_rows(values_only=True))
         flat = [" | ".join("" if cell is None else str(cell) for cell in row) for row in rows]
         self.assertTrue(any("Conditions de marché | GM actuel: GM positif ET GM marché: GM négatif" in row for row in flat))
+        self.assertTrue(any("Protection marché GM | GM marché: GM négatif < -0.03" in row for row in flat))
 
 
 

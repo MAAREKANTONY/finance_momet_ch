@@ -243,6 +243,8 @@
     <div class="muted" style="margin-top:12px;">
       <div>Conditions de marché de la ligne : <b>{% line_market_conditions_display line %}</b></div>
       <div>Les conditions de marché ne déclenchent pas un achat à elles seules. Elles servent à autoriser ou bloquer l'achat lorsqu'un signal BUY est déjà présent.</div>
+      <div>Protection marché GM : <b>{% line_gm_sell_market_exit_display line %}</b></div>
+      <div>La protection marché GM peut déclencher une vente lorsqu’une position est ouverte, même sans signal de vente ticker.</div>
     </div>
   {% endif %}
 </div>
