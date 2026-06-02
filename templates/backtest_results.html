@@ -408,6 +408,33 @@
   </div>
   {% endif %}
 
+  {% if diagnostic_chart_payload.trend_filters %}
+  <div style="margin-bottom:18px;">
+    <h4 style="margin:0 0 8px 0;">Contexte GM de ligne</h4>
+    <div class="muted" style="margin-bottom:8px;">
+      Les courbes GM affichent les conditions de marché BUY et la protection marché GM SELL réellement configurées sur la ligne.
+    </div>
+    {% if diagnostic_chart_payload.trend_filters.current.active %}
+    <div style="margin-bottom:14px;">
+      <h5 style="margin:0 0 6px 0;">GM actuel</h5>
+      <canvas id="diagnosticTrendCurrentChart" height="105"></canvas>
+    </div>
+    {% endif %}
+    {% if diagnostic_chart_payload.trend_filters.market.active %}
+    <div style="margin-bottom:14px;">
+      <h5 style="margin:0 0 6px 0;">GM marché</h5>
+      <canvas id="diagnosticTrendMarketChart" height="105"></canvas>
+    </div>
+    {% endif %}
+    {% if diagnostic_chart_payload.trend_filters.sector.active %}
+    <div style="margin-bottom:14px;">
+      <h5 style="margin:0 0 6px 0;">GM secteur</h5>
+      <canvas id="diagnosticTrendSectorChart" height="105"></canvas>
+    </div>
+    {% endif %}
+  </div>
+  {% endif %}
+
   {% if diagnostic_chart_payload.market_cap %}
   <div style="margin-bottom:8px;">
     <h4 style="margin:0 0 8px 0;">Historical Market Cap</h4>
@@ -1107,43 +1134,61 @@
         const n = toNumber(v);
         return n === null ? null : n * 100;
       });
+      const trendDatasets = [
+        {
+          type: "line",
+          label: "Ligne zéro",
+          data: labels.map(() => 0),
+          borderColor: colors.ZERO,
+          backgroundColor: colors.ZERO,
+          borderDash: [5, 5],
+          pointRadius: 0,
+          spanGaps: true,
+        },
+        {
+          type: "line",
+          label: trendPayload.label,
+          data: trendValues,
+          borderColor: colors.GM,
+          backgroundColor: colors.GM,
+          spanGaps: true,
+          tension: 0.2,
+          pointRadius: 0,
+        },
+      ];
+      (trendPayload.thresholds || []).forEach((threshold) => {
+        const raw = toNumber(threshold.threshold);
+        if (raw === null) return;
+        const value = raw * 100;
+        trendDatasets.push({
+          type: "line",
+          label: threshold.label || "Seuil GM",
+          data: labels.map(() => value),
+          borderColor: threshold.role === "SELL" ? colors.SELL : colors.BUY,
+          backgroundColor: threshold.role === "SELL" ? colors.SELL : colors.BUY,
+          borderDash: threshold.role === "SELL" ? [2, 4] : [8, 4],
+          pointRadius: 0,
+          spanGaps: true,
+        });
+      });
+      ["BUY", "SELL", "FORCED_SELL"].forEach((markerType) => {
+        trendDatasets.push({
+          type: "scatter",
+          label: markerType,
+          data: buildMarkerSeriesFromValues(markerType, trendValues),
+          borderColor: colors[markerType],
+          backgroundColor: colors[markerType],
+          showLine: false,
+          pointRadius: 8,
+          pointHoverRadius: 9,
+          pointStyle: pointStyles[markerType],
+          rotation: pointRotations[markerType],
+        });
+      });
       new Chart(trendCanvas.getContext("2d"), {
         data: {
           labels,
-          datasets: [
-            {
-              type: "line",
-              label: "Ligne zéro",
-              data: labels.map(() => 0),
-              borderColor: colors.ZERO,
-              backgroundColor: colors.ZERO,
-              borderDash: [5, 5],
-              pointRadius: 0,
-              spanGaps: true,
-            },
-            {
-              type: "line",
-              label: trendPayload.label,
-              data: trendValues,
-              borderColor: colors.GM,
-              backgroundColor: colors.GM,
-              spanGaps: true,
-              tension: 0.2,
-              pointRadius: 0,
-            },
-            ...["BUY", "SELL", "FORCED_SELL"].map((markerType) => ({
-              type: "scatter",
-              label: markerType,
-              data: buildMarkerSeriesFromValues(markerType, trendValues),
-              borderColor: colors[markerType],
-              backgroundColor: colors[markerType],
-              showLine: false,
-              pointRadius: 8,
-              pointHoverRadius: 9,
-              pointStyle: pointStyles[markerType],
-              rotation: pointRotations[markerType],
-            })),
-          ]
+          datasets: trendDatasets
         },
         options: {
           responsive: true,
@@ -1153,6 +1198,11 @@
           }
         }
       });
+    }
+    if (payload.trend_filters) {
+      buildTrendChart("diagnosticTrendCurrentChart", payload.trend_filters.current, "GM actuel — rendement borné (%)");
+      buildTrendChart("diagnosticTrendMarketChart", payload.trend_filters.market, "GM marché — rendement borné (%)");
+      buildTrendChart("diagnosticTrendSectorChart", payload.trend_filters.sector, "GM secteur — rendement borné (%)");
     }
 
   }

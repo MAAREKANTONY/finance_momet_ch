@@ -1491,14 +1491,14 @@ class BacktestResultsRenderTests(TestCase):
             capital_per_ticker="100",
             capital_mode="FIXED",
             include_all_tickers=True,
-            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            signal_lines=[{
+                "buy": ["Af"],
+                "sell": ["Bf"],
+                "buy_market_gm_current": "GM_POS",
+                "buy_market_gm_market": "GM_POS",
+                "buy_market_gm_sector": "GM_POS",
+            }],
             universe_snapshot=[self.symbol.ticker],
-            settings={
-                "trend_filter_operator": "AND",
-                "trend_filter_gm_current": "GM_POS",
-                "trend_filter_gm_market": "GM_POS",
-                "trend_filter_gm_sector": "GM_POS",
-            },
             results={
                 "meta": {
                     "start_date": "2024-01-02",
@@ -1513,6 +1513,9 @@ class BacktestResultsRenderTests(TestCase):
                             "line_index": 1,
                             "buy": ["Af"],
                             "sell": ["Bf"],
+                            "buy_market_gm_current": "GM_POS",
+                            "buy_market_gm_market": "GM_POS",
+                            "buy_market_gm_sector": "GM_POS",
                             "daily": [],
                             "daily_rows_omitted": True,
                             "events": [
@@ -1721,6 +1724,7 @@ class BacktestResultsRenderTests(TestCase):
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         payload = response.context["diagnostic_chart_payload"]
         self.assertIsNone(payload["gm"])
+        self.assertIsNone(payload["trend_filters"])
         body = response.content.decode()
         self.assertIn("Diagnostic visuel de la stratégie", body)
         self.assertNotIn("Filtre GM</h4>", body)
@@ -2089,47 +2093,54 @@ class BacktestResultsRenderTests(TestCase):
         self._add_bar(spy, "2024-01-02", "100")
         self._add_bar(spy, "2024-01-03", "110")
         bt = self._build_diagnostic_backtest(
-            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "buy_market_gm_market": "GM_POS"}],
             ticker_lines={
-                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "buy_market_gm_market": "GM_POS", "daily": [
                     {"date": "2024-01-02", "price_close": "10", "action": None},
                     {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
                 ], "final": {}}]},
             },
         )
-        bt.settings = {"trend_filter_gm_market": "GM_POS"}
-        bt.save(update_fields=["settings"])
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         payload = response.context["diagnostic_chart_payload"]
+        self.assertTrue(payload["trend_filters"]["market"]["active"])
         self.assertEqual(payload["trend_filters"]["market"]["benchmark_ticker"], "SPY")
         self.assertEqual(payload["trend_filters"]["market"]["values"], [None, "0.1"])
         self.assertEqual(payload["trend_filters"]["zero_line"], "0")
+        self.assertIn("diagnosticTrendMarketChart", response.content.decode())
 
-    def test_backtest_results_diagnostic_payload_handles_string_avg_global_nglobal(self):
+    def test_backtest_results_diagnostic_payload_includes_new_gm_buy_current_curve_with_threshold(self):
         self.scenario.nglobal = 1
         self.scenario.save(update_fields=["nglobal"])
+        gm_buy_conditions = {
+            "operator": "AND",
+            "current": {"mode": "GM_POS", "threshold": "0.03", "explicit_threshold": True},
+        }
         bt = self._build_diagnostic_backtest(
-            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "gm_buy_conditions": gm_buy_conditions}],
             ticker_lines={
-                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "gm_buy_conditions": gm_buy_conditions, "daily": [
                     {"date": "2024-01-02", "price_close": "10", "action": None},
                     {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
                 ], "final": {}}]},
             },
         )
-        bt.settings = {"trend_filter_gm_current": "GM_POS"}
         bt.results["portfolio"]["daily"] = [
             {"date": "2024-01-02", "avg_global_nglobal": ""},
             {"date": "2024-01-03", "avg_global_nglobal": "0.2"},
         ]
-        bt.save(update_fields=["settings", "results"])
+        bt.save(update_fields=["results"])
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         self.assertEqual(response.status_code, 200)
         payload = response.context["diagnostic_chart_payload"]
+        self.assertTrue(payload["trend_filters"]["current"]["active"])
         self.assertEqual(payload["trend_filters"]["current"]["values"], [None, "0.2"])
         self.assertEqual(payload["trend_filters"]["current"]["status"], "passed")
+        self.assertEqual(payload["trend_filters"]["current"]["thresholds"][0]["role"], "BUY")
+        self.assertEqual(payload["trend_filters"]["current"]["thresholds"][0]["threshold"], "0.03")
+        self.assertIn("diagnosticTrendCurrentChart", response.content.decode())
 
-    def test_backtest_results_diagnostic_payload_includes_sector_trend_curve_when_configured(self):
+    def test_backtest_results_diagnostic_payload_includes_gm_sell_market_exit_sector_curve(self):
         self.scenario.nglobal = 1
         self.scenario.save(update_fields=["nglobal"])
         self.symbol.sector = "Technology"
@@ -2137,21 +2148,27 @@ class BacktestResultsRenderTests(TestCase):
         xlk = Symbol.objects.create(ticker="XLK", exchange="NYSE", country="US", sector="Technology", active=True)
         self._add_bar(xlk, "2024-01-02", "100")
         self._add_bar(xlk, "2024-01-03", "110")
+        gm_sell_conditions = {
+            "operator": "AND",
+            "sector": {"mode": "GM_POS", "threshold": "0.05", "explicit_threshold": True},
+        }
         bt = self._build_diagnostic_backtest(
-            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "gm_sell_market_exit_conditions": gm_sell_conditions}],
             ticker_lines={
-                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "gm_sell_market_exit_conditions": gm_sell_conditions, "daily": [
                     {"date": "2024-01-02", "price_close": "10", "action": None},
                     {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
                 ], "final": {}}]},
             },
         )
-        bt.settings = {"trend_filter_gm_sector": "GM_POS"}
-        bt.save(update_fields=["settings"])
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         payload = response.context["diagnostic_chart_payload"]
+        self.assertTrue(payload["trend_filters"]["sector"]["active"])
         self.assertEqual(payload["trend_filters"]["sector"]["benchmark_ticker"], "XLK")
         self.assertEqual(payload["trend_filters"]["sector"]["values"], [None, "0.1"])
+        self.assertEqual(payload["trend_filters"]["sector"]["thresholds"][0]["role"], "SELL")
+        self.assertEqual(payload["trend_filters"]["sector"]["thresholds"][0]["threshold"], "0.05")
+        self.assertIn("diagnosticTrendSectorChart", response.content.decode())
 
     def test_backtest_results_hides_legacy_trend_filter_diagnostic(self):
         self.scenario.nglobal = 1
@@ -2188,16 +2205,17 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertNotIn("Filtres de tendance (achat uniquement)", body)
-        self.assertNotIn("diagnosticTrendCurrentChart", body)
-        self.assertNotIn("diagnosticTrendMarketChart", body)
-        self.assertNotIn("diagnosticTrendSectorChart", body)
+        self.assertNotIn("Contexte GM de ligne", body)
+        self.assertNotIn('<canvas id="diagnosticTrendCurrentChart"', body)
+        self.assertNotIn('<canvas id="diagnosticTrendMarketChart"', body)
+        self.assertNotIn('<canvas id="diagnosticTrendSectorChart"', body)
 
     def test_backtest_results_diagnostic_payload_warns_on_missing_market_mapping_or_data(self):
         symbol = Symbol.objects.create(ticker="INTL", exchange="", country="", sector="Technology", active=True)
         bt = self._build_diagnostic_backtest(
-            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "buy_market_gm_market": "GM_POS"}],
             ticker_lines={
-                "INTL": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                "INTL": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "buy_market_gm_market": "GM_POS", "daily": [
                     {"date": "2024-01-02", "price_close": "10", "action": None},
                     {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
                 ], "final": {}}]},
@@ -2205,8 +2223,7 @@ class BacktestResultsRenderTests(TestCase):
             extra_symbols=[symbol],
         )
         bt.universe_snapshot = ["INTL"]
-        bt.settings = {"trend_filter_gm_market": "GM_POS"}
-        bt.save(update_fields=["universe_snapshot", "settings"])
+        bt.save(update_fields=["universe_snapshot"])
         response = self.client.get(reverse("backtest_results", args=[bt.pk]), {"ticker": "INTL"})
         payload = response.context["diagnostic_chart_payload"]
         self.assertIn("missing benchmark mapping", payload["trend_filters"]["market"]["reason"])
@@ -2214,9 +2231,9 @@ class BacktestResultsRenderTests(TestCase):
     def test_backtest_results_diagnostic_payload_warns_on_missing_sector_mapping_or_data(self):
         symbol = Symbol.objects.create(ticker="UNKN", exchange="NYSE", country="US", sector="", active=True)
         bt = self._build_diagnostic_backtest(
-            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "buy_market_gm_sector": "GM_POS"}],
             ticker_lines={
-                "UNKN": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                "UNKN": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "buy_market_gm_sector": "GM_POS", "daily": [
                     {"date": "2024-01-02", "price_close": "10", "action": None},
                     {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
                 ], "final": {}}]},
@@ -2224,8 +2241,7 @@ class BacktestResultsRenderTests(TestCase):
             extra_symbols=[symbol],
         )
         bt.universe_snapshot = ["UNKN"]
-        bt.settings = {"trend_filter_gm_sector": "GM_POS"}
-        bt.save(update_fields=["universe_snapshot", "settings"])
+        bt.save(update_fields=["universe_snapshot"])
         response = self.client.get(reverse("backtest_results", args=[bt.pk]), {"ticker": "UNKN"})
         payload = response.context["diagnostic_chart_payload"]
         self.assertIn("missing sector mapping", payload["trend_filters"]["sector"]["reason"])
@@ -2244,7 +2260,7 @@ class BacktestResultsRenderTests(TestCase):
             "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
                 {"date": "2024-01-02", "price_close": "10", "action": None},
                 {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
-            ], "final": {}}]},
+            ], "buy_market_gm_market": "GM_POS", "buy_market_gm_sector": "GM_POS", "final": {}}]},
         }
         for symbol in extra_symbols:
             ticker_lines[symbol.ticker] = {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
@@ -2252,13 +2268,12 @@ class BacktestResultsRenderTests(TestCase):
                 {"date": "2024-01-03", "price_close": "11", "action": None},
             ], "final": {}}]}
         bt = self._build_diagnostic_backtest(
-            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "buy_market_gm_market": "GM_POS", "buy_market_gm_sector": "GM_POS"}],
             ticker_lines=ticker_lines,
             extra_symbols=extra_symbols,
         )
         bt.universe_snapshot = ["AAA"] + [symbol.ticker for symbol in extra_symbols]
-        bt.settings = {"trend_filter_gm_market": "GM_POS", "trend_filter_gm_sector": "GM_POS"}
-        bt.save(update_fields=["universe_snapshot", "settings"])
+        bt.save(update_fields=["universe_snapshot"])
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
         payload = response.context["diagnostic_chart_payload"]
         self.assertEqual(payload["trend_filters"]["universe"]["market_benchmarks"], ["SPY"])

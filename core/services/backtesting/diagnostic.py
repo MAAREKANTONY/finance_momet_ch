@@ -12,7 +12,6 @@ from core.services.recent_high_drawdown import (
     normalize_recent_high_drawdown_params,
 )
 from core.services.trend_filters import (
-    active_trend_filter_keys,
     collect_distinct_benchmark_tickers,
     evaluate_trend_filters_for_symbol,
     normalize_trend_filter_settings,
@@ -76,6 +75,17 @@ _MARKET_CAP_PROVIDER = "eodhd"
 _MARKET_CAP_MIN_KEY = "market_cap_min"
 _MARKET_CAP_MAX_KEY = "market_cap_max"
 _MARKET_CAP_MISSING_POLICY_KEY = "market_cap_missing_policy"
+_GM_FAMILIES = ("current", "market", "sector")
+_GM_FAMILY_TO_SETTING_KEY = {
+    "current": "trend_filter_gm_current",
+    "market": "trend_filter_gm_market",
+    "sector": "trend_filter_gm_sector",
+}
+_GM_FAMILY_LABELS = {
+    "current": "GM actuel",
+    "market": "GM marché",
+    "sector": "GM secteur",
+}
 
 
 def _alerts_set(alerts_str: str) -> set[str]:
@@ -283,6 +293,82 @@ def _to_decimal_or_none(value: Any) -> Decimal | None:
         return None
 
 
+def _normalize_gm_condition_mode(value: Any) -> str:
+    code = str(value or "IGNORE").strip().upper()
+    if code.startswith("GM_"):
+        code = code[3:]
+    mapping = {
+        "POSITIVE": "POS",
+        "POSITIF": "POS",
+        "NEGATIVE": "NEG",
+        "NEGATIF": "NEG",
+        "NEUTRAL": "NEU",
+        "NEUTRE": "NEU",
+        "POS_OR_NEU": "POS_OR_NEU",
+        "NEG_OR_NEU": "NEG_OR_NEU",
+    }
+    code = mapping.get(code, code)
+    return code if code in {"IGNORE", "POS", "NEG", "NEU", "POS_OR_NEU", "NEG_OR_NEU"} else "IGNORE"
+
+
+def _gm_mode_to_filter_code(mode: Any) -> str:
+    normalized = _normalize_gm_condition_mode(mode)
+    return {
+        "POS": "GM_POS",
+        "NEG": "GM_NEG",
+        "NEU": "GM_NEU",
+        "POS_OR_NEU": "GM_POS_OR_NEU",
+        "NEG_OR_NEU": "GM_NEG_OR_NEU",
+    }.get(normalized, "IGNORE")
+
+
+def _gm_condition_entry(config: dict[str, Any] | None, family: str) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {"mode": "IGNORE", "threshold": None, "explicit_threshold": False}
+    raw = config.get(family)
+    if not isinstance(raw, dict):
+        return {"mode": "IGNORE", "threshold": None, "explicit_threshold": False}
+    return {
+        "mode": _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code")),
+        "threshold": None if raw.get("threshold") in (None, "") else str(raw.get("threshold")),
+        "explicit_threshold": bool(raw.get("explicit_threshold")) and raw.get("threshold") not in (None, ""),
+    }
+
+
+def _line_gm_diagnostic_config(line: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(line, dict):
+        return None
+    gm_buy = line.get("gm_buy_conditions") if isinstance(line.get("gm_buy_conditions"), dict) else {}
+    gm_sell = line.get("gm_sell_market_exit_conditions") if isinstance(line.get("gm_sell_market_exit_conditions"), dict) else {}
+    legacy_buy = {
+        "current": line.get("buy_market_gm_current", line.get("buy_gm_filter")),
+        "market": line.get("buy_market_gm_market"),
+        "sector": line.get("buy_market_gm_sector"),
+    }
+
+    settings = {"trend_filter_operator": "OR"}
+    roles_by_family: dict[str, list[dict[str, Any]]] = {family: [] for family in _GM_FAMILIES}
+    for family in _GM_FAMILIES:
+        buy_entry = _gm_condition_entry(gm_buy, family)
+        if buy_entry["mode"] == "IGNORE":
+            legacy_code = _gm_mode_to_filter_code(legacy_buy.get(family))
+            if legacy_code != "IGNORE":
+                buy_entry = {"mode": _normalize_gm_condition_mode(legacy_code), "threshold": None, "explicit_threshold": False}
+        if buy_entry["mode"] != "IGNORE":
+            roles_by_family[family].append({"role": "BUY", **buy_entry})
+
+        sell_entry = _gm_condition_entry(gm_sell, family)
+        if sell_entry["mode"] != "IGNORE":
+            roles_by_family[family].append({"role": "SELL", **sell_entry})
+
+        selected = roles_by_family[family][0] if roles_by_family[family] else {"mode": "IGNORE"}
+        settings[_GM_FAMILY_TO_SETTING_KEY[family]] = _gm_mode_to_filter_code(selected.get("mode"))
+
+    if not any(roles_by_family.values()):
+        return None
+    return {"settings": settings, "roles_by_family": roles_by_family}
+
+
 def _build_markers(daily: list[dict[str, Any]]) -> list[dict[str, str]]:
     markers: list[dict[str, str]] = []
     for row in daily:
@@ -361,11 +447,13 @@ def _build_market_cap_payload(*, backtest, symbol: Symbol | None, dates: list[st
     }
 
 
-def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[str], portfolio_daily: list[dict[str, Any]] | None):
-    settings = dict(getattr(backtest, "settings", {}) or {})
-    if not active_trend_filter_keys(settings) or not dates:
+def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[str], portfolio_daily: list[dict[str, Any]] | None, line: dict[str, Any] | None):
+    line_config = _line_gm_diagnostic_config(line)
+    if not line_config or not dates:
         return None
 
+    settings = line_config["settings"]
+    roles_by_family = line_config["roles_by_family"]
     normalized = normalize_trend_filter_settings(settings)
     gm_values_by_date = {
         str((row or {}).get("date") or ""): None if (row or {}).get("avg_global_nglobal") in (None, "") else str((row or {}).get("avg_global_nglobal"))
@@ -416,15 +504,29 @@ def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[
 
     filters = evaluated["filters"]
 
-    def _series_payload(key: str, *, values: list[str | None], benchmark_ticker: str | None = None):
+    def _series_payload(key: str, family: str, *, values: list[str | None], benchmark_ticker: str | None = None):
         payload = filters.get(key) or {}
+        roles = roles_by_family.get(family) or []
+        thresholds = [
+            {
+                "role": role.get("role"),
+                "label": f"Seuil {role.get('role')} {_GM_FAMILY_LABELS[family]}",
+                "mode": role.get("mode"),
+                "threshold": role.get("threshold"),
+            }
+            for role in roles
+            if role.get("explicit_threshold") and role.get("threshold") not in (None, "")
+        ]
         return {
-            "label": payload.get("label") or key,
+            "active": bool(roles),
+            "label": _GM_FAMILY_LABELS.get(family) or payload.get("label") or key,
             "filter_code": payload.get("filter_code"),
             "benchmark_ticker": benchmark_ticker or payload.get("benchmark_ticker"),
             "values": values,
             "status": payload.get("status"),
             "reason": payload.get("reason"),
+            "roles": roles,
+            "thresholds": thresholds,
         }
 
     market_benchmark_ticker = (filters.get("trend_filter_gm_market") or {}).get("benchmark_ticker")
@@ -436,10 +538,12 @@ def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[
         "zero_line": "0",
         "current": _series_payload(
             "trend_filter_gm_current",
+            "current",
             values=[gm_values_by_date.get(row_date) for row_date in dates],
         ),
         "market": _series_payload(
             "trend_filter_gm_market",
+            "market",
             benchmark_ticker=market_benchmark_ticker,
             values=[
                 _decimal_str(
@@ -456,6 +560,7 @@ def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[
         ),
         "sector": _series_payload(
             "trend_filter_gm_sector",
+            "sector",
             benchmark_ticker=sector_benchmark_ticker,
             values=[
                 _decimal_str(
@@ -530,6 +635,7 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         symbol=symbol,
         dates=dates,
         portfolio_daily=portfolio_daily,
+        line=line,
     )
     rhd_lookback_days, rhd_max_drop_pct = normalize_recent_high_drawdown_params(backtest.scenario)
     recent_high_drawdown = None
