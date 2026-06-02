@@ -94,6 +94,10 @@
                 {% endif %}
               {% else %}—{% endif %}
             {% endif %}
+            {% line_gm_sell_market_exit_display line as gm_sell_market_exit_display %}
+            {% if gm_sell_market_exit_display != "Aucune" %}
+              <div class="muted" style="margin-top:4px;">Protection marché GM : {{ gm_sell_market_exit_display }}</div>
+            {% endif %}
           </td>
         </tr>
       {% endfor %}

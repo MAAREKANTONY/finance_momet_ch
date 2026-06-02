@@ -1,5 +1,6 @@
 from django import forms
 import json
+from decimal import Decimal
 
 BACKTEST_SIGNAL_CHOICES = [
     ("A1", "A1 (K1 croise 0 vers le haut)"),
@@ -152,6 +153,69 @@ def _normalize_global_regime_filter(value):
     return code if code in GLOBAL_REGIME_FILTER_CODES else "IGNORE"
 
 
+def _normalize_gm_condition_mode(value):
+    code = str(value or "IGNORE").strip().upper()
+    if code.startswith("GM_"):
+        code = code[3:]
+    mapping = {
+        "POSITIVE": "POS",
+        "POSITIF": "POS",
+        "NEGATIVE": "NEG",
+        "NEGATIF": "NEG",
+        "NEUTRAL": "NEU",
+        "NEUTRE": "NEU",
+        "POS_OR_NEU": "POS_OR_NEU",
+        "NEG_OR_NEU": "NEG_OR_NEU",
+    }
+    code = mapping.get(code, code)
+    return code if code in {"IGNORE", "POS", "NEG", "NEU", "POS_OR_NEU", "NEG_OR_NEU"} else "IGNORE"
+
+
+def _normalize_gm_condition_entry(raw=None, *, legacy_code=None):
+    if isinstance(raw, dict):
+        mode = _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code"))
+        threshold = raw.get("threshold")
+        explicit_raw = raw.get("explicit_threshold")
+    else:
+        mode = _normalize_gm_condition_mode(raw if raw not in (None, "") else legacy_code)
+        threshold = None
+        explicit_raw = False
+    threshold_str = None
+    explicit_threshold = bool(explicit_raw) or threshold not in (None, "")
+    if threshold not in (None, ""):
+        try:
+            threshold_str = str(Decimal(str(threshold)))
+        except Exception as exc:
+            raise forms.ValidationError("Le seuil GM doit être un nombre.") from exc
+    if threshold_str is None:
+        explicit_threshold = False
+    return {
+        "mode": mode,
+        "threshold": threshold_str,
+        "explicit_threshold": bool(explicit_threshold),
+    }
+
+
+def _normalize_gm_conditions_config(raw=None, *, operator=None, current=None, market=None, sector=None):
+    payload = raw if isinstance(raw, dict) else {}
+    out = {
+        "operator": _normalize_logic(payload.get("operator", operator), "AND"),
+    }
+    legacy = {"current": current, "market": market, "sector": sector}
+    for family in ("current", "market", "sector"):
+        out[family] = _normalize_gm_condition_entry(payload.get(family), legacy_code=legacy.get(family))
+    return out
+
+
+def _gm_conditions_has_active(config):
+    if not isinstance(config, dict):
+        return False
+    return any(
+        _normalize_gm_condition_mode((config.get(family) or {}).get("mode")) != "IGNORE"
+        for family in ("current", "market", "sector")
+    )
+
+
 def _normalize_line_market_conditions(item):
     legacy_current = _normalize_global_regime_filter(item.get("buy_gm_filter"))
     return {
@@ -191,11 +255,24 @@ def _clean_signal_lines_json(value):
             "sell_gm_operator": _normalize_logic(item.get("sell_gm_operator"), "AND"),
         }
         payload.update(_normalize_line_market_conditions(item))
+        payload["gm_buy_conditions"] = _normalize_gm_conditions_config(
+            item.get("gm_buy_conditions"),
+            operator=payload["buy_market_operator"],
+            current=payload["buy_market_gm_current"],
+            market=payload["buy_market_gm_market"],
+            sector=payload["buy_market_gm_sector"],
+        )
+        payload["gm_sell_market_exit_conditions"] = _normalize_gm_conditions_config(
+            item.get("gm_sell_market_exit_conditions"),
+            operator=item.get("gm_sell_market_exit_operator"),
+        )
         has_line_market_conditions = any(
             payload[key] != "IGNORE"
             for key in ("buy_market_gm_current", "buy_market_gm_market", "buy_market_gm_sector")
         )
-        if has_line_market_conditions and not buy:
+        has_gm_buy_conditions = _gm_conditions_has_active(payload["gm_buy_conditions"])
+        has_gm_sell_market_exit = _gm_conditions_has_active(payload["gm_sell_market_exit_conditions"])
+        if (has_line_market_conditions or has_gm_buy_conditions) and not buy:
             raise forms.ValidationError(
                 "Chaque ligne avec des conditions de marché doit contenir au moins un signal BUY."
             )
@@ -216,6 +293,7 @@ def _clean_signal_lines_json(value):
                     buy_logic=payload["buy_logic"],
                     sell_codes=sell,
                     sell_gm_filter=payload["sell_gm_filter"],
+                    has_gm_sell_market_exit=has_gm_sell_market_exit,
                 )
             except ValueError as exc:
                 raise forms.ValidationError(str(exc)) from exc
@@ -225,6 +303,8 @@ def _clean_signal_lines_json(value):
             or payload["buy_gm_filter"] != "IGNORE"
             or payload["sell_gm_filter"] != "IGNORE"
             or has_line_market_conditions
+            or has_gm_buy_conditions
+            or has_gm_sell_market_exit
         ):
             cleaned.append(payload)
     return cleaned
@@ -251,6 +331,13 @@ def _normalize_legacy_gm_for_trend_filters(signal_lines, trend_filter_gm_current
         payload.setdefault("buy_market_gm_market", "IGNORE")
         payload.setdefault("buy_market_gm_sector", "IGNORE")
         payload.setdefault("buy_market_operator", "AND")
+        payload.setdefault("gm_buy_conditions", _normalize_gm_conditions_config(
+            operator=payload.get("buy_market_operator"),
+            current=payload.get("buy_market_gm_current"),
+            market=payload.get("buy_market_gm_market"),
+            sector=payload.get("buy_market_gm_sector"),
+        ))
+        payload.setdefault("gm_sell_market_exit_conditions", _normalize_gm_conditions_config())
         normalized_lines.append(payload)
     return normalized_lines, normalized_current
 

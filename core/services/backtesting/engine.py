@@ -37,11 +37,15 @@ from core.services.market_cap import preload_market_cap_series
 from core.services.trend_filters import (
     collect_distinct_benchmark_tickers,
     evaluate_trend_filters_for_symbol,
+    gm_condition_matches,
+    market_benchmark_ticker_for_symbol,
     preload_benchmark_price_cache,
+    sector_benchmark_ticker_for_symbol,
     TREND_FILTER_GM_CURRENT_KEY,
     TREND_FILTER_GM_MARKET_KEY,
     TREND_FILTER_GM_SECTOR_KEY,
     TREND_FILTER_OPERATOR_KEY,
+    trend_return_from_cache,
 )
 from core.trading_model_config import (
     SIGNAL_LATCH_OPPOSITES,
@@ -58,6 +62,7 @@ from core.trading_model_config import (
 )
 
 GLOBAL_REGIME_FILTER_CODES = {"IGNORE", "GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR_NEU", "GM_NEG_OR_NEU"}
+GM_CONDITION_FAMILIES = ("current", "market", "sector")
 MARKET_CAP_MISSING_POLICY_ALLOW = "ALLOW"
 MARKET_CAP_MISSING_POLICY_BLOCK = "BLOCK"
 REENTRY_WARNING_WINDOW_DAYS = 1
@@ -270,6 +275,79 @@ def _normalize_global_regime_filter(value: Any) -> str:
     return code if code in GLOBAL_REGIME_FILTER_CODES else "IGNORE"
 
 
+def _normalize_gm_condition_mode(value: Any) -> str:
+    code = str(value or "IGNORE").strip().upper()
+    if code.startswith("GM_"):
+        code = code[3:]
+    mapping = {
+        "POSITIVE": "POS",
+        "POSITIF": "POS",
+        "NEGATIVE": "NEG",
+        "NEGATIF": "NEG",
+        "NEUTRAL": "NEU",
+        "NEUTRE": "NEU",
+        "POS_OR_NEU": "POS_OR_NEU",
+        "NEG_OR_NEU": "NEG_OR_NEU",
+    }
+    code = mapping.get(code, code)
+    return code if code in {"IGNORE", "POS", "NEG", "NEU", "POS_OR_NEU", "NEG_OR_NEU"} else "IGNORE"
+
+
+def _normalize_gm_condition_entry(raw: Any = None, *, legacy_code: Any = None) -> dict[str, Any]:
+    if isinstance(raw, dict):
+        mode = _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code"))
+        threshold = raw.get("threshold")
+        explicit_raw = raw.get("explicit_threshold")
+    else:
+        mode = _normalize_gm_condition_mode(raw if raw not in (None, "") else legacy_code)
+        threshold = None
+        explicit_raw = False
+
+    threshold_dec = _to_dec(threshold)
+    explicit_threshold = bool(explicit_raw) or threshold not in (None, "")
+    if threshold_dec is None:
+        explicit_threshold = False
+    return {
+        "mode": mode,
+        "threshold": None if threshold_dec is None else str(threshold_dec),
+        "explicit_threshold": bool(explicit_threshold),
+    }
+
+
+def _normalize_gm_conditions_config(
+    raw: Any = None,
+    *,
+    operator: Any = None,
+    current: Any = None,
+    market: Any = None,
+    sector: Any = None,
+) -> dict[str, Any]:
+    payload = raw if isinstance(raw, dict) else {}
+    normalized = {
+        "operator": _normalize_logic(payload.get("operator", operator), "AND"),
+    }
+    legacy = {"current": current, "market": market, "sector": sector}
+    for family in GM_CONDITION_FAMILIES:
+        normalized[family] = _normalize_gm_condition_entry(
+            payload.get(family),
+            legacy_code=legacy.get(family),
+        )
+    return normalized
+
+
+def _gm_conditions_has_active(config: dict[str, Any] | None) -> bool:
+    if not isinstance(config, dict):
+        return False
+    return any(
+        _normalize_gm_condition_mode((config.get(family) or {}).get("mode")) != "IGNORE"
+        for family in GM_CONDITION_FAMILIES
+    )
+
+
+def _legacy_filter_to_gm_condition(filter_code: Any) -> dict[str, Any]:
+    return _normalize_gm_condition_entry(legacy_code=filter_code)
+
+
 def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
     if not isinstance(signal_lines, list) or not signal_lines:
         default_buy = ["AF"]
@@ -281,7 +359,18 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
         mode = str(raw.get("mode") or "standard").strip() or "standard"
         buy_codes = _normalize_codes(raw.get("buy") or raw.get("buy_conditions"))
         sell_codes = _normalize_codes(raw.get("sell") or raw.get("sell_conditions"))
-        if buy_codes or sell_codes:
+        gm_buy_conditions = _normalize_gm_conditions_config(
+            raw.get("gm_buy_conditions"),
+            operator=raw.get("buy_market_operator"),
+            current=raw.get("buy_market_gm_current", raw.get("buy_gm_filter")),
+            market=raw.get("buy_market_gm_market"),
+            sector=raw.get("buy_market_gm_sector"),
+        )
+        gm_sell_market_exit_conditions = _normalize_gm_conditions_config(
+            raw.get("gm_sell_market_exit_conditions"),
+            operator=raw.get("gm_sell_market_exit_operator"),
+        )
+        if buy_codes or sell_codes or _gm_conditions_has_active(gm_buy_conditions) or _gm_conditions_has_active(gm_sell_market_exit_conditions):
             trading_model, explicit_trading_model = resolve_trading_model(raw.get("trading_model"), buy_codes)
             buy_logic = _normalize_logic(raw.get("buy_logic"), "AND")
             sell_logic = _normalize_logic(raw.get("sell_logic"), "OR")
@@ -299,6 +388,7 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
                     buy_logic=buy_logic,
                     sell_codes=sell_codes,
                     sell_gm_filter=sell_gm_filter,
+                    has_gm_sell_market_exit=_gm_conditions_has_active(gm_sell_market_exit_conditions),
                 )
             out.append({
                 "mode": mode,
@@ -313,10 +403,12 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
                 "buy_market_gm_market": _normalize_global_regime_filter(raw.get("buy_market_gm_market")),
                 "buy_market_gm_sector": _normalize_global_regime_filter(raw.get("buy_market_gm_sector")),
                 "buy_market_operator": _normalize_logic(raw.get("buy_market_operator"), "AND"),
+                "gm_buy_conditions": gm_buy_conditions,
+                "gm_sell_market_exit_conditions": gm_sell_market_exit_conditions,
                 "sell_gm_filter": sell_gm_filter,
                 "sell_gm_operator": _normalize_logic(raw.get("sell_gm_operator"), "AND"),
             })
-    return out or [{"mode": "standard", "trading_model": TRADING_MODEL_PROGRESSIVE_AUTO_SELL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "buy_market_gm_current": "IGNORE", "buy_market_gm_market": "IGNORE", "buy_market_gm_sector": "IGNORE", "buy_market_operator": "AND", "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
+    return out or [{"mode": "standard", "trading_model": TRADING_MODEL_PROGRESSIVE_AUTO_SELL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "buy_market_gm_current": "IGNORE", "buy_market_gm_market": "IGNORE", "buy_market_gm_sector": "IGNORE", "buy_market_operator": "AND", "gm_buy_conditions": _normalize_gm_conditions_config(), "gm_sell_market_exit_conditions": _normalize_gm_conditions_config(), "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
 
 
 def _match_codes(day_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
@@ -801,6 +893,25 @@ def _line_market_conditions_settings(state_row: dict[str, Any]) -> dict[str, Any
     }
 
 
+def _gm_conditions_to_trend_settings(config: dict[str, Any] | None) -> dict[str, Any]:
+    def code_for(family: str) -> str:
+        mode = _normalize_gm_condition_mode(((config or {}).get(family) or {}).get("mode"))
+        return {
+            "POS": "GM_POS",
+            "NEG": "GM_NEG",
+            "NEU": "GM_NEU",
+            "POS_OR_NEU": "GM_POS_OR_NEU",
+            "NEG_OR_NEU": "GM_NEG_OR_NEU",
+        }.get(mode, "IGNORE")
+
+    return {
+        TREND_FILTER_OPERATOR_KEY: _normalize_logic((config or {}).get("operator"), "AND"),
+        TREND_FILTER_GM_CURRENT_KEY: code_for("current"),
+        TREND_FILTER_GM_MARKET_KEY: code_for("market"),
+        TREND_FILTER_GM_SECTOR_KEY: code_for("sector"),
+    }
+
+
 def _collect_distinct_benchmark_tickers_for_line_market_conditions(
     symbols: list[Symbol],
     signal_lines: list[dict[str, Any]] | None,
@@ -808,6 +919,14 @@ def _collect_distinct_benchmark_tickers_for_line_market_conditions(
     benchmark_tickers: set[str] = set()
     for line in signal_lines or []:
         benchmark_tickers |= collect_distinct_benchmark_tickers(symbols, _line_market_conditions_settings(line))
+        benchmark_tickers |= collect_distinct_benchmark_tickers(
+            symbols,
+            _gm_conditions_to_trend_settings(line.get("gm_buy_conditions")),
+        )
+        benchmark_tickers |= collect_distinct_benchmark_tickers(
+            symbols,
+            _gm_conditions_to_trend_settings(line.get("gm_sell_market_exit_conditions")),
+        )
     return benchmark_tickers
 
 
@@ -829,6 +948,129 @@ def _line_market_conditions_label(state_row: dict[str, Any]) -> str:
         return labels[0]
     op_txt = " ET " if settings[TREND_FILTER_OPERATOR_KEY] == "AND" else " OU "
     return op_txt.join(labels)
+
+
+def _gm_condition_entry_label(entry: dict[str, Any] | None) -> str:
+    entry = entry or {}
+    mode = _normalize_gm_condition_mode(entry.get("mode"))
+    if mode == "IGNORE":
+        return ""
+    label = {
+        "POS": "positif",
+        "NEG": "négatif",
+        "NEU": "neutre",
+        "POS_OR_NEU": "positif ou neutre",
+        "NEG_OR_NEU": "négatif ou neutre",
+    }.get(mode, mode)
+    if entry.get("explicit_threshold"):
+        threshold = entry.get("threshold")
+        if threshold not in (None, ""):
+            op = ">" if mode == "POS" else "<" if mode == "NEG" else "autour de"
+            return f"{label} ({op} {threshold})"
+    return label
+
+
+def _gm_conditions_label(config: dict[str, Any] | None) -> str:
+    if not _gm_conditions_has_active(config):
+        return ""
+    parts = []
+    for family, label in (("current", "GM actuel"), ("market", "GM marché"), ("sector", "GM secteur")):
+        entry_label = _gm_condition_entry_label((config or {}).get(family))
+        if entry_label:
+            parts.append(f"{label}: {entry_label}")
+    op_txt = " ET " if _normalize_logic((config or {}).get("operator"), "AND") == "AND" else " OU "
+    return op_txt.join(parts)
+
+
+def _gm_value_for_condition_family(
+    *,
+    family: str,
+    symbol: Symbol | None,
+    as_of: date,
+    nglobal: int,
+    gm_current_value: Decimal | None,
+    benchmark_cache_by_ticker: dict[str, dict[str, list[Any]]] | None,
+) -> tuple[Decimal | None, str | None]:
+    if family == "current":
+        return gm_current_value, None
+    if family == "market":
+        benchmark_ticker = market_benchmark_ticker_for_symbol(symbol)
+    elif family == "sector":
+        benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol)
+    else:
+        return None, None
+    if not benchmark_ticker:
+        return None, None
+    return (
+        trend_return_from_cache(
+            (benchmark_cache_by_ticker or {}).get(benchmark_ticker),
+            as_of=as_of,
+            nglobal=nglobal,
+        ),
+        benchmark_ticker,
+    )
+
+
+def _evaluate_gm_conditions(
+    *,
+    config: dict[str, Any] | None,
+    symbol: Symbol | None,
+    as_of: date,
+    nglobal: int,
+    gm_current_value: Decimal | None,
+    gm_current_regime: str | None = None,
+    benchmark_cache_by_ticker: dict[str, dict[str, list[Any]]] | None,
+) -> dict[str, Any]:
+    config = config if isinstance(config, dict) else {}
+    active_results = []
+    family_results = {}
+    for family in GM_CONDITION_FAMILIES:
+        entry = (config.get(family) or {}) if isinstance(config.get(family), dict) else {}
+        mode = _normalize_gm_condition_mode(entry.get("mode"))
+        if mode == "IGNORE":
+            family_results[family] = {"active": False, "passed": None, "value": None, "benchmark_ticker": None}
+            continue
+        actual_value, benchmark_ticker = _gm_value_for_condition_family(
+            family=family,
+            symbol=symbol,
+            as_of=as_of,
+            nglobal=nglobal,
+            gm_current_value=gm_current_value,
+            benchmark_cache_by_ticker=benchmark_cache_by_ticker,
+        )
+        if family == "current" and not bool(entry.get("explicit_threshold")) and gm_current_regime:
+            passed = _gm_filter_match(gm_current_regime, f"GM_{mode}")
+        else:
+            passed = gm_condition_matches(
+                actual_value=actual_value,
+                mode=mode,
+                threshold=_to_dec(entry.get("threshold")),
+                explicit_threshold=bool(entry.get("explicit_threshold")),
+            )
+        payload = {
+            "active": True,
+            "mode": mode,
+            "threshold": entry.get("threshold"),
+            "explicit_threshold": bool(entry.get("explicit_threshold")),
+            "value": None if actual_value is None else str(actual_value),
+            "benchmark_ticker": benchmark_ticker,
+            "passed": bool(passed),
+        }
+        family_results[family] = payload
+        active_results.append(payload)
+    if not active_results:
+        passed_all = True
+    elif _normalize_logic(config.get("operator"), "AND") == "OR":
+        passed_all = any(item["passed"] is True for item in active_results)
+    else:
+        passed_all = all(item["passed"] is True for item in active_results)
+    return {
+        "operator": _normalize_logic(config.get("operator"), "AND"),
+        "has_active": bool(active_results),
+        "passed": bool(passed_all),
+        "families": family_results,
+        "label": _gm_conditions_label(config),
+    }
 
 
 def _initialize_active_signal_states(active_states: dict[str, bool], metrics_tuple: tuple | None, price_value: Any, *, slope_threshold: Any = None, slope_threshold_basse: Any = None) -> set[str]:
@@ -1050,11 +1292,14 @@ def run_backtest(
         price_close: Decimal | None = None,
         action_g: Decimal | None = None,
         action_pnl_amount: Decimal | None = None,
+        action_reason: str | None = None,
     ) -> None:
         event = {
             "date": str(as_of),
             "action": str(action),
         }
+        if action_reason:
+            event["action_reason"] = str(action_reason)
         if price_close is not None:
             event["price_close"] = str(price_close)
         if action_g is not None:
@@ -1215,24 +1460,41 @@ def run_backtest(
         )
 
     def _line_market_conditions_allow_buy(st: dict[str, Any], ticker: str, d, gm_code: str | None) -> bool:
-        line_market_settings = _line_market_conditions_settings(st)
-        active_codes = (
-            line_market_settings[TREND_FILTER_GM_CURRENT_KEY],
-            line_market_settings[TREND_FILTER_GM_MARKET_KEY],
-            line_market_settings[TREND_FILTER_GM_SECTOR_KEY],
+        gm_buy_conditions = st.get("gm_buy_conditions") or _normalize_gm_conditions_config(
+            operator=st.get("buy_market_operator"),
+            current=st.get("buy_market_gm_current"),
+            market=st.get("buy_market_gm_market"),
+            sector=st.get("buy_market_gm_sector"),
         )
-        if all(code == "IGNORE" for code in active_codes):
+        if not _gm_conditions_has_active(gm_buy_conditions):
             return True
         return bool(
-            evaluate_trend_filters_for_symbol(
+            _evaluate_gm_conditions(
+                config=gm_buy_conditions,
                 symbol=sym_by_ticker.get(ticker),
-                settings=line_market_settings,
                 as_of=d,
                 nglobal=nglobal,
+                gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
                 gm_current_regime=gm_code,
                 benchmark_cache_by_ticker=benchmark_price_cache,
             )["passed"]
         )
+
+    def _gm_market_exit_sell_evaluation(st: dict[str, Any], ticker: str, d) -> dict[str, Any]:
+        gm_sell_conditions = st.get("gm_sell_market_exit_conditions") or _normalize_gm_conditions_config()
+        if not _gm_conditions_has_active(gm_sell_conditions):
+            return {"has_active": False, "passed": False, "label": ""}
+        evaluation = _evaluate_gm_conditions(
+            config=gm_sell_conditions,
+            symbol=sym_by_ticker.get(ticker),
+            as_of=d,
+            nglobal=nglobal,
+            gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
+            gm_current_regime=global_momentum_regime_by_date.get(d),
+            benchmark_cache_by_ticker=benchmark_price_cache,
+        )
+        evaluation["passed"] = bool(evaluation.get("passed"))
+        return evaluation
 
     for ticker in data_by_ticker.keys():
         for li, line in enumerate(signal_lines):
@@ -1249,6 +1511,17 @@ def run_backtest(
                 "buy_market_gm_market": _normalize_global_regime_filter(line.get("buy_market_gm_market")),
                 "buy_market_gm_sector": _normalize_global_regime_filter(line.get("buy_market_gm_sector")),
                 "buy_market_operator": _normalize_logic(line.get("buy_market_operator"), "AND"),
+                "gm_buy_conditions": _normalize_gm_conditions_config(
+                    line.get("gm_buy_conditions"),
+                    operator=line.get("buy_market_operator"),
+                    current=line.get("buy_market_gm_current", line.get("buy_gm_filter")),
+                    market=line.get("buy_market_gm_market"),
+                    sector=line.get("buy_market_gm_sector"),
+                ),
+                "gm_sell_market_exit_conditions": _normalize_gm_conditions_config(
+                    line.get("gm_sell_market_exit_conditions"),
+                    operator=line.get("gm_sell_market_exit_operator"),
+                ),
                 "sell_gm_filter": _normalize_global_regime_filter(line.get("sell_gm_filter")),
                 "sell_gm_operator": _normalize_logic(line.get("sell_gm_operator"), "AND"),
                 "trading_model": line.get("trading_model"),
@@ -1435,6 +1708,9 @@ def run_backtest(
                     "buy_market_gm_market": st["buy_market_gm_market"],
                     "buy_market_gm_sector": st["buy_market_gm_sector"],
                     "buy_market_operator": st["buy_market_operator"],
+                    "gm_buy_conditions": st["gm_buy_conditions"],
+                    "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
+                    "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
                     "sell_gm_filter": st["sell_gm_filter"],
                     "sell_gm_operator": st["sell_gm_operator"],
                     "action": None,
@@ -1490,6 +1766,7 @@ def run_backtest(
                 if closed is None:
                     return
                 G_today, pnl_amount_today = closed
+                st["_last_action_reason"] = reason
                 logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
 
             sell_codes = st["sell_codes"]
@@ -1541,6 +1818,15 @@ def run_backtest(
                     _retain_non_invalidated_latch_signals_after_sell(st, invalidated_signals, previous_latch_state)
             elif st["position_open"] and _match_line_with_global_filter(day_alerts, latched_alerts, sell_codes, st["sell_logic"], gm_code, st["sell_gm_filter"], st["sell_gm_operator"]):
                 _do_sell(f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}")
+            if st["position_open"] and G_today is None:
+                gm_sell_evaluation = _gm_market_exit_sell_evaluation(st, ticker, d)
+                if gm_sell_evaluation.get("has_active") and gm_sell_evaluation.get("passed"):
+                    _do_sell(
+                        f"Protection marché GM ({gm_sell_evaluation.get('label') or 'active'})",
+                        reset_signal_memory=not bool(st.get("use_signal_latch_model")),
+                    )
+                    if _line_uses_progressive_explicit_sell_model(st):
+                        _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
             if G_today is not None:
                 st["_sold_today"] = True
                 _record_line_event(
@@ -1550,6 +1836,7 @@ def run_backtest(
                     price_close=close_d,
                     action_g=G_today,
                     action_pnl_amount=pnl_amount_today,
+                    action_reason=st.get("_last_action_reason"),
                 )
 
             # record daily row (we may update with buy action later, but keep as dict to mutate)
@@ -1586,9 +1873,17 @@ def run_backtest(
                 "sell_logic": st["sell_logic"],
                 "buy_gm_filter": st["buy_gm_filter"],
                 "buy_gm_operator": st["buy_gm_operator"],
+                "buy_market_gm_current": st["buy_market_gm_current"],
+                "buy_market_gm_market": st["buy_market_gm_market"],
+                "buy_market_gm_sector": st["buy_market_gm_sector"],
+                "buy_market_operator": st["buy_market_operator"],
+                "gm_buy_conditions": st["gm_buy_conditions"],
+                "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
+                "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
                 "sell_gm_filter": st["sell_gm_filter"],
                 "sell_gm_operator": st["sell_gm_operator"],
                 "action": "SELL" if G_today is not None else None,
+                "action_reason": st.get("_last_action_reason") if G_today is not None else None,
                 "action_G": None if G_today is None else str(G_today),
                 "action_PNL_AMOUNT": None if pnl_amount_today is None else str(pnl_amount_today),
                 "forced_close": forced_close,
@@ -1938,6 +2233,13 @@ def run_backtest(
                     "sell_logic": st["sell_logic"],
                     "buy_gm_filter": st["buy_gm_filter"],
                     "buy_gm_operator": st["buy_gm_operator"],
+                    "buy_market_gm_current": st["buy_market_gm_current"],
+                    "buy_market_gm_market": st["buy_market_gm_market"],
+                    "buy_market_gm_sector": st["buy_market_gm_sector"],
+                    "buy_market_operator": st["buy_market_operator"],
+                    "gm_buy_conditions": st["gm_buy_conditions"],
+                    "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
+                    "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
                     "sell_gm_filter": st["sell_gm_filter"],
                     "sell_gm_operator": st["sell_gm_operator"],
                     "action": "FORCED_SELL",
@@ -2032,6 +2334,9 @@ def run_backtest(
                 "buy_market_gm_market": st["buy_market_gm_market"],
                 "buy_market_gm_sector": st["buy_market_gm_sector"],
                 "buy_market_operator": st["buy_market_operator"],
+                "gm_buy_conditions": st["gm_buy_conditions"],
+                "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
+                "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
                 "sell_gm_filter": st["sell_gm_filter"],
                 "sell_gm_operator": st["sell_gm_operator"],
                 "trading_model": st["trading_model"],
@@ -2446,6 +2751,17 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 "buy_market_gm_market": _normalize_global_regime_filter(line.get("buy_market_gm_market")),
                 "buy_market_gm_sector": _normalize_global_regime_filter(line.get("buy_market_gm_sector")),
                 "buy_market_operator": _normalize_logic(line.get("buy_market_operator"), "AND"),
+                "gm_buy_conditions": _normalize_gm_conditions_config(
+                    line.get("gm_buy_conditions"),
+                    operator=line.get("buy_market_operator"),
+                    current=line.get("buy_market_gm_current", line.get("buy_gm_filter")),
+                    market=line.get("buy_market_gm_market"),
+                    sector=line.get("buy_market_gm_sector"),
+                ),
+                "gm_sell_market_exit_conditions": _normalize_gm_conditions_config(
+                    line.get("gm_sell_market_exit_conditions"),
+                    operator=line.get("gm_sell_market_exit_operator"),
+                ),
                 "sell_gm_filter": _normalize_global_regime_filter(line.get("sell_gm_filter")),
                 "sell_gm_operator": _normalize_logic(line.get("sell_gm_operator"), "AND"),
                 "trading_model": line.get("trading_model"),
@@ -2519,22 +2835,41 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         )
 
     def _line_market_conditions_allow_buy(st: dict[str, Any], ticker: str, d, gm_code: str | None) -> bool:
-        line_market_settings = _line_market_conditions_settings(st)
-        if all(
-            line_market_settings[key] == "IGNORE"
-            for key in (TREND_FILTER_GM_CURRENT_KEY, TREND_FILTER_GM_MARKET_KEY, TREND_FILTER_GM_SECTOR_KEY)
-        ):
+        gm_buy_conditions = st.get("gm_buy_conditions") or _normalize_gm_conditions_config(
+            operator=st.get("buy_market_operator"),
+            current=st.get("buy_market_gm_current"),
+            market=st.get("buy_market_gm_market"),
+            sector=st.get("buy_market_gm_sector"),
+        )
+        if not _gm_conditions_has_active(gm_buy_conditions):
             return True
         return bool(
-            evaluate_trend_filters_for_symbol(
+            _evaluate_gm_conditions(
+                config=gm_buy_conditions,
                 symbol=sym_by_ticker.get(ticker),
-                settings=line_market_settings,
                 as_of=d,
                 nglobal=nglobal,
+                gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
                 gm_current_regime=gm_code,
                 benchmark_cache_by_ticker=benchmark_price_cache,
             )["passed"]
         )
+
+    def _gm_market_exit_sell_evaluation(st: dict[str, Any], ticker: str, d) -> dict[str, Any]:
+        gm_sell_conditions = st.get("gm_sell_market_exit_conditions") or _normalize_gm_conditions_config()
+        if not _gm_conditions_has_active(gm_sell_conditions):
+            return {"has_active": False, "passed": False, "label": ""}
+        evaluation = _evaluate_gm_conditions(
+            config=gm_sell_conditions,
+            symbol=sym_by_ticker.get(ticker),
+            as_of=d,
+            nglobal=nglobal,
+            gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
+            gm_current_regime=global_momentum_regime_by_date.get(d),
+            benchmark_cache_by_ticker=benchmark_price_cache,
+        )
+        evaluation["passed"] = bool(evaluation.get("passed"))
+        return evaluation
 
     # Warmup phase: reconstruct persistent states before the real game period.
     # No allocation, no trades, no counters during warmup.
@@ -2600,6 +2935,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 if closed is None:
                     return
                 G_today, _pnl_amount_today = closed
+                st["_last_action_reason"] = reason
                 logs.append(f"{ticker}[L{li+1}] SELL {reason} on {d} close={close_d} G={G_today}")
 
             sell_codes = st["sell_codes"]
@@ -2644,6 +2980,15 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     _retain_non_invalidated_latch_signals_after_sell(st, invalidated_signals, previous_latch_state)
             elif st["position_open"] and _match_line_with_global_filter(day_alerts, latched_alerts, sell_codes, st["sell_logic"], gm_code, st["sell_gm_filter"], st["sell_gm_operator"]):
                 _do_sell(f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}")
+            if st["position_open"] and G_today is None:
+                gm_sell_evaluation = _gm_market_exit_sell_evaluation(st, ticker, d)
+                if gm_sell_evaluation.get("has_active") and gm_sell_evaluation.get("passed"):
+                    _do_sell(
+                        f"Protection marché GM ({gm_sell_evaluation.get('label') or 'active'})",
+                        reset_signal_memory=not bool(st.get("use_signal_latch_model")),
+                    )
+                    if _line_uses_progressive_explicit_sell_model(st):
+                        _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
             if G_today is not None:
                 st["_sold_today"] = True
 
@@ -2825,6 +3170,9 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     "buy_market_gm_market": st["buy_market_gm_market"],
                     "buy_market_gm_sector": st["buy_market_gm_sector"],
                     "buy_market_operator": st["buy_market_operator"],
+                    "gm_buy_conditions": st["gm_buy_conditions"],
+                    "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
+                    "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
                     "sell_gm_filter": st["sell_gm_filter"],
                     "sell_gm_operator": st["sell_gm_operator"],
                     "trading_model": st["trading_model"],

@@ -215,7 +215,12 @@
     return arr.join(normalizeLogic(logic, "AND") === "OR" ? " OU " : " ET ");
   }
   function normalizeLegacyGmFilter(value) {
-    const code = String(value || 'IGNORE').toUpperCase();
+    let code = String(value || 'IGNORE').toUpperCase();
+    if (code === 'POS') code = 'GM_POS';
+    if (code === 'NEG') code = 'GM_NEG';
+    if (code === 'NEU') code = 'GM_NEU';
+    if (code === 'POS_OR_NEU') code = 'GM_POS_OR_NEU';
+    if (code === 'NEG_OR_NEU') code = 'GM_NEG_OR_NEU';
     return LEGACY_GM_FILTER_CODES.has(code) ? code : 'IGNORE';
   }
   function composeConditionSummary(codes, logic) {
@@ -229,12 +234,36 @@
     if (!parts.length) return 'Aucune';
     return parts.join(normalizeLogic(operator, 'AND') === 'OR' ? ' OU ' : ' ET ');
   }
+  function composeMarketExitSummary(values, operator) {
+    const parts = [];
+    if (values.current.mode !== 'IGNORE') parts.push(`GM actuel=${marketConditionLabel(values.current.mode)}${values.current.threshold ? ' seuil ' + values.current.threshold : ''}`);
+    if (values.market.mode !== 'IGNORE') parts.push(`GM marché=${marketConditionLabel(values.market.mode)}${values.market.threshold ? ' seuil ' + values.market.threshold : ''}`);
+    if (values.sector.mode !== 'IGNORE') parts.push(`GM secteur=${marketConditionLabel(values.sector.mode)}${values.sector.threshold ? ' seuil ' + values.sector.threshold : ''}`);
+    if (!parts.length) return 'Aucune';
+    return parts.join(normalizeLogic(operator, 'AND') === 'OR' ? ' OU ' : ' ET ');
+  }
   function marketConditionLabel(value) {
     const code = normalizeLegacyGmFilter(value);
     return (MARKET_CONDITION_CHOICES.find(([item]) => item === code) || [code, code])[1];
   }
   function normalizeLineMarketValue(item, key, legacyFallback) {
     return normalizeLegacyGmFilter(item[key] || legacyFallback || 'IGNORE');
+  }
+  function normalizeGmCondition(item, family, legacyValue) {
+    const config = item.gm_buy_conditions || {};
+    const entry = config[family] || {};
+    return {
+      mode: normalizeLegacyGmFilter(entry.mode || legacyValue || 'IGNORE'),
+      threshold: entry.threshold || ''
+    };
+  }
+  function normalizeSellMarketExitCondition(item, family) {
+    const config = item.gm_sell_market_exit_conditions || {};
+    const entry = config[family] || {};
+    return {
+      mode: normalizeLegacyGmFilter(entry.mode || 'IGNORE'),
+      threshold: entry.threshold || ''
+    };
   }
   function makeCheckboxList(values, role) {
     const selected = new Set(normalizeCodes(values));
@@ -337,6 +366,16 @@
     sel.value = normalizeLegacyGmFilter(value);
     return sel;
   }
+  function makeThresholdInput(value, role) {
+    const input = document.createElement("input");
+    input.type = "number";
+    input.step = "0.0001";
+    input.placeholder = "Seuil en décimal : 0.03 = 3 %";
+    input.value = value || "";
+    input.setAttribute("data-role", role);
+    input.style.maxWidth = "140px";
+    return input;
+  }
   function tradingModelLabel(value) {
     if (value === 'LEGACY_DAILY') return 'Mode legacy classique';
     if (value === 'PROGRESSIVE_EXPLICIT_SELL') return 'Progressif avec vente explicite';
@@ -365,9 +404,15 @@
         market: tr.querySelector('[data-role="buy_market_gm_market"]')?.value || 'IGNORE',
         sector: tr.querySelector('[data-role="buy_market_gm_sector"]')?.value || 'IGNORE',
       };
+      const marketExitValues = {
+        current: {mode: tr.querySelector('[data-role="sell_market_gm_current"]')?.value || 'IGNORE', threshold: tr.querySelector('[data-role="sell_market_gm_current_threshold"]')?.value || ''},
+        market: {mode: tr.querySelector('[data-role="sell_market_gm_market"]')?.value || 'IGNORE', threshold: tr.querySelector('[data-role="sell_market_gm_market_threshold"]')?.value || ''},
+        sector: {mode: tr.querySelector('[data-role="sell_market_gm_sector"]')?.value || 'IGNORE', threshold: tr.querySelector('[data-role="sell_market_gm_sector_threshold"]')?.value || ''},
+      };
       const marketOperator = tr.querySelector('[data-role="buy_market_operator"]')?.value || 'AND';
+      const marketExitOperator = tr.querySelector('[data-role="sell_market_operator"]')?.value || 'AND';
       const sellSummary = isAutoSellModel(tradingModel) ? 'Vente automatique' : (mode === 'special_k1f' ? 'AUTO(K1f)' : composeConditionSummary(sell, sellLogic));
-      parts.push(`L${i+1}: Mode=${tradingModelLabel(tradingModel)} | Achat=${composeConditionSummary(buy, buyLogic)} | Marché=${composeMarketSummary(marketValues, marketOperator)} | Vente=${sellSummary}`);
+      parts.push(`L${i+1}: Mode=${tradingModelLabel(tradingModel)} | Achat=${composeConditionSummary(buy, buyLogic)} | Marché=${composeMarketSummary(marketValues, marketOperator)} | Vente=${sellSummary} | Protection marché GM=${composeMarketExitSummary(marketExitValues, marketExitOperator)}`);
     });
     summary.textContent = parts.join('  •  ');
   }
@@ -420,16 +465,22 @@
     const gmCurrent = makeMarketConditionSelect(normalizeLineMarketValue(item, 'buy_market_gm_current', item.buy_gm_filter), 'buy_market_gm_current');
     const gmMarket = makeMarketConditionSelect(normalizeLineMarketValue(item, 'buy_market_gm_market'), 'buy_market_gm_market');
     const gmSector = makeMarketConditionSelect(normalizeLineMarketValue(item, 'buy_market_gm_sector'), 'buy_market_gm_sector');
+    const gmBuyCurrent = normalizeGmCondition(item, 'current', gmCurrent.value);
+    const gmBuyMarket = normalizeGmCondition(item, 'market', gmMarket.value);
+    const gmBuySector = normalizeGmCondition(item, 'sector', gmSector.value);
+    const gmCurrentThreshold = makeThresholdInput(gmBuyCurrent.threshold, 'buy_market_gm_current_threshold');
+    const gmMarketThreshold = makeThresholdInput(gmBuyMarket.threshold, 'buy_market_gm_market_threshold');
+    const gmSectorThreshold = makeThresholdInput(gmBuySector.threshold, 'buy_market_gm_sector_threshold');
     const gmOperator = document.createElement('select');
     gmOperator.setAttribute('data-role', 'buy_market_operator');
     gmOperator.innerHTML = '<option value="AND">ET</option><option value="OR">OU</option>';
     gmOperator.value = normalizeLogic(item.buy_market_operator || item.buy_gm_operator, 'AND');
     [
-      ['GM actuel', gmCurrent],
-      ['GM marché', gmMarket],
-      ['GM secteur', gmSector],
-      ['Opérateur', gmOperator],
-    ].forEach(([label, input]) => {
+      ['GM actuel', gmCurrent, gmCurrentThreshold],
+      ['GM marché', gmMarket, gmMarketThreshold],
+      ['GM secteur', gmSector, gmSectorThreshold],
+      ['Opérateur', gmOperator, null],
+    ].forEach(([label, input, thresholdInput]) => {
       const block = document.createElement('label');
       block.style.display = 'flex';
       block.style.flexDirection = 'column';
@@ -437,6 +488,7 @@
       const text = document.createElement('span');
       text.textContent = label;
       block.append(text, input);
+      if (thresholdInput) block.appendChild(thresholdInput);
       marketFields.appendChild(block);
     });
     marketBox.append(marketTitle, marketHelp, marketFields);
@@ -453,6 +505,53 @@
     const sellSel = makeCheckboxList((normalizeCodes(item.sell)[0] || '') === SPECIAL_SELL ? [] : (item.sell || []), 'sell');
     sellWrap.appendChild(sellLogicSel);
     sellWrap.appendChild(sellSel);
+    const sellMarketBox = document.createElement('div');
+    sellMarketBox.style.border = '1px dashed #d0d7de';
+    sellMarketBox.style.borderRadius = '8px';
+    sellMarketBox.style.padding = '8px';
+    sellMarketBox.style.background = '#fafafa';
+    const sellMarketTitle = document.createElement('div');
+    sellMarketTitle.innerHTML = '<strong>Protection marché GM</strong>';
+    const sellMarketHelp = document.createElement('div');
+    sellMarketHelp.className = 'muted';
+    sellMarketHelp.style.marginTop = '4px';
+    sellMarketHelp.textContent = 'La protection marché GM peut déclencher une vente lorsqu’une position est ouverte, même sans signal de vente ticker.';
+    const sellMarketFields = document.createElement('div');
+    sellMarketFields.style.display = 'grid';
+    sellMarketFields.style.gridTemplateColumns = 'repeat(auto-fit, minmax(160px, 1fr))';
+    sellMarketFields.style.gap = '8px';
+    sellMarketFields.style.marginTop = '8px';
+    const sellCurrent = normalizeSellMarketExitCondition(item, 'current');
+    const sellMarket = normalizeSellMarketExitCondition(item, 'market');
+    const sellSector = normalizeSellMarketExitCondition(item, 'sector');
+    const sellGmCurrent = makeMarketConditionSelect(sellCurrent.mode, 'sell_market_gm_current');
+    const sellGmMarket = makeMarketConditionSelect(sellMarket.mode, 'sell_market_gm_market');
+    const sellGmSector = makeMarketConditionSelect(sellSector.mode, 'sell_market_gm_sector');
+    const sellGmCurrentThreshold = makeThresholdInput(sellCurrent.threshold, 'sell_market_gm_current_threshold');
+    const sellGmMarketThreshold = makeThresholdInput(sellMarket.threshold, 'sell_market_gm_market_threshold');
+    const sellGmSectorThreshold = makeThresholdInput(sellSector.threshold, 'sell_market_gm_sector_threshold');
+    const sellGmOperator = document.createElement('select');
+    sellGmOperator.setAttribute('data-role', 'sell_market_operator');
+    sellGmOperator.innerHTML = '<option value="AND">ET</option><option value="OR">OU</option>';
+    sellGmOperator.value = normalizeLogic(item.gm_sell_market_exit_conditions?.operator, 'AND');
+    [
+      ['GM actuel', sellGmCurrent, sellGmCurrentThreshold],
+      ['GM marché', sellGmMarket, sellGmMarketThreshold],
+      ['GM secteur', sellGmSector, sellGmSectorThreshold],
+      ['Opérateur', sellGmOperator, null],
+    ].forEach(([label, input, thresholdInput]) => {
+      const block = document.createElement('label');
+      block.style.display = 'flex';
+      block.style.flexDirection = 'column';
+      block.style.gap = '4px';
+      const text = document.createElement('span');
+      text.textContent = label;
+      block.append(text, input);
+      if (thresholdInput) block.appendChild(thresholdInput);
+      sellMarketFields.appendChild(block);
+    });
+    sellMarketBox.append(sellMarketTitle, sellMarketHelp, sellMarketFields);
+    sellWrap.appendChild(sellMarketBox);
     const latchHelp = document.createElement('div');
     latchHelp.className = 'muted';
     latchHelp.textContent = 'Les conditions d’achat peuvent se valider progressivement dans le temps. La vente est automatique dès qu’une condition n’est plus respectée.';
@@ -487,7 +586,7 @@
     }
     modeSel.addEventListener('change', () => { applyMode(); serialize(); });
     tradingModelSel.addEventListener('change', () => { applyMode(); serialize(); });
-    [buySel, sellSel, buyLogicSel, sellLogicSel, gmCurrent, gmMarket, gmSector, gmOperator].forEach((container) => container.addEventListener('change', serialize));
+    [buySel, sellSel, buyLogicSel, sellLogicSel, gmCurrent, gmMarket, gmSector, gmOperator, gmCurrentThreshold, gmMarketThreshold, gmSectorThreshold, sellGmCurrent, sellGmMarket, sellGmSector, sellGmOperator, sellGmCurrentThreshold, sellGmMarketThreshold, sellGmSectorThreshold].forEach((container) => container.addEventListener('change', serialize));
     body.appendChild(tr);
     applyMode();
   }
@@ -506,10 +605,22 @@
       const buyMarketGmMarket = tr.querySelector('[data-role="buy_market_gm_market"]')?.value || 'IGNORE';
       const buyMarketGmSector = tr.querySelector('[data-role="buy_market_gm_sector"]')?.value || 'IGNORE';
       const buyMarketOperator = tr.querySelector('[data-role="buy_market_operator"]')?.value || 'AND';
+      const buyCurrentThreshold = tr.querySelector('[data-role="buy_market_gm_current_threshold"]')?.value || '';
+      const buyMarketThreshold = tr.querySelector('[data-role="buy_market_gm_market_threshold"]')?.value || '';
+      const buySectorThreshold = tr.querySelector('[data-role="buy_market_gm_sector_threshold"]')?.value || '';
+      const sellMarketGmCurrent = tr.querySelector('[data-role="sell_market_gm_current"]')?.value || 'IGNORE';
+      const sellMarketGmMarket = tr.querySelector('[data-role="sell_market_gm_market"]')?.value || 'IGNORE';
+      const sellMarketGmSector = tr.querySelector('[data-role="sell_market_gm_sector"]')?.value || 'IGNORE';
+      const sellMarketOperator = tr.querySelector('[data-role="sell_market_operator"]')?.value || 'AND';
+      const sellCurrentThreshold = tr.querySelector('[data-role="sell_market_gm_current_threshold"]')?.value || '';
+      const sellMarketThreshold = tr.querySelector('[data-role="sell_market_gm_market_threshold"]')?.value || '';
+      const sellSectorThreshold = tr.querySelector('[data-role="sell_market_gm_sector_threshold"]')?.value || '';
       const sell = isAutoSellModel(tradingModel) ? [] : (mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]')));
       const sellLogic = isAutoSellModel(tradingModel) ? 'OR' : selectedLogic(tr.querySelector('[data-role="sell_logic"]'), 'OR');
       const hasMarketConditions = [buyMarketGmCurrent, buyMarketGmMarket, buyMarketGmSector].some((value) => value !== 'IGNORE');
-      if (buy.length || sell.length || hasMarketConditions || tradingModel) {
+      const hasSellMarketExit = [sellMarketGmCurrent, sellMarketGmMarket, sellMarketGmSector].some((value) => value !== 'IGNORE');
+      const gmEntry = (mode, threshold) => ({mode, threshold: threshold || null, explicit_threshold: !!threshold});
+      if (buy.length || sell.length || hasMarketConditions || hasSellMarketExit || tradingModel) {
         const payload = {
           mode,
           buy,
@@ -523,7 +634,19 @@
           buy_market_gm_current: buyMarketGmCurrent,
           buy_market_gm_market: buyMarketGmMarket,
           buy_market_gm_sector: buyMarketGmSector,
-          buy_market_operator: buyMarketOperator
+          buy_market_operator: buyMarketOperator,
+          gm_buy_conditions: {
+            operator: buyMarketOperator,
+            current: gmEntry(buyMarketGmCurrent, buyCurrentThreshold),
+            market: gmEntry(buyMarketGmMarket, buyMarketThreshold),
+            sector: gmEntry(buyMarketGmSector, buySectorThreshold)
+          },
+          gm_sell_market_exit_conditions: {
+            operator: sellMarketOperator,
+            current: gmEntry(sellMarketGmCurrent, sellCurrentThreshold),
+            market: gmEntry(sellMarketGmMarket, sellMarketThreshold),
+            sector: gmEntry(sellMarketGmSector, sellSectorThreshold)
+          }
         };
         if (tradingModel) payload.trading_model = tradingModel;
         out.push(payload);
@@ -534,11 +657,11 @@
   }
   let initial = [];
   try { initial = JSON.parse(hidden.value || '[]'); } catch(e) { initial = []; }
-  if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', trading_model:'PROGRESSIVE_AUTO_SELL', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND', buy_market_gm_current:'IGNORE', buy_market_gm_market:'IGNORE', buy_market_gm_sector:'IGNORE', buy_market_operator:'AND'}];
+  if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', trading_model:'PROGRESSIVE_AUTO_SELL', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND', buy_market_gm_current:'IGNORE', buy_market_gm_market:'IGNORE', buy_market_gm_sector:'IGNORE', buy_market_operator:'AND', gm_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}}];
   initial.forEach((it, idx) => addRow(idx, it));
   renumber();
   serialize();
-  addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', trading_model:'PROGRESSIVE_AUTO_SELL', buy:[], sell:[], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND', buy_market_gm_current:'IGNORE', buy_market_gm_market:'IGNORE', buy_market_gm_sector:'IGNORE', buy_market_operator:'AND'}); renumber(); serialize(); });
+  addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', trading_model:'PROGRESSIVE_AUTO_SELL', buy:[], sell:[], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND', buy_market_gm_current:'IGNORE', buy_market_gm_market:'IGNORE', buy_market_gm_sector:'IGNORE', buy_market_operator:'AND', gm_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}}); renumber(); serialize(); });
   form?.addEventListener('submit', serialize);
 })();
 </script>

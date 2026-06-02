@@ -127,6 +127,7 @@ def validate_progressive_explicit_sell_config(
     buy_logic: str,
     sell_codes: Any,
     sell_gm_filter: str,
+    has_gm_sell_market_exit: bool = False,
 ) -> None:
     normalized_buy = normalize_model_codes(buy_codes)
     unsupported_buy = [code for code in normalized_buy if code not in SIGNAL_LATCH_INVALIDATORS]
@@ -139,7 +140,7 @@ def validate_progressive_explicit_sell_config(
 
     normalized_sell = normalize_model_codes(sell_codes)
     unsupported_sell = [code for code in normalized_sell if code not in SIGNAL_LATCH_OPPOSITES]
-    if not normalized_sell:
+    if not normalized_sell and not has_gm_sell_market_exit:
         raise ValueError("PROGRESSIVE_EXPLICIT_SELL requires at least one sell signal")
     if unsupported_sell:
         raise ValueError(f"PROGRESSIVE_EXPLICIT_SELL unsupported sell signal(s): {', '.join(unsupported_sell)}")

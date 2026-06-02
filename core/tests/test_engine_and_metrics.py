@@ -2371,6 +2371,55 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(line["warning_count"], 1)
         self.assertEqual(line["warnings"][0]["code"], "IMMEDIATE_REENTRY")
 
+    def test_progressive_explicit_sell_gm_market_exit_warns_on_immediate_reentry(self):
+        start = date(2024, 11, 30)
+        self._create_bars_for_symbol(self.symbol, ["10", "10", "10"], start=start)
+        spy = Symbol.objects.create(ticker="SPY", exchange="NYSE", active=True)
+        self._create_bars_for_symbol(spy, ["100", "110", "90"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(3)
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+        bt = Backtest.objects.create(
+            name="Progressive Explicit Sell GM Reentry Warning",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{
+                "trading_model": "PROGRESSIVE_EXPLICIT_SELL",
+                "buy": ["A1"],
+                "buy_logic": "AND",
+                "sell": [],
+                "sell_logic": "OR",
+                "gm_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_NEG"},
+                },
+            }],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        line = result["tickers"][self.symbol.ticker]["lines"][0]
+        daily = line["daily"]
+        events = line["events"]
+
+        self.assertEqual(daily[0]["action"], "BUY")
+        self.assertEqual(daily[2]["action"], "SELL+BUY")
+        self.assertIn("Protection marché GM", daily[2]["action_reason"])
+        self.assertEqual(events[1]["action"], "SELL")
+        self.assertIn("Protection marché GM", events[1]["action_reason"])
+        self.assertEqual(line["warning_count"], 1)
+        self.assertEqual(result["meta"]["warning_count"], 1)
+        self.assertEqual(line["warnings"][0]["code"], "IMMEDIATE_REENTRY")
+
     def test_explicit_latch_routing_matches_kpi_only_path(self):
         start = self._create_latch_routing_fixture()
         bt = Backtest.objects.create(
@@ -3092,7 +3141,14 @@ class BacktestLargeResultModeTests(TestCase):
             ticker_lines["events"],
             [
                 {"date": str(start), "action": "BUY", "price_close": "10.000000"},
-                {"date": str(start + timedelta(days=2)), "action": "SELL", "price_close": "12.000000", "action_G": "0.2", "action_PNL_AMOUNT": "20.000000"},
+                {
+                    "date": str(start + timedelta(days=2)),
+                    "action": "SELL",
+                    "action_reason": "signal invalidation A1",
+                    "price_close": "12.000000",
+                    "action_G": "0.2",
+                    "action_PNL_AMOUNT": "20.000000",
+                },
             ],
         )
         self.assertEqual(int(ticker_lines["final"]["N"]), 1)

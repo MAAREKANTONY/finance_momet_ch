@@ -32,6 +32,20 @@ GM_FILTER_BUSINESS_LABELS = {
     "GM_NEG_OR_NEU": "GM négatif ou neutre",
 }
 
+GM_CONDITION_MODE_LABELS = {
+    "IGNORE": "Ignorer",
+    "GM_POS": "GM positif",
+    "GM_NEG": "GM négatif",
+    "GM_NEU": "GM neutre",
+    "GM_POS_OR_NEU": "GM positif ou neutre",
+    "GM_NEG_OR_NEU": "GM négatif ou neutre",
+    "POS": "GM positif",
+    "NEG": "GM négatif",
+    "NEU": "GM neutre",
+    "POS_OR_NEU": "GM positif ou neutre",
+    "NEG_OR_NEU": "GM négatif ou neutre",
+}
+
 
 def _to_decimal(value) -> Decimal | None:
     if value is None or value == "":
@@ -97,6 +111,34 @@ def gm_filter_business_label(value) -> str:
     return GM_FILTER_BUSINESS_LABELS.get(code, code)
 
 
+def _gm_condition_label(entry) -> str:
+    entry = entry if isinstance(entry, dict) else {}
+    mode = str(entry.get("mode") or "IGNORE").upper()
+    label = GM_CONDITION_MODE_LABELS.get(mode, mode)
+    threshold = entry.get("threshold")
+    if entry.get("explicit_threshold") and threshold not in (None, ""):
+        if mode in {"GM_POS", "POS"}:
+            return f"{label} > {threshold}"
+        if mode in {"GM_NEG", "NEG"}:
+            return f"{label} < {threshold}"
+        return f"{label} seuil {threshold}"
+    return label
+
+
+def _gm_conditions_display(config) -> str:
+    config = config if isinstance(config, dict) else {}
+    parts = []
+    for key, label in (("current", "GM actuel"), ("market", "GM marché"), ("sector", "GM secteur")):
+        entry = config.get(key) if isinstance(config.get(key), dict) else {}
+        mode = str((entry or {}).get("mode") or "IGNORE").upper()
+        if mode != "IGNORE":
+            parts.append(f"{label}: {_gm_condition_label(entry)}")
+    if not parts:
+        return "Aucune"
+    op_txt = " ET " if str(config.get("operator") or "AND").upper() == "AND" else " OU "
+    return op_txt.join(parts)
+
+
 @register.simple_tag
 def line_gm_filter_display(line, side: str = "buy") -> str:
     try:
@@ -143,3 +185,9 @@ def line_market_conditions_display(line) -> str:
         return "Aucune"
     op_txt = " ET " if str(operator).upper() == "AND" else " OU "
     return op_txt.join(parts)
+
+
+@register.simple_tag
+def line_gm_sell_market_exit_display(line) -> str:
+    config = line.get("gm_sell_market_exit_conditions") if isinstance(line, dict) else getattr(line, "gm_sell_market_exit_conditions", None)
+    return _gm_conditions_display(config)

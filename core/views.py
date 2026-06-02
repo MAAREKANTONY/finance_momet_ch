@@ -64,7 +64,7 @@ from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
 from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
-from .templatetags.backtest_extras import line_market_conditions_display
+from .templatetags.backtest_extras import line_gm_sell_market_exit_display, line_market_conditions_display
 from .excel_utils import append_excel_row
 from .job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
 from .services.derived_data import (
@@ -2875,6 +2875,7 @@ def _build_backtest_workbook_full(bt):
         "Line #",
         "BUY",
         "Conditions de marché",
+        "Protection marché GM",
         "SELL",
         "Allocated",
         "N",
@@ -2899,6 +2900,7 @@ def _build_backtest_workbook_full(bt):
                 line.get("line_index"),
                 line.get("buy"),
                 line_market_conditions_display(line),
+                line_gm_sell_market_exit_display(line),
                 line.get("sell"),
                 "Oui" if line.get("allocated") else "Non",
                 fin.get("N"),
@@ -3242,7 +3244,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
     # -------- Summary --------
     ws_s = wb.create_sheet("Summary")
     append_excel_row(ws_s, [
-        "Ticker", "Line #", "BUY", "Conditions de marché", "SELL", "Allocated",
+        "Ticker", "Line #", "BUY", "Conditions de marché", "Protection marché GM", "SELL", "Allocated",
         "N", "S_G_N (%)", "BT (%)", "NB_JOUR_OUVRES", "BMJ (%)", "BMD (%)", "BUY_DAYS_CLOSED", "Cash end",
     ])
     ws_s.freeze_panes = "A2"
@@ -3266,6 +3268,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
                 sidx,
                 strat.get("buy"),
                 line_market_conditions_display(strat),
+                line_gm_sell_market_exit_display(strat),
                 strat.get("sell"),
                 "Oui" if strat.get("allocated") else "Non",
                 fin.get("N"),
