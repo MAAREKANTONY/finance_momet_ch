@@ -130,8 +130,8 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             loaded = load_workbook(tmp.name, read_only=True)
             rows = list(loaded["Settings"].iter_rows(values_only=True))
         flat = [" | ".join("" if cell is None else str(cell) for cell in row) for row in rows]
-        self.assertTrue(any("Protection anti-chute fenêtre | 10" in row for row in flat))
-        self.assertTrue(any("Protection anti-chute chute max | -0.10" in row for row in flat))
+        self.assertTrue(any("Signal anti-chute RHD fenêtre | 10" in row for row in flat))
+        self.assertTrue(any("Signal anti-chute RHD repli max | -0.10" in row for row in flat))
 
     def test_backtest_debug_workbook_serializes_nested_daily_values(self):
         scenario = SimpleNamespace(name="Scenario X", description="")
@@ -237,8 +237,8 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             loaded = load_workbook(tmp.name, read_only=True)
             rows = list(loaded["FORMULAS"].iter_rows(values_only=True))
         flat = [" | ".join("" if cell is None else str(cell) for cell in row) for row in rows]
-        self.assertTrue(any("Fenêtre du plus haut récent | 10" in row for row in flat))
-        self.assertTrue(any("Chute maximale autorisée | -0.10" in row for row in flat))
+        self.assertTrue(any("Signal anti-chute RHD fenêtre | 10" in row for row in flat))
+        self.assertTrue(any("Signal anti-chute RHD repli max | -0.10" in row for row in flat))
 
     def test_backtest_debug_workbook_lists_line_market_conditions_when_present(self):
         scenario = SimpleNamespace(name="Scenario X", description="")
@@ -294,5 +294,5 @@ class GameScenarioExportRegressionTests(TestCase):
         job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.DONE)
         self.assertEqual(job.output_file, tmp.name)
-        self.assertTrue(any("Fenêtre du plus haut récent | 10" in row for row in flat))
-        self.assertTrue(any("Chute maximale autorisée | -0.1" in row or "Chute maximale autorisée | -0.10" in row for row in flat))
+        self.assertTrue(any("Signal anti-chute RHD fenêtre | 10" in row for row in flat))
+        self.assertTrue(any("Signal anti-chute RHD repli max | -0.1" in row or "Signal anti-chute RHD repli max | -0.10" in row for row in flat))

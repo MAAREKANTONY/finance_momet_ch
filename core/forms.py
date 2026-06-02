@@ -20,8 +20,8 @@ BACKTEST_SIGNAL_CHOICES = [
     ("SPv_basse", "SPv_basse (SUM_SLOPE_BASSE croise le seuil de pente basse vers le bas)"),
     ("SPVa_basse", "SPVa_basse (SLOPE_VRAI_BASSE croise le seuil de pente basse vers le haut)"),
     ("SPVv_basse", "SPVv_basse (SLOPE_VRAI_BASSE croise le seuil de pente basse vers le bas)"),
-    ("RHD_OK", "Protection / risque — RHD_OK (Prix proche du plus haut récent / Anti-chute OK)"),
-    ("RHD_FAIL", "Protection / risque — RHD_FAIL (Prix sous le seuil anti-chute)"),
+    ("RHD_OK", "Signal anti-chute RHD — Repli depuis haut récent OK"),
+    ("RHD_FAIL", "Signal anti-chute RHD — Repli depuis haut récent excessif"),
     ("GM_POS", "GM_POS (momentum global positif)"),
     ("GM_NEG", "GM_NEG (momentum global négatif)"),
     ("GM_NEU", "GM_NEU (momentum global neutre)"),
@@ -69,9 +69,11 @@ from .services.trend_filters import (
     normalize_trend_filter_operator,
 )
 from .trading_model_config import (
-    TRADING_MODEL_LATCH_STATEFUL,
+    TRADING_MODEL_AUTO_SELL_VALUES,
+    TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL,
     resolve_trading_model,
     validate_explicit_latch_config,
+    validate_progressive_explicit_sell_config,
 )
 from .widgets import SymbolPickerWidget
 
@@ -105,11 +107,11 @@ def _configure_recent_high_drawdown_fields(form):
     field_config = {
         "recent_high_drawdown_lookback_days": (
             "Fenêtre du plus haut récent",
-            "Nombre de jours de cotation précédents utilisés pour calculer le plus haut récent. Le jour courant est exclu du calcul.",
+            "Nombre de jours de cotation précédents utilisés par le signal RHD. Le jour courant est exclu du calcul du plus haut récent.",
         ),
         "recent_high_drawdown_max_drop_pct": (
-            "Chute maximale autorisée",
-            "Pourcentage maximal de baisse autorisé par rapport au plus haut récent. Exemple : -10 % signifie que le BUY reste autorisé tant que le prix du jour reste au-dessus de 90 % du plus haut récent.",
+            "Repli maximal RHD",
+            "Repli maximal toléré par rapport au plus haut récent. Exemple : -10 % signifie que RHD_OK est actif tant que le prix du jour reste au-dessus de 90 % du plus haut récent.",
         ),
     }
     for field_name, (label, help_text) in field_config.items():
@@ -197,9 +199,19 @@ def _clean_signal_lines_json(value):
             raise forms.ValidationError(
                 "Chaque ligne avec des conditions de marché doit contenir au moins un signal BUY."
             )
-        if explicit_trading_model and trading_model == TRADING_MODEL_LATCH_STATEFUL:
+        if explicit_trading_model and trading_model in TRADING_MODEL_AUTO_SELL_VALUES:
             try:
                 validate_explicit_latch_config(
+                    buy_codes=buy,
+                    buy_logic=payload["buy_logic"],
+                    sell_codes=sell,
+                    sell_gm_filter=payload["sell_gm_filter"],
+                )
+            except ValueError as exc:
+                raise forms.ValidationError(str(exc)) from exc
+        if explicit_trading_model and trading_model == TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL:
+            try:
+                validate_progressive_explicit_sell_config(
                     buy_codes=buy,
                     buy_logic=payload["buy_logic"],
                     sell_codes=sell,

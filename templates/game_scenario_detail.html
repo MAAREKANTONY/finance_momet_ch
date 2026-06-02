@@ -33,9 +33,9 @@
     <b>Prix maximum d'achat:</b> {{ obj.settings.max_price|default:"aucune borne maximum" }}
   </p>
   <p>
-    <b>Protection anti-chute:</b>
+    <b>Signal anti-chute RHD — Repli depuis haut récent:</b>
     {% if obj.recent_high_drawdown_lookback_days and obj.recent_high_drawdown_max_drop_pct != None %}
-      fenêtre {{ obj.recent_high_drawdown_lookback_days }} j précédents, chute max {{ obj.recent_high_drawdown_max_drop_pct|pct:2 }}
+      fenêtre {{ obj.recent_high_drawdown_lookback_days }} j précédents hors jour courant, repli max {{ obj.recent_high_drawdown_max_drop_pct|pct:2 }}
     {% else %}
       désactivée
     {% endif %}
@@ -115,7 +115,7 @@
 
 <h3>Résultats du jour</h3>
 {% if snapshot.date %}
-  <p class="muted">Date: {{ snapshot.date }} | BMD threshold: {{ snapshot.threshold_pct }}% | Npente: {{ snapshot.npente|default:obj.npente }} | Slope threshold: {{ snapshot.slope_threshold|default:obj.slope_threshold }} | Presence threshold: {{ snapshot.presence_threshold_pct|default:obj.presence_threshold_pct }}%{% if obj.recent_high_drawdown_lookback_days and obj.recent_high_drawdown_max_drop_pct != None %} | Anti-chute: {{ obj.recent_high_drawdown_lookback_days }} j / {{ obj.recent_high_drawdown_max_drop_pct|pct:2 }}{% endif %}</p>
+  <p class="muted">Date: {{ snapshot.date }} | BMD threshold: {{ snapshot.threshold_pct }}% | Npente: {{ snapshot.npente|default:obj.npente }} | Slope threshold: {{ snapshot.slope_threshold|default:obj.slope_threshold }} | Presence threshold: {{ snapshot.presence_threshold_pct|default:obj.presence_threshold_pct }}%{% if obj.recent_high_drawdown_lookback_days and obj.recent_high_drawdown_max_drop_pct != None %} | Signal RHD: {{ obj.recent_high_drawdown_lookback_days }} j précédents / {{ obj.recent_high_drawdown_max_drop_pct|pct:2 }}{% endif %}</p>
 {% endif %}
 
 <table>

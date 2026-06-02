@@ -125,8 +125,8 @@
     </div>
 
     <div class="card" style="margin-bottom:16px;">
-      <h3 style="margin-top:0;">4. Protection anti-chute</h3>
-      <p class="muted">Cette protection compare le prix du jour au plus haut observé sur les X jours de cotation précédents. Le BUY est autorisé si le prix reste au-dessus du seuil défini. Si la condition devient fausse alors qu’une position est ouverte, le SELL est déclenché. Ce n’est pas un stop-loss basé sur le prix d’achat, mais une protection par rapport au plus haut récent.</p>
+      <h3 style="margin-top:0;">4. Signal anti-chute RHD — Repli depuis haut récent</h3>
+      <p class="muted">RHD est un signal ticker calculé à partir du repli depuis le plus haut récent. RHD_OK indique que le repli reste dans la limite définie ; RHD_FAIL indique que cette limite est dépassée. Le plus haut récent est calculé sur les jours de cotation précédents, hors jour courant.</p>
 
       <div style="display:flex; gap:12px; flex-wrap:wrap;">
         <p>
