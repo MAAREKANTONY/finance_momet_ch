@@ -107,6 +107,14 @@
     <div class="muted" style="margin-top:8px;">Courbe globale des gains / pertes (PnL global = Equity - Investi).</div>
   </div>
   <div style="margin-top:18px;">
+    <h3 style="margin:0 0 8px;">Gains réalisés cumulés</h3>
+    <canvas id="realizedGainsChart" height="100"></canvas>
+    <div class="muted" style="margin-top:8px;">Cette courbe cumule uniquement les gains/pertes réalisés lors des ventes clôturées. Les positions encore ouvertes et les gains latents ne sont pas inclus.</div>
+    {% if not realized_gains_has_sales %}
+      <div class="muted" style="margin-top:6px;">Aucune vente clôturée : la courbe reste à 0 €.</div>
+    {% endif %}
+  </div>
+  <div style="margin-top:18px;">
     <canvas id="portfolioReturnChart" height="100"></canvas>
     <div class="muted" style="margin-top:8px;">Performance globale du portefeuille (%) = (Equity / Capital total) - 1.</div>
   </div>
@@ -555,6 +563,7 @@
 
   const rows = {{ daily_json|safe }};
   const portRows = {{ portfolio_daily_json|default:"[]"|safe }};
+  const realizedRows = {{ realized_gains_series_json|default:"[]"|safe }};
   function toNumber(v) {
     if (v === null || v === undefined || v === "") return null;
     const x = Number(v);
@@ -675,6 +684,25 @@
         responsive: true,
         spanGaps: true,
         scales: { y: { type: "linear", title: { display: true, text: "Gain / Perte" } } }
+      }
+    });
+  }
+
+  const realizedCanvas = document.getElementById("realizedGainsChart");
+  if (realizedCanvas && realizedRows && realizedRows.length) {
+    const labels = realizedRows.map(r => r.date);
+    const realized = realizedRows.map(r => toNumber(r.realized_pnl_cumulative));
+    const ctx = realizedCanvas.getContext("2d");
+    new Chart(ctx, {
+      type: "line",
+      data: {
+        labels,
+        datasets: [{ label: "Gains réalisés cumulés", data: realized }]
+      },
+      options: {
+        responsive: true,
+        spanGaps: true,
+        scales: { y: { type: "linear", title: { display: true, text: "Montant (€)" } } }
       }
     });
   }

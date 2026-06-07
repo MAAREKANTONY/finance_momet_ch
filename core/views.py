@@ -2485,6 +2485,64 @@ def backtest_run(request, pk: int):
     messages.success(request, "Backtest lancé (traitement en arrière-plan).")
     return redirect("backtest_detail", pk=pk)
 
+
+def _build_realized_gains_cumulative_series(results: dict, *, initial_date=None) -> list[dict]:
+    """Build portfolio realized PnL curve from persisted line events only."""
+    pnl_by_date: dict[str, Decimal] = {}
+    tickers_map = (results or {}).get("tickers") or {}
+    for tentry in tickers_map.values():
+        for line in (tentry or {}).get("lines") or []:
+            for event in (line or {}).get("events") or []:
+                action = str((event or {}).get("action") or "").upper()
+                if "SELL" not in action:
+                    continue
+                pnl_raw = (event or {}).get("action_PNL_AMOUNT")
+                if pnl_raw in (None, ""):
+                    continue
+                row_date = str((event or {}).get("date") or "").strip()
+                if not row_date:
+                    continue
+                try:
+                    pnl_value = Decimal(str(pnl_raw))
+                except Exception:
+                    continue
+                pnl_by_date[row_date] = pnl_by_date.get(row_date, Decimal("0")) + pnl_value
+
+    initial_label = ""
+    if initial_date not in (None, ""):
+        initial_label = initial_date.isoformat() if hasattr(initial_date, "isoformat") else str(initial_date)
+    if not initial_label:
+        initial_label = str(((results or {}).get("meta") or {}).get("start_date") or "").strip()
+    if not initial_label and pnl_by_date:
+        initial_label = sorted(pnl_by_date.keys())[0]
+
+    series: list[dict] = []
+    if initial_label:
+        series.append({
+            "date": initial_label,
+            "realized_pnl_daily": "0",
+            "realized_pnl_cumulative": "0",
+        })
+
+    cumulative = Decimal("0")
+    for row_date in sorted(pnl_by_date.keys()):
+        daily_pnl = pnl_by_date[row_date]
+        cumulative += daily_pnl
+        series.append({
+            "date": row_date,
+            "realized_pnl_daily": str(daily_pnl),
+            "realized_pnl_cumulative": str(cumulative),
+        })
+
+    if not series:
+        series.append({
+            "date": "Début",
+            "realized_pnl_daily": "0",
+            "realized_pnl_cumulative": "0",
+        })
+    return series
+
+
 @login_required
 def backtest_results(request, pk: int):
     """Readable results view for a computed backtest.
@@ -2596,6 +2654,12 @@ def backtest_results(request, pk: int):
 
     # keep charts responsive without hiding the start of the backtest period
     port_daily_for_ui = _downsample_series_keep_full_period(port_daily, max_points=400)
+    realized_gains_series = _build_realized_gains_cumulative_series(results, initial_date=bt.start_date)
+    realized_gains_series_for_ui = _downsample_series_keep_full_period(realized_gains_series, max_points=400)
+    realized_gains_has_sales = any(
+        _to_dec((row or {}).get("realized_pnl_daily")) not in (None, Decimal("0"))
+        for row in realized_gains_series
+    )
     diagnostic_chart_payload = build_diagnostic_chart_payload(
         backtest=bt,
         ticker=ticker,
@@ -2707,6 +2771,9 @@ def backtest_results(request, pk: int):
             "portfolio_kpi": port_kpi,
             "portfolio_daily": port_daily_for_ui,
             "portfolio_daily_json": json.dumps(port_daily_for_ui),
+            "realized_gains_series": realized_gains_series_for_ui,
+            "realized_gains_series_json": json.dumps(realized_gains_series_for_ui),
+            "realized_gains_has_sales": realized_gains_has_sales,
             "diagnostic_chart_payload": diagnostic_chart_payload,
             "large_result_warning": large_result_warning,
             "is_truncated": is_truncated,
