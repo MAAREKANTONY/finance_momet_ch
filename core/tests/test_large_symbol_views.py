@@ -7,6 +7,7 @@ from django.urls import reverse
 import json
 
 from core.models import Alert, Backtest, BacktestPortfolioKPI, DailyBar, DailyMetric, GameScenario, HistoricalMarketCap, ProcessingJob, Scenario, Study, Symbol, Universe
+from core.views import _build_realized_gains_cumulative_series
 
 
 class LargeSymbolFormViewTests(TestCase):
@@ -1305,6 +1306,132 @@ class BacktestResultsRenderTests(TestCase):
             close=Decimal(price),
             volume=1000,
         )
+
+    def test_realized_gains_cumulative_series_aggregates_closing_events_only(self):
+        results = {
+            "meta": {"start_date": "2024-01-01"},
+            "tickers": {
+                "AAA": {
+                    "lines": [
+                        {
+                            "events": [
+                                {"date": "2024-01-02", "action": "BUY", "action_PNL_AMOUNT": "999"},
+                                {"date": "2024-01-03", "action": "SELL", "action_PNL_AMOUNT": "500"},
+                                {"date": "2024-01-04", "action": "SELL", "action_PNL_AMOUNT": "-300"},
+                                {"date": "2024-01-05", "action": "BUY"},
+                            ]
+                        }
+                    ]
+                },
+                "BBB": {
+                    "lines": [
+                        {
+                            "events": [
+                                {"date": "2024-01-03", "action": "SELL", "action_PNL_AMOUNT": "25"},
+                                {"date": "2024-01-04", "action": "SELL+BUY", "action_PNL_AMOUNT": "-50"},
+                                {"date": "2024-01-06", "action": "FORCED_SELL", "action_PNL_AMOUNT": "-400"},
+                            ]
+                        },
+                        {
+                            "events": [
+                                {
+                                    "date": "2024-01-07",
+                                    "action": "SELL",
+                                    "action_PNL_AMOUNT": "20",
+                                    "action_reason": "Protection marché GM (GM marché négatif)",
+                                }
+                            ]
+                        },
+                    ]
+                },
+            },
+        }
+
+        series = _build_realized_gains_cumulative_series(results, initial_date="2024-01-01")
+
+        self.assertEqual(series[0], {
+            "date": "2024-01-01",
+            "realized_pnl_daily": "0",
+            "realized_pnl_cumulative": "0",
+        })
+        self.assertEqual(
+            [(row["date"], row["realized_pnl_daily"], row["realized_pnl_cumulative"]) for row in series[1:]],
+            [
+                ("2024-01-03", "525", "525"),
+                ("2024-01-04", "-350", "175"),
+                ("2024-01-06", "-400", "-225"),
+                ("2024-01-07", "20", "-205"),
+            ],
+        )
+
+    def test_realized_gains_cumulative_series_stays_flat_without_closing_events(self):
+        results = {
+            "meta": {"start_date": "2024-01-01"},
+            "tickers": {
+                "AAA": {
+                    "lines": [
+                        {
+                            "events": [
+                                {"date": "2024-01-02", "action": "BUY", "action_PNL_AMOUNT": "999"},
+                                {"date": "2024-01-03", "action": "BUY"},
+                            ],
+                            "daily": [],
+                        }
+                    ]
+                }
+            },
+        }
+
+        self.assertEqual(
+            _build_realized_gains_cumulative_series(results, initial_date="2024-01-01"),
+            [{"date": "2024-01-01", "realized_pnl_daily": "0", "realized_pnl_cumulative": "0"}],
+        )
+
+    def test_backtest_results_renders_realized_gains_curve_from_events_without_daily_rows(self):
+        bt = Backtest.objects.create(
+            name="BT Realized Events",
+            scenario=self.scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            results={
+                "meta": {
+                    "start_date": "2024-01-01",
+                    "end_date": "2024-01-31",
+                    "detailed_daily_rows_omitted": True,
+                },
+                "tickers": {
+                    self.symbol.ticker: {
+                        "lines": [{
+                            "line_index": 1,
+                            "buy": ["A1"],
+                            "sell": ["B1"],
+                            "events": [
+                                {"date": "2024-01-02", "action": "BUY", "price_close": "10"},
+                                {"date": "2024-01-03", "action": "SELL", "action_PNL_AMOUNT": "15"},
+                            ],
+                            "daily_rows_omitted": True,
+                            "final": {"N": 1, "BT": "0.15", "PNL_AMOUNT": "15"},
+                        }]
+                    }
+                },
+                "portfolio": {"kpi": {}, "daily": []},
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Gains réalisés cumulés", body)
+        self.assertIn("Cette courbe cumule uniquement les gains/pertes réalisés", body)
+        self.assertIn('"realized_pnl_cumulative": "0"', body)
+        self.assertIn('"realized_pnl_cumulative": "15"', body)
+        self.assertIn("realizedGainsChart", body)
 
     def test_backtest_results_renders_portfolio_kpis_and_legend_terms(self):
         bt = Backtest.objects.create(
