@@ -119,6 +119,31 @@ class SignalLinesCleaningTests(SimpleTestCase):
         self.assertTrue(line["gm_sell_market_exit_conditions"]["market"]["explicit_threshold"])
         self.assertEqual(line["gm_sell_market_exit_conditions"]["sector"]["mode"], "NEG")
 
+    def test_clean_signal_lines_stores_gm_push_separately(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "PROGRESSIVE_EXPLICIT_SELL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_push_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "GM_POS", "threshold": "0.03", "explicit_threshold": True},
+                },
+                "gm_push_sell_market_exit_conditions": {
+                    "operator": "OR",
+                    "market": {"mode": "GM_NEG", "threshold": "0.04", "explicit_threshold": True},
+                },
+            }
+        ])
+        line = cleaned[0]
+        self.assertEqual(line["gm_push_buy_conditions"]["current"]["mode"], "POS")
+        self.assertEqual(line["gm_push_buy_conditions"]["current"]["buy_threshold"], "0.03")
+        self.assertEqual(line["gm_push_buy_conditions"]["current"]["sell_threshold"], "-0.03")
+        self.assertEqual(line["gm_push_sell_market_exit_conditions"]["operator"], "OR")
+        self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["mode"], "NEG")
+        self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["buy_threshold"], "0.04")
+        self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["sell_threshold"], "-0.04")
+
     def test_clean_signal_lines_rejects_market_conditions_without_buy_signal(self):
         with self.assertRaises(forms.ValidationError):
             _clean_signal_lines_json([
@@ -128,6 +153,19 @@ class SignalLinesCleaningTests(SimpleTestCase):
                     "sell": [],
                     "buy_market_gm_market": "GM_POS",
                     "buy_market_operator": "AND",
+                }
+            ])
+
+    def test_clean_signal_lines_rejects_gm_push_buy_without_buy_signal(self):
+        with self.assertRaises(forms.ValidationError):
+            _clean_signal_lines_json([
+                {
+                    "trading_model": "LATCH_STATEFUL",
+                    "buy": [],
+                    "sell": [],
+                    "gm_push_buy_conditions": {
+                        "current": {"mode": "GM_POS", "threshold": "0.03", "explicit_threshold": True},
+                    },
                 }
             ])
 
@@ -188,6 +226,9 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
                 "La protection marché GM peut déclencher une vente lorsqu’une position est ouverte, même sans signal de vente ticker.",
                 content,
             )
+            self.assertIn("GM Push — impulsion marché BUY", content)
+            self.assertIn("GM Push — protection impulsion marché", content)
+            self.assertIn("GM Push mémorise les impulsions de marché.", content)
             self.assertIn("Seuil en décimal : 0.03 = 3 %", content)
             self.assertNotIn('data-role="sell_gm_filter"', content)
 
@@ -214,6 +255,9 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
             "La protection marché GM peut déclencher une vente lorsqu’une position est ouverte, même sans signal de vente ticker.",
             content,
         )
+        self.assertIn("GM Push — impulsion marché BUY", content)
+        self.assertIn("GM Push — protection impulsion marché", content)
+        self.assertIn("GM Push mémorise les impulsions de marché.", content)
         self.assertIn("Seuil en décimal : 0.03 = 3 %", content)
         self.assertNotIn('data-role="sell_gm_filter"', content)
 

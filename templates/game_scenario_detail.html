@@ -75,6 +75,10 @@
                 {% if line_market_display != "Aucune" %}
                   <div class="muted" style="margin-top:4px;">Conditions de marché : {{ line_market_display }}</div>
                 {% endif %}
+                {% line_gm_push_buy_display line as gm_push_buy_display %}
+                {% if gm_push_buy_display != "Aucune" %}
+                  <div class="muted" style="margin-top:4px;">GM Push BUY : {{ gm_push_buy_display }}</div>
+                {% endif %}
               </td>
               <td>
                 {% if line.sell == "AUTO_K1F_UPPER_DOWN_B1F" or line.sell.0 == "AUTO_K1F_UPPER_DOWN_B1F" %}
@@ -91,6 +95,10 @@
                 {% line_gm_sell_market_exit_display line as gm_sell_market_exit_display %}
                 {% if gm_sell_market_exit_display != "Aucune" %}
                   <div class="muted" style="margin-top:4px;">Protection marché GM : {{ gm_sell_market_exit_display }}</div>
+                {% endif %}
+                {% line_gm_push_sell_market_exit_display line as gm_push_sell_market_exit_display %}
+                {% if gm_push_sell_market_exit_display != "Aucune" %}
+                  <div class="muted" style="margin-top:4px;">Protection GM Push : {{ gm_push_sell_market_exit_display }}</div>
                 {% endif %}
               </td>
             </tr>

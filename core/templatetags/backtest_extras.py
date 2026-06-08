@@ -191,3 +191,36 @@ def line_market_conditions_display(line) -> str:
 def line_gm_sell_market_exit_display(line) -> str:
     config = line.get("gm_sell_market_exit_conditions") if isinstance(line, dict) else getattr(line, "gm_sell_market_exit_conditions", None)
     return _gm_conditions_display(config)
+
+
+def _gm_push_conditions_display(config) -> str:
+    if not isinstance(config, dict):
+        return "Aucune"
+    parts = []
+    for key, label in (("current", "GM_push actuel"), ("market", "GM_push marché"), ("sector", "GM_push secteur")):
+        entry = config.get(key) if isinstance(config.get(key), dict) else {}
+        mode = str((entry or {}).get("mode") or "IGNORE").upper()
+        if mode == "IGNORE":
+            continue
+        mode_label = {"POS": "impulsion positive", "NEG": "impulsion négative"}.get(mode, mode)
+        threshold = entry.get("buy_threshold") if mode == "POS" else entry.get("sell_threshold")
+        if threshold not in (None, ""):
+            op = ">" if mode == "POS" else "<"
+            mode_label = f"{mode_label} {op} {threshold}"
+        parts.append(f"{label}: {mode_label}")
+    if not parts:
+        return "Aucune"
+    op_txt = " ET " if str(config.get("operator") or "AND").upper() == "AND" else " OU "
+    return op_txt.join(parts)
+
+
+@register.simple_tag
+def line_gm_push_buy_display(line) -> str:
+    config = line.get("gm_push_buy_conditions") if isinstance(line, dict) else getattr(line, "gm_push_buy_conditions", None)
+    return _gm_push_conditions_display(config)
+
+
+@register.simple_tag
+def line_gm_push_sell_market_exit_display(line) -> str:
+    config = line.get("gm_push_sell_market_exit_conditions") if isinstance(line, dict) else getattr(line, "gm_push_sell_market_exit_conditions", None)
+    return _gm_push_conditions_display(config)

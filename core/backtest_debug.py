@@ -7,7 +7,13 @@ from openpyxl import Workbook
 from .backtest_row_projection import augment_tradable_projection_row
 from .excel_utils import append_excel_row
 from .models import Backtest
-from .templatetags.backtest_extras import line_gm_sell_market_exit_display, line_market_conditions_display, trading_model_business_label
+from .templatetags.backtest_extras import (
+    line_gm_push_buy_display,
+    line_gm_push_sell_market_exit_display,
+    line_gm_sell_market_exit_display,
+    line_market_conditions_display,
+    trading_model_business_label,
+)
 
 
 PREFERRED_DATA_COLUMNS = [
@@ -108,6 +114,8 @@ def get_backtest_debug_payload(bt: Backtest, ticker: str = '', line: str | int |
         'sell_label': _codes_to_label(selected_line.get('sell')),
         'line_market_conditions_label': line_market_conditions_display(selected_line),
         'gm_sell_market_exit_label': line_gm_sell_market_exit_display(selected_line),
+        'gm_push_buy_label': line_gm_push_buy_display(selected_line),
+        'gm_push_sell_market_exit_label': line_gm_push_sell_market_exit_display(selected_line),
         'trading_model': selected_line.get('trading_model') or '',
         'trading_model_label': trading_model_business_label(selected_line),
         'warning_count': int(selected_line.get('warning_count') or 0),
@@ -161,7 +169,9 @@ def build_backtest_debug_workbook(bt: Backtest, ticker: str = '', line: str | in
     _append_kv(ws_formulas, 'BUY conditions', payload['buy_label'])
     _append_kv(ws_formulas, 'SELL conditions', payload['sell_label'])
     _append_kv(ws_formulas, 'Conditions de marché', payload['line_market_conditions_label'])
+    _append_kv(ws_formulas, 'GM Push BUY', payload['gm_push_buy_label'])
     _append_kv(ws_formulas, 'Protection marché GM', payload['gm_sell_market_exit_label'])
+    _append_kv(ws_formulas, 'Protection GM Push', payload['gm_push_sell_market_exit_label'])
     _append_kv(ws_formulas, 'Mode de trading', payload['trading_model'])
     _append_kv(ws_formulas, 'Libellé métier du mode', payload['trading_model_label'])
     _append_kv(ws_formulas, "Nombre d'avertissements", payload['warning_count'])

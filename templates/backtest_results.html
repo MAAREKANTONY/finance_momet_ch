@@ -126,6 +126,19 @@
 </details>
 {% endif %}
 
+{% if not portfolio_kpi and realized_gains_series %}
+<details class="card acc" open data-acc-key="realized-gains">
+<summary class="acc-summary"><span class="acc-title">Gains réalisés cumulés</span></summary>
+<div class="acc-body">
+  <canvas id="realizedGainsChart" height="100"></canvas>
+  <div class="muted" style="margin-top:8px;">Cette courbe cumule uniquement les gains/pertes réalisés lors des ventes clôturées. Les positions encore ouvertes et les gains latents ne sont pas inclus.</div>
+  {% if not realized_gains_has_sales %}
+    <div class="muted" style="margin-top:6px;">Aucune vente clôturée : la courbe reste à 0 €.</div>
+  {% endif %}
+</div>
+</details>
+{% endif %}
+
 <details class="card acc" open data-acc-key="global-played-tickers">
 <summary class="acc-summary"><span class="acc-title">Actions jouées — synthèse globale</span></summary>
 <div class="acc-body">
@@ -250,8 +263,10 @@
   {% if line %}
     <div class="muted" style="margin-top:12px;">
       <div>Conditions de marché de la ligne : <b>{% line_market_conditions_display line %}</b></div>
+      <div>GM Push BUY : <b>{% line_gm_push_buy_display line %}</b></div>
       <div>Les conditions de marché ne déclenchent pas un achat à elles seules. Elles servent à autoriser ou bloquer l'achat lorsqu'un signal BUY est déjà présent.</div>
       <div>Protection marché GM : <b>{% line_gm_sell_market_exit_display line %}</b></div>
+      <div>Protection GM Push : <b>{% line_gm_push_sell_market_exit_display line %}</b></div>
       <div>La protection marché GM peut déclencher une vente lorsqu’une position est ouverte, même sans signal de vente ticker.</div>
     </div>
   {% endif %}
