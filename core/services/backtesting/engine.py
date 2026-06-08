@@ -346,6 +346,7 @@ def _normalize_gm_conditions_config(
 def _normalize_gm_push_condition_entry(raw: Any = None) -> dict[str, Any]:
     raw = raw if isinstance(raw, dict) else {}
     mode = _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code"))
+    normalized_mode = mode if mode in {"IGNORE", "POS", "NEG"} else "IGNORE"
     threshold = _to_dec(raw.get("threshold"))
     buy_threshold = _to_dec(raw.get("buy_threshold"))
     sell_threshold = _to_dec(raw.get("sell_threshold"))
@@ -361,8 +362,11 @@ def _normalize_gm_push_condition_entry(raw: Any = None) -> dict[str, Any]:
         value not in (None, "")
         for value in (raw.get("threshold"), raw.get("buy_threshold"), raw.get("sell_threshold"))
     )
+    if normalized_mode in {"POS", "NEG"} and buy_threshold is None and sell_threshold is None:
+        buy_threshold = Decimal("0")
+        sell_threshold = Decimal("0")
     return {
-        "mode": mode if mode in {"IGNORE", "POS", "NEG"} else "IGNORE",
+        "mode": normalized_mode,
         "threshold": None if threshold is None else str(threshold),
         "buy_threshold": None if buy_threshold is None else str(buy_threshold),
         "sell_threshold": None if sell_threshold is None else str(sell_threshold),

@@ -2321,6 +2321,194 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(payload["trend_filters"]["sector"]["thresholds"][0]["threshold"], "0.05")
         self.assertIn("diagnosticTrendSectorChart", response.content.decode())
 
+    def test_backtest_results_diagnostic_payload_omits_gm_push_when_not_configured(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertIsNone(payload["gm_push"])
+        body = response.content.decode()
+        self.assertNotIn("Impulsion GM Push", body)
+        self.assertNotIn('<canvas id="diagnosticGmPushCurrentChart"', body)
+
+    def test_backtest_results_diagnostic_payload_includes_gm_push_current_curve_with_states_and_thresholds(self):
+        self.scenario.nglobal = 1
+        self.scenario.save(update_fields=["nglobal"])
+        gm_push_buy_conditions = {
+            "operator": "AND",
+            "current": {
+                "mode": "GM_POS",
+                "threshold": "0.03",
+                "buy_threshold": "0.03",
+                "sell_threshold": "-0.03",
+                "explicit_threshold": True,
+            },
+        }
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "gm_push_buy_conditions": gm_push_buy_conditions}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "gm_push_buy_conditions": gm_push_buy_conditions, "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                    {"date": "2024-01-04", "price_close": "12", "action": None},
+                ], "final": {}}]},
+            },
+        )
+        bt.results["portfolio"]["daily"] = [
+            {"date": "2024-01-02", "gm_push_current": "0.01"},
+            {"date": "2024-01-03", "gm_push_current": "0.05"},
+            {"date": "2024-01-04", "gm_push_current": "0.04"},
+        ]
+        bt.save(update_fields=["results"])
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertTrue(payload["gm_push"]["current"]["active"])
+        self.assertEqual(payload["gm_push"]["operator_buy"], "AND")
+        self.assertEqual(payload["gm_push"]["current"]["values"], ["0.01", "0.05", "0.04"])
+        self.assertEqual(payload["gm_push"]["current"]["states"], ["UNKNOWN", "POS_ACTIVE", "POS_ACTIVE"])
+        self.assertEqual(payload["gm_push"]["current"]["thresholds"][0]["role"], "BUY")
+        self.assertEqual(payload["gm_push"]["current"]["thresholds"][0]["threshold"], "0.03")
+        self.assertEqual(payload["gm_push"]["current"]["thresholds"][1]["role"], "SELL")
+        self.assertEqual(payload["gm_push"]["current"]["thresholds"][1]["threshold"], "-0.03")
+        body = response.content.decode()
+        self.assertIn("Impulsion GM Push", body)
+        self.assertIn("diagnosticGmPushCurrentChart", body)
+        self.assertIn("État mémorisé", body)
+
+    def test_backtest_results_diagnostic_payload_displays_implicit_zero_gm_push_thresholds(self):
+        self.scenario.nglobal = 1
+        self.scenario.save(update_fields=["nglobal"])
+        gm_push_buy_conditions = {
+            "operator": "AND",
+            "current": {
+                "mode": "GM_POS",
+                "threshold": None,
+                "buy_threshold": None,
+                "sell_threshold": None,
+                "explicit_threshold": False,
+            },
+        }
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "gm_push_buy_conditions": gm_push_buy_conditions}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "gm_push_buy_conditions": gm_push_buy_conditions, "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                ], "final": {}}]},
+            },
+        )
+        bt.results["portfolio"]["daily"] = [
+            {"date": "2024-01-02", "gm_push_current": "-0.01"},
+            {"date": "2024-01-03", "gm_push_current": "0.02"},
+        ]
+        bt.save(update_fields=["results"])
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["gm_push"]["current"]["states"], ["UNKNOWN", "POS_ACTIVE"])
+        self.assertEqual(payload["gm_push"]["current"]["roles"][0]["buy_threshold"], "0")
+        self.assertEqual(payload["gm_push"]["current"]["roles"][0]["sell_threshold"], "0")
+        self.assertFalse(payload["gm_push"]["current"]["roles"][0]["explicit_threshold"])
+        self.assertEqual(payload["gm_push"]["current"]["thresholds"][0]["threshold"], "0")
+        self.assertEqual(payload["gm_push"]["current"]["thresholds"][1]["threshold"], "0")
+
+    def test_backtest_results_diagnostic_payload_includes_gm_push_market_curve_with_benchmark(self):
+        self.scenario.nglobal = 1
+        self.scenario.save(update_fields=["nglobal"])
+        spy = Symbol.objects.create(ticker="SPY", exchange="NYSE", country="US", active=True)
+        self._add_bar(spy, "2024-01-02", "100")
+        self._add_bar(spy, "2024-01-03", "101")
+        self._add_bar(spy, "2024-01-04", "105")
+        gm_push_buy_conditions = {
+            "operator": "AND",
+            "market": {
+                "mode": "GM_POS",
+                "threshold": "0.02",
+                "buy_threshold": "0.02",
+                "sell_threshold": "-0.02",
+                "explicit_threshold": True,
+            },
+        }
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "gm_push_buy_conditions": gm_push_buy_conditions}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "gm_push_buy_conditions": gm_push_buy_conditions, "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": None},
+                    {"date": "2024-01-03", "price_close": "11", "action": "BUY"},
+                    {"date": "2024-01-04", "price_close": "12", "action": None},
+                ], "final": {}}]},
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertTrue(payload["gm_push"]["market"]["active"])
+        self.assertEqual(payload["gm_push"]["market"]["benchmark_ticker"], "SPY")
+        self.assertEqual(payload["gm_push"]["market"]["values"], [None, "0.01", "0.0396039603960396039603960396"])
+        self.assertEqual(payload["gm_push"]["market"]["states"], ["UNKNOWN", "UNKNOWN", "POS_ACTIVE"])
+        self.assertIn("diagnosticGmPushMarketChart", response.content.decode())
+
+    def test_backtest_results_diagnostic_payload_includes_gm_push_sector_curve_with_benchmark_and_exit_marker(self):
+        self.scenario.nglobal = 1
+        self.scenario.save(update_fields=["nglobal"])
+        self.symbol.sector = "Technology"
+        self.symbol.save(update_fields=["sector"])
+        xlk = Symbol.objects.create(ticker="XLK", exchange="NYSE", country="US", sector="Technology", active=True)
+        self._add_bar(xlk, "2024-01-02", "100")
+        self._add_bar(xlk, "2024-01-03", "99")
+        self._add_bar(xlk, "2024-01-04", "95")
+        gm_push_sell_conditions = {
+            "operator": "OR",
+            "sector": {
+                "mode": "GM_NEG",
+                "threshold": "-0.02",
+                "buy_threshold": "0.02",
+                "sell_threshold": "-0.02",
+                "explicit_threshold": True,
+            },
+        }
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "gm_push_sell_market_exit_conditions": gm_push_sell_conditions}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["Af"], "sell": ["Bf"], "gm_push_sell_market_exit_conditions": gm_push_sell_conditions, "daily": [
+                    {"date": "2024-01-02", "price_close": "10", "action": "BUY"},
+                    {"date": "2024-01-03", "price_close": "11", "action": None},
+                    {
+                        "date": "2024-01-04",
+                        "price_close": "12",
+                        "action": "SELL",
+                        "action_reason": "GM_PUSH_MARKET_EXIT (GM_push secteur négatif)",
+                    },
+                ], "final": {}}]},
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        payload = response.context["diagnostic_chart_payload"]
+        self.assertEqual(payload["gm_push"]["operator_sell"], "OR")
+        self.assertTrue(payload["gm_push"]["sector"]["active"])
+        self.assertEqual(payload["gm_push"]["sector"]["benchmark_ticker"], "XLK")
+        self.assertEqual(payload["gm_push"]["sector"]["values"], [None, "-0.01", "-0.0404040404040404040404040404"])
+        self.assertEqual(payload["gm_push"]["sector"]["states"], ["UNKNOWN", "UNKNOWN", "NEG_ACTIVE"])
+        self.assertIn({"date": "2024-01-04", "type": "GM_PUSH_MARKET_EXIT"}, payload["markers"])
+        body = response.content.decode()
+        self.assertIn("diagnosticGmPushSectorChart", body)
+        self.assertIn("GM_PUSH_MARKET_EXIT", body)
+
     def test_backtest_results_hides_legacy_trend_filter_diagnostic(self):
         self.scenario.nglobal = 1
         self.scenario.save(update_fields=["nglobal"])
