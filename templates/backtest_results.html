@@ -458,6 +458,37 @@
   </div>
   {% endif %}
 
+  {% if diagnostic_chart_payload.gm_push %}
+  <details class="acc" open style="margin-bottom:18px;">
+    <summary class="acc-summary"><span class="acc-title">Impulsion GM Push</span></summary>
+    <div class="acc-body">
+      <div class="muted" style="margin-bottom:8px;">
+        Les courbes GM Push affichent l'impulsion calculée sur Nglobal, son état mémorisé et les seuils BUY / SELL utilisés par les filtres ou protections configurés.
+        <span style="margin-left:10px;">Opérateur BUY : <b>{{ diagnostic_chart_payload.gm_push.operator_buy }}</b></span>
+        <span style="margin-left:10px;">Opérateur SELL : <b>{{ diagnostic_chart_payload.gm_push.operator_sell }}</b></span>
+      </div>
+      {% if diagnostic_chart_payload.gm_push.current.active %}
+      <div style="margin-bottom:14px;">
+        <h5 style="margin:0 0 6px 0;">GM_push actuel</h5>
+        <canvas id="diagnosticGmPushCurrentChart" height="105"></canvas>
+      </div>
+      {% endif %}
+      {% if diagnostic_chart_payload.gm_push.market.active %}
+      <div style="margin-bottom:14px;">
+        <h5 style="margin:0 0 6px 0;">GM_push marché{% if diagnostic_chart_payload.gm_push.market.benchmark_ticker %} — {{ diagnostic_chart_payload.gm_push.market.benchmark_ticker }}{% endif %}</h5>
+        <canvas id="diagnosticGmPushMarketChart" height="105"></canvas>
+      </div>
+      {% endif %}
+      {% if diagnostic_chart_payload.gm_push.sector.active %}
+      <div style="margin-bottom:14px;">
+        <h5 style="margin:0 0 6px 0;">GM_push secteur{% if diagnostic_chart_payload.gm_push.sector.benchmark_ticker %} — {{ diagnostic_chart_payload.gm_push.sector.benchmark_ticker }}{% endif %}</h5>
+        <canvas id="diagnosticGmPushSectorChart" height="105"></canvas>
+      </div>
+      {% endif %}
+    </div>
+  </details>
+  {% endif %}
+
   {% if diagnostic_chart_payload.market_cap %}
   <div style="margin-bottom:8px;">
     <h4 style="margin:0 0 8px 0;">Historical Market Cap</h4>
@@ -778,20 +809,24 @@
       SUM_SLOPE_BASSE: "#0f766e",
       SLOPE_VRAI_BASSE: "#9f1239",
       GM: "#16a34a",
+      GM_PUSH: "#0891b2",
       BUY: "#16a34a",
       SELL: "#dc2626",
       FORCED_SELL: "#ea580c",
+      GM_PUSH_MARKET_EXIT: "#0e7490",
       ZERO: "#9ca3af",
     };
     const pointStyles = {
       BUY: "triangle",
       SELL: "triangle",
       FORCED_SELL: "rectRot",
+      GM_PUSH_MARKET_EXIT: "crossRot",
     };
     const pointRotations = {
       BUY: 0,
       SELL: 180,
       FORCED_SELL: 0,
+      GM_PUSH_MARKET_EXIT: 0,
     };
 
     function formatMarketCapValue(value) {
@@ -1214,7 +1249,7 @@
           spanGaps: true,
         });
       });
-      ["BUY", "SELL", "FORCED_SELL"].forEach((markerType) => {
+      ["BUY", "SELL", "FORCED_SELL", "GM_PUSH_MARKET_EXIT"].forEach((markerType) => {
         trendDatasets.push({
           type: "scatter",
           label: markerType,
@@ -1237,7 +1272,18 @@
           responsive: true,
           spanGaps: true,
           scales: {
-            y: { type: "linear", position: "left", title: { display: true, text: yTitle } },
+          y: { type: "linear", position: "left", title: { display: true, text: yTitle } },
+          },
+          plugins: {
+            tooltip: {
+              callbacks: {
+                afterLabel(context) {
+                  if (!trendPayload.states || context.dataset.label !== trendPayload.label) return "";
+                  const state = trendPayload.states[context.dataIndex];
+                  return state ? `État mémorisé: ${state}` : "";
+                }
+              }
+            }
           }
         }
       });
@@ -1246,6 +1292,11 @@
       buildTrendChart("diagnosticTrendCurrentChart", payload.trend_filters.current, "GM actuel — rendement borné (%)");
       buildTrendChart("diagnosticTrendMarketChart", payload.trend_filters.market, "GM marché — rendement borné (%)");
       buildTrendChart("diagnosticTrendSectorChart", payload.trend_filters.sector, "GM secteur — rendement borné (%)");
+    }
+    if (payload.gm_push) {
+      buildTrendChart("diagnosticGmPushCurrentChart", payload.gm_push.current, "GM_push actuel — impulsion (%)");
+      buildTrendChart("diagnosticGmPushMarketChart", payload.gm_push.market, "GM_push marché — impulsion (%)");
+      buildTrendChart("diagnosticGmPushSectorChart", payload.gm_push.sector, "GM_push secteur — impulsion (%)");
     }
 
   }

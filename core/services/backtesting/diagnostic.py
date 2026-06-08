@@ -11,6 +11,7 @@ from core.services.recent_high_drawdown import (
     compute_recent_high_drawdown_condition,
     normalize_recent_high_drawdown_params,
 )
+from core.services.gm_push import compute_current_push_values_by_date, compute_push_state_by_date, compute_push_values_for_series
 from core.services.trend_filters import (
     collect_distinct_benchmark_tickers,
     evaluate_trend_filters_for_symbol,
@@ -85,6 +86,11 @@ _GM_FAMILY_LABELS = {
     "current": "GM actuel",
     "market": "GM marché",
     "sector": "GM secteur",
+}
+_GM_PUSH_FAMILY_LABELS = {
+    "current": "GM_push actuel",
+    "market": "GM_push marché",
+    "sector": "GM_push secteur",
 }
 
 
@@ -380,6 +386,9 @@ def _build_markers(daily: list[dict[str, Any]]) -> list[dict[str, str]]:
             marker_type = part.strip().upper()
             if marker_type in _ACTION_MARKERS:
                 markers.append({"date": date, "type": marker_type})
+        action_reason = str((row or {}).get("action_reason") or "").upper()
+        if "GM_PUSH_MARKET_EXIT" in action_reason:
+            markers.append({"date": date, "type": "GM_PUSH_MARKET_EXIT"})
     return markers
 
 
@@ -579,6 +588,209 @@ def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[
     }
 
 
+def _gm_push_condition_entry(config: dict[str, Any] | None, family: str) -> dict[str, Any]:
+    if not isinstance(config, dict):
+        return {"mode": "IGNORE", "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False}
+    raw = config.get(family)
+    if not isinstance(raw, dict):
+        return {"mode": "IGNORE", "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False}
+    mode = _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code"))
+    buy_threshold = raw.get("buy_threshold")
+    sell_threshold = raw.get("sell_threshold")
+    threshold = raw.get("threshold")
+    if buy_threshold in (None, ""):
+        buy_threshold = threshold
+    if sell_threshold in (None, "") and threshold not in (None, ""):
+        try:
+            sell_threshold = str(-abs(Decimal(str(threshold))))
+        except Exception:
+            sell_threshold = None
+    if buy_threshold in (None, "") and sell_threshold not in (None, ""):
+        try:
+            buy_threshold = str(abs(Decimal(str(sell_threshold))))
+        except Exception:
+            buy_threshold = None
+    if sell_threshold in (None, "") and buy_threshold not in (None, ""):
+        try:
+            sell_threshold = str(-abs(Decimal(str(buy_threshold))))
+        except Exception:
+            sell_threshold = None
+    if mode in {"POS", "NEG"} and buy_threshold in (None, "") and sell_threshold in (None, ""):
+        buy_threshold = "0"
+        sell_threshold = "0"
+    return {
+        "mode": mode,
+        "buy_threshold": None if buy_threshold in (None, "") else str(buy_threshold),
+        "sell_threshold": None if sell_threshold in (None, "") else str(sell_threshold),
+        "explicit_threshold": bool(raw.get("explicit_threshold")) and (buy_threshold not in (None, "") or sell_threshold not in (None, "")),
+    }
+
+
+def _line_gm_push_diagnostic_config(line: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(line, dict):
+        return None
+    gm_push_buy = line.get("gm_push_buy_conditions") if isinstance(line.get("gm_push_buy_conditions"), dict) else {}
+    gm_push_sell = (
+        line.get("gm_push_sell_market_exit_conditions")
+        if isinstance(line.get("gm_push_sell_market_exit_conditions"), dict)
+        else {}
+    )
+    roles_by_family: dict[str, list[dict[str, Any]]] = {family: [] for family in _GM_FAMILIES}
+    for family in _GM_FAMILIES:
+        buy_entry = _gm_push_condition_entry(gm_push_buy, family)
+        if buy_entry["mode"] != "IGNORE":
+            roles_by_family[family].append({"role": "BUY", **buy_entry})
+
+        sell_entry = _gm_push_condition_entry(gm_push_sell, family)
+        if sell_entry["mode"] != "IGNORE":
+            roles_by_family[family].append({"role": "SELL", **sell_entry})
+
+    if not any(roles_by_family.values()):
+        return None
+    return {
+        "operator_buy": str((gm_push_buy or {}).get("operator") or "AND").strip().upper(),
+        "operator_sell": str((gm_push_sell or {}).get("operator") or "AND").strip().upper(),
+        "roles_by_family": roles_by_family,
+    }
+
+
+def _push_state_series(values_by_date: dict[date, Decimal | None], roles: list[dict[str, Any]]) -> dict[date, str]:
+    buy_threshold = next((role.get("buy_threshold") for role in roles if role.get("buy_threshold") not in (None, "")), None)
+    sell_threshold = next((role.get("sell_threshold") for role in roles if role.get("sell_threshold") not in (None, "")), None)
+    if buy_threshold in (None, "") or sell_threshold in (None, ""):
+        return {}
+    return compute_push_state_by_date(values_by_date, buy_threshold=buy_threshold, sell_threshold=sell_threshold)
+
+
+def _build_gm_push_payload(*, backtest, symbol: Symbol | None, dates: list[str], portfolio_daily: list[dict[str, Any]] | None, line: dict[str, Any] | None):
+    line_config = _line_gm_push_diagnostic_config(line)
+    if not line_config or not dates:
+        return None
+
+    roles_by_family = line_config["roles_by_family"]
+    nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
+    date_objects = [date.fromisoformat(row_date) for row_date in dates]
+
+    current_values_by_date = {
+        str((row or {}).get("date") or ""): None if (row or {}).get("gm_push_current") in (None, "") else str((row or {}).get("gm_push_current"))
+        for row in (portfolio_daily or [])
+        if (row or {}).get("date")
+    }
+    if not any(current_values_by_date.get(row_date) is not None for row_date in dates):
+        metrics_by_symbol: dict[int, dict[date, Any]] = {}
+        for row in DailyMetric.objects.filter(scenario=backtest.scenario, date__in=date_objects).values("symbol_id", "date", "P"):
+            metrics_by_symbol.setdefault(int(row["symbol_id"]), {})[row["date"]] = row.get("P")
+        current_recomputed = compute_current_push_values_by_date(metrics_by_symbol, nglobal=nglobal)
+        current_values_by_date = {
+            row_date: _decimal_str(current_recomputed.get(date.fromisoformat(row_date)))
+            for row_date in dates
+        }
+
+    universe_tickers = []
+    raw_universe = getattr(backtest, "universe_snapshot", None) or []
+    if isinstance(raw_universe, list):
+        for item in raw_universe:
+            if isinstance(item, dict):
+                ticker = item.get("ticker") or item.get("symbol") or item.get("code")
+                if ticker:
+                    universe_tickers.append(str(ticker))
+            elif item:
+                universe_tickers.append(str(item))
+    universe_symbols = list(Symbol.objects.filter(ticker__in=universe_tickers).order_by("ticker", "id"))
+
+    settings = {"trend_filter_operator": "OR"}
+    for family in _GM_FAMILIES:
+        roles = roles_by_family.get(family) or []
+        settings[_GM_FAMILY_TO_SETTING_KEY[family]] = _gm_mode_to_filter_code(roles[0].get("mode")) if roles else "IGNORE"
+
+    benchmark_tickers = sorted(collect_distinct_benchmark_tickers(universe_symbols, settings))
+    benchmark_symbols_by_ticker: dict[str, Symbol] = {}
+    for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
+        benchmark_symbols_by_ticker.setdefault(benchmark_symbol.ticker, benchmark_symbol)
+    benchmark_cache = preload_benchmark_price_cache(
+        symbols=list(benchmark_symbols_by_ticker.values()),
+        scenario=backtest.scenario,
+        start_date=date_objects[0],
+        end_date=date_objects[-1],
+    )
+
+    def _benchmark_series(benchmark_ticker: str | None) -> dict[date, Decimal | None]:
+        if not benchmark_ticker:
+            return {}
+        cache_entry = benchmark_cache.get(benchmark_ticker) or {}
+        return compute_push_values_for_series(
+            list(zip(cache_entry.get("dates") or [], cache_entry.get("values") or [])),
+            nglobal=nglobal,
+        )
+
+    def _series_payload(family: str, *, values_by_date: dict[date, Decimal | None] | dict[str, str | None], benchmark_ticker: str | None = None):
+        roles = roles_by_family.get(family) or []
+        state_source = {
+            (date.fromisoformat(row_date) if isinstance(row_date, str) else row_date): _to_decimal_or_none(value)
+            for row_date, value in (values_by_date or {}).items()
+        }
+        states_by_date = _push_state_series(state_source, roles)
+        thresholds = []
+        for role in roles:
+            if role.get("buy_threshold") not in (None, ""):
+                thresholds.append({
+                    "role": "BUY",
+                    "label": f"Seuil BUY {_GM_PUSH_FAMILY_LABELS[family]}",
+                    "threshold": role.get("buy_threshold"),
+                    "mode": role.get("mode"),
+                    "source_role": role.get("role"),
+                })
+            if role.get("sell_threshold") not in (None, ""):
+                thresholds.append({
+                    "role": "SELL",
+                    "label": f"Seuil SELL {_GM_PUSH_FAMILY_LABELS[family]}",
+                    "threshold": role.get("sell_threshold"),
+                    "mode": role.get("mode"),
+                    "source_role": role.get("role"),
+                })
+        return {
+            "active": bool(roles),
+            "label": _GM_PUSH_FAMILY_LABELS[family],
+            "benchmark_ticker": benchmark_ticker,
+            "values": [
+                _decimal_str(state_source.get(date.fromisoformat(row_date)))
+                for row_date in dates
+            ],
+            "states": [states_by_date.get(date.fromisoformat(row_date), "UNKNOWN") for row_date in dates],
+            "roles": roles,
+            "thresholds": thresholds,
+        }
+
+    market_benchmark_ticker = None
+    sector_benchmark_ticker = None
+    if symbol is not None:
+        from core.services.trend_filters import market_benchmark_ticker_for_symbol, sector_benchmark_ticker_for_symbol
+
+        market_benchmark_ticker = market_benchmark_ticker_for_symbol(symbol)
+        sector_benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol)
+
+    return {
+        "operator_buy": line_config["operator_buy"] if line_config["operator_buy"] in {"AND", "OR"} else "AND",
+        "operator_sell": line_config["operator_sell"] if line_config["operator_sell"] in {"AND", "OR"} else "AND",
+        "zero_line": "0",
+        "current": _series_payload(
+            "current",
+            values_by_date=current_values_by_date,
+        ),
+        "market": _series_payload(
+            "market",
+            benchmark_ticker=market_benchmark_ticker,
+            values_by_date=_benchmark_series(market_benchmark_ticker),
+        ),
+        "sector": _series_payload(
+            "sector",
+            benchmark_ticker=sector_benchmark_ticker,
+            values_by_date=_benchmark_series(sector_benchmark_ticker),
+        ),
+        "universe": summarize_benchmark_usage(symbols=universe_symbols, settings=settings),
+    }
+
+
 def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, line: dict[str, Any] | None,
                                    daily: list[dict[str, Any]] | None, portfolio_daily: list[dict[str, Any]] | None):
     if not line or not daily:
@@ -637,6 +849,13 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         portfolio_daily=portfolio_daily,
         line=line,
     )
+    gm_push = _build_gm_push_payload(
+        backtest=backtest,
+        symbol=symbol,
+        dates=dates,
+        portfolio_daily=portfolio_daily,
+        line=line,
+    )
     rhd_lookback_days, rhd_max_drop_pct = normalize_recent_high_drawdown_params(backtest.scenario)
     recent_high_drawdown = None
     if rhd_lookback_days is not None and rhd_max_drop_pct is not None:
@@ -675,6 +894,7 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         "signal_series": signal_series,
         "gm": gm,
         "trend_filters": trend_filters,
+        "gm_push": gm_push,
         "market_cap": market_cap,
         "recent_high_drawdown": recent_high_drawdown,
         "thresholds": thresholds,

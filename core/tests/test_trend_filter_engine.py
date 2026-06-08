@@ -11,8 +11,13 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
 from core.forms import BacktestForm
+from core.forms import _normalize_gm_push_condition_entry as normalize_form_gm_push_condition_entry
 from core.models import Alert, Backtest, DailyBar, DailyMetric, HistoricalMarketCap, Scenario, Symbol
-from core.services.backtesting.engine import run_backtest, run_backtest_kpi_only
+from core.services.backtesting.engine import (
+    _normalize_gm_push_condition_entry as normalize_engine_gm_push_condition_entry,
+    run_backtest,
+    run_backtest_kpi_only,
+)
 from core.services.gm_push import (
     GM_PUSH_NEG_ACTIVE,
     GM_PUSH_POS_ACTIVE,
@@ -256,6 +261,37 @@ class TrendFilterEngineTests(TestCase):
         self.assertEqual(states[self.start + timedelta(days=4)], GM_PUSH_NEG_ACTIVE)
         self.assertEqual(states[self.start + timedelta(days=5)], GM_PUSH_NEG_ACTIVE)
 
+    def test_gm_push_normalization_defaults_active_entries_without_threshold_to_zero(self):
+        for normalizer in (normalize_engine_gm_push_condition_entry, normalize_form_gm_push_condition_entry):
+            pos_entry = normalizer({"mode": "POS"})
+            self.assertEqual(pos_entry["mode"], "POS")
+            self.assertEqual(pos_entry["buy_threshold"], "0")
+            self.assertEqual(pos_entry["sell_threshold"], "0")
+            self.assertFalse(pos_entry["explicit_threshold"])
+
+            neg_entry = normalizer({"mode": "NEG"})
+            self.assertEqual(neg_entry["mode"], "NEG")
+            self.assertEqual(neg_entry["buy_threshold"], "0")
+            self.assertEqual(neg_entry["sell_threshold"], "0")
+            self.assertFalse(neg_entry["explicit_threshold"])
+
+    def test_gm_push_state_crosses_zero_with_default_thresholds(self):
+        positive_values = {
+            self.start: Decimal("-0.01"),
+            self.start + timedelta(days=1): Decimal("0.02"),
+        }
+        positive_states = compute_push_state_by_date(positive_values, buy_threshold=Decimal("0"), sell_threshold=Decimal("0"))
+        self.assertEqual(positive_states[self.start], GM_PUSH_UNKNOWN)
+        self.assertEqual(positive_states[self.start + timedelta(days=1)], GM_PUSH_POS_ACTIVE)
+
+        negative_values = {
+            self.start: Decimal("0.01"),
+            self.start + timedelta(days=1): Decimal("-0.02"),
+        }
+        negative_states = compute_push_state_by_date(negative_values, buy_threshold=Decimal("0"), sell_threshold=Decimal("0"))
+        self.assertEqual(negative_states[self.start], GM_PUSH_UNKNOWN)
+        self.assertEqual(negative_states[self.start + timedelta(days=1)], GM_PUSH_NEG_ACTIVE)
+
     def test_gm_push_current_averages_symbol_push_values(self):
         values = compute_current_push_values_by_date(
             {
@@ -292,6 +328,38 @@ class TrendFilterEngineTests(TestCase):
         )
         daily = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]["daily"]
         self.assertEqual([row.get("action") for row in daily], [None, None, None, "BUY"])
+        kpi_final = run_backtest_kpi_only(bt)[symbol.ticker]["lines"][0]["final"]
+        self.assertEqual(int(kpi_final["N"]), 0)
+
+    def test_gm_push_market_buy_without_explicit_threshold_does_not_block_backtest_or_kpi_path(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "101", "low": "99", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "99", "high": "100", "low": "98", "close": "99"},
+                {"date": self.start + timedelta(days=2), "open": "101", "high": "102", "low": "100", "close": "101"},
+            ],
+        )
+        symbol = self._fresh_symbol()
+        signal_lines = [{
+            "trading_model": "PROGRESSIVE_AUTO_SELL",
+            "buy": ["Af"],
+            "sell": [],
+            "gm_push_buy_conditions": {
+                "operator": "AND",
+                "market": {"mode": "POS", "explicit_threshold": False},
+            },
+        }]
+        bt = self._backtest_for_symbol(
+            symbol=symbol,
+            prices=["10", "10", "10.5"],
+            alerts_by_offset={1: "Af"},
+            signal_lines=signal_lines,
+        )
+
+        line = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]
+        self.assertEqual([row.get("action") for row in line["daily"]], [None, None, "BUY"])
+
         kpi_final = run_backtest_kpi_only(bt)[symbol.ticker]["lines"][0]["final"]
         self.assertEqual(int(kpi_final["N"]), 0)
 
