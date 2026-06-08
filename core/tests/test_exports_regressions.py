@@ -65,7 +65,9 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertEqual(rows[1][2], '["SPA", "SPVA"]')
         self.assertEqual(rows[1][3], 'GM marché: GM positif')
         self.assertEqual(rows[1][4], "Aucune")
-        self.assertEqual(rows[1][5], '["SVA"]')
+        self.assertEqual(rows[1][5], "Aucune")
+        self.assertEqual(rows[1][6], "Aucune")
+        self.assertEqual(rows[1][7], '["SVA"]')
 
     def test_build_backtest_workbook_full_serializes_list_cells(self):
         bt = self._make_backtest_stub()
@@ -78,7 +80,9 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertEqual(rows[1][2], '["SPA", "SPVA"]')
         self.assertEqual(rows[1][3], 'GM marché: GM positif')
         self.assertEqual(rows[1][4], "Aucune")
-        self.assertEqual(rows[1][5], '["SVA"]')
+        self.assertEqual(rows[1][5], "Aucune")
+        self.assertEqual(rows[1][6], "Aucune")
+        self.assertEqual(rows[1][7], '["SVA"]')
 
     def test_build_backtest_workbook_full_uses_bounded_return_wording_for_global_momentum(self):
         bt = self._make_backtest_stub()

@@ -696,6 +696,18 @@ class SymbolMetadataViewTests(TestCase):
                 "market": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
                 "sector": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
             },
+            "gm_push_buy_conditions": {
+                "operator": "AND",
+                "current": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+                "market": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+                "sector": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+            },
+            "gm_push_sell_market_exit_conditions": {
+                "operator": "AND",
+                "current": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+                "market": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+                "sector": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+            },
         }]
         self.assertEqual(json.loads(response.context["signal_lines_json"]), normalized_signal_lines)
         body = response.content.decode()
@@ -1052,6 +1064,18 @@ class SymbolMetadataViewTests(TestCase):
                 "current": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
                 "market": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
                 "sector": {"mode": "IGNORE", "threshold": None, "explicit_threshold": False},
+            },
+            "gm_push_buy_conditions": {
+                "operator": "AND",
+                "current": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+                "market": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+                "sector": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+            },
+            "gm_push_sell_market_exit_conditions": {
+                "operator": "AND",
+                "current": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+                "market": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
+                "sector": {"mode": "IGNORE", "threshold": None, "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False},
             },
         }]
         self.assertEqual(json.loads(response.context["signal_lines_json"]), normalized_signal_lines)

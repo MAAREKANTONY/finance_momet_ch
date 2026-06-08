@@ -207,11 +207,79 @@ def _normalize_gm_conditions_config(raw=None, *, operator=None, current=None, ma
     return out
 
 
+def _normalize_gm_push_condition_entry(raw=None):
+    raw = raw if isinstance(raw, dict) else {}
+    mode = _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code"))
+    threshold = raw.get("threshold")
+    buy_threshold = raw.get("buy_threshold")
+    sell_threshold = raw.get("sell_threshold")
+    if buy_threshold in (None, "") and threshold not in (None, ""):
+        buy_threshold = threshold
+    if sell_threshold in (None, "") and threshold not in (None, ""):
+        try:
+            sell_threshold = str(-abs(Decimal(str(threshold))))
+        except Exception:
+            sell_threshold = None
+    if buy_threshold in (None, "") and sell_threshold not in (None, ""):
+        try:
+            buy_threshold = str(abs(Decimal(str(sell_threshold))))
+        except Exception:
+            buy_threshold = None
+    if sell_threshold in (None, "") and buy_threshold not in (None, ""):
+        try:
+            sell_threshold = str(-abs(Decimal(str(buy_threshold))))
+        except Exception:
+            sell_threshold = None
+
+    def _threshold_str(value):
+        if value in (None, ""):
+            return None
+        try:
+            return str(Decimal(str(value)))
+        except Exception as exc:
+            raise forms.ValidationError("Le seuil GM_push doit être un nombre.") from exc
+
+    buy_threshold_str = _threshold_str(buy_threshold)
+    sell_threshold_str = _threshold_str(sell_threshold)
+    explicit_threshold = bool(raw.get("explicit_threshold")) or any(
+        value not in (None, "")
+        for value in (raw.get("threshold"), raw.get("buy_threshold"), raw.get("sell_threshold"))
+    )
+    if buy_threshold_str is None or sell_threshold_str is None:
+        explicit_threshold = False
+    return {
+        "mode": mode if mode in {"IGNORE", "POS", "NEG"} else "IGNORE",
+        "threshold": _threshold_str(threshold),
+        "buy_threshold": buy_threshold_str,
+        "sell_threshold": sell_threshold_str,
+        "explicit_threshold": bool(explicit_threshold),
+    }
+
+
+def _normalize_gm_push_conditions_config(raw=None, *, operator=None):
+    payload = raw if isinstance(raw, dict) else {}
+    out = {
+        "operator": _normalize_logic(payload.get("operator", operator), "AND"),
+    }
+    for family in ("current", "market", "sector"):
+        out[family] = _normalize_gm_push_condition_entry(payload.get(family))
+    return out
+
+
 def _gm_conditions_has_active(config):
     if not isinstance(config, dict):
         return False
     return any(
         _normalize_gm_condition_mode((config.get(family) or {}).get("mode")) != "IGNORE"
+        for family in ("current", "market", "sector")
+    )
+
+
+def _gm_push_conditions_has_active(config):
+    if not isinstance(config, dict):
+        return False
+    return any(
+        _normalize_gm_condition_mode((config.get(family) or {}).get("mode")) in {"POS", "NEG"}
         for family in ("current", "market", "sector")
     )
 
@@ -266,13 +334,20 @@ def _clean_signal_lines_json(value):
             item.get("gm_sell_market_exit_conditions"),
             operator=item.get("gm_sell_market_exit_operator"),
         )
+        payload["gm_push_buy_conditions"] = _normalize_gm_push_conditions_config(item.get("gm_push_buy_conditions"))
+        payload["gm_push_sell_market_exit_conditions"] = _normalize_gm_push_conditions_config(
+            item.get("gm_push_sell_market_exit_conditions"),
+            operator=item.get("gm_push_sell_market_exit_operator"),
+        )
         has_line_market_conditions = any(
             payload[key] != "IGNORE"
             for key in ("buy_market_gm_current", "buy_market_gm_market", "buy_market_gm_sector")
         )
         has_gm_buy_conditions = _gm_conditions_has_active(payload["gm_buy_conditions"])
         has_gm_sell_market_exit = _gm_conditions_has_active(payload["gm_sell_market_exit_conditions"])
-        if (has_line_market_conditions or has_gm_buy_conditions) and not buy:
+        has_gm_push_buy_conditions = _gm_push_conditions_has_active(payload["gm_push_buy_conditions"])
+        has_gm_push_sell_market_exit = _gm_push_conditions_has_active(payload["gm_push_sell_market_exit_conditions"])
+        if (has_line_market_conditions or has_gm_buy_conditions or has_gm_push_buy_conditions) and not buy:
             raise forms.ValidationError(
                 "Chaque ligne avec des conditions de marché doit contenir au moins un signal BUY."
             )
@@ -293,7 +368,7 @@ def _clean_signal_lines_json(value):
                     buy_logic=payload["buy_logic"],
                     sell_codes=sell,
                     sell_gm_filter=payload["sell_gm_filter"],
-                    has_gm_sell_market_exit=has_gm_sell_market_exit,
+                    has_gm_sell_market_exit=has_gm_sell_market_exit or has_gm_push_sell_market_exit,
                 )
             except ValueError as exc:
                 raise forms.ValidationError(str(exc)) from exc
@@ -305,6 +380,8 @@ def _clean_signal_lines_json(value):
             or has_line_market_conditions
             or has_gm_buy_conditions
             or has_gm_sell_market_exit
+            or has_gm_push_buy_conditions
+            or has_gm_push_sell_market_exit
         ):
             cleaned.append(payload)
     return cleaned
@@ -338,6 +415,8 @@ def _normalize_legacy_gm_for_trend_filters(signal_lines, trend_filter_gm_current
             sector=payload.get("buy_market_gm_sector"),
         ))
         payload.setdefault("gm_sell_market_exit_conditions", _normalize_gm_conditions_config())
+        payload.setdefault("gm_push_buy_conditions", _normalize_gm_push_conditions_config())
+        payload.setdefault("gm_push_sell_market_exit_conditions", _normalize_gm_push_conditions_config())
         normalized_lines.append(payload)
     return normalized_lines, normalized_current
 

@@ -13,6 +13,14 @@ from django.test.utils import CaptureQueriesContext
 from core.forms import BacktestForm
 from core.models import Alert, Backtest, DailyBar, DailyMetric, HistoricalMarketCap, Scenario, Symbol
 from core.services.backtesting.engine import run_backtest, run_backtest_kpi_only
+from core.services.gm_push import (
+    GM_PUSH_NEG_ACTIVE,
+    GM_PUSH_POS_ACTIVE,
+    GM_PUSH_UNKNOWN,
+    compute_current_push_values_by_date,
+    compute_push_state_by_date,
+    compute_push_values_for_series,
+)
 from core.services.trend_filters import (
     TREND_FILTER_GM_CURRENT_KEY,
     TREND_FILTER_GM_MARKET_KEY,
@@ -186,6 +194,33 @@ class TrendFilterEngineTests(TestCase):
         ticker = backtest.universe_snapshot[0]
         return run_backtest_kpi_only(backtest)[ticker]["lines"][0]["final"]
 
+    def _backtest_for_symbol(
+        self,
+        *,
+        symbol: Symbol,
+        prices: list[str],
+        alerts_by_offset: dict[int, str],
+        signal_lines: list[dict],
+        warmup_days: int = 0,
+        start_offset: int = 0,
+    ) -> Backtest:
+        self._add_symbol_fixture(symbol=symbol, prices=prices, alerts_by_offset=alerts_by_offset)
+        return Backtest.objects.create(
+            name="GM Push Backtest",
+            scenario=self.scenario,
+            start_date=self.start + timedelta(days=start_offset),
+            end_date=self.start + timedelta(days=len(prices) - 1),
+            capital_total=Decimal("0"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=signal_lines,
+            universe_snapshot=[symbol.ticker],
+            warmup_days=warmup_days,
+            close_positions_at_end=False,
+            settings={},
+        )
+
     def _count_dailybar_queries(self, func) -> int:
         with CaptureQueriesContext(connection) as ctx:
             func()
@@ -195,6 +230,114 @@ class TrendFilterEngineTests(TestCase):
         baseline = self._create_backtest()
         same = self._create_backtest(settings={TREND_FILTER_OPERATOR_KEY: "AND"})
         self.assertEqual(self._actions(baseline), self._actions(same))
+
+    def test_gm_push_formula_uses_sum_of_daily_returns_over_nglobal(self):
+        values = {
+            self.start: Decimal("100"),
+            self.start + timedelta(days=1): Decimal("110"),
+            self.start + timedelta(days=2): Decimal("121"),
+        }
+        out = compute_push_values_for_series(values, nglobal=2)
+        self.assertEqual(out[self.start + timedelta(days=2)], Decimal("0.20"))
+
+    def test_gm_push_state_crossing_and_memory(self):
+        values = {
+            self.start: Decimal("0.00"),
+            self.start + timedelta(days=1): Decimal("0.02"),
+            self.start + timedelta(days=2): Decimal("0.04"),
+            self.start + timedelta(days=3): Decimal("0.01"),
+            self.start + timedelta(days=4): Decimal("-0.04"),
+            self.start + timedelta(days=5): Decimal("-0.02"),
+        }
+        states = compute_push_state_by_date(values, buy_threshold=Decimal("0.03"), sell_threshold=Decimal("-0.03"))
+        self.assertEqual(states[self.start], GM_PUSH_UNKNOWN)
+        self.assertEqual(states[self.start + timedelta(days=2)], GM_PUSH_POS_ACTIVE)
+        self.assertEqual(states[self.start + timedelta(days=3)], GM_PUSH_POS_ACTIVE)
+        self.assertEqual(states[self.start + timedelta(days=4)], GM_PUSH_NEG_ACTIVE)
+        self.assertEqual(states[self.start + timedelta(days=5)], GM_PUSH_NEG_ACTIVE)
+
+    def test_gm_push_current_averages_symbol_push_values(self):
+        values = compute_current_push_values_by_date(
+            {
+                "AAA": {
+                    self.start: Decimal("100"),
+                    self.start + timedelta(days=1): Decimal("110"),
+                    self.start + timedelta(days=2): Decimal("121"),
+                },
+                "BBB": {
+                    self.start: Decimal("100"),
+                    self.start + timedelta(days=1): Decimal("100"),
+                    self.start + timedelta(days=2): Decimal("110"),
+                },
+            },
+            nglobal=2,
+        )
+        self.assertEqual(values[self.start + timedelta(days=2)], Decimal("0.15"))
+
+    def test_gm_push_buy_delays_authorization_until_latched_state_is_positive(self):
+        symbol = self._fresh_symbol()
+        bt = self._backtest_for_symbol(
+            symbol=symbol,
+            prices=["10", "10.1", "10.2", "10.6"],
+            alerts_by_offset={1: "Af"},
+            signal_lines=[{
+                "trading_model": "PROGRESSIVE_AUTO_SELL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_push_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "POS", "buy_threshold": "0.03", "sell_threshold": "-0.03", "explicit_threshold": True},
+                },
+            }],
+        )
+        daily = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]["daily"]
+        self.assertEqual([row.get("action") for row in daily], [None, None, None, "BUY"])
+        kpi_final = run_backtest_kpi_only(bt)[symbol.ticker]["lines"][0]["final"]
+        self.assertEqual(int(kpi_final["N"]), 0)
+
+    def test_gm_push_sell_market_exit_closes_open_position_and_matches_kpi_path(self):
+        symbol = self._fresh_symbol()
+        bt = self._backtest_for_symbol(
+            symbol=symbol,
+            prices=["10", "10.1", "10.2", "9"],
+            alerts_by_offset={1: "Af"},
+            signal_lines=[{
+                "trading_model": "PROGRESSIVE_AUTO_SELL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_push_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "NEG", "buy_threshold": "0.03", "sell_threshold": "-0.03", "explicit_threshold": True},
+                },
+            }],
+        )
+        line = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]
+        actions = [row.get("action") for row in line["daily"]]
+        self.assertEqual(actions, [None, "BUY", None, "SELL"])
+        self.assertIn("GM_PUSH_MARKET_EXIT", line["daily"][3]["action_reason"])
+        kpi_final = run_backtest_kpi_only(bt)[symbol.ticker]["lines"][0]["final"]
+        self.assertEqual(int(kpi_final["N"]), 1)
+
+    def test_gm_push_warmup_restores_state_before_backtest_start(self):
+        symbol = self._fresh_symbol()
+        bt = self._backtest_for_symbol(
+            symbol=symbol,
+            prices=["10", "10.1", "10.2", "10.6"],
+            alerts_by_offset={3: "Af"},
+            start_offset=3,
+            warmup_days=3,
+            signal_lines=[{
+                "trading_model": "PROGRESSIVE_AUTO_SELL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_push_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "POS", "buy_threshold": "0.03", "sell_threshold": "-0.03", "explicit_threshold": True},
+                },
+            }],
+        )
+        daily = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]["daily"]
+        self.assertEqual([row.get("action") for row in daily], ["BUY"])
 
     def test_legacy_buy_gm_filter_remains_unchanged(self):
         signal_lines = [{

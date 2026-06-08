@@ -33,6 +33,14 @@ from core.services.global_momentum import (
     compute_global_momentum_values_by_date,
     regime_for_value,
 )
+from core.services.gm_push import (
+    GM_PUSH_NEG_ACTIVE,
+    GM_PUSH_POS_ACTIVE,
+    GM_PUSH_UNKNOWN,
+    compute_current_push_values_by_date,
+    compute_push_state_by_date,
+    compute_push_values_for_series,
+)
 from core.services.market_cap import preload_market_cap_series
 from core.services.trend_filters import (
     collect_distinct_benchmark_tickers,
@@ -335,11 +343,57 @@ def _normalize_gm_conditions_config(
     return normalized
 
 
+def _normalize_gm_push_condition_entry(raw: Any = None) -> dict[str, Any]:
+    raw = raw if isinstance(raw, dict) else {}
+    mode = _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code"))
+    threshold = _to_dec(raw.get("threshold"))
+    buy_threshold = _to_dec(raw.get("buy_threshold"))
+    sell_threshold = _to_dec(raw.get("sell_threshold"))
+    if buy_threshold is None and threshold is not None:
+        buy_threshold = threshold
+    if sell_threshold is None and threshold is not None:
+        sell_threshold = -abs(threshold)
+    if buy_threshold is None and sell_threshold is not None:
+        buy_threshold = abs(sell_threshold)
+    if sell_threshold is None and buy_threshold is not None:
+        sell_threshold = -abs(buy_threshold)
+    explicit_threshold = bool(raw.get("explicit_threshold")) or any(
+        value not in (None, "")
+        for value in (raw.get("threshold"), raw.get("buy_threshold"), raw.get("sell_threshold"))
+    )
+    return {
+        "mode": mode if mode in {"IGNORE", "POS", "NEG"} else "IGNORE",
+        "threshold": None if threshold is None else str(threshold),
+        "buy_threshold": None if buy_threshold is None else str(buy_threshold),
+        "sell_threshold": None if sell_threshold is None else str(sell_threshold),
+        "explicit_threshold": bool(explicit_threshold and buy_threshold is not None and sell_threshold is not None),
+    }
+
+
+def _normalize_gm_push_conditions_config(raw: Any = None, *, operator: Any = None) -> dict[str, Any]:
+    payload = raw if isinstance(raw, dict) else {}
+    normalized = {
+        "operator": _normalize_logic(payload.get("operator", operator), "AND"),
+    }
+    for family in GM_CONDITION_FAMILIES:
+        normalized[family] = _normalize_gm_push_condition_entry(payload.get(family))
+    return normalized
+
+
 def _gm_conditions_has_active(config: dict[str, Any] | None) -> bool:
     if not isinstance(config, dict):
         return False
     return any(
         _normalize_gm_condition_mode((config.get(family) or {}).get("mode")) != "IGNORE"
+        for family in GM_CONDITION_FAMILIES
+    )
+
+
+def _gm_push_conditions_has_active(config: dict[str, Any] | None) -> bool:
+    if not isinstance(config, dict):
+        return False
+    return any(
+        _normalize_gm_condition_mode((config.get(family) or {}).get("mode")) in {"POS", "NEG"}
         for family in GM_CONDITION_FAMILIES
     )
 
@@ -370,7 +424,19 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
             raw.get("gm_sell_market_exit_conditions"),
             operator=raw.get("gm_sell_market_exit_operator"),
         )
-        if buy_codes or sell_codes or _gm_conditions_has_active(gm_buy_conditions) or _gm_conditions_has_active(gm_sell_market_exit_conditions):
+        gm_push_buy_conditions = _normalize_gm_push_conditions_config(raw.get("gm_push_buy_conditions"))
+        gm_push_sell_market_exit_conditions = _normalize_gm_push_conditions_config(
+            raw.get("gm_push_sell_market_exit_conditions"),
+            operator=raw.get("gm_push_sell_market_exit_operator"),
+        )
+        if (
+            buy_codes
+            or sell_codes
+            or _gm_conditions_has_active(gm_buy_conditions)
+            or _gm_conditions_has_active(gm_sell_market_exit_conditions)
+            or _gm_push_conditions_has_active(gm_push_buy_conditions)
+            or _gm_push_conditions_has_active(gm_push_sell_market_exit_conditions)
+        ):
             trading_model, explicit_trading_model = resolve_trading_model(raw.get("trading_model"), buy_codes)
             buy_logic = _normalize_logic(raw.get("buy_logic"), "AND")
             sell_logic = _normalize_logic(raw.get("sell_logic"), "OR")
@@ -388,7 +454,10 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
                     buy_logic=buy_logic,
                     sell_codes=sell_codes,
                     sell_gm_filter=sell_gm_filter,
-                    has_gm_sell_market_exit=_gm_conditions_has_active(gm_sell_market_exit_conditions),
+                    has_gm_sell_market_exit=(
+                        _gm_conditions_has_active(gm_sell_market_exit_conditions)
+                        or _gm_push_conditions_has_active(gm_push_sell_market_exit_conditions)
+                    ),
                 )
             out.append({
                 "mode": mode,
@@ -405,10 +474,12 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
                 "buy_market_operator": _normalize_logic(raw.get("buy_market_operator"), "AND"),
                 "gm_buy_conditions": gm_buy_conditions,
                 "gm_sell_market_exit_conditions": gm_sell_market_exit_conditions,
+                "gm_push_buy_conditions": gm_push_buy_conditions,
+                "gm_push_sell_market_exit_conditions": gm_push_sell_market_exit_conditions,
                 "sell_gm_filter": sell_gm_filter,
                 "sell_gm_operator": _normalize_logic(raw.get("sell_gm_operator"), "AND"),
             })
-    return out or [{"mode": "standard", "trading_model": TRADING_MODEL_PROGRESSIVE_AUTO_SELL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "buy_market_gm_current": "IGNORE", "buy_market_gm_market": "IGNORE", "buy_market_gm_sector": "IGNORE", "buy_market_operator": "AND", "gm_buy_conditions": _normalize_gm_conditions_config(), "gm_sell_market_exit_conditions": _normalize_gm_conditions_config(), "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
+    return out or [{"mode": "standard", "trading_model": TRADING_MODEL_PROGRESSIVE_AUTO_SELL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "buy_market_gm_current": "IGNORE", "buy_market_gm_market": "IGNORE", "buy_market_gm_sector": "IGNORE", "buy_market_operator": "AND", "gm_buy_conditions": _normalize_gm_conditions_config(), "gm_sell_market_exit_conditions": _normalize_gm_conditions_config(), "gm_push_buy_conditions": _normalize_gm_push_conditions_config(), "gm_push_sell_market_exit_conditions": _normalize_gm_push_conditions_config(), "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
 
 
 def _match_codes(day_alerts: set[str], codes: list[str], logic: str = "AND") -> bool:
@@ -927,6 +998,14 @@ def _collect_distinct_benchmark_tickers_for_line_market_conditions(
             symbols,
             _gm_conditions_to_trend_settings(line.get("gm_sell_market_exit_conditions")),
         )
+        benchmark_tickers |= collect_distinct_benchmark_tickers(
+            symbols,
+            _gm_conditions_to_trend_settings(line.get("gm_push_buy_conditions")),
+        )
+        benchmark_tickers |= collect_distinct_benchmark_tickers(
+            symbols,
+            _gm_conditions_to_trend_settings(line.get("gm_push_sell_market_exit_conditions")),
+        )
     return benchmark_tickers
 
 
@@ -982,6 +1061,31 @@ def _gm_conditions_label(config: dict[str, Any] | None) -> str:
     return op_txt.join(parts)
 
 
+def _gm_push_condition_entry_label(entry: dict[str, Any] | None) -> str:
+    entry = entry or {}
+    mode = _normalize_gm_condition_mode(entry.get("mode"))
+    if mode == "IGNORE":
+        return ""
+    label = {"POS": "impulsion positive", "NEG": "impulsion négative"}.get(mode, mode)
+    threshold = entry.get("buy_threshold") if mode == "POS" else entry.get("sell_threshold")
+    if threshold not in (None, ""):
+        op = ">" if mode == "POS" else "<"
+        return f"{label} ({op} {threshold})"
+    return label
+
+
+def _gm_push_conditions_label(config: dict[str, Any] | None) -> str:
+    if not _gm_push_conditions_has_active(config):
+        return ""
+    parts = []
+    for family, label in (("current", "GM_push actuel"), ("market", "GM_push marché"), ("sector", "GM_push secteur")):
+        entry_label = _gm_push_condition_entry_label((config or {}).get(family))
+        if entry_label:
+            parts.append(f"{label}: {entry_label}")
+    op_txt = " ET " if _normalize_logic((config or {}).get("operator"), "AND") == "AND" else " OU "
+    return op_txt.join(parts)
+
+
 def _gm_value_for_condition_family(
     *,
     family: str,
@@ -1009,6 +1113,122 @@ def _gm_value_for_condition_family(
         ),
         benchmark_ticker,
     )
+
+
+def _build_gm_push_values_from_benchmark_cache(
+    benchmark_cache_by_ticker: dict[str, dict[str, list[Any]]] | None,
+    *,
+    nglobal: int,
+) -> dict[str, dict[date, Decimal | None]]:
+    out: dict[str, dict[date, Decimal | None]] = {}
+    for ticker, cache_entry in (benchmark_cache_by_ticker or {}).items():
+        dates = cache_entry.get("dates") or []
+        values = cache_entry.get("values") or []
+        out[ticker] = compute_push_values_for_series(list(zip(dates, values)), nglobal=nglobal)
+    return out
+
+
+def _gm_push_value_for_condition_family(
+    *,
+    family: str,
+    symbol: Symbol | None,
+    as_of: date,
+    gm_push_current_values: dict[date, Decimal | None] | None,
+    gm_push_benchmark_values_by_ticker: dict[str, dict[date, Decimal | None]] | None,
+) -> tuple[Decimal | None, str | None]:
+    if family == "current":
+        return (gm_push_current_values or {}).get(as_of), None
+    if family == "market":
+        benchmark_ticker = market_benchmark_ticker_for_symbol(symbol)
+    elif family == "sector":
+        benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol)
+    else:
+        return None, None
+    if not benchmark_ticker:
+        return None, None
+    return (
+        (gm_push_benchmark_values_by_ticker or {}).get(benchmark_ticker, {}).get(as_of),
+        benchmark_ticker,
+    )
+
+
+def _gm_push_thresholds_for_entry(entry: dict[str, Any]) -> tuple[Decimal | None, Decimal | None]:
+    buy_threshold = _to_dec(entry.get("buy_threshold"))
+    sell_threshold = _to_dec(entry.get("sell_threshold"))
+    return buy_threshold, sell_threshold
+
+
+def _evaluate_gm_push_conditions(
+    *,
+    config: dict[str, Any] | None,
+    symbol: Symbol | None,
+    as_of: date,
+    gm_push_current_values: dict[date, Decimal | None] | None,
+    gm_push_benchmark_values_by_ticker: dict[str, dict[date, Decimal | None]] | None,
+    gm_push_state_cache: dict[tuple[Any, ...], dict[date, str]],
+) -> dict[str, Any]:
+    config = config if isinstance(config, dict) else {}
+    active_results = []
+    family_results = {}
+    for family in GM_CONDITION_FAMILIES:
+        entry = (config.get(family) or {}) if isinstance(config.get(family), dict) else {}
+        mode = _normalize_gm_condition_mode(entry.get("mode"))
+        if mode not in {"POS", "NEG"}:
+            family_results[family] = {"active": False, "passed": None, "value": None, "state": GM_PUSH_UNKNOWN, "benchmark_ticker": None}
+            continue
+        actual_value, benchmark_ticker = _gm_push_value_for_condition_family(
+            family=family,
+            symbol=symbol,
+            as_of=as_of,
+            gm_push_current_values=gm_push_current_values,
+            gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
+        )
+        buy_threshold, sell_threshold = _gm_push_thresholds_for_entry(entry)
+        if family == "current":
+            series_key = ("current", str(buy_threshold), str(sell_threshold))
+            series = gm_push_current_values or {}
+        else:
+            series_key = (family, benchmark_ticker, str(buy_threshold), str(sell_threshold))
+            series = (gm_push_benchmark_values_by_ticker or {}).get(benchmark_ticker or "", {})
+        if series_key not in gm_push_state_cache:
+            gm_push_state_cache[series_key] = compute_push_state_by_date(
+                series,
+                buy_threshold=buy_threshold,
+                sell_threshold=sell_threshold,
+            )
+        state_value = gm_push_state_cache[series_key].get(as_of, GM_PUSH_UNKNOWN)
+        passed = (
+            state_value == GM_PUSH_POS_ACTIVE
+            if mode == "POS"
+            else state_value == GM_PUSH_NEG_ACTIVE
+        )
+        payload = {
+            "active": True,
+            "mode": mode,
+            "threshold": entry.get("threshold"),
+            "buy_threshold": entry.get("buy_threshold"),
+            "sell_threshold": entry.get("sell_threshold"),
+            "explicit_threshold": bool(entry.get("explicit_threshold")),
+            "value": None if actual_value is None else str(actual_value),
+            "state": state_value,
+            "benchmark_ticker": benchmark_ticker,
+            "passed": bool(passed),
+        }
+        family_results[family] = payload
+        active_results.append(payload)
+    if not active_results:
+        passed_all = True
+    elif _normalize_logic(config.get("operator"), "AND") == "OR":
+        passed_all = any(item["passed"] is True for item in active_results)
+    else:
+        passed_all = all(item["passed"] is True for item in active_results)
+    return {
+        "operator": _normalize_logic(config.get("operator"), "AND"),
+        "has_active": bool(active_results),
+        "passed": bool(passed_all),
+        "families": family_results,
+        "label": _gm_push_conditions_label(config),
+    }
 
 
 def _evaluate_gm_conditions(
@@ -1118,6 +1338,19 @@ def _build_global_momentum_values_from_ticker_data(data_by_ticker: dict[str, dic
         if metrics:
             metrics_by_ticker[ticker] = metrics
     return compute_global_momentum_values_by_date(
+        metrics_by_ticker,
+        nglobal=int(nglobal or 0),
+        p_getter=lambda mt: _metric_val(mt, _M_P),
+    )
+
+
+def _build_gm_push_current_values_from_ticker_data(data_by_ticker: dict[str, dict[str, Any]], nglobal: int) -> dict[date, Decimal | None]:
+    metrics_by_ticker: dict[str, dict[date, tuple[Any, ...]]] = {}
+    for ticker, tdata in (data_by_ticker or {}).items():
+        metrics = tdata.get("metrics") or {}
+        if metrics:
+            metrics_by_ticker[ticker] = metrics
+    return compute_current_push_values_by_date(
         metrics_by_ticker,
         nglobal=int(nglobal or 0),
         p_getter=lambda mt: _metric_val(mt, _M_P),
@@ -1404,6 +1637,12 @@ def run_backtest(
     nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
     global_momentum_values_by_date = _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
     global_momentum_regime_by_date = _build_global_momentum_regime_from_values(global_momentum_values_by_date)
+    gm_push_current_values_by_date = _build_gm_push_current_values_from_ticker_data(data_by_ticker, nglobal)
+    gm_push_benchmark_values_by_ticker = _build_gm_push_values_from_benchmark_cache(
+        benchmark_price_cache,
+        nglobal=nglobal,
+    )
+    gm_push_state_cache: dict[tuple[Any, ...], dict[date, str]] = {}
 
     dates_sorted = sorted(all_dates)
     if not dates_sorted:
@@ -1496,6 +1735,36 @@ def run_backtest(
         evaluation["passed"] = bool(evaluation.get("passed"))
         return evaluation
 
+    def _line_gm_push_conditions_allow_buy(st: dict[str, Any], ticker: str, d) -> bool:
+        gm_push_buy_conditions = st.get("gm_push_buy_conditions") or _normalize_gm_push_conditions_config()
+        if not _gm_push_conditions_has_active(gm_push_buy_conditions):
+            return True
+        return bool(
+            _evaluate_gm_push_conditions(
+                config=gm_push_buy_conditions,
+                symbol=sym_by_ticker.get(ticker),
+                as_of=d,
+                gm_push_current_values=gm_push_current_values_by_date,
+                gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
+                gm_push_state_cache=gm_push_state_cache,
+            )["passed"]
+        )
+
+    def _gm_push_market_exit_sell_evaluation(st: dict[str, Any], ticker: str, d) -> dict[str, Any]:
+        gm_push_sell_conditions = st.get("gm_push_sell_market_exit_conditions") or _normalize_gm_push_conditions_config()
+        if not _gm_push_conditions_has_active(gm_push_sell_conditions):
+            return {"has_active": False, "passed": False, "label": ""}
+        evaluation = _evaluate_gm_push_conditions(
+            config=gm_push_sell_conditions,
+            symbol=sym_by_ticker.get(ticker),
+            as_of=d,
+            gm_push_current_values=gm_push_current_values_by_date,
+            gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
+            gm_push_state_cache=gm_push_state_cache,
+        )
+        evaluation["passed"] = bool(evaluation.get("passed"))
+        return evaluation
+
     for ticker in data_by_ticker.keys():
         for li, line in enumerate(signal_lines):
             state[(ticker, li)] = {
@@ -1521,6 +1790,11 @@ def run_backtest(
                 "gm_sell_market_exit_conditions": _normalize_gm_conditions_config(
                     line.get("gm_sell_market_exit_conditions"),
                     operator=line.get("gm_sell_market_exit_operator"),
+                ),
+                "gm_push_buy_conditions": _normalize_gm_push_conditions_config(line.get("gm_push_buy_conditions")),
+                "gm_push_sell_market_exit_conditions": _normalize_gm_push_conditions_config(
+                    line.get("gm_push_sell_market_exit_conditions"),
+                    operator=line.get("gm_push_sell_market_exit_operator"),
                 ),
                 "sell_gm_filter": _normalize_global_regime_filter(line.get("sell_gm_filter")),
                 "sell_gm_operator": _normalize_logic(line.get("sell_gm_operator"), "AND"),
@@ -1646,6 +1920,7 @@ def run_backtest(
             portfolio_return_global = (equity - capital_total) / capital_total
 
         avg_global_nglobal = _to_dec((global_momentum_values_by_date or {}).get(d))
+        gm_push_current_value = _to_dec((gm_push_current_values_by_date or {}).get(d))
 
         if peak_equity is None or equity > peak_equity:
             peak_equity = equity
@@ -1672,6 +1947,7 @@ def run_backtest(
                 "pnl_global": str(pnl_global),
                 "portfolio_return_global": None if portfolio_return_global is None else str(portfolio_return_global),
                 "avg_global_nglobal": None if avg_global_nglobal is None else str(avg_global_nglobal),
+                "gm_push_current": None if gm_push_current_value is None else str(gm_push_current_value),
                 "drawdown": str(dd),
             }
         )
@@ -1711,6 +1987,10 @@ def run_backtest(
                     "gm_buy_conditions": st["gm_buy_conditions"],
                     "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
                     "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
+                    "gm_push_buy_conditions": st["gm_push_buy_conditions"],
+                    "gm_push_sell_market_exit_conditions": st["gm_push_sell_market_exit_conditions"],
+                    "gm_push_buy_label": _gm_push_conditions_label(st["gm_push_buy_conditions"]),
+                    "gm_push_sell_market_exit_label": _gm_push_conditions_label(st["gm_push_sell_market_exit_conditions"]),
                     "sell_gm_filter": st["sell_gm_filter"],
                     "sell_gm_operator": st["sell_gm_operator"],
                     "action": None,
@@ -1827,6 +2107,15 @@ def run_backtest(
                     )
                     if _line_uses_progressive_explicit_sell_model(st):
                         _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
+            if st["position_open"] and G_today is None:
+                gm_push_sell_evaluation = _gm_push_market_exit_sell_evaluation(st, ticker, d)
+                if gm_push_sell_evaluation.get("has_active") and gm_push_sell_evaluation.get("passed"):
+                    _do_sell(
+                        f"GM_PUSH_MARKET_EXIT ({gm_push_sell_evaluation.get('label') or 'active'})",
+                        reset_signal_memory=not bool(st.get("use_signal_latch_model")),
+                    )
+                    if _line_uses_progressive_explicit_sell_model(st):
+                        _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
             if G_today is not None:
                 st["_sold_today"] = True
                 _record_line_event(
@@ -1880,6 +2169,10 @@ def run_backtest(
                 "gm_buy_conditions": st["gm_buy_conditions"],
                 "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
                 "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
+                "gm_push_buy_conditions": st["gm_push_buy_conditions"],
+                "gm_push_sell_market_exit_conditions": st["gm_push_sell_market_exit_conditions"],
+                "gm_push_buy_label": _gm_push_conditions_label(st["gm_push_buy_conditions"]),
+                "gm_push_sell_market_exit_label": _gm_push_conditions_label(st["gm_push_sell_market_exit_conditions"]),
                 "sell_gm_filter": st["sell_gm_filter"],
                 "sell_gm_operator": st["sell_gm_operator"],
                 "action": "SELL" if G_today is not None else None,
@@ -1938,6 +2231,8 @@ def run_backtest(
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                continue
+            if not _line_gm_push_conditions_allow_buy(st, ticker, d):
                 continue
 
             if not st["allocated"]:
@@ -2012,6 +2307,8 @@ def run_backtest(
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                continue
+            if not _line_gm_push_conditions_allow_buy(st, ticker, d):
                 continue
 
             if not st["allocated"]:
@@ -2240,6 +2537,10 @@ def run_backtest(
                     "gm_buy_conditions": st["gm_buy_conditions"],
                     "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
                     "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
+                    "gm_push_buy_conditions": st["gm_push_buy_conditions"],
+                    "gm_push_sell_market_exit_conditions": st["gm_push_sell_market_exit_conditions"],
+                    "gm_push_buy_label": _gm_push_conditions_label(st["gm_push_buy_conditions"]),
+                    "gm_push_sell_market_exit_label": _gm_push_conditions_label(st["gm_push_sell_market_exit_conditions"]),
                     "sell_gm_filter": st["sell_gm_filter"],
                     "sell_gm_operator": st["sell_gm_operator"],
                     "action": "FORCED_SELL",
@@ -2337,6 +2638,10 @@ def run_backtest(
                 "gm_buy_conditions": st["gm_buy_conditions"],
                 "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
                 "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
+                "gm_push_buy_conditions": st["gm_push_buy_conditions"],
+                "gm_push_sell_market_exit_conditions": st["gm_push_sell_market_exit_conditions"],
+                "gm_push_buy_label": _gm_push_conditions_label(st["gm_push_buy_conditions"]),
+                "gm_push_sell_market_exit_label": _gm_push_conditions_label(st["gm_push_sell_market_exit_conditions"]),
                 "sell_gm_filter": st["sell_gm_filter"],
                 "sell_gm_operator": st["sell_gm_operator"],
                 "trading_model": st["trading_model"],
@@ -2725,6 +3030,12 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
     global_momentum_values_by_date = _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
     global_momentum_regime_by_date = _build_global_momentum_regime_from_values(global_momentum_values_by_date)
+    gm_push_current_values_by_date = _build_gm_push_current_values_from_ticker_data(data_by_ticker, nglobal)
+    gm_push_benchmark_values_by_ticker = _build_gm_push_values_from_benchmark_cache(
+        benchmark_price_cache,
+        nglobal=nglobal,
+    )
+    gm_push_state_cache: dict[tuple[Any, ...], dict[date, str]] = {}
 
     dates_sorted = sorted(all_dates)
     warmup_dates = [d for d in dates_sorted if (start_d is not None and d < start_d)]
@@ -2761,6 +3072,11 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 "gm_sell_market_exit_conditions": _normalize_gm_conditions_config(
                     line.get("gm_sell_market_exit_conditions"),
                     operator=line.get("gm_sell_market_exit_operator"),
+                ),
+                "gm_push_buy_conditions": _normalize_gm_push_conditions_config(line.get("gm_push_buy_conditions")),
+                "gm_push_sell_market_exit_conditions": _normalize_gm_push_conditions_config(
+                    line.get("gm_push_sell_market_exit_conditions"),
+                    operator=line.get("gm_push_sell_market_exit_operator"),
                 ),
                 "sell_gm_filter": _normalize_global_regime_filter(line.get("sell_gm_filter")),
                 "sell_gm_operator": _normalize_logic(line.get("sell_gm_operator"), "AND"),
@@ -2867,6 +3183,36 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
             gm_current_regime=global_momentum_regime_by_date.get(d),
             benchmark_cache_by_ticker=benchmark_price_cache,
+        )
+        evaluation["passed"] = bool(evaluation.get("passed"))
+        return evaluation
+
+    def _line_gm_push_conditions_allow_buy(st: dict[str, Any], ticker: str, d) -> bool:
+        gm_push_buy_conditions = st.get("gm_push_buy_conditions") or _normalize_gm_push_conditions_config()
+        if not _gm_push_conditions_has_active(gm_push_buy_conditions):
+            return True
+        return bool(
+            _evaluate_gm_push_conditions(
+                config=gm_push_buy_conditions,
+                symbol=sym_by_ticker.get(ticker),
+                as_of=d,
+                gm_push_current_values=gm_push_current_values_by_date,
+                gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
+                gm_push_state_cache=gm_push_state_cache,
+            )["passed"]
+        )
+
+    def _gm_push_market_exit_sell_evaluation(st: dict[str, Any], ticker: str, d) -> dict[str, Any]:
+        gm_push_sell_conditions = st.get("gm_push_sell_market_exit_conditions") or _normalize_gm_push_conditions_config()
+        if not _gm_push_conditions_has_active(gm_push_sell_conditions):
+            return {"has_active": False, "passed": False, "label": ""}
+        evaluation = _evaluate_gm_push_conditions(
+            config=gm_push_sell_conditions,
+            symbol=sym_by_ticker.get(ticker),
+            as_of=d,
+            gm_push_current_values=gm_push_current_values_by_date,
+            gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
+            gm_push_state_cache=gm_push_state_cache,
         )
         evaluation["passed"] = bool(evaluation.get("passed"))
         return evaluation
@@ -2989,6 +3335,15 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     )
                     if _line_uses_progressive_explicit_sell_model(st):
                         _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
+            if st["position_open"] and G_today is None:
+                gm_push_sell_evaluation = _gm_push_market_exit_sell_evaluation(st, ticker, d)
+                if gm_push_sell_evaluation.get("has_active") and gm_push_sell_evaluation.get("passed"):
+                    _do_sell(
+                        f"GM_PUSH_MARKET_EXIT ({gm_push_sell_evaluation.get('label') or 'active'})",
+                        reset_signal_memory=not bool(st.get("use_signal_latch_model")),
+                    )
+                    if _line_uses_progressive_explicit_sell_model(st):
+                        _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
             if G_today is not None:
                 st["_sold_today"] = True
 
@@ -3026,6 +3381,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                continue
+            if not _line_gm_push_conditions_allow_buy(st, ticker, d):
                 continue
 
             if not st["allocated"]:
@@ -3078,6 +3435,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                continue
+            if not _line_gm_push_conditions_allow_buy(st, ticker, d):
                 continue
             if not st["allocated"]:
                 continue
@@ -3173,6 +3532,10 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                     "gm_buy_conditions": st["gm_buy_conditions"],
                     "gm_sell_market_exit_conditions": st["gm_sell_market_exit_conditions"],
                     "gm_sell_market_exit_label": _gm_conditions_label(st["gm_sell_market_exit_conditions"]),
+                    "gm_push_buy_conditions": st["gm_push_buy_conditions"],
+                    "gm_push_sell_market_exit_conditions": st["gm_push_sell_market_exit_conditions"],
+                    "gm_push_buy_label": _gm_push_conditions_label(st["gm_push_buy_conditions"]),
+                    "gm_push_sell_market_exit_label": _gm_push_conditions_label(st["gm_push_sell_market_exit_conditions"]),
                     "sell_gm_filter": st["sell_gm_filter"],
                     "sell_gm_operator": st["sell_gm_operator"],
                     "trading_model": st["trading_model"],
