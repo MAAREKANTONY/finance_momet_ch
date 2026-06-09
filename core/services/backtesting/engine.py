@@ -350,14 +350,13 @@ def _normalize_gm_push_condition_entry(raw: Any = None) -> dict[str, Any]:
     threshold = _to_dec(raw.get("threshold"))
     buy_threshold = _to_dec(raw.get("buy_threshold"))
     sell_threshold = _to_dec(raw.get("sell_threshold"))
-    if buy_threshold is None and threshold is not None:
+    if threshold is not None:
         buy_threshold = threshold
-    if sell_threshold is None and threshold is not None:
-        sell_threshold = -abs(threshold)
-    if buy_threshold is None and sell_threshold is not None:
-        buy_threshold = abs(sell_threshold)
-    if sell_threshold is None and buy_threshold is not None:
-        sell_threshold = -abs(buy_threshold)
+        sell_threshold = threshold
+    elif buy_threshold is not None and sell_threshold is None:
+        sell_threshold = buy_threshold
+    elif sell_threshold is not None and buy_threshold is None:
+        buy_threshold = sell_threshold
     explicit_threshold = bool(raw.get("explicit_threshold")) or any(
         value not in (None, "")
         for value in (raw.get("threshold"), raw.get("buy_threshold"), raw.get("sell_threshold"))

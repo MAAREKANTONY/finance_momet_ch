@@ -138,11 +138,11 @@ class SignalLinesCleaningTests(SimpleTestCase):
         line = cleaned[0]
         self.assertEqual(line["gm_push_buy_conditions"]["current"]["mode"], "POS")
         self.assertEqual(line["gm_push_buy_conditions"]["current"]["buy_threshold"], "0.03")
-        self.assertEqual(line["gm_push_buy_conditions"]["current"]["sell_threshold"], "-0.03")
+        self.assertEqual(line["gm_push_buy_conditions"]["current"]["sell_threshold"], "0.03")
         self.assertEqual(line["gm_push_sell_market_exit_conditions"]["operator"], "OR")
         self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["mode"], "NEG")
         self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["buy_threshold"], "0.04")
-        self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["sell_threshold"], "-0.04")
+        self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["sell_threshold"], "0.04")
 
     def test_clean_signal_lines_rejects_market_conditions_without_buy_signal(self):
         with self.assertRaises(forms.ValidationError):

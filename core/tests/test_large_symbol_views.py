@@ -2380,7 +2380,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(payload["gm_push"]["current"]["thresholds"][0]["role"], "BUY")
         self.assertEqual(payload["gm_push"]["current"]["thresholds"][0]["threshold"], "0.03")
         self.assertEqual(payload["gm_push"]["current"]["thresholds"][1]["role"], "SELL")
-        self.assertEqual(payload["gm_push"]["current"]["thresholds"][1]["threshold"], "-0.03")
+        self.assertEqual(payload["gm_push"]["current"]["thresholds"][1]["threshold"], "0.03")
         body = response.content.decode()
         self.assertIn("Impulsion GM Push", body)
         self.assertIn("diagnosticGmPushCurrentChart", body)
@@ -2437,7 +2437,7 @@ class BacktestResultsRenderTests(TestCase):
                 "mode": "GM_POS",
                 "threshold": "0.02",
                 "buy_threshold": "0.02",
-                "sell_threshold": "-0.02",
+                "sell_threshold": "0.02",
                 "explicit_threshold": True,
             },
         }
@@ -2468,15 +2468,13 @@ class BacktestResultsRenderTests(TestCase):
         self.symbol.save(update_fields=["sector"])
         xlk = Symbol.objects.create(ticker="XLK", exchange="NYSE", country="US", sector="Technology", active=True)
         self._add_bar(xlk, "2024-01-02", "100")
-        self._add_bar(xlk, "2024-01-03", "99")
+        self._add_bar(xlk, "2024-01-03", "103")
         self._add_bar(xlk, "2024-01-04", "95")
         gm_push_sell_conditions = {
             "operator": "OR",
             "sector": {
                 "mode": "GM_NEG",
-                "threshold": "-0.02",
-                "buy_threshold": "0.02",
-                "sell_threshold": "-0.02",
+                "threshold": "0.02",
                 "explicit_threshold": True,
             },
         }
@@ -2502,8 +2500,12 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(payload["gm_push"]["operator_sell"], "OR")
         self.assertTrue(payload["gm_push"]["sector"]["active"])
         self.assertEqual(payload["gm_push"]["sector"]["benchmark_ticker"], "XLK")
-        self.assertEqual(payload["gm_push"]["sector"]["values"], [None, "-0.01", "-0.0404040404040404040404040404"])
+        self.assertEqual(payload["gm_push"]["sector"]["values"], [None, "0.03", "-0.07766990291262135922330097087"])
         self.assertEqual(payload["gm_push"]["sector"]["states"], ["UNKNOWN", "UNKNOWN", "NEG_ACTIVE"])
+        self.assertEqual(payload["gm_push"]["sector"]["roles"][0]["threshold"], "0.02")
+        self.assertEqual(payload["gm_push"]["sector"]["roles"][0]["sell_threshold"], "0.02")
+        self.assertEqual(payload["gm_push"]["sector"]["thresholds"][1]["user_threshold"], "0.02")
+        self.assertEqual(payload["gm_push"]["sector"]["thresholds"][1]["threshold"], "0.02")
         self.assertIn({"date": "2024-01-04", "type": "GM_PUSH_MARKET_EXIT"}, payload["markers"])
         body = response.content.decode()
         self.assertIn("diagnosticGmPushSectorChart", body)

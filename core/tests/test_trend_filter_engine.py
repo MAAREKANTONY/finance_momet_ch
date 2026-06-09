@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+from pathlib import Path
 from datetime import date, timedelta
 from decimal import Decimal
 from unittest.mock import patch
@@ -275,6 +276,54 @@ class TrendFilterEngineTests(TestCase):
             self.assertEqual(neg_entry["sell_threshold"], "0")
             self.assertFalse(neg_entry["explicit_threshold"])
 
+    def test_gm_push_normalization_uses_user_threshold_without_sign_inversion(self):
+        for normalizer in (normalize_engine_gm_push_condition_entry, normalize_form_gm_push_condition_entry):
+            neg_entry = normalizer({"mode": "NEG", "threshold": "0.2"})
+            self.assertEqual(neg_entry["mode"], "NEG")
+            self.assertEqual(neg_entry["threshold"], "0.2")
+            self.assertEqual(neg_entry["buy_threshold"], "0.2")
+            self.assertEqual(neg_entry["sell_threshold"], "0.2")
+            self.assertTrue(neg_entry["explicit_threshold"])
+
+            threshold_wins_entry = normalizer({
+                "mode": "NEG",
+                "threshold": "0.2",
+                "buy_threshold": "0.2",
+                "sell_threshold": "-0.2",
+                "explicit_threshold": True,
+            })
+            self.assertEqual(threshold_wins_entry["threshold"], "0.2")
+            self.assertEqual(threshold_wins_entry["buy_threshold"], "0.2")
+            self.assertEqual(threshold_wins_entry["sell_threshold"], "0.2")
+            self.assertTrue(threshold_wins_entry["explicit_threshold"])
+
+            legacy_entry = normalizer({"mode": "NEG", "sell_threshold": "-0.2", "explicit_threshold": True})
+            self.assertIsNone(legacy_entry["threshold"])
+            self.assertEqual(legacy_entry["buy_threshold"], "-0.2")
+            self.assertEqual(legacy_entry["sell_threshold"], "-0.2")
+            self.assertTrue(legacy_entry["explicit_threshold"])
+
+            positive_sell_entry = normalizer({"mode": "NEG", "sell_threshold": "0.2", "explicit_threshold": True})
+            self.assertIsNone(positive_sell_entry["threshold"])
+            self.assertEqual(positive_sell_entry["buy_threshold"], "0.2")
+            self.assertEqual(positive_sell_entry["sell_threshold"], "0.2")
+            self.assertTrue(positive_sell_entry["explicit_threshold"])
+
+            pos_entry = normalizer({"mode": "POS", "threshold": "0.2"})
+            self.assertEqual(pos_entry["threshold"], "0.2")
+            self.assertEqual(pos_entry["buy_threshold"], "0.2")
+            self.assertEqual(pos_entry["sell_threshold"], "0.2")
+
+    def test_gm_push_ui_serializes_user_threshold_magnitude_only(self):
+        for relative_path in (
+            "templates/backtest_create.html",
+            "templates/backtest_edit.html",
+            "templates/game_scenario_form.html",
+        ):
+            source = Path(relative_path).read_text()
+            self.assertIn("threshold: threshold || null", source)
+            self.assertNotIn("sell_threshold: threshold ? String(-Math.abs(Number(threshold)))", source)
+
     def test_gm_push_state_crosses_zero_with_default_thresholds(self):
         positive_values = {
             self.start: Decimal("-0.01"),
@@ -291,6 +340,17 @@ class TrendFilterEngineTests(TestCase):
         negative_states = compute_push_state_by_date(negative_values, buy_threshold=Decimal("0"), sell_threshold=Decimal("0"))
         self.assertEqual(negative_states[self.start], GM_PUSH_UNKNOWN)
         self.assertEqual(negative_states[self.start + timedelta(days=1)], GM_PUSH_NEG_ACTIVE)
+
+    def test_gm_push_negative_state_crosses_down_below_positive_threshold(self):
+        values = {
+            self.start: Decimal("0.25"),
+            self.start + timedelta(days=1): Decimal("0.15"),
+            self.start + timedelta(days=2): Decimal("-0.25"),
+        }
+        states = compute_push_state_by_date(values, buy_threshold=Decimal("0.2"), sell_threshold=Decimal("0.2"))
+        self.assertEqual(states[self.start], GM_PUSH_UNKNOWN)
+        self.assertEqual(states[self.start + timedelta(days=1)], GM_PUSH_NEG_ACTIVE)
+        self.assertEqual(states[self.start + timedelta(days=2)], GM_PUSH_NEG_ACTIVE)
 
     def test_gm_push_current_averages_symbol_push_values(self):
         values = compute_current_push_values_by_date(
@@ -383,6 +443,41 @@ class TrendFilterEngineTests(TestCase):
         actions = [row.get("action") for row in line["daily"]]
         self.assertEqual(actions, [None, "BUY", None, "SELL"])
         self.assertIn("GM_PUSH_MARKET_EXIT", line["daily"][3]["action_reason"])
+        kpi_final = run_backtest_kpi_only(bt)[symbol.ticker]["lines"][0]["final"]
+        self.assertEqual(int(kpi_final["N"]), 1)
+
+    def test_gm_push_sector_sell_market_exit_accepts_positive_negative_threshold_and_matches_kpi_path(self):
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "101", "low": "99", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "100", "high": "101", "low": "99", "close": "100"},
+                {"date": self.start + timedelta(days=2), "open": "125", "high": "126", "low": "124", "close": "125"},
+                {"date": self.start + timedelta(days=3), "open": "80", "high": "81", "low": "79", "close": "80"},
+            ],
+        )
+        symbol = self._fresh_symbol(sector="Technology")
+        signal_lines = [{
+            "trading_model": "PROGRESSIVE_AUTO_SELL",
+            "buy": ["Af"],
+            "sell": [],
+            "gm_push_sell_market_exit_conditions": {
+                "operator": "AND",
+                "sector": {"mode": "NEG", "threshold": "0.2", "explicit_threshold": True},
+            },
+        }]
+        bt = self._backtest_for_symbol(
+            symbol=symbol,
+            prices=["10", "10.1", "10.2", "9"],
+            alerts_by_offset={1: "Af"},
+            signal_lines=signal_lines,
+        )
+
+        line = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]
+        actions = [row.get("action") for row in line["daily"]]
+        self.assertEqual(actions, [None, "BUY", None, "SELL"])
+        self.assertIn("GM_PUSH_MARKET_EXIT", line["daily"][3]["action_reason"])
+
         kpi_final = run_backtest_kpi_only(bt)[symbol.ticker]["lines"][0]["final"]
         self.assertEqual(int(kpi_final["N"]), 1)
 

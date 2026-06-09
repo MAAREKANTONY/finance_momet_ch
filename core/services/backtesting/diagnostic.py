@@ -595,34 +595,26 @@ def _gm_push_condition_entry(config: dict[str, Any] | None, family: str) -> dict
     if not isinstance(raw, dict):
         return {"mode": "IGNORE", "buy_threshold": None, "sell_threshold": None, "explicit_threshold": False}
     mode = _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code"))
-    buy_threshold = raw.get("buy_threshold")
-    sell_threshold = raw.get("sell_threshold")
-    threshold = raw.get("threshold")
-    if buy_threshold in (None, ""):
+    threshold = _to_decimal_or_none(raw.get("threshold"))
+    buy_threshold = _to_decimal_or_none(raw.get("buy_threshold"))
+    sell_threshold = _to_decimal_or_none(raw.get("sell_threshold"))
+    if threshold is not None:
         buy_threshold = threshold
-    if sell_threshold in (None, "") and threshold not in (None, ""):
-        try:
-            sell_threshold = str(-abs(Decimal(str(threshold))))
-        except Exception:
-            sell_threshold = None
-    if buy_threshold in (None, "") and sell_threshold not in (None, ""):
-        try:
-            buy_threshold = str(abs(Decimal(str(sell_threshold))))
-        except Exception:
-            buy_threshold = None
-    if sell_threshold in (None, "") and buy_threshold not in (None, ""):
-        try:
-            sell_threshold = str(-abs(Decimal(str(buy_threshold))))
-        except Exception:
-            sell_threshold = None
-    if mode in {"POS", "NEG"} and buy_threshold in (None, "") and sell_threshold in (None, ""):
-        buy_threshold = "0"
-        sell_threshold = "0"
+        sell_threshold = threshold
+    elif buy_threshold is not None and sell_threshold is None:
+        sell_threshold = buy_threshold
+    elif sell_threshold is not None and buy_threshold is None:
+        buy_threshold = sell_threshold
+    if mode in {"POS", "NEG"} and buy_threshold is None and sell_threshold is None:
+        threshold = Decimal("0")
+        buy_threshold = Decimal("0")
+        sell_threshold = Decimal("0")
     return {
         "mode": mode,
-        "buy_threshold": None if buy_threshold in (None, "") else str(buy_threshold),
-        "sell_threshold": None if sell_threshold in (None, "") else str(sell_threshold),
-        "explicit_threshold": bool(raw.get("explicit_threshold")) and (buy_threshold not in (None, "") or sell_threshold not in (None, "")),
+        "threshold": None if threshold is None else str(threshold),
+        "buy_threshold": None if buy_threshold is None else str(buy_threshold),
+        "sell_threshold": None if sell_threshold is None else str(sell_threshold),
+        "explicit_threshold": bool(raw.get("explicit_threshold")) and (buy_threshold is not None or sell_threshold is not None),
     }
 
 
@@ -735,16 +727,18 @@ def _build_gm_push_payload(*, backtest, symbol: Symbol | None, dates: list[str],
             if role.get("buy_threshold") not in (None, ""):
                 thresholds.append({
                     "role": "BUY",
-                    "label": f"Seuil BUY {_GM_PUSH_FAMILY_LABELS[family]}",
+                    "label": f"Seuil BUY {_GM_PUSH_FAMILY_LABELS[family]} : au-dessus de {role.get('buy_threshold')}",
                     "threshold": role.get("buy_threshold"),
+                    "user_threshold": role.get("threshold"),
                     "mode": role.get("mode"),
                     "source_role": role.get("role"),
                 })
             if role.get("sell_threshold") not in (None, ""):
                 thresholds.append({
                     "role": "SELL",
-                    "label": f"Seuil SELL {_GM_PUSH_FAMILY_LABELS[family]}",
+                    "label": f"Seuil SELL {_GM_PUSH_FAMILY_LABELS[family]} : en dessous de {role.get('sell_threshold')}",
                     "threshold": role.get("sell_threshold"),
+                    "user_threshold": role.get("threshold"),
                     "mode": role.get("mode"),
                     "source_role": role.get("role"),
                 })
