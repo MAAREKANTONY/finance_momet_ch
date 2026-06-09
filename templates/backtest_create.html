@@ -750,7 +750,7 @@
       const hasGmPushBuy = [gmPushBuyCurrent, gmPushBuyMarket, gmPushBuySector].some((value) => value !== 'IGNORE');
       const hasGmPushSell = [gmPushSellCurrent, gmPushSellMarket, gmPushSellSector].some((value) => value !== 'IGNORE');
       const gmEntry = (mode, threshold) => ({mode, threshold: threshold || null, explicit_threshold: !!threshold});
-      const gmPushEntry = (mode, threshold) => ({mode, threshold: threshold || null, buy_threshold: threshold || null, sell_threshold: threshold ? String(-Math.abs(Number(threshold))) : null, explicit_threshold: !!threshold});
+      const gmPushEntry = (mode, threshold) => ({mode, threshold: threshold || null, explicit_threshold: !!threshold});
       if (buy.length || sell.length || hasMarketConditions || hasSellMarketExit || hasGmPushBuy || hasGmPushSell || tradingModel) {
         const payload = {
           mode,
