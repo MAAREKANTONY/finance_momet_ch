@@ -27,6 +27,12 @@
         {{ form.is_default }}
         {% for error in form.is_default.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
       </p>
+      <p>
+        {{ form.universe_mode.label_tag }}<br/>
+        {{ form.universe_mode }}
+        <br/><span class="muted">Mode d’univers du scénario. La sélection statique conserve le comportement actuel. Le mode S&amp;P500 historique dynamique sera utilisé par les backtests dynamiques dans les prochaines phases. Les Games restent inchangés.</span>
+        {% for error in form.universe_mode.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+      </p>
 
       <div style="display:flex; gap:12px; flex-wrap:wrap;">
         <p>

@@ -1497,6 +1497,7 @@ def scenario_duplicate(request, pk: int):
             "name": f"{source.name} (copie)",
             "description": source.description,
             "is_default": source.is_default,
+            "universe_mode": getattr(source, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS),
             "a": source.a,
             "b": source.b,
             "c": source.c,

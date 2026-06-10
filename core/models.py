@@ -26,6 +26,10 @@ class Symbol(models.Model):
 
 
 class Scenario(models.Model):
+    class UniverseMode(models.TextChoices):
+        STATIC_TICKERS = "STATIC_TICKERS", "Sélection statique de tickers"
+        SP500_HISTORICAL_DYNAMIC = "SP500_HISTORICAL_DYNAMIC", "S&P500 historique dynamique"
+
     name = models.CharField(max_length=120)
     description = models.TextField(blank=True, default="")
     description = models.TextField(blank=True, default="")
@@ -36,6 +40,13 @@ class Scenario(models.Model):
     # If True, this scenario was created as an internal clone for a Study.
     # It should generally be hidden from the main Scenarios list in the UI.
     is_study_clone = models.BooleanField(default=False)
+
+    universe_mode = models.CharField(
+        max_length=32,
+        choices=UniverseMode.choices,
+        default=UniverseMode.STATIC_TICKERS,
+        help_text="Mode d'univers du scénario. Phase 1 stocke uniquement ce choix.",
+    )
 
     a = models.DecimalField(max_digits=18, decimal_places=6, default=1)
     b = models.DecimalField(max_digits=18, decimal_places=6, default=1)

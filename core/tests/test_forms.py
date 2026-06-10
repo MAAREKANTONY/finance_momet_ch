@@ -60,13 +60,74 @@ class SymbolPickerFormTests(TestCase):
 
     def test_scenario_form_renders_sell_threshold_fields(self):
         form = ScenarioForm()
+        self.assertIn("universe_mode", form.fields)
         self.assertIn("slope_sell_threshold", form.fields)
         self.assertIn("slope_sell_threshold_basse", form.fields)
         self.assertIn("recent_high_drawdown_lookback_days", form.fields)
         self.assertIn("recent_high_drawdown_max_drop_pct", form.fields)
+        self.assertEqual(form.fields["universe_mode"].initial, Scenario.UniverseMode.STATIC_TICKERS)
         self.assertEqual(form.fields["slope_sell_threshold"].label, "Seuil de déclenchement vente")
         self.assertIn("Si vide, le seuil d'achat est réutilisé.", form.fields["slope_sell_threshold"].help_text)
         self.assertEqual(form.fields["recent_high_drawdown_lookback_days"].label, "Fenêtre du plus haut récent")
+
+    def test_scenario_default_universe_mode_is_static_tickers(self):
+        scenario = Scenario.objects.create(name="Default universe mode", active=True)
+        self.assertEqual(scenario.universe_mode, Scenario.UniverseMode.STATIC_TICKERS)
+
+    def test_scenario_form_exposes_universe_mode_choices_and_saves_dynamic_mode(self):
+        form = ScenarioForm(data={
+            "name": "Scenario dynamic universe",
+            "description": "test",
+            "is_default": "",
+            "universe_mode": Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC,
+            "a": "1",
+            "b": "1",
+            "c": "1",
+            "d": "1",
+            "e": "1",
+            "n1": "5",
+            "n2": "3",
+            "npente": "100",
+            "slope_threshold": "0.1",
+            "npente_basse": "20",
+            "slope_threshold_basse": "0.02",
+            "nglobal": "20",
+            "history_years": "2",
+            "active": "on",
+            "symbols": f"{self.sym1.id},{self.sym2.id}",
+        })
+        choices = {choice[0] for choice in form.fields["universe_mode"].choices}
+        self.assertIn(Scenario.UniverseMode.STATIC_TICKERS, choices)
+        self.assertIn(Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC, choices)
+        self.assertTrue(form.is_valid(), form.errors)
+        scenario = form.save()
+        self.assertEqual(scenario.universe_mode, Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC)
+        self.assertEqual(set(scenario.symbols.values_list("ticker", flat=True)), {"AAPL", "MSFT"})
+
+    def test_scenario_form_missing_universe_mode_keeps_static_tickers_and_symbols(self):
+        form = ScenarioForm(data={
+            "name": "Scenario legacy post",
+            "description": "test",
+            "a": "1",
+            "b": "1",
+            "c": "1",
+            "d": "1",
+            "e": "1",
+            "n1": "5",
+            "n2": "3",
+            "npente": "100",
+            "slope_threshold": "0.1",
+            "npente_basse": "20",
+            "slope_threshold_basse": "0.02",
+            "nglobal": "20",
+            "history_years": "2",
+            "active": "on",
+            "symbols": f"{self.sym1.id}",
+        })
+        self.assertTrue(form.is_valid(), form.errors)
+        scenario = form.save()
+        self.assertEqual(scenario.universe_mode, Scenario.UniverseMode.STATIC_TICKERS)
+        self.assertEqual(list(scenario.symbols.values_list("ticker", flat=True)), ["AAPL"])
 
     def test_scenario_form_saves_explicit_sell_thresholds(self):
         form = ScenarioForm(data={
@@ -138,6 +199,8 @@ class SymbolPickerFormTests(TestCase):
 
     def test_game_scenario_form_renders_sell_threshold_fields(self):
         form = GameScenarioForm()
+        self.assertFalse(hasattr(GameScenario, "universe_mode"))
+        self.assertNotIn("universe_mode", form.fields)
         self.assertIn("slope_sell_threshold", form.fields)
         self.assertIn("slope_sell_threshold_basse", form.fields)
         self.assertIn("recent_high_drawdown_lookback_days", form.fields)

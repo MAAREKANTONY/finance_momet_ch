@@ -175,6 +175,9 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn("5. Historique &amp; calcul", body)
         self.assertIn("6. Contrôles avancés des indicateurs", body)
         self.assertIn("Le scénario = le modèle d’indicateurs.", body)
+        self.assertIn("Mode d’univers", body)
+        self.assertIn("S&amp;P500 historique dynamique", body)
+        self.assertIn("Les Games restent inchangés.", body)
         self.assertIn("Seuil de déclenchement vente", body)
         self.assertIn("Seuil de déclenchement vente — pente basse", body)
         self.assertIn("Fenêtre du plus haut récent", body)
@@ -215,6 +218,7 @@ class LargeSymbolFormViewTests(TestCase):
         scenario = Scenario.objects.create(
             name="Slope Duplicate",
             active=True,
+            universe_mode=Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC,
             a=1,
             b=1,
             c=1,
@@ -238,6 +242,8 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn('value="0.05', body)
         self.assertIn('name="slope_sell_threshold_basse"', body)
         self.assertIn('value="0.01', body)
+        self.assertIn('name="universe_mode"', body)
+        self.assertIn('value="SP500_HISTORICAL_DYNAMIC" selected', body)
 
     def test_backtest_create_view_shows_only_line_market_conditions_for_gm(self):
         scenario = Scenario.objects.create(
