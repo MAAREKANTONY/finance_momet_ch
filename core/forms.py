@@ -538,6 +538,7 @@ class ScenarioForm(forms.ModelForm):
             "name",
             "description",
             "is_default",
+            "universe_mode",
             "a",
             "b",
             "c",
@@ -565,6 +566,13 @@ class ScenarioForm(forms.ModelForm):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.fields["universe_mode"].label = "Mode d’univers"
+        self.fields["universe_mode"].required = False
+        self.fields["universe_mode"].initial = Scenario.UniverseMode.STATIC_TICKERS
+        self.fields["universe_mode"].help_text = (
+            "La sélection statique conserve le comportement actuel. "
+            "Le mode S&P500 historique dynamique sera utilisé par les backtests dynamiques dans les prochaines phases."
+        )
         self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
         # Make the option label searchable (ticker + exchange + name)
         def _label(sym: Symbol) -> str:
@@ -590,6 +598,9 @@ class ScenarioForm(forms.ModelForm):
         _configure_symbol_picker(self.fields["symbols"], selected_symbols)
         _configure_slope_threshold_fields(self)
         _configure_recent_high_drawdown_fields(self)
+
+    def clean_universe_mode(self):
+        return self.cleaned_data.get("universe_mode") or Scenario.UniverseMode.STATIC_TICKERS
 
 
 class UniverseForm(forms.ModelForm):
