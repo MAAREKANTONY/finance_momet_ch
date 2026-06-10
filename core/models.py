@@ -260,6 +260,70 @@ class Universe(models.Model):
         return self.name
 
 
+class UniverseDefinition(models.Model):
+    code = models.CharField(max_length=32, unique=True)
+    name = models.CharField(max_length=120)
+    description = models.TextField(blank=True, default="")
+    source = models.CharField(max_length=64, blank=True, default="")
+    active = models.BooleanField(default=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["code"]
+
+    def __str__(self) -> str:
+        return f"{self.code} - {self.name}"
+
+
+class UniverseMembership(models.Model):
+    universe = models.ForeignKey(
+        UniverseDefinition,
+        on_delete=models.CASCADE,
+        related_name="memberships",
+    )
+    symbol = models.ForeignKey(
+        Symbol,
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name="universe_memberships",
+    )
+    ticker = models.CharField(max_length=64)
+    exchange = models.CharField(max_length=64, blank=True, default="")
+    provider_symbol = models.CharField(max_length=128, blank=True, default="")
+    valid_from = models.DateField()
+    valid_to = models.DateField(null=True, blank=True)
+    source = models.CharField(max_length=64, blank=True, default="")
+    source_payload = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["universe__code", "ticker", "valid_from"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["universe", "ticker", "exchange", "valid_from"],
+                name="uniq_universe_membership_start",
+            ),
+            models.CheckConstraint(
+                condition=Q(valid_to__isnull=True) | Q(valid_to__gte=models.F("valid_from")),
+                name="membership_valid_to_gte_from",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["universe", "valid_from", "valid_to"], name="core_um_range_idx"),
+            models.Index(fields=["universe", "ticker"], name="core_um_ticker_idx"),
+            models.Index(fields=["symbol"], name="core_um_symbol_idx"),
+        ]
+
+    def __str__(self) -> str:
+        suffix = f":{self.exchange}" if self.exchange else ""
+        end = self.valid_to.isoformat() if self.valid_to else "open"
+        return f"{self.universe.code} {self.ticker}{suffix} {self.valid_from.isoformat()}..{end}"
+
+
 class Study(models.Model):
     """User-friendly, unified configuration container.
 
