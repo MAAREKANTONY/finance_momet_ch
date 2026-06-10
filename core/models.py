@@ -324,6 +324,98 @@ class UniverseMembership(models.Model):
         return f"{self.universe.code} {self.ticker}{suffix} {self.valid_from.isoformat()}..{end}"
 
 
+class UniverseCoverageStatus(models.TextChoices):
+    IMPORTED = "IMPORTED", "Imported"
+    VALIDATED = "VALIDATED", "Validated"
+    PARTIAL = "PARTIAL", "Partial"
+    FAILED = "FAILED", "Failed"
+    STALE = "STALE", "Stale"
+
+
+class UniverseImportBatch(models.Model):
+    universe = models.ForeignKey(
+        UniverseDefinition,
+        on_delete=models.CASCADE,
+        related_name="import_batches",
+    )
+    provider = models.CharField(max_length=64, blank=True, default="")
+    source_name = models.CharField(max_length=120, blank=True, default="")
+    source_reference = models.CharField(max_length=255, blank=True, default="")
+    period_start = models.DateField()
+    period_end = models.DateField()
+    expected_member_count = models.PositiveIntegerField(default=500)
+    imported_member_count = models.PositiveIntegerField(default=0)
+    mapped_member_count = models.PositiveIntegerField(default=0)
+    unmapped_member_count = models.PositiveIntegerField(default=0)
+    status = models.CharField(
+        max_length=16,
+        choices=UniverseCoverageStatus.choices,
+        default=UniverseCoverageStatus.IMPORTED,
+    )
+    validated_at = models.DateTimeField(null=True, blank=True)
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["universe__code", "period_start", "period_end", "id"]
+        constraints = [
+            models.CheckConstraint(
+                condition=Q(period_end__gte=models.F("period_start")),
+                name="uib_period_end_gte_start",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["universe", "period_start", "period_end"], name="core_uib_period_idx"),
+            models.Index(fields=["universe", "status"], name="core_uib_status_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.universe.code} {self.period_start.isoformat()}..{self.period_end.isoformat()} {self.status}"
+
+
+class UniverseCoverageSnapshot(models.Model):
+    universe = models.ForeignKey(
+        UniverseDefinition,
+        on_delete=models.CASCADE,
+        related_name="coverage_snapshots",
+    )
+    import_batch = models.ForeignKey(
+        UniverseImportBatch,
+        on_delete=models.PROTECT,
+        related_name="coverage_snapshots",
+    )
+    coverage_date = models.DateField()
+    expected_member_count = models.PositiveIntegerField(default=500)
+    actual_member_count = models.PositiveIntegerField(default=0)
+    mapped_member_count = models.PositiveIntegerField(default=0)
+    unmapped_member_count = models.PositiveIntegerField(default=0)
+    status = models.CharField(
+        max_length=16,
+        choices=UniverseCoverageStatus.choices,
+        default=UniverseCoverageStatus.IMPORTED,
+    )
+    metadata = models.JSONField(default=dict, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ["universe__code", "coverage_date"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["universe", "coverage_date"],
+                name="uniq_universe_coverage_date",
+            ),
+        ]
+        indexes = [
+            models.Index(fields=["universe", "coverage_date"], name="core_ucs_date_idx"),
+            models.Index(fields=["universe", "status"], name="core_ucs_status_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.universe.code} {self.coverage_date.isoformat()} {self.status}"
+
+
 class Study(models.Model):
     """User-friendly, unified configuration container.
 

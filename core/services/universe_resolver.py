@@ -5,7 +5,14 @@ from datetime import date, timedelta
 
 from django.db.models import Q
 
-from core.models import Scenario, Symbol, UniverseDefinition, UniverseMembership
+from core.models import (
+    Scenario,
+    Symbol,
+    UniverseCoverageSnapshot,
+    UniverseCoverageStatus,
+    UniverseDefinition,
+    UniverseMembership,
+)
 
 SP500_UNIVERSE_CODE = "SP500"
 
@@ -92,6 +99,25 @@ def _active_memberships_for_day(memberships: list[UniverseMembership], day: date
     ]
 
 
+def _coverage_error_message(day: date, snapshot: UniverseCoverageSnapshot | None) -> str:
+    if snapshot is None:
+        return (
+            "Historical SP500 coverage is not validated: "
+            f"missing coverage snapshot for {day.isoformat()}."
+        )
+    batch = snapshot.import_batch
+    return (
+        "Historical SP500 coverage is not validated: "
+        f"date={day.isoformat()} "
+        f"snapshot_status={snapshot.status} "
+        f"batch_status={batch.status} "
+        f"actual_member_count={snapshot.actual_member_count} "
+        f"expected_member_count={snapshot.expected_member_count} "
+        f"mapped_member_count={snapshot.mapped_member_count} "
+        f"unmapped_member_count={snapshot.unmapped_member_count}."
+    )
+
+
 class UniverseResolver:
     def resolve(
         self,
@@ -162,6 +188,8 @@ class UniverseResolver:
             universe = UniverseDefinition.objects.get(code=SP500_UNIVERSE_CODE, active=True)
         except UniverseDefinition.DoesNotExist as exc:
             raise UniverseConfigurationError("UniverseDefinition SP500 is missing or inactive.") from exc
+
+        self._validate_historical_coverage(universe, coverage_start, end_date)
 
         memberships = list(
             UniverseMembership.objects.filter(
@@ -238,6 +266,28 @@ class UniverseResolver:
                 "ticker_count": len(tickers),
             },
         )
+
+    def _validate_historical_coverage(self, universe: UniverseDefinition, coverage_start: date, end_date: date) -> None:
+        snapshots = {
+            snapshot.coverage_date: snapshot
+            for snapshot in UniverseCoverageSnapshot.objects.filter(
+                universe=universe,
+                coverage_date__gte=coverage_start,
+                coverage_date__lte=end_date,
+            ).select_related("import_batch")
+        }
+        for day in _iter_calendar_days(coverage_start, end_date):
+            snapshot = snapshots.get(day)
+            if snapshot is None:
+                raise UniverseCoverageError(_coverage_error_message(day, None))
+            if (
+                snapshot.status != UniverseCoverageStatus.VALIDATED
+                or snapshot.import_batch.status != UniverseCoverageStatus.VALIDATED
+                or snapshot.actual_member_count < snapshot.expected_member_count
+                or snapshot.mapped_member_count < snapshot.actual_member_count
+                or snapshot.unmapped_member_count != 0
+            ):
+                raise UniverseCoverageError(_coverage_error_message(day, snapshot))
 
 
 def resolve_universe_for_backtest(
