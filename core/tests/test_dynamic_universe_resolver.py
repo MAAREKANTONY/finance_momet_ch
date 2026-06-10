@@ -1,12 +1,22 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 from django.db import IntegrityError, transaction
 from django.test import TestCase
+from django.utils import timezone
 
-from core.models import GameScenario, Scenario, Symbol, UniverseDefinition, UniverseMembership
+from core.models import (
+    GameScenario,
+    Scenario,
+    Symbol,
+    UniverseCoverageSnapshot,
+    UniverseCoverageStatus,
+    UniverseDefinition,
+    UniverseImportBatch,
+    UniverseMembership,
+)
 from core.services.universe_resolver import (
     SP500_UNIVERSE_CODE,
     UniverseConfigurationError,
@@ -69,6 +79,51 @@ class DynamicUniverseResolverTests(TestCase):
         self._add_membership(universe, "NEW", date(2020, 1, 11), None)
         return universe
 
+    def _create_coverage(
+        self,
+        universe: UniverseDefinition,
+        start: date,
+        end: date,
+        *,
+        snapshot_status: str = UniverseCoverageStatus.VALIDATED,
+        batch_status: str = UniverseCoverageStatus.VALIDATED,
+        expected_member_count: int = 3,
+        actual_member_count: int | None = None,
+        mapped_member_count: int | None = None,
+        unmapped_member_count: int = 0,
+    ) -> UniverseImportBatch:
+        actual = expected_member_count if actual_member_count is None else actual_member_count
+        mapped = actual if mapped_member_count is None else mapped_member_count
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="test",
+            source_name="fixture",
+            source_reference="unit-test",
+            period_start=start,
+            period_end=end,
+            expected_member_count=expected_member_count,
+            imported_member_count=actual,
+            mapped_member_count=mapped,
+            unmapped_member_count=unmapped_member_count,
+            status=batch_status,
+            validated_at=timezone.now() if batch_status == UniverseCoverageStatus.VALIDATED else None,
+        )
+        current = start
+        while current <= end:
+            UniverseCoverageSnapshot.objects.create(
+                universe=universe,
+                import_batch=batch,
+                coverage_date=current,
+                expected_member_count=expected_member_count,
+                actual_member_count=actual,
+                mapped_member_count=mapped,
+                unmapped_member_count=unmapped_member_count,
+                status=snapshot_status,
+                metadata={"fixture": True},
+            )
+            current += timedelta(days=1)
+        return batch
+
     def test_models_store_definition_membership_and_open_interval(self):
         universe = self._create_sp500()
         membership = self._add_membership(universe, "AAA", date(2020, 1, 1), None)
@@ -79,6 +134,56 @@ class DynamicUniverseResolverTests(TestCase):
         self.assertEqual(membership.ticker, "AAA")
         self.assertEqual(membership.symbol, self.symbols["AAA"])
 
+    def test_coverage_models_store_status_counts_and_constraints(self):
+        universe = self._create_sp500()
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="manual",
+            source_name="fixture",
+            source_reference="sp500.csv",
+            period_start=date(2020, 1, 1),
+            period_end=date(2020, 1, 31),
+            expected_member_count=500,
+            imported_member_count=500,
+            mapped_member_count=500,
+            unmapped_member_count=0,
+            status=UniverseCoverageStatus.VALIDATED,
+            validated_at=timezone.now(),
+        )
+        snapshot = UniverseCoverageSnapshot.objects.create(
+            universe=universe,
+            import_batch=batch,
+            coverage_date=date(2020, 1, 1),
+            expected_member_count=500,
+            actual_member_count=500,
+            mapped_member_count=500,
+            unmapped_member_count=0,
+            status=UniverseCoverageStatus.VALIDATED,
+        )
+
+        self.assertEqual(batch.status, UniverseCoverageStatus.VALIDATED)
+        self.assertEqual(batch.period_start, date(2020, 1, 1))
+        self.assertEqual(batch.period_end, date(2020, 1, 31))
+        self.assertEqual(snapshot.coverage_date, date(2020, 1, 1))
+        self.assertEqual(snapshot.actual_member_count, 500)
+        self.assertEqual(snapshot.mapped_member_count, 500)
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                UniverseCoverageSnapshot.objects.create(
+                    universe=universe,
+                    import_batch=batch,
+                    coverage_date=date(2020, 1, 1),
+                )
+
+        with self.assertRaises(IntegrityError):
+            with transaction.atomic():
+                UniverseImportBatch.objects.create(
+                    universe=universe,
+                    period_start=date(2020, 2, 1),
+                    period_end=date(2020, 1, 1),
+                )
+
     def test_universe_definition_code_is_unique(self):
         self._create_sp500()
         with self.assertRaises(IntegrityError):
@@ -86,7 +191,8 @@ class DynamicUniverseResolverTests(TestCase):
                 self._create_sp500()
 
     def test_resolves_sp500_superset_active_by_date_and_membership_intervals(self):
-        self._create_fixture_memberships()
+        universe = self._create_fixture_memberships()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 20))
 
         result = self.resolver.resolve(
             self.scenario,
@@ -105,7 +211,8 @@ class DynamicUniverseResolverTests(TestCase):
         self.assertEqual(result.metadata["membership_count"], 5)
 
     def test_survivorship_bias_members_are_not_reduced_to_end_date_composition(self):
-        self._create_fixture_memberships()
+        universe = self._create_fixture_memberships()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 20))
 
         result = resolve_universe_for_backtest(
             self.scenario,
@@ -124,7 +231,7 @@ class DynamicUniverseResolverTests(TestCase):
         universe = self._create_sp500()
         self._add_membership(universe, "AAA", date(2020, 1, 1), None)
 
-        with self.assertRaisesRegex(UniverseCoverageError, "no active members on 2019-12-30"):
+        with self.assertRaisesRegex(UniverseCoverageError, "missing coverage snapshot for 2019-12-30"):
             self.resolver.resolve(
                 self.scenario,
                 start_date=date(2020, 1, 1),
@@ -141,7 +248,8 @@ class DynamicUniverseResolverTests(TestCase):
             )
 
     def test_no_memberships_raises_coverage_error(self):
-        self._create_sp500()
+        universe = self._create_sp500()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 20))
 
         with self.assertRaisesRegex(UniverseCoverageError, "no memberships overlap"):
             self.resolver.resolve(
@@ -152,6 +260,7 @@ class DynamicUniverseResolverTests(TestCase):
 
     def test_coverage_gap_raises_explicit_error(self):
         universe = self._create_sp500()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 10), expected_member_count=1)
         self._add_membership(universe, "AAA", date(2020, 1, 1), date(2020, 1, 5))
         self._add_membership(universe, "BBB", date(2020, 1, 7), None)
 
@@ -164,6 +273,7 @@ class DynamicUniverseResolverTests(TestCase):
 
     def test_period_before_first_membership_raises_coverage_error(self):
         universe = self._create_sp500()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 10), expected_member_count=1)
         self._add_membership(universe, "AAA", date(2020, 1, 5), None)
 
         with self.assertRaisesRegex(UniverseCoverageError, "no active members on 2020-01-01"):
@@ -175,6 +285,7 @@ class DynamicUniverseResolverTests(TestCase):
 
     def test_period_after_closed_coverage_raises_coverage_error(self):
         universe = self._create_sp500()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 10), expected_member_count=1)
         self._add_membership(universe, "AAA", date(2020, 1, 1), date(2020, 1, 5))
 
         with self.assertRaisesRegex(UniverseCoverageError, "no active members on 2020-01-06"):
@@ -186,6 +297,7 @@ class DynamicUniverseResolverTests(TestCase):
 
     def test_unmapped_membership_raises_mapping_error(self):
         universe = self._create_sp500()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 2), expected_member_count=1)
         UniverseMembership.objects.create(
             universe=universe,
             ticker="MISSING",
@@ -204,6 +316,7 @@ class DynamicUniverseResolverTests(TestCase):
 
     def test_ambiguous_membership_mapping_raises_mapping_error(self):
         universe = self._create_sp500()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 2), expected_member_count=1)
         Symbol.objects.create(ticker="DUP", exchange="NYSE", active=True)
         Symbol.objects.create(ticker="DUP", exchange="NASDAQ", active=True)
         UniverseMembership.objects.create(
@@ -224,6 +337,7 @@ class DynamicUniverseResolverTests(TestCase):
 
     def test_membership_without_symbol_can_map_by_exact_ticker_exchange(self):
         universe = self._create_sp500()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 2), expected_member_count=1)
         UniverseMembership.objects.create(
             universe=universe,
             ticker="AAA",
@@ -240,6 +354,126 @@ class DynamicUniverseResolverTests(TestCase):
         )
 
         self.assertEqual(result.symbols[0], self.symbols["AAA"])
+
+    def test_missing_coverage_snapshot_blocks_dynamic_resolution(self):
+        universe = self._create_fixture_memberships()
+        self._create_coverage(universe, date(2020, 1, 2), date(2020, 1, 3))
+
+        with self.assertRaisesRegex(UniverseCoverageError, "missing coverage snapshot for 2020-01-01"):
+            self.resolver.resolve(
+                self.scenario,
+                start_date=date(2020, 1, 1),
+                end_date=date(2020, 1, 3),
+            )
+
+    def test_snapshot_status_must_be_validated(self):
+        for status in (
+            UniverseCoverageStatus.IMPORTED,
+            UniverseCoverageStatus.PARTIAL,
+            UniverseCoverageStatus.FAILED,
+            UniverseCoverageStatus.STALE,
+        ):
+            with self.subTest(status=status):
+                UniverseCoverageSnapshot.objects.all().delete()
+                UniverseImportBatch.objects.all().delete()
+                UniverseMembership.objects.all().delete()
+                UniverseDefinition.objects.all().delete()
+                universe = self._create_fixture_memberships()
+                self._create_coverage(
+                    universe,
+                    date(2020, 1, 1),
+                    date(2020, 1, 1),
+                    snapshot_status=status,
+                )
+
+                with self.assertRaisesRegex(UniverseCoverageError, f"snapshot_status={status}"):
+                    self.resolver.resolve(
+                        self.scenario,
+                        start_date=date(2020, 1, 1),
+                        end_date=date(2020, 1, 1),
+                    )
+
+    def test_import_batch_status_must_be_validated(self):
+        for status in (
+            UniverseCoverageStatus.IMPORTED,
+            UniverseCoverageStatus.PARTIAL,
+            UniverseCoverageStatus.FAILED,
+            UniverseCoverageStatus.STALE,
+        ):
+            with self.subTest(status=status):
+                UniverseCoverageSnapshot.objects.all().delete()
+                UniverseImportBatch.objects.all().delete()
+                UniverseMembership.objects.all().delete()
+                UniverseDefinition.objects.all().delete()
+                universe = self._create_fixture_memberships()
+                self._create_coverage(
+                    universe,
+                    date(2020, 1, 1),
+                    date(2020, 1, 1),
+                    batch_status=status,
+                )
+
+                with self.assertRaisesRegex(UniverseCoverageError, f"batch_status={status}"):
+                    self.resolver.resolve(
+                        self.scenario,
+                        start_date=date(2020, 1, 1),
+                        end_date=date(2020, 1, 1),
+                    )
+
+    def test_expected_member_count_mismatch_blocks_dynamic_resolution(self):
+        universe = self._create_fixture_memberships()
+        self._create_coverage(
+            universe,
+            date(2020, 1, 1),
+            date(2020, 1, 1),
+            expected_member_count=5,
+            actual_member_count=4,
+            mapped_member_count=4,
+        )
+
+        with self.assertRaisesRegex(UniverseCoverageError, "actual_member_count=4 expected_member_count=5"):
+            self.resolver.resolve(
+                self.scenario,
+                start_date=date(2020, 1, 1),
+                end_date=date(2020, 1, 1),
+            )
+
+    def test_mapping_count_mismatch_blocks_dynamic_resolution(self):
+        universe = self._create_fixture_memberships()
+        self._create_coverage(
+            universe,
+            date(2020, 1, 1),
+            date(2020, 1, 1),
+            expected_member_count=3,
+            actual_member_count=3,
+            mapped_member_count=2,
+        )
+
+        with self.assertRaisesRegex(UniverseCoverageError, "mapped_member_count=2"):
+            self.resolver.resolve(
+                self.scenario,
+                start_date=date(2020, 1, 1),
+                end_date=date(2020, 1, 1),
+            )
+
+    def test_unmapped_count_blocks_dynamic_resolution(self):
+        universe = self._create_fixture_memberships()
+        self._create_coverage(
+            universe,
+            date(2020, 1, 1),
+            date(2020, 1, 1),
+            expected_member_count=3,
+            actual_member_count=3,
+            mapped_member_count=3,
+            unmapped_member_count=1,
+        )
+
+        with self.assertRaisesRegex(UniverseCoverageError, "unmapped_member_count=1"):
+            self.resolver.resolve(
+                self.scenario,
+                start_date=date(2020, 1, 1),
+                end_date=date(2020, 1, 1),
+            )
 
     def test_static_tickers_mode_uses_scenario_symbols_without_universe_definition(self):
         static_scenario = Scenario.objects.create(
@@ -268,8 +502,12 @@ class DynamicUniverseResolverTests(TestCase):
 
         self.assertNotIn("universe_resolver", runner_source)
         self.assertNotIn("UniverseResolver", runner_source)
+        self.assertNotIn("UniverseCoverageSnapshot", runner_source)
+        self.assertNotIn("UniverseImportBatch", runner_source)
         self.assertNotIn("universe_resolver", sync_source)
         self.assertNotIn("UniverseResolver", sync_source)
+        self.assertNotIn("UniverseCoverageSnapshot", sync_source)
+        self.assertNotIn("UniverseImportBatch", sync_source)
 
     def test_backtest_engine_and_prep_do_not_import_dynamic_universe_resolver(self):
         base = Path(__file__).resolve().parents[1]
@@ -278,5 +516,9 @@ class DynamicUniverseResolverTests(TestCase):
 
         self.assertNotIn("universe_resolver", engine_source)
         self.assertNotIn("UniverseResolver", engine_source)
+        self.assertNotIn("UniverseCoverageSnapshot", engine_source)
+        self.assertNotIn("UniverseImportBatch", engine_source)
         self.assertNotIn("universe_resolver", prep_source)
         self.assertNotIn("UniverseResolver", prep_source)
+        self.assertNotIn("UniverseCoverageSnapshot", prep_source)
+        self.assertNotIn("UniverseImportBatch", prep_source)
