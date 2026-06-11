@@ -1501,6 +1501,7 @@ def run_backtest(
     *,
     large_result_mode: bool = False,
     estimated_daily_rows: int | None = None,
+    resolved_universe=None,
 ) -> BacktestEngineResult:
 
     """
@@ -1543,6 +1544,26 @@ def run_backtest(
         if action_pnl_amount is not None:
             event["action_PNL_AMOUNT"] = str(action_pnl_amount)
         st.setdefault("events", []).append(event)
+
+    def _universe_allows_new_buy(ticker: str, as_of: date) -> bool:
+        if resolved_universe is None:
+            return True
+        active_by_date = getattr(resolved_universe, "active_by_date", None) or {}
+        return ticker in active_by_date.get(as_of, frozenset())
+
+    def _resolved_universe_meta() -> dict[str, Any] | None:
+        if resolved_universe is None:
+            return None
+        metadata = getattr(resolved_universe, "metadata", {}) or {}
+        return {
+            "mode": getattr(resolved_universe, "mode", None),
+            "universe_code": getattr(resolved_universe, "universe_code", None),
+            "coverage_start": str(getattr(resolved_universe, "coverage_start", "")),
+            "coverage_end": str(getattr(resolved_universe, "coverage_end", "")),
+            "superset_count": len(getattr(resolved_universe, "tickers", ()) or ()),
+            "ticker_count": len(getattr(resolved_universe, "tickers", ()) or ()),
+            "source": metadata.get("source"),
+        }
 
     # Universe
     raw_universe = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
@@ -2212,6 +2233,8 @@ def run_backtest(
                 continue
             if st["position_open"] or (st.get("_sold_today") and not _line_allows_same_day_reentry(st)):
                 continue
+            if not _universe_allows_new_buy(ticker, d):
+                continue
             buy_codes = st["buy_codes"]
             day_alerts_raw = tdata["alerts"].get(d, set())
             local_event_alerts = {a.upper() for a in day_alerts_raw}
@@ -2286,6 +2309,8 @@ def run_backtest(
             if d not in price_by_date:
                 continue
             if st["position_open"] or (st.get("_sold_today") and not _line_allows_same_day_reentry(st)):
+                continue
+            if not _universe_allows_new_buy(ticker, d):
                 continue
 
             buy_codes = st["buy_codes"]
@@ -2589,6 +2614,9 @@ def run_backtest(
         },
         "tickers": {},
     }
+    universe_meta = _resolved_universe_meta()
+    if universe_meta is not None:
+        results["meta"]["universe"] = universe_meta
 
     # Organize by ticker
     for ticker in data_by_ticker.keys():

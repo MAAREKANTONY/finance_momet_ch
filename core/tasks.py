@@ -145,6 +145,42 @@ def determine_backtest_result_mode(backtest: Backtest) -> dict[str, int | bool]:
     stats["large_result_mode"] = bool(limit > 0 and stats["estimated_daily_rows"] > limit)
     return stats
 
+
+def _dynamic_universe_warmup_start(backtest: Backtest) -> date | None:
+    start_d = getattr(backtest, "start_date", None)
+    warmup_days = int(getattr(backtest, "warmup_days", 0) or 0)
+    if start_d and warmup_days > 0:
+        return start_d - timedelta(days=warmup_days)
+    return start_d
+
+
+def _snapshot_from_resolved_universe(resolved_universe) -> list[dict]:
+    return [
+        {
+            "ticker": symbol.ticker,
+            "exchange": symbol.exchange,
+            "sector": getattr(symbol, "sector", "") or "",
+        }
+        for symbol in resolved_universe.symbols
+    ]
+
+
+def _resolve_dynamic_universe_for_backtest(backtest: Backtest):
+    scenario = getattr(backtest, "scenario", None)
+    if not scenario or getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS) != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+        return None
+    from .services.universe_resolver import UniverseResolver
+
+    resolved_universe = UniverseResolver().resolve(
+        scenario=scenario,
+        start_date=backtest.start_date,
+        end_date=backtest.end_date,
+        warmup_start_date=_dynamic_universe_warmup_start(backtest),
+    )
+    backtest.universe_snapshot = _snapshot_from_resolved_universe(resolved_universe)
+    backtest.save(update_fields=["universe_snapshot", "updated_at"])
+    return resolved_universe
+
 def parse_date(s: str) -> date:
     return datetime.fromisoformat(s.replace("Z","")).date()
 
@@ -1505,6 +1541,7 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
 
     Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.RUNNING, error_message="")
     try:
+        resolved_universe = _resolve_dynamic_universe_for_backtest(bt)
         preflight = determine_backtest_result_mode(bt)
         preflight_msg = (
             "Backtest preflight: "
@@ -1530,6 +1567,7 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
             checkpoint=(lambda: job_checkpoint(job, checkpoint="run_backtest:engine", task_request=task_request)) if job_id else None,
             large_result_mode=bool(preflight["large_result_mode"]),
             estimated_daily_rows=int(preflight["estimated_daily_rows"]),
+            resolved_universe=resolved_universe,
         )
         results = engine_result.results
         logger.warning(

@@ -29,6 +29,20 @@ class BacktestPrepReport:
     notes: list[str]
 
 
+def _tickers_from_universe_snapshot(raw_universe) -> list[str]:
+    tickers: list[str] = []
+    if not isinstance(raw_universe, list):
+        return tickers
+    for item in raw_universe:
+        if isinstance(item, dict):
+            ticker = item.get("ticker") or item.get("symbol") or item.get("code")
+            if ticker:
+                tickers.append(str(ticker).strip())
+        elif item:
+            tickers.append(str(item).strip())
+    return [ticker for ticker in tickers if ticker]
+
+
 def _bars_cover_range(symbol_id: int, start: date, end: date) -> bool:
     qs = DailyBar.objects.filter(symbol_id=symbol_id, date__gte=start, date__lte=end)
     agg = qs.aggregate(mn=Min("date"), mx=Max("date"))
@@ -59,7 +73,7 @@ def prepare_backtest_data(backtest: Backtest, *, force_full_recompute: bool = Fa
     from core.tasks import _compute_metrics_for_scenario
 
     # Determine universe (snapshot if present, else scenario symbols)
-    tickers = backtest.universe_snapshot or []
+    tickers = _tickers_from_universe_snapshot(backtest.universe_snapshot or [])
     symbols = Symbol.objects.filter(ticker__in=tickers).all() if tickers else backtest.scenario.symbols.all()
 
     # Check bars coverage
