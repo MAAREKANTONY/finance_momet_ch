@@ -1,0 +1,4 @@
+universe_code,ticker,exchange,provider_symbol,valid_from,valid_to,company_name,source
+SP500,AAPL,NASDAQ,AAPL.US,2020-01-01,,Apple Inc.,manual_csv
+SP500,OLD,NYSE,OLD.US,2020-01-01,2020-01-02,Old Corp,manual_csv
+SP500,NEW,NYSE,NEW.US,2020-01-03,,New Corp,manual_csv
