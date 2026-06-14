@@ -1318,6 +1318,144 @@ class BacktestResultsRenderTests(TestCase):
             results=results,
         )
 
+    def _minimal_results(self, *, universe_meta=None):
+        meta = {"start_date": "2024-01-01", "end_date": "2024-01-31"}
+        if universe_meta is not None:
+            meta["universe"] = universe_meta
+        return {
+            "meta": meta,
+            "tickers": {
+                self.symbol.ticker: {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [],
+                        "final": {
+                            "N": 0,
+                            "S_G_N": "0",
+                            "BT": "0",
+                            "PNL_AMOUNT": "0",
+                            "FINAL_EQUITY": "0",
+                            "AVG_TRADE_AMOUNT": "0",
+                            "TOTAL_GAIN_AMOUNT": "0",
+                            "TOTAL_LOSS_AMOUNT": "0",
+                            "PROFIT_FACTOR_AMOUNT": None,
+                            "WIN_TRADES": 0,
+                            "LOSS_TRADES": 0,
+                            "WIN_RATE_AMOUNT": "0",
+                            "MAX_GAIN_AMOUNT": None,
+                            "MAX_LOSS_AMOUNT": None,
+                            "TRADABLE_DAYS": 0,
+                            "TRADABLE_DAYS_NOT_IN_POSITION": 0,
+                            "TRADABLE_DAYS_IN_POSITION_CLOSED": 0,
+                            "BMJ": "0",
+                            "BMD": "0",
+                        },
+                    }]
+                }
+            },
+            "portfolio": {"kpi": {}, "daily": []},
+        }
+
+    def _create_done_backtest(self, *, scenario=None, results=None, universe_snapshot=None):
+        return Backtest.objects.create(
+            name="BT Universe Metadata",
+            scenario=scenario or self.scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=universe_snapshot if universe_snapshot is not None else [self.symbol.ticker],
+            status=Backtest.Status.DONE,
+            results=results or self._minimal_results(),
+        )
+
+    def test_backtest_detail_displays_dynamic_universe_metadata_and_superset_wording(self):
+        self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        bt = self._create_done_backtest(
+            universe_snapshot=[
+                {"ticker": "AAA", "exchange": "NYSE", "sector": "Technology"},
+                {"ticker": "OLD", "exchange": "NYSE", "sector": "Industrials"},
+            ],
+            results=self._minimal_results(universe_meta={
+                "mode": Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC,
+                "universe_code": "SP500",
+                "coverage_start": "2024-01-01",
+                "coverage_end": "2024-01-31",
+                "superset_count": 2,
+                "ticker_count": 2,
+                "source": "manual_csv",
+            }),
+        )
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Univers du backtest", body)
+        self.assertIn("S&P500 historique dynamique", body)
+        self.assertIn("SP500", body)
+        self.assertIn("2024-01-01", body)
+        self.assertIn("2024-01-31", body)
+        self.assertIn("Tickers dans le superset", body)
+        self.assertIn("manual_csv", body)
+        self.assertIn("Superset de tickers du backtest", body)
+        self.assertIn("L’appartenance à l’indice est évaluée date par date", body)
+
+    def test_backtest_results_displays_dynamic_universe_metadata(self):
+        self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        bt = self._create_done_backtest(results=self._minimal_results(universe_meta={
+            "mode": Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC,
+            "universe_code": "SP500",
+            "coverage_start": "2024-01-01",
+            "coverage_end": "2024-01-31",
+            "superset_count": 3,
+            "ticker_count": 3,
+            "source": "manual_csv",
+        }))
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Univers du backtest", body)
+        self.assertIn("S&P500 historique dynamique", body)
+        self.assertIn("SP500", body)
+        self.assertIn("2024-01-01", body)
+        self.assertIn("2024-01-31", body)
+        self.assertIn("Tickers dans le superset", body)
+        self.assertIn("manual_csv", body)
+
+    def test_backtest_detail_warns_when_dynamic_universe_metadata_missing(self):
+        self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        bt = self._create_done_backtest(results=self._minimal_results())
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("metadata d’univers ne sont pas présentes", body)
+        self.assertIn("Relancez le backtest avec la dernière version", body)
+
+    def test_backtest_detail_displays_static_universe_without_dynamic_claims(self):
+        bt = self._create_done_backtest()
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Sélection statique de tickers", body)
+        self.assertIn("Univers (snapshot)", body)
+        self.assertNotIn("S&P500 historique dynamique", body)
+        self.assertNotIn("Superset de tickers du backtest", body)
+
     def _add_historical_market_cap(self, symbol, dt, value, provider="eodhd"):
         return HistoricalMarketCap.objects.create(
             symbol=symbol,
