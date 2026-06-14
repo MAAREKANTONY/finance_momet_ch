@@ -176,6 +176,11 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         self.assertEqual(bt.status, Backtest.Status.DONE)
         self.assertEqual(bt.universe_snapshot, [self.old.ticker])
         self.assertNotIn("universe", bt.results["meta"])
+        old_daily = bt.results["tickers"]["OLD"]["lines"][0]["daily"]
+        self.assertTrue(old_daily)
+        self.assertNotIn("universe_member", old_daily[0])
+        self.assertNotIn("buy_blocked_by_universe", old_daily[0])
+        self.assertNotIn("buy_blocked_reason", old_daily[0])
 
     def test_dynamic_resolver_error_fails_backtest_before_prep(self):
         self.scenario = self._scenario(dynamic=True)
@@ -251,6 +256,12 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
 
         old_daily = results["tickers"]["OLD"]["lines"][0]["daily"]
         self.assertNotIn("BUY", {row.get("action") for row in old_daily})
+        blocked_row = next(row for row in old_daily if row["date"] == (self.start + timedelta(days=2)).isoformat())
+        self.assertIsNone(blocked_row["action"])
+        self.assertEqual(blocked_row["shares"], 0)
+        self.assertIs(blocked_row["universe_member"], False)
+        self.assertIs(blocked_row["buy_blocked_by_universe"], True)
+        self.assertEqual(blocked_row["buy_blocked_reason"], "not_active_in_universe")
 
     def test_dynamic_position_survives_exit_and_sell_after_exit_is_allowed(self):
         self.scenario = self._scenario(dynamic=True)
@@ -269,10 +280,57 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
 
         old_daily = results["tickers"]["OLD"]["lines"][0]["daily"]
         self.assertEqual(old_daily[0]["action"], "BUY")
+        self.assertGreater(old_daily[0]["shares"], 0)
+        self.assertIs(old_daily[0]["universe_member"], True)
+        self.assertIs(old_daily[0]["buy_blocked_by_universe"], False)
+        self.assertIsNone(old_daily[0]["buy_blocked_reason"])
         self.assertIsNone(old_daily[1]["action"])
         self.assertGreater(old_daily[1]["shares"], 0)
         self.assertEqual(old_daily[2]["action"], "SELL")
+        self.assertIs(old_daily[2]["universe_member"], False)
+        self.assertIs(old_daily[2]["buy_blocked_by_universe"], False)
+        self.assertIsNone(old_daily[2]["buy_blocked_reason"])
         self.assertFalse(old_daily[1]["forced_close"])
+
+    def test_dynamic_position_stays_valued_after_exit_without_universe_block_flag(self):
+        self.scenario = self._scenario(dynamic=True)
+        self._validated_sp500_universe()
+        self._market_data()
+        Alert.objects.create(symbol=self.old, scenario=self.scenario, date=self.start, alerts="A1")
+        bt = self._backtest(self.scenario, close_positions_at_end=False)
+        resolved = UniverseResolver().resolve(self.scenario, self.start, self.end)
+        bt.universe_snapshot = [{"ticker": symbol.ticker, "exchange": symbol.exchange, "sector": symbol.sector} for symbol in resolved.symbols]
+        bt.save(update_fields=["universe_snapshot"])
+
+        results = run_backtest(bt, resolved_universe=resolved).results
+
+        old_daily = results["tickers"]["OLD"]["lines"][0]["daily"]
+        post_exit_row = next(row for row in old_daily if row["date"] == (self.start + timedelta(days=2)).isoformat())
+        self.assertIsNone(post_exit_row["action"])
+        self.assertGreater(post_exit_row["shares"], 0)
+        self.assertIs(post_exit_row["universe_member"], False)
+        self.assertIs(post_exit_row["buy_blocked_by_universe"], False)
+        self.assertIsNone(post_exit_row["buy_blocked_reason"])
+        self.assertFalse(post_exit_row["forced_close"])
+
+    def test_dynamic_no_signal_after_exit_is_not_marked_as_universe_blocked(self):
+        self.scenario = self._scenario(dynamic=True)
+        self._validated_sp500_universe()
+        self._market_data()
+        bt = self._backtest(self.scenario, close_positions_at_end=False)
+        resolved = UniverseResolver().resolve(self.scenario, self.start, self.end)
+        bt.universe_snapshot = [{"ticker": symbol.ticker, "exchange": symbol.exchange, "sector": symbol.sector} for symbol in resolved.symbols]
+        bt.save(update_fields=["universe_snapshot"])
+
+        results = run_backtest(bt, resolved_universe=resolved).results
+
+        old_daily = results["tickers"]["OLD"]["lines"][0]["daily"]
+        post_exit_row = next(row for row in old_daily if row["date"] == (self.start + timedelta(days=2)).isoformat())
+        self.assertIsNone(post_exit_row["action"])
+        self.assertEqual(post_exit_row["shares"], 0)
+        self.assertIs(post_exit_row["universe_member"], False)
+        self.assertIs(post_exit_row["buy_blocked_by_universe"], False)
+        self.assertIsNone(post_exit_row["buy_blocked_reason"])
 
     def test_dynamic_forced_sell_final_is_unchanged_after_index_exit(self):
         self.scenario = self._scenario(dynamic=True)
