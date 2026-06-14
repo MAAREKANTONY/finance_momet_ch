@@ -32,6 +32,38 @@
 </div>
 {% endif %}
 
+{% with universe_meta=results.meta.universe %}
+<div class="card">
+  <h3 style="margin-top:0;">Univers du backtest</h3>
+  {% if bt.scenario.universe_mode == "SP500_HISTORICAL_DYNAMIC" %}
+    {% if universe_meta %}
+      <table>
+        <tbody>
+          <tr><th>Mode</th><td>S&P500 historique dynamique</td></tr>
+          <tr><th>Univers</th><td>{{ universe_meta.universe_code|default:"SP500" }}</td></tr>
+          <tr><th>Couverture</th><td>{{ universe_meta.coverage_start|default:"—" }} → {{ universe_meta.coverage_end|default:"—" }}</td></tr>
+          <tr><th>Tickers dans le superset</th><td>{{ universe_meta.superset_count|default:"—" }}</td></tr>
+          {% if universe_meta.ticker_count and universe_meta.ticker_count != universe_meta.superset_count %}
+            <tr><th>Tickers</th><td>{{ universe_meta.ticker_count }}</td></tr>
+          {% endif %}
+          <tr><th>Source</th><td>{{ universe_meta.source|default:"—" }}</td></tr>
+        </tbody>
+      </table>
+      <div class="muted" style="margin-top:8px;">
+        Le snapshot affiché correspond au superset de tickers utilisés pour le backtest. L’appartenance à l’indice est évaluée date par date pour les nouveaux achats.
+      </div>
+    {% else %}
+      <div style="border-left:4px solid #b45309; padding-left:10px;">
+        Ce scénario est configuré en univers dynamique, mais les metadata d’univers ne sont pas présentes dans ce résultat. Relancez le backtest avec la dernière version.
+      </div>
+    {% endif %}
+  {% else %}
+    <div>Sélection statique de tickers.</div>
+    <div class="muted" style="margin-top:8px;">Le backtest utilise le snapshot statique du scénario.</div>
+  {% endif %}
+</div>
+{% endwith %}
+
 {% if results.meta.warning_count %}
 <div class="card" style="border-left:4px solid #b45309;">
   <div style="font-weight:600; color:#92400e; margin-bottom:6px;">Réentrées immédiates détectées</div>
