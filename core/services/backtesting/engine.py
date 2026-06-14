@@ -1551,6 +1551,33 @@ def run_backtest(
         active_by_date = getattr(resolved_universe, "active_by_date", None) or {}
         return ticker in active_by_date.get(as_of, frozenset())
 
+    def _universe_member(ticker: str, as_of: date) -> bool | None:
+        if resolved_universe is None:
+            return None
+        return _universe_allows_new_buy(ticker, as_of)
+
+    def _universe_daily_fields(ticker: str, as_of: date) -> dict[str, Any]:
+        member = _universe_member(ticker, as_of)
+        if member is None:
+            return {}
+        return {
+            "universe_member": member,
+            "buy_blocked_by_universe": False,
+            "buy_blocked_reason": None,
+        }
+
+    def _mark_universe_buy_blocked(st: dict[str, Any], as_of: date) -> None:
+        if resolved_universe is None or large_result_mode:
+            return
+        rows = st.get("daily_rows") or []
+        if not rows:
+            return
+        last = rows[-1]
+        if str(last.get("date") or "") != str(as_of):
+            return
+        last["buy_blocked_by_universe"] = True
+        last["buy_blocked_reason"] = "not_active_in_universe"
+
     def _resolved_universe_meta() -> dict[str, Any] | None:
         if resolved_universe is None:
             return None
@@ -1564,6 +1591,81 @@ def run_backtest(
             "ticker_count": len(getattr(resolved_universe, "tickers", ()) or ()),
             "source": metadata.get("source"),
         }
+
+    def _state_copy_for_buy_probe(st: dict[str, Any]) -> dict[str, Any]:
+        probe = dict(st)
+        probe["active_signal_states"] = dict(st.get("active_signal_states") or {})
+        probe["and_latched_states"] = dict(st.get("and_latched_states") or {})
+        probe["signal_latch_state"] = dict(st.get("signal_latch_state") or {})
+        probe["signal_latch_invalidated_today"] = set(st.get("signal_latch_invalidated_today") or set())
+        return probe
+
+    def _would_be_buy_candidate_without_universe(
+        ticker: str,
+        d: date,
+        st: dict[str, Any],
+        tdata: dict[str, Any],
+        *,
+        require_allocated: bool,
+    ) -> bool:
+        if require_allocated and not st.get("allocated"):
+            return False
+
+        price_by_date = tdata["price_by_date"]
+        if d not in price_by_date:
+            return False
+
+        probe = _state_copy_for_buy_probe(st)
+        buy_codes = probe["buy_codes"]
+        day_alerts_raw = tdata["alerts"].get(d, set())
+        local_event_alerts = {a.upper() for a in day_alerts_raw}
+        event_alerts = set(local_event_alerts)
+        gm_code = global_momentum_regime_by_date.get(d)
+        if gm_code:
+            event_alerts.add(gm_code)
+        day_alerts = _apply_signal_state_transitions(probe["active_signal_states"], event_alerts)
+        latched_alerts = _update_and_latched_states(probe["and_latched_states"], event_alerts)
+        if probe["use_signal_latch_model"]:
+            _get_signal_latch_day_state(probe, local_event_alerts, d)
+            if not _signal_latch_buy_ready(probe, gm_code):
+                return False
+        elif not _match_line_with_global_filter(
+            day_alerts,
+            latched_alerts,
+            buy_codes,
+            probe["buy_logic"],
+            gm_code,
+            probe["buy_gm_filter"],
+            probe["buy_gm_operator"],
+        ):
+            return False
+
+        tradable, _ratio_pct, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
+        if not tradable:
+            return False
+        if not _trend_filter_allows_buy(ticker, d, gm_code, probe["buy_gm_filter"]):
+            return False
+        if not _line_market_conditions_allow_buy(probe, ticker, d, gm_code):
+            return False
+        if not _line_gm_push_conditions_allow_buy(probe, ticker, d):
+            return False
+
+        if not require_allocated and not probe.get("allocated"):
+            return True
+
+        close_d = _to_dec(price_by_date[d])
+        if close_d is None or close_d <= 0:
+            return False
+        cash = probe["cash_ticker"]
+        if fixed_capital and probe.get("allocated"):
+            cash = CT
+        elif (not require_allocated) and CP_infinite and not probe.get("allocated"):
+            cash = CT
+        try:
+            shares = int((cash / close_d).to_integral_value(rounding="ROUND_FLOOR"))
+        except Exception:
+            shares = 0
+        return shares > 0
 
     # Universe
     raw_universe = backtest.universe_snapshot or list(backtest.scenario.symbols.values_list("ticker", flat=True))
@@ -1996,6 +2098,7 @@ def run_backtest(
                     "ratio_P_pct": None if ratio_pct is None else str(ratio_pct),
                     "tradable": False,
                     "alerts": sorted(list(tdata["alerts"].get(d, set()))),
+                    **_universe_daily_fields(ticker, d),
                     "buy_code": _compose_condition_label(st["buy_codes"], st["buy_logic"], st["buy_gm_filter"], st["buy_gm_operator"]),
                     "sell_code": _compose_condition_label(st["sell_codes"], st["sell_logic"], st["sell_gm_filter"], st["sell_gm_operator"]),
                     "buy_codes": st["buy_codes"],
@@ -2178,6 +2281,7 @@ def run_backtest(
                 "ratio_P_pct": None if ratio_pct is None else str(ratio_pct),
                 "tradable": tradable,
                 "alerts": sorted(list(day_alerts_raw)),
+                **_universe_daily_fields(ticker, d),
                 "buy_code": _compose_condition_label(st["buy_codes"], st["buy_logic"], st["buy_gm_filter"], st["buy_gm_operator"]),
                 "sell_code": _compose_condition_label(st["sell_codes"], st["sell_logic"], st["sell_gm_filter"], st["sell_gm_operator"]),
                 "buy_codes": st["buy_codes"],
@@ -2234,6 +2338,8 @@ def run_backtest(
             if st["position_open"] or (st.get("_sold_today") and not _line_allows_same_day_reentry(st)):
                 continue
             if not _universe_allows_new_buy(ticker, d):
+                if _would_be_buy_candidate_without_universe(ticker, d, st, tdata, require_allocated=False):
+                    _mark_universe_buy_blocked(st, d)
                 continue
             buy_codes = st["buy_codes"]
             day_alerts_raw = tdata["alerts"].get(d, set())
@@ -2311,6 +2417,8 @@ def run_backtest(
             if st["position_open"] or (st.get("_sold_today") and not _line_allows_same_day_reentry(st)):
                 continue
             if not _universe_allows_new_buy(ticker, d):
+                if _would_be_buy_candidate_without_universe(ticker, d, st, tdata, require_allocated=True):
+                    _mark_universe_buy_blocked(st, d)
                 continue
 
             buy_codes = st["buy_codes"]
@@ -2550,6 +2658,7 @@ def run_backtest(
                     "ratio_P_pct": None,
                     "tradable": False,
                     "alerts": [],
+                    **_universe_daily_fields(ticker, last_date),
                     "buy_code": _compose_condition_label(st["buy_codes"], st["buy_logic"], st["buy_gm_filter"], st["buy_gm_operator"]),
                     "sell_code": _compose_condition_label(st["sell_codes"], st["sell_logic"], st["sell_gm_filter"], st["sell_gm_operator"]),
                     "buy_codes": st["buy_codes"],
