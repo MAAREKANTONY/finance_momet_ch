@@ -14,14 +14,20 @@ class ExportRegressionTests(SimpleTestCase):
 
 
 from openpyxl import load_workbook
-from tempfile import NamedTemporaryFile
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from types import SimpleNamespace
+import gzip
+import json
 
 from core.backtest_debug import build_backtest_debug_workbook
 from core.views import _build_backtest_workbook_full
 
 
 class ExcelSerializationRegressionTests(SimpleTestCase):
+    def _sheet_flat_rows(self, workbook, sheet_name):
+        rows = list(workbook[sheet_name].iter_rows(values_only=True))
+        return [" | ".join("" if cell is None else str(cell) for cell in row) for row in rows]
+
     def _make_backtest_stub(self):
         scenario = SimpleNamespace(
             name="Scenario X",
@@ -83,6 +89,54 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertEqual(rows[1][5], "Aucune")
         self.assertEqual(rows[1][6], "Aucune")
         self.assertEqual(rows[1][7], '["SVA"]')
+
+    def test_build_backtest_workbook_full_settings_include_dynamic_universe_metadata(self):
+        bt = self._make_backtest_stub()
+        bt.results["meta"]["universe"] = {
+            "mode": "SP500_HISTORICAL_DYNAMIC",
+            "universe_code": "SP500",
+            "universe_name": "S&P 500",
+            "coverage_start": "2020-01-01",
+            "coverage_end": "2020-12-31",
+            "superset_count": 503,
+            "source": "manual_csv",
+        }
+        wb, _ = _build_backtest_workbook_full(bt)
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            loaded = load_workbook(tmp.name, read_only=True)
+            flat = self._sheet_flat_rows(loaded, "Settings")
+        self.assertTrue(any("Univers mode | SP500_HISTORICAL_DYNAMIC" in row for row in flat))
+        self.assertTrue(any("Univers code | SP500" in row for row in flat))
+        self.assertTrue(any("Univers nom | S&P 500" in row for row in flat))
+        self.assertTrue(any("Univers coverage start | 2020-01-01" in row for row in flat))
+        self.assertTrue(any("Univers coverage end | 2020-12-31" in row for row in flat))
+        self.assertTrue(any("Univers superset count | 503" in row for row in flat))
+        self.assertTrue(any("Univers source | manual_csv" in row for row in flat))
+
+    def test_build_backtest_workbook_compact_settings_include_dynamic_universe_metadata(self):
+        bt = self._make_backtest_stub()
+        bt.results["meta"]["universe"] = {
+            "mode": "SP500_HISTORICAL_DYNAMIC",
+            "universe_code": "SP500",
+            "coverage_start": "2020-01-01",
+            "coverage_end": "2020-12-31",
+            "superset_count": 503,
+            "source": "manual_csv",
+        }
+        from core.views import _build_backtest_workbook_compact
+
+        wb, _ = _build_backtest_workbook_compact(bt, charts="0")
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            loaded = load_workbook(tmp.name, read_only=True)
+            flat = self._sheet_flat_rows(loaded, "Settings")
+        self.assertTrue(any("Univers mode | SP500_HISTORICAL_DYNAMIC" in row for row in flat))
+        self.assertTrue(any("Univers code | SP500" in row for row in flat))
+        self.assertTrue(any("Univers coverage start | 2020-01-01" in row for row in flat))
+        self.assertTrue(any("Univers coverage end | 2020-12-31" in row for row in flat))
+        self.assertTrue(any("Univers superset count | 503" in row for row in flat))
+        self.assertTrue(any("Univers source | manual_csv" in row for row in flat))
 
     def test_build_backtest_workbook_full_uses_bounded_return_wording_for_global_momentum(self):
         bt = self._make_backtest_stub()
@@ -160,6 +214,40 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             loaded = load_workbook(tmp.name, read_only=True)
             rows = list(loaded["DATA"].iter_rows(values_only=True))
         self.assertIn('["BUY", "SELL"]', rows[1])
+
+    def test_backtest_debug_workbook_exposes_dynamic_universe_daily_fields(self):
+        scenario = SimpleNamespace(name="Scenario X", description="")
+        bt = SimpleNamespace(id=1, name="BT", scenario=scenario, start_date=None, end_date=None, capital_total=0, capital_per_ticker=0, capital_mode="fixed", ratio_threshold=0, include_all_tickers=False, warmup_days=0, close_positions_at_end=False, results={
+            "tickers": {
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["SPA"],
+                        "sell": ["SVA"],
+                        "daily": [{
+                            "date": "2026-01-01",
+                            "universe_member": False,
+                            "buy_blocked_by_universe": True,
+                            "buy_blocked_reason": "not_active_in_universe",
+                        }],
+                        "final": {},
+                    }]
+                }
+            }
+        })
+        wb, _ = build_backtest_debug_workbook(bt, ticker="AAA", line=1)
+        with NamedTemporaryFile(suffix=".xlsx") as tmp:
+            wb.save(tmp.name)
+            loaded = load_workbook(tmp.name, read_only=True)
+            rows = list(loaded["DATA"].iter_rows(values_only=True))
+        headers = list(rows[0])
+        values = dict(zip(headers, rows[1]))
+        self.assertIn("universe_member", headers)
+        self.assertIn("buy_blocked_by_universe", headers)
+        self.assertIn("buy_blocked_reason", headers)
+        self.assertIs(values["universe_member"], False)
+        self.assertIs(values["buy_blocked_by_universe"], True)
+        self.assertEqual(values["buy_blocked_reason"], "not_active_in_universe")
 
     def test_backtest_debug_workbook_handles_large_result_mode_without_daily_rows(self):
         scenario = SimpleNamespace(name="Scenario X", description="")
@@ -277,6 +365,59 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertTrue(any("Conditions de marché | GM actuel: GM positif ET GM marché: GM négatif" in row for row in flat))
         self.assertTrue(any("Protection marché GM | GM marché: GM négatif < -0.03" in row for row in flat))
 
+
+
+class BacktestDebugCsvExportRegressionTests(TestCase):
+    def test_backtest_debug_csv_reads_offloaded_daily_rows(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        from core.models import Backtest, ProcessingJob, Scenario
+        from core.tasks import export_backtest_debug_csv_task
+
+        scenario = Scenario.objects.create(name="Scenario CSV")
+        with TemporaryDirectory() as tmp_dir:
+            daily_path = Path(tmp_dir) / "aaa_L1.json.gz"
+            with gzip.open(daily_path, "wt", encoding="utf-8") as handle:
+                json.dump([
+                    {
+                        "date": "2026-01-01",
+                        "universe_member": False,
+                        "buy_blocked_by_universe": True,
+                        "buy_blocked_reason": "not_active_in_universe",
+                    }
+                ], handle)
+            bt = Backtest.objects.create(
+                name="BT CSV",
+                scenario=scenario,
+                results={
+                    "tickers": {
+                        "AAA": {
+                            "lines": [{
+                                "line_index": 1,
+                                "buy": ["SPA"],
+                                "sell": ["SVA"],
+                                "daily_offloaded": True,
+                                "daily_backend": "json.gz",
+                                "daily_path": str(daily_path),
+                                "daily_rows": 1,
+                                "final": {},
+                            }]
+                        }
+                    }
+                },
+            )
+            job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.EXPORT_BACKTEST_DEBUG_CSV, status=ProcessingJob.Status.PENDING)
+            output_path = Path(tmp_dir) / "debug.csv"
+
+            with patch("core.tasks._job_export_path", return_value=output_path):
+                result = export_backtest_debug_csv_task.run(job_id=job.id, backtest_id=bt.id, ticker="AAA", line="1")
+
+            self.assertEqual(result, str(output_path))
+            content = output_path.read_text(encoding="utf-8")
+        self.assertIn("universe_member", content)
+        self.assertIn("buy_blocked_by_universe", content)
+        self.assertIn("buy_blocked_reason", content)
+        self.assertIn("not_active_in_universe", content)
 
 
 class GameScenarioExportRegressionTests(TestCase):
