@@ -178,6 +178,12 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn("Mode d’univers", body)
         self.assertIn("S&amp;P500 historique dynamique", body)
         self.assertIn("Les Games restent inchangés.", body)
+        self.assertIn("static-ticker-selection", body)
+        self.assertIn("dynamic-universe-help", body)
+        self.assertIn("Les actions seront déterminées automatiquement", body)
+        self.assertIn("Vous n’avez pas besoin de sélectionner de tickers", body)
+        self.assertIn("SP500_HISTORICAL_DYNAMIC", body)
+        self.assertNotIn("prochaines phases", body)
         self.assertIn("Seuil de déclenchement vente", body)
         self.assertIn("Seuil de déclenchement vente — pente basse", body)
         self.assertIn("Fenêtre du plus haut récent", body)
@@ -244,6 +250,9 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn('value="0.01', body)
         self.assertIn('name="universe_mode"', body)
         self.assertIn('value="SP500_HISTORICAL_DYNAMIC" selected', body)
+        self.assertIn("Les actions seront déterminées automatiquement", body)
+        self.assertIn("static-ticker-selection", body)
+        self.assertIn("dynamic-universe-help", body)
 
     def test_backtest_create_view_shows_only_line_market_conditions_for_gm(self):
         scenario = Scenario.objects.create(
@@ -1374,7 +1383,7 @@ class BacktestResultsRenderTests(TestCase):
             results=results or self._minimal_results(),
         )
 
-    def test_backtest_detail_displays_dynamic_universe_metadata_and_superset_wording(self):
+    def test_backtest_detail_displays_dynamic_universe_metadata_with_business_wording(self):
         self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
         self.scenario.save(update_fields=["universe_mode"])
         bt = self._create_done_backtest(
@@ -1402,10 +1411,14 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("SP500", body)
         self.assertIn("2024-01-01", body)
         self.assertIn("2024-01-31", body)
-        self.assertIn("Tickers dans le superset", body)
+        self.assertIn("Période couverte par l’historique S&amp;P 500", body)
+        self.assertIn("Actions analysées sur la période", body)
         self.assertIn("manual_csv", body)
-        self.assertIn("Superset de tickers du backtest", body)
-        self.assertIn("L’appartenance à l’indice est évaluée date par date", body)
+        self.assertIn("Ce nombre correspond à toutes les actions ayant appartenu au S&amp;P 500", body)
+        self.assertIn("L’appartenance à l’indice est ensuite évaluée date par date", body)
+        self.assertNotIn("Tickers dans le superset", body)
+        self.assertNotIn("Superset de tickers du backtest", body)
+        self.assertNotIn("metadata d’univers", body)
 
     def test_backtest_results_displays_dynamic_universe_metadata(self):
         self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
@@ -1429,8 +1442,11 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("SP500", body)
         self.assertIn("2024-01-01", body)
         self.assertIn("2024-01-31", body)
-        self.assertIn("Tickers dans le superset", body)
+        self.assertIn("Période couverte par l’historique S&amp;P 500", body)
+        self.assertIn("Actions analysées sur la période", body)
         self.assertIn("manual_csv", body)
+        self.assertNotIn("Tickers dans le superset", body)
+        self.assertNotIn("metadata d’univers", body)
 
     def test_backtest_detail_warns_when_dynamic_universe_metadata_missing(self):
         self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
@@ -1441,8 +1457,9 @@ class BacktestResultsRenderTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("metadata d’univers ne sont pas présentes", body)
-        self.assertIn("Relancez le backtest avec la dernière version", body)
+        self.assertIn("Ce résultat a été généré avant l’ajout de cette information", body)
+        self.assertIn("Relancez le backtest pour l’afficher", body)
+        self.assertNotIn("metadata d’univers ne sont pas présentes", body)
 
     def test_backtest_detail_displays_static_universe_without_dynamic_claims(self):
         bt = self._create_done_backtest()
@@ -1452,7 +1469,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertIn("Sélection statique de tickers", body)
-        self.assertIn("Univers (snapshot)", body)
+        self.assertIn("Univers du backtest", body)
         self.assertNotIn("S&P500 historique dynamique", body)
         self.assertNotIn("Superset de tickers du backtest", body)
 

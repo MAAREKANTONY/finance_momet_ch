@@ -109,10 +109,10 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertTrue(any("Univers mode | SP500_HISTORICAL_DYNAMIC" in row for row in flat))
         self.assertTrue(any("Univers code | SP500" in row for row in flat))
         self.assertTrue(any("Univers nom | S&P 500" in row for row in flat))
-        self.assertTrue(any("Univers coverage start | 2020-01-01" in row for row in flat))
-        self.assertTrue(any("Univers coverage end | 2020-12-31" in row for row in flat))
-        self.assertTrue(any("Univers superset count | 503" in row for row in flat))
-        self.assertTrue(any("Univers source | manual_csv" in row for row in flat))
+        self.assertTrue(any("Univers période historique début | 2020-01-01" in row for row in flat))
+        self.assertTrue(any("Univers période historique fin | 2020-12-31" in row for row in flat))
+        self.assertTrue(any("Univers actions analysées | 503" in row for row in flat))
+        self.assertTrue(any("Univers source des données | manual_csv" in row for row in flat))
 
     def test_build_backtest_workbook_compact_settings_include_dynamic_universe_metadata(self):
         bt = self._make_backtest_stub()
@@ -133,10 +133,10 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             flat = self._sheet_flat_rows(loaded, "Settings")
         self.assertTrue(any("Univers mode | SP500_HISTORICAL_DYNAMIC" in row for row in flat))
         self.assertTrue(any("Univers code | SP500" in row for row in flat))
-        self.assertTrue(any("Univers coverage start | 2020-01-01" in row for row in flat))
-        self.assertTrue(any("Univers coverage end | 2020-12-31" in row for row in flat))
-        self.assertTrue(any("Univers superset count | 503" in row for row in flat))
-        self.assertTrue(any("Univers source | manual_csv" in row for row in flat))
+        self.assertTrue(any("Univers période historique début | 2020-01-01" in row for row in flat))
+        self.assertTrue(any("Univers période historique fin | 2020-12-31" in row for row in flat))
+        self.assertTrue(any("Univers actions analysées | 503" in row for row in flat))
+        self.assertTrue(any("Univers source des données | manual_csv" in row for row in flat))
 
     def test_build_backtest_workbook_full_uses_bounded_return_wording_for_global_momentum(self):
         bt = self._make_backtest_stub()

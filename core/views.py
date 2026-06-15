@@ -103,6 +103,8 @@ def _refresh_backtest_universe_snapshot(bt: Backtest) -> None:
     - We keep the snapshot concept (it is still stored on the Backtest), but we update it
       whenever the user explicitly triggers a new processing action.
     """
+    if getattr(bt.scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS) == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+        return
     symbols = (
         bt.scenario.symbols.all()
         .order_by("ticker", "exchange")
@@ -1677,6 +1679,8 @@ def backtest_compute_metrics(request, pk: int):
         tickers = []
 
     symbol_ids = list(Symbol.objects.filter(ticker__in=tickers).values_list("id", flat=True)) if tickers else list(bt.scenario.symbols.values_list("id", flat=True))
+    if bt.scenario.universe_mode == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+        symbol_ids = None
 
     from core.tasks import compute_metrics_job_task
 
@@ -2854,10 +2858,10 @@ def _append_backtest_universe_settings_rows(ws, meta: dict) -> None:
         ("Univers mode", universe_meta.get("mode")),
         ("Univers code", universe_meta.get("universe_code") or universe_meta.get("code")),
         ("Univers nom", universe_meta.get("universe_name") or universe_meta.get("name")),
-        ("Univers coverage start", universe_meta.get("coverage_start")),
-        ("Univers coverage end", universe_meta.get("coverage_end")),
-        ("Univers superset count", universe_meta.get("superset_count") or universe_meta.get("ticker_count")),
-        ("Univers source", universe_meta.get("source")),
+        ("Univers période historique début", universe_meta.get("coverage_start")),
+        ("Univers période historique fin", universe_meta.get("coverage_end")),
+        ("Univers actions analysées", universe_meta.get("superset_count") or universe_meta.get("ticker_count")),
+        ("Univers source des données", universe_meta.get("source")),
     ]
     for key, value in rows:
         if value not in (None, ""):
@@ -4372,6 +4376,8 @@ def trigger_page(request: HttpRequest):
                             if tickers else
                             list(bt.scenario.symbols.values_list("id", flat=True))
                         )
+                        if bt.scenario.universe_mode == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+                            symbol_ids = None
 
                         from core.tasks import compute_metrics_job_task
                         recompute_all = (action == "bt_recompute")

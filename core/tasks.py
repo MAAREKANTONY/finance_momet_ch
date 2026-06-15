@@ -38,6 +38,11 @@ import logging
 TRANSIENT_DB_EXCEPTIONS = (OperationalError, InterfaceError)
 logger = logging.getLogger(__name__)
 
+DYNAMIC_UNIVERSE_USER_ERROR = (
+    "Les données historiques du S&P 500 ne sont pas encore disponibles ou validées pour cette période. "
+    "Importez le fichier historique S&P 500 puis relancez le backtest."
+)
+
 
 def _with_db_retries(fn, *, attempts: int | None = None):
     """Retry short-lived database availability failures.
@@ -169,14 +174,17 @@ def _resolve_dynamic_universe_for_backtest(backtest: Backtest):
     scenario = getattr(backtest, "scenario", None)
     if not scenario or getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS) != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
         return None
-    from .services.universe_resolver import UniverseResolver
+    from .services.universe_resolver import UniverseResolver, UniverseResolverError
 
-    resolved_universe = UniverseResolver().resolve(
-        scenario=scenario,
-        start_date=backtest.start_date,
-        end_date=backtest.end_date,
-        warmup_start_date=_dynamic_universe_warmup_start(backtest),
-    )
+    try:
+        resolved_universe = UniverseResolver().resolve(
+            scenario=scenario,
+            start_date=backtest.start_date,
+            end_date=backtest.end_date,
+            warmup_start_date=_dynamic_universe_warmup_start(backtest),
+        )
+    except UniverseResolverError as exc:
+        raise ValueError(f"{DYNAMIC_UNIVERSE_USER_ERROR} Détail technique: {exc}") from exc
     backtest.universe_snapshot = _snapshot_from_resolved_universe(resolved_universe)
     backtest.save(update_fields=["universe_snapshot", "updated_at"])
     return resolved_universe
@@ -733,6 +741,7 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
     try:
         job_checkpoint(job, task_request=self.request)
         scenario = Scenario.objects.get(id=scenario_id)
+        backtest = Backtest.objects.filter(id=backtest_id).select_related("scenario").first() if backtest_id else None
         # Scoping rules (no regression for legacy flows):
         # - If explicit symbol_ids are provided (e.g., from a Backtest universe snapshot), compute only those.
         # - Otherwise, when computing a single scenario from UI, compute only the symbols attached to that scenario.
@@ -740,6 +749,13 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
         if symbol_ids:
             symbols_qs = Symbol.objects.filter(id__in=list(symbol_ids))
             scope_note = f"explicit_ids={len(list(symbol_ids))}"
+        elif (
+            backtest is not None
+            and scenario.universe_mode == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+        ):
+            resolved_universe = _resolve_dynamic_universe_for_backtest(backtest)
+            symbols_qs = Symbol.objects.filter(id__in=[symbol.id for symbol in resolved_universe.symbols])
+            scope_note = f"dynamic_sp500={symbols_qs.count()}"
         else:
             # When no explicit symbol_ids are provided, we interpret this job as "compute this scenario".
             # To avoid surprise recomputes across the whole universe, we scope strictly to the scenario symbols.

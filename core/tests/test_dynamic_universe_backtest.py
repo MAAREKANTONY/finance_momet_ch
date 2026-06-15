@@ -14,6 +14,7 @@ from core.models import (
     Backtest,
     DailyBar,
     DailyMetric,
+    ProcessingJob,
     Scenario,
     Symbol,
     UniverseCoverageSnapshot,
@@ -25,7 +26,7 @@ from core.models import (
 from core.services.backtesting.engine import run_backtest, run_backtest_kpi_only
 from core.services.backtesting.prep import prepare_backtest_data
 from core.services.universe_resolver import UniverseResolver
-from core.tasks import run_backtest_task
+from core.tasks import DYNAMIC_UNIVERSE_USER_ERROR, compute_metrics_job_task, run_backtest_task
 
 
 class DynamicUniverseBacktestIntegrationTests(TestCase):
@@ -187,13 +188,89 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         bt = self._backtest(self.scenario)
 
         with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock:
-            with self.assertRaisesMessage(Exception, "UniverseDefinition SP500 is missing or inactive"):
+            with self.assertRaisesMessage(Exception, DYNAMIC_UNIVERSE_USER_ERROR):
                 run_backtest_task(bt.id)
 
         prep_mock.assert_not_called()
         bt.refresh_from_db()
         self.assertEqual(bt.status, Backtest.Status.FAILED)
+        self.assertIn(DYNAMIC_UNIVERSE_USER_ERROR, bt.error_message)
         self.assertIn("UniverseDefinition SP500 is missing or inactive", bt.error_message)
+
+    def test_static_compute_metrics_without_symbols_still_blocks(self):
+        self.scenario = Scenario.objects.create(
+            name="Static empty",
+            universe_mode=Scenario.UniverseMode.STATIC_TICKERS,
+            active=True,
+        )
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            scenario=self.scenario,
+        )
+
+        message = compute_metrics_job_task.run(
+            job_id=job.id,
+            scenario_id=self.scenario.id,
+            symbol_ids=None,
+            recompute_all=False,
+        )
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.DONE)
+        self.assertEqual(message, "No symbols linked to this scenario (nothing to compute).")
+
+    def test_dynamic_compute_metrics_without_manual_symbols_uses_resolved_universe(self):
+        self.scenario = self._scenario(dynamic=True)
+        self._validated_sp500_universe()
+        bt = self._backtest(self.scenario)
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            scenario=self.scenario,
+            backtest=bt,
+        )
+
+        with patch("core.tasks._compute_metrics_for_scenario", return_value={"symbols": 3, "rows": 0, "full": True}) as compute_mock:
+            message = compute_metrics_job_task.run(
+                job_id=job.id,
+                scenario_id=self.scenario.id,
+                symbol_ids=None,
+                recompute_all=True,
+                backtest_id=bt.id,
+            )
+
+        compute_mock.assert_called_once()
+        symbols_qs = compute_mock.call_args.kwargs["symbols_qs"]
+        self.assertEqual({symbol.ticker for symbol in symbols_qs}, {"KEEP", "NEW", "OLD"})
+        self.assertIn("dynamic_sp500=3", message)
+        self.assertNotIn("No symbols linked", message)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.DONE)
+
+    def test_dynamic_compute_metrics_without_validated_universe_uses_friendly_error(self):
+        self.scenario = self._scenario(dynamic=True)
+        bt = self._backtest(self.scenario)
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            scenario=self.scenario,
+            backtest=bt,
+        )
+
+        with self.assertRaisesMessage(ValueError, DYNAMIC_UNIVERSE_USER_ERROR):
+            compute_metrics_job_task.run(
+                job_id=job.id,
+                scenario_id=self.scenario.id,
+                symbol_ids=None,
+                recompute_all=True,
+                backtest_id=bt.id,
+            )
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertIn(DYNAMIC_UNIVERSE_USER_ERROR, job.error)
+        self.assertIn("UniverseDefinition SP500 is missing or inactive", job.error)
 
     def test_dynamic_task_sets_superset_snapshot_and_metadata(self):
         self.scenario = self._scenario(dynamic=True)

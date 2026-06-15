@@ -30,7 +30,7 @@
       <p>
         {{ form.universe_mode.label_tag }}<br/>
         {{ form.universe_mode }}
-        <br/><span class="muted">Mode d’univers du scénario. La sélection statique conserve le comportement actuel. Le mode S&amp;P500 historique dynamique sera utilisé par les backtests dynamiques dans les prochaines phases. Les Games restent inchangés.</span>
+        <br/><span class="muted">Mode d’univers du scénario. La sélection statique utilise les tickers choisis ci-dessous. Le mode S&amp;P500 historique dynamique détermine automatiquement les actions à partir de l’historique du S&amp;P 500 pour les backtests. Les Games restent inchangés.</span>
         {% for error in form.universe_mode.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
       </p>
 
@@ -176,41 +176,42 @@
       <p class="muted">Aide disponible sur les indicateurs actifs : P, K1..K4, Kf, SUM_SLOPE et SLOPE_VRAI.</p>
     </div>
 
-  <div id="server-selected-bootstrap" style="display:none;">{{ form.symbols }}</div>
-    {% for error in form.symbols.errors %}<p class="error">{{ error }}</p>{% endfor %}
+    <div id="static-ticker-selection">
+      <div id="server-selected-bootstrap" style="display:none;">{{ form.symbols }}</div>
+      {% for error in form.symbols.errors %}<p class="error">{{ error }}</p>{% endfor %}
 
-    <div class="card">
-      <h3>Tickers du scénario — sélection massive adaptée aux grands volumes</h3>
-      <p class="muted">L’aperçu reste limité pour rester fluide, mais les actions de masse s’appliquent à <strong>tous</strong> les résultats du filtre.</p>
+      <div class="card">
+        <h3>Tickers du scénario — sélection massive adaptée aux grands volumes</h3>
+        <p class="muted">L’aperçu reste limité pour rester fluide, mais les actions de masse s’appliquent à <strong>tous</strong> les résultats du filtre.</p>
 
-      {% if universes %}
-      <div class="card" style="margin: 10px 0 14px 0;">
-        <h4 style="margin-top:0;">Appliquer un univers existant</h4>
-        <div style="display:flex; gap:10px; flex-wrap: wrap; align-items: end;">
-          <div style="min-width:260px; flex:1;">
-            <label class="muted" style="display:block; margin-bottom:4px;">Univers</label>
-            <select id="universe-select" style="width:100%;">
-              <option value="">— Sélectionner un univers —</option>
-              {% for u in universes %}
-                <option value="{{ u.id }}">{{ u.name }}</option>
-              {% endfor %}
-            </select>
+        {% if universes %}
+        <div class="card" style="margin: 10px 0 14px 0;">
+          <h4 style="margin-top:0;">Appliquer un univers existant</h4>
+          <div style="display:flex; gap:10px; flex-wrap: wrap; align-items: end;">
+            <div style="min-width:260px; flex:1;">
+              <label class="muted" style="display:block; margin-bottom:4px;">Univers</label>
+              <select id="universe-select" style="width:100%;">
+                <option value="">— Sélectionner un univers —</option>
+                {% for u in universes %}
+                  <option value="{{ u.id }}">{{ u.name }}</option>
+                {% endfor %}
+              </select>
+            </div>
+            <div style="min-width:220px;">
+              <label class="muted" style="display:block; margin-bottom:4px;">Mode</label>
+              <select id="universe-mode" style="width:100%;">
+                <option value="add">Ajouter l’univers</option>
+                <option value="replace">Remplacer par l’univers</option>
+                <option value="remove">Retirer l’univers</option>
+              </select>
+            </div>
+            <div>
+              <button type="button" class="btn" id="universe-apply">Appliquer</button>
+            </div>
+            <div class="muted" id="universe-apply-msg" style="flex: 1; min-width: 220px;"></div>
           </div>
-          <div style="min-width:220px;">
-            <label class="muted" style="display:block; margin-bottom:4px;">Mode</label>
-            <select id="universe-mode" style="width:100%;">
-              <option value="add">Ajouter l’univers</option>
-              <option value="replace">Remplacer par l’univers</option>
-              <option value="remove">Retirer l’univers</option>
-            </select>
-          </div>
-          <div>
-            <button type="button" class="btn" id="universe-apply">Appliquer</button>
-          </div>
-          <div class="muted" id="universe-apply-msg" style="flex: 1; min-width: 220px;"></div>
         </div>
-      </div>
-      {% endif %}
+        {% endif %}
 
       <div class="grid2" style="align-items:start; gap:18px;">
         <div>
@@ -263,45 +264,71 @@
           <div id="list-summary" class="muted" style="margin-top:10px;"></div>
         </div>
       </div>
+      </div>
+
+      <div class="card">
+        <div style="display:flex; justify-content:space-between; gap:12px; align-items:end; flex-wrap:wrap;">
+          <div>
+            <h3 style="margin:0;">3. Sélection actuelle</h3>
+            <div class="muted" id="selected-summary"></div>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">
+            <div>
+              <label>Recherche dans la sélection</label><br/>
+              <input type="text" id="selected-search" placeholder="ticker, nom, secteur…" />
+            </div>
+            <div>
+              <label>Par page</label><br/>
+              <select id="selected-page-size">
+                <option value="50">50</option>
+                <option value="100" selected>100</option>
+                <option value="200">200</option>
+              </select>
+            </div>
+            <button type="button" class="btn" id="selected-clear">Vider la sélection</button>
+          </div>
+        </div>
+
+        <div id="selected-list" style="margin-top:12px; max-height:420px; overflow:auto; border:1px solid #ddd; border-radius:6px;"></div>
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-top:10px;">
+          <div class="muted" id="selected-page-info"></div>
+          <div style="display:flex; gap:8px;">
+            <button type="button" class="btn" id="selected-prev">Page précédente</button>
+            <button type="button" class="btn" id="selected-next">Page suivante</button>
+          </div>
+        </div>
+      </div>
     </div>
 
-    <div class="card">
-      <div style="display:flex; justify-content:space-between; gap:12px; align-items:end; flex-wrap:wrap;">
-        <div>
-          <h3 style="margin:0;">3. Sélection actuelle</h3>
-          <div class="muted" id="selected-summary"></div>
-        </div>
-        <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:end;">
-          <div>
-            <label>Recherche dans la sélection</label><br/>
-            <input type="text" id="selected-search" placeholder="ticker, nom, secteur…" />
-          </div>
-          <div>
-            <label>Par page</label><br/>
-            <select id="selected-page-size">
-              <option value="50">50</option>
-              <option value="100" selected>100</option>
-              <option value="200">200</option>
-            </select>
-          </div>
-          <button type="button" class="btn" id="selected-clear">Vider la sélection</button>
-        </div>
-      </div>
-
-      <div id="selected-list" style="margin-top:12px; max-height:420px; overflow:auto; border:1px solid #ddd; border-radius:6px;"></div>
-      <div style="display:flex; justify-content:space-between; align-items:center; gap:12px; flex-wrap:wrap; margin-top:10px;">
-        <div class="muted" id="selected-page-info"></div>
-        <div style="display:flex; gap:8px;">
-          <button type="button" class="btn" id="selected-prev">Page précédente</button>
-          <button type="button" class="btn" id="selected-next">Page suivante</button>
-        </div>
-      </div>
+    <div id="dynamic-universe-help" class="card" style="margin-bottom:16px; display:none;">
+      <h3 style="margin-top:0;">Actions du backtest</h3>
+      <p class="muted">Les actions seront déterminées automatiquement à partir de l’historique du S&amp;P 500 sur la période du backtest. Vous n’avez pas besoin de sélectionner de tickers.</p>
     </div>
 
     <button class="btn" type="submit">Enregistrer</button>
     <a class="btn" href="{% url 'scenarios_page' %}">Annuler</a>
   </form>
 </div>
+
+<script>
+(function(){
+  const universeMode = document.getElementById('id_universe_mode');
+  const staticTickerSelection = document.getElementById('static-ticker-selection');
+  const dynamicUniverseHelp = document.getElementById('dynamic-universe-help');
+
+  function syncUniverseModeUi(){
+    if (!universeMode || !staticTickerSelection || !dynamicUniverseHelp) return;
+    const isDynamic = universeMode.value === 'SP500_HISTORICAL_DYNAMIC';
+    staticTickerSelection.style.display = isDynamic ? 'none' : '';
+    dynamicUniverseHelp.style.display = isDynamic ? '' : 'none';
+  }
+
+  if (universeMode) {
+    universeMode.addEventListener('change', syncUniverseModeUi);
+    syncUniverseModeUi();
+  }
+})();
+</script>
 
 <script>
 (function(){
