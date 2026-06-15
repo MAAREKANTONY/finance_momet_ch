@@ -2845,6 +2845,25 @@ def backtest_export_debug_csv(request, pk: int):
     return redirect("job_detail", pk=launch.job.id)
 
 
+def _append_backtest_universe_settings_rows(ws, meta: dict) -> None:
+    universe_meta = (meta or {}).get("universe") or {}
+    if not isinstance(universe_meta, dict) or not universe_meta:
+        return
+
+    rows = [
+        ("Univers mode", universe_meta.get("mode")),
+        ("Univers code", universe_meta.get("universe_code") or universe_meta.get("code")),
+        ("Univers nom", universe_meta.get("universe_name") or universe_meta.get("name")),
+        ("Univers coverage start", universe_meta.get("coverage_start")),
+        ("Univers coverage end", universe_meta.get("coverage_end")),
+        ("Univers superset count", universe_meta.get("superset_count") or universe_meta.get("ticker_count")),
+        ("Univers source", universe_meta.get("source")),
+    ]
+    for key, value in rows:
+        if value not in (None, ""):
+            append_excel_row(ws, [key, value])
+
+
 def _build_backtest_workbook_full(bt):
     """Export full backtest results to Excel (settings + universe + summary + daily sheets + charts)."""
     results = bt.results or {}
@@ -2923,6 +2942,7 @@ def _build_backtest_workbook_full(bt):
     ]
     for k, v in settings_rows:
         append_excel_row(ws, [k, v])
+    _append_backtest_universe_settings_rows(ws, meta)
     _auto_width(ws)
 
     # --- Universe (snapshot) ---
@@ -3301,6 +3321,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
     ]
     for k, v in rows:
         append_excel_row(ws, [k, v])
+    _append_backtest_universe_settings_rows(ws, meta)
     _auto_width(ws)
 
     # -------- Universe --------

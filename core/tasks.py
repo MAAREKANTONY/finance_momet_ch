@@ -2058,7 +2058,9 @@ def export_backtest_debug_csv_task(self, *, job_id: int, backtest_id: int, ticke
             selected = lines[:1]
         if not selected:
             raise ValueError('Ligne introuvable dans les résultats du backtest.')
-        daily = selected[0].get('daily') or []
+        from .services.backtesting.results_offload import load_daily_from_line
+
+        daily = load_daily_from_line(selected[0])
         output_name = f'backtest_{backtest_id}_{ticker}_debug.csv'
         path = _job_export_path(job_id, output_name)
         fieldnames = sorted({k for row in daily for k in row.keys()})
