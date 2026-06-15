@@ -16,11 +16,66 @@ from core.services.provider_eodhd import (
     EODHDError,
     UnsupportedEODHDSymbolError,
     normalize_historical_market_cap_payload,
+    normalize_sp500_historical_components_payload,
     to_eodhd_symbol,
 )
 
 
 class EODHDMarketCapClientTests(TestCase):
+    def test_normalize_sp500_historical_components_payload_handles_dict_indexed_payload(self):
+        payload = {
+            "0": {"Code": "AAPL", "Name": "Apple Inc", "StartDate": "1982-11-30", "EndDate": None, "IsActiveNow": 1, "IsDelisted": 0},
+            "1": {"Code": "OLD", "Name": "Old Corp", "StartDate": "2020-01-01", "EndDate": "2020-01-02", "IsActiveNow": 0, "IsDelisted": 1},
+        }
+
+        rows = normalize_sp500_historical_components_payload(payload)
+
+        self.assertEqual(rows[0]["Code"], "AAPL")
+        self.assertEqual(rows[0]["Name"], "Apple Inc")
+        self.assertEqual(rows[0]["StartDate"], "1982-11-30")
+        self.assertIsNone(rows[0]["EndDate"])
+        self.assertEqual(rows[1]["Code"], "OLD")
+
+    @override_settings(EODHD_API_KEY="token", EODHD_BASE_URL="https://example.test/api")
+    @patch("core.services.provider_eodhd.requests.get")
+    def test_client_fetch_sp500_historical_components_uses_fundamentals_filter(self, mock_get):
+        response = Mock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "0": {"Code": "AAPL", "Name": "Apple Inc", "StartDate": "1982-11-30", "EndDate": None, "IsActiveNow": 1, "IsDelisted": 0},
+        }
+        mock_get.return_value = response
+
+        rows = EODHDClient().fetch_sp500_historical_components()
+
+        self.assertEqual(rows[0]["Code"], "AAPL")
+        mock_get.assert_called_once()
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "https://example.test/api/fundamentals/GSPC.INDX")
+        self.assertEqual(kwargs["params"]["filter"], "HistoricalTickerComponents")
+        self.assertEqual(kwargs["params"]["fmt"], "json")
+        self.assertNotIn("token", args[0])
+
+    @override_settings(EODHD_API_KEY="token", EODHD_BASE_URL="https://example.test/api")
+    @patch("core.services.provider_eodhd.requests.get")
+    def test_client_fetch_sp500_historical_components_rejects_invalid_payload(self, mock_get):
+        response = Mock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {"unexpected": {"foo": "bar"}}
+        mock_get.return_value = response
+
+        with self.assertRaises(EODHDError) as exc:
+            EODHDClient().fetch_sp500_historical_components()
+
+        self.assertIn("Unsupported EODHD S&P500 components payload shape", str(exc.exception))
+
+    @override_settings(EODHD_API_KEY="", EODHD_BASE_URL="https://example.test/api")
+    def test_client_fetch_sp500_historical_components_requires_api_key(self):
+        with self.assertRaisesMessage(EODHDError, "EODHD_API_KEY is missing"):
+            EODHDClient().fetch_sp500_historical_components()
+
     def test_normalize_historical_market_cap_payload_handles_dict_indexed_payload(self):
         payload = {
             "0": {"date": "2024-01-05", "value": 2801386317300},

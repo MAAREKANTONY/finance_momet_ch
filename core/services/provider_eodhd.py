@@ -129,6 +129,18 @@ class EODHDClient:
             return []
         raise EODHDError(_unsupported_payload_message(payload))
 
+    def fetch_sp500_historical_components(self) -> list[dict[str, Any]]:
+        payload = self._get(
+            "/fundamentals/GSPC.INDX",
+            {"filter": "HistoricalTickerComponents"},
+        )
+        rows = normalize_sp500_historical_components_payload(payload)
+        if rows:
+            return rows
+        if payload in (None, "", [], {}):
+            return []
+        raise EODHDError(_unsupported_sp500_payload_message(payload))
+
 
 def _records_from_payload(payload: Any) -> list[Any]:
     if isinstance(payload, list):
@@ -183,6 +195,27 @@ def normalize_historical_market_cap_payload(payload: Any, provider_symbol: str) 
     return rows
 
 
+def normalize_sp500_historical_components_payload(payload: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in _records_from_payload(payload):
+        if not isinstance(record, dict):
+            continue
+        code = str(record.get("Code") or "").strip().upper()
+        name = str(record.get("Name") or "").strip()
+        if not code:
+            raise EODHDError("Unsupported EODHD S&P500 components payload: missing Code.")
+        rows.append({
+            "Code": code,
+            "Name": name,
+            "StartDate": record.get("StartDate"),
+            "EndDate": record.get("EndDate"),
+            "IsActiveNow": record.get("IsActiveNow"),
+            "IsDelisted": record.get("IsDelisted"),
+            "source_payload": record,
+        })
+    return rows
+
+
 def _unsupported_payload_message(payload: Any) -> str:
     if isinstance(payload, dict):
         sample_keys = list(payload.keys())[:5]
@@ -192,6 +225,19 @@ def _unsupported_payload_message(payload: Any) -> str:
         )
     return (
         "Unsupported EODHD historical market cap payload shape: "
+        f"type={type(payload).__name__}"
+    )
+
+
+def _unsupported_sp500_payload_message(payload: Any) -> str:
+    if isinstance(payload, dict):
+        sample_keys = list(payload.keys())[:5]
+        return (
+            "Unsupported EODHD S&P500 components payload shape: "
+            f"dict keys={sample_keys}"
+        )
+    return (
+        "Unsupported EODHD S&P500 components payload shape: "
         f"type={type(payload).__name__}"
     )
 
