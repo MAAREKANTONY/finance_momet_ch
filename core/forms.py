@@ -570,8 +570,8 @@ class ScenarioForm(forms.ModelForm):
         self.fields["universe_mode"].required = False
         self.fields["universe_mode"].initial = Scenario.UniverseMode.STATIC_TICKERS
         self.fields["universe_mode"].help_text = (
-            "La sélection statique conserve le comportement actuel. "
-            "Le mode S&P500 historique dynamique sera utilisé par les backtests dynamiques dans les prochaines phases."
+            "La sélection statique utilise les tickers choisis dans le scénario. "
+            "Le mode S&P500 historique dynamique détermine automatiquement les actions à partir de l’historique du S&P 500 pour les backtests."
         )
         self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
         # Make the option label searchable (ticker + exchange + name)
