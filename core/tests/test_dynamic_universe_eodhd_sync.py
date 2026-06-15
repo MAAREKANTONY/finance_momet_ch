@@ -146,6 +146,46 @@ class DynamicUniverseEODHDSyncTests(TestCase):
         with self.assertRaises(UniverseCoverageError):
             self._resolve()
 
+    def test_historical_old_suffix_records_are_skipped_not_unmapped(self):
+        result = self._sync(
+            records=[record("AAPL"), record("NEW"), record("INFO_OLD")],
+            apply=True,
+            expected=2,
+        )
+
+        self.assertEqual(result.status, UniverseCoverageStatus.VALIDATED)
+        self.assertEqual(result.records_retained, 2)
+        self.assertEqual(result.records_skipped, 1)
+        self.assertEqual(result.unmapped_member_count, 0)
+        self.assertIn("historical _OLD provider suffix skipped", " ".join(result.warnings))
+        self.assertFalse(UniverseMembership.objects.filter(ticker="INFO_OLD").exists())
+
+    def test_historical_old_numbered_suffix_records_are_skipped(self):
+        result = self._sync(
+            records=[record("AAPL"), record("NEW"), record("INFO_OLD1")],
+            apply=True,
+            expected=2,
+        )
+
+        self.assertEqual(result.status, UniverseCoverageStatus.VALIDATED)
+        self.assertEqual(result.records_retained, 2)
+        self.assertEqual(result.records_skipped, 1)
+        self.assertEqual(result.unmapped_member_count, 0)
+        self.assertIn("INFO_OLD1", " ".join(result.warnings))
+        self.assertFalse(UniverseMembership.objects.filter(ticker="INFO_OLD1").exists())
+
+    def test_historical_old_suffix_record_can_map_when_local_symbol_exists(self):
+        Symbol.objects.create(ticker="INFO_OLD1", exchange="US", active=True)
+
+        result = self._sync(records=[record("INFO_OLD1")], apply=True, expected=1)
+
+        self.assertEqual(result.status, UniverseCoverageStatus.VALIDATED)
+        self.assertEqual(result.records_retained, 1)
+        self.assertEqual(result.records_skipped, 0)
+        membership = UniverseMembership.objects.get()
+        self.assertEqual(membership.ticker, "INFO_OLD1")
+        self.assertEqual(membership.symbol.ticker, "INFO_OLD1")
+
     def test_missing_start_date_uses_coverage_start_with_warning(self):
         result = self._sync(records=[record("OLD", start=None, end="2020-01-02", active=0)], apply=True, expected=1, end=date(2020, 1, 2))
 

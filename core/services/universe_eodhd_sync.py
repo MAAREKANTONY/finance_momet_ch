@@ -209,6 +209,9 @@ def _build_membership_rows(
                 f"record {index} {code}: StartDate {start.isoformat()} is after coverage_end; skipped."
             )
             continue
+        if _is_historical_provider_suffix(code) and not _symbol_exists_for_provider_code(code):
+            result.warnings.append(f"record {index} {code}: historical _OLD provider suffix skipped.")
+            continue
         if start is None:
             start = coverage_start
             result.warnings.append(
@@ -274,6 +277,14 @@ def _ticker_candidates(provider_code: str) -> list[str]:
     if "." in code:
         candidates.append(code.replace(".", "-"))
     return list(dict.fromkeys(candidates))
+
+
+def _symbol_exists_for_provider_code(provider_code: str) -> bool:
+    return Symbol.objects.filter(ticker__in=_ticker_candidates(provider_code)).exists()
+
+
+def _is_historical_provider_suffix(provider_code: str) -> bool:
+    return "_OLD" in str(provider_code or "").strip().upper()
 
 
 def _upsert_memberships(
