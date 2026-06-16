@@ -39,8 +39,9 @@ TRANSIENT_DB_EXCEPTIONS = (OperationalError, InterfaceError)
 logger = logging.getLogger(__name__)
 
 DYNAMIC_UNIVERSE_USER_ERROR = (
-    "Les données historiques du S&P 500 ne sont pas encore disponibles ou validées pour cette période. "
-    "Importez le fichier historique S&P 500 puis relancez le backtest."
+    "Impossible de préparer automatiquement l’historique S&P 500 pour cette période. "
+    "Certains symboles ne sont pas disponibles ou la couverture n’est pas validée. "
+    "Vérifiez la synchronisation S&P 500 dans l’administration."
 )
 
 
@@ -174,17 +175,29 @@ def _resolve_dynamic_universe_for_backtest(backtest: Backtest):
     scenario = getattr(backtest, "scenario", None)
     if not scenario or getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS) != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
         return None
-    from .services.universe_resolver import UniverseResolver, UniverseResolverError
+    from .services.dynamic_universe_auto_prepare import (
+        DynamicUniverseAutoPrepareError,
+        ensure_sp500_historical_universe_ready,
+    )
 
     try:
-        resolved_universe = UniverseResolver().resolve(
+        prepare_result = ensure_sp500_historical_universe_ready(
             scenario=scenario,
             start_date=backtest.start_date,
             end_date=backtest.end_date,
             warmup_start_date=_dynamic_universe_warmup_start(backtest),
         )
-    except UniverseResolverError as exc:
-        raise ValueError(f"{DYNAMIC_UNIVERSE_USER_ERROR} Détail technique: {exc}") from exc
+    except DynamicUniverseAutoPrepareError as exc:
+        if getattr(exc, "technical_detail", ""):
+            logger.warning(
+                "[dynamic-universe] auto-prepare failed backtest_id=%s detail=%s",
+                getattr(backtest, "id", None),
+                exc.technical_detail,
+            )
+        raise ValueError(DYNAMIC_UNIVERSE_USER_ERROR) from exc
+    resolved_universe = prepare_result.resolved_universe
+    if resolved_universe is None:
+        return None
     backtest.universe_snapshot = _snapshot_from_resolved_universe(resolved_universe)
     backtest.save(update_fields=["universe_snapshot", "updated_at"])
     return resolved_universe
