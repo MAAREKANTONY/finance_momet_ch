@@ -753,6 +753,118 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
 
 
 @shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
+def prepare_dynamic_universe_ohlc_job_task(
+    self,
+    *,
+    universe_code="SP500",
+    start_date=None,
+    end_date=None,
+    backtest_id=None,
+    scenario_id=None,
+    provider="eodhd",
+    force_refresh: bool = False,
+    max_symbols=None,
+    user_id=None,
+    job_id=None,
+):
+    """Explicit Dynamic Universe OHLC preparation job.
+
+    This job prepares DailyBar rows before a dynamic backtest. It is intentionally
+    not called from prepare_backtest_data or run_backtest.
+    """
+    job = None
+    if job_id:
+        job = ProcessingJob.objects.filter(id=job_id).first()
+        if job:
+            mark_job_running(job, task_request=self.request, message="Dynamic Universe OHLC preparation started")
+    if job is None:
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.PENDING,
+            backtest_id=backtest_id,
+            scenario_id=scenario_id,
+            created_by_id=user_id,
+            message="Dynamic Universe OHLC preparation queued",
+        )
+        mark_job_running(job, task_request=self.request, message="Dynamic Universe OHLC preparation started")
+
+    try:
+        from .services.dynamic_universe_ohlc_prepare import prepare_dynamic_universe_ohlc
+
+        pulse = JobCheckpointPulse(
+            job,
+            every_n=1,
+            every_seconds=15,
+            task_request=self.request,
+            base_label="dynamic_universe_ohlc",
+        )
+        pulse.hit(checkpoint="resolve", force=True)
+
+        result = prepare_dynamic_universe_ohlc(
+            universe_code=universe_code,
+            start_date=start_date,
+            end_date=end_date,
+            backtest_id=backtest_id,
+            scenario_id=scenario_id,
+            provider=provider,
+            force_refresh=bool(force_refresh),
+            max_symbols=max_symbols,
+            job=job,
+            progress_callback=lambda checkpoint: pulse.hit(checkpoint=checkpoint, force=True),
+        )
+        summary = (
+            "Dynamic Universe OHLC preparation: "
+            f"provider={result.provider} checked={result.checked_symbols} "
+            f"ready_before={result.ready_before} missing_before={len(result.missing_before)} "
+            f"fetched_symbols={len(result.fetched_symbols)} inserted_bars={result.inserted_bars} "
+            f"updated_bars={result.updated_bars} unchanged_bars={result.unchanged_bars} "
+            f"no_data={len(result.no_data_symbols)} provider_errors={len(result.provider_error_symbols)} "
+            f"network_errors={len(result.network_error_symbols)} skipped={len(result.skipped_symbols)} "
+            f"ready_after={result.ready_after} missing_after={len(result.missing_after)}"
+        )
+        if result.missing_after:
+            job.status = ProcessingJob.Status.FAILED
+            job.message = summary
+            job.error = (
+                "Dynamic Universe OHLC preparation incomplete. "
+                f"Missing symbols: {', '.join(result.missing_after[:20])}"
+                f"{'...' if len(result.missing_after) > 20 else ''}"
+            )
+            job.finished_at = timezone.now()
+            _job_save(job, update_fields=["status", "message", "error", "finished_at"])
+            sync_related_state_for_terminal_job(job)
+            return job.error
+
+        job.status = ProcessingJob.Status.DONE
+        job.message = summary
+        job.error = ""
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "error", "finished_at"])
+        return job.message
+    except JobCancelled:
+        job.status = ProcessingJob.Status.CANCELLED
+        job.message = (job.message or "") + "\nCancelled by user."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "cancelled"
+    except JobKilled:
+        job.status = ProcessingJob.Status.KILLED
+        job.message = (job.message or "") + "\nKilled by user."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "killed"
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
+    except Exception as e:
+        job.status = ProcessingJob.Status.FAILED
+        job.error = _sanitize_provider_error_message(e)
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
+        raise
+
+
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
 def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_all=False, backtest_id=None, user_id=None, job_id=None):
     """Tracked job wrapper around metrics computation."""
     job = None

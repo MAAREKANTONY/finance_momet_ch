@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal, InvalidOperation
+import re
 import time
 from typing import Any
 
@@ -129,6 +130,23 @@ class EODHDClient:
             return []
         raise EODHDError(_unsupported_payload_message(payload))
 
+    def fetch_historical_ohlc(
+        self,
+        provider_symbol: str,
+        from_date: date | str,
+        to_date: date | str,
+    ) -> list[dict[str, Any]]:
+        payload = self._get(
+            f"/eod/{provider_symbol}",
+            {"from": str(from_date), "to": str(to_date), "period": "d"},
+        )
+        rows = normalize_historical_ohlc_payload(payload, provider_symbol)
+        if rows:
+            return rows
+        if payload in (None, "", [], {}):
+            return []
+        raise EODHDError(_unsupported_ohlc_payload_message(payload))
+
     def fetch_sp500_historical_components(self) -> list[dict[str, Any]]:
         payload = self._get(
             "/fundamentals/GSPC.INDX",
@@ -153,7 +171,15 @@ def _records_from_payload(payload: Any) -> list[Any]:
         ]
         if numeric_key_items:
             return [value for _idx, value in sorted(numeric_key_items, key=lambda item: item[0])]
-        for key in ("data", "values", "results", "items", "market_cap", "market_caps"):
+        for key in (
+            "data",
+            "values",
+            "results",
+            "items",
+            "historical",
+            "market_cap",
+            "market_caps",
+        ):
             value = payload.get(key)
             if isinstance(value, list):
                 return value
@@ -176,6 +202,30 @@ def _market_cap_from_record(record: dict[str, Any]) -> Decimal | None:
     return None
 
 
+def _decimal_from_record(record: dict[str, Any], keys: tuple[str, ...]) -> Decimal | None:
+    for key in keys:
+        value = record.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return Decimal(str(value))
+        except (InvalidOperation, ValueError):
+            return None
+    return None
+
+
+def _int_from_record(record: dict[str, Any], keys: tuple[str, ...]) -> int | None:
+    for key in keys:
+        value = record.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            return int(Decimal(str(value)))
+        except (InvalidOperation, ValueError):
+            return None
+    return None
+
+
 def normalize_historical_market_cap_payload(payload: Any, provider_symbol: str) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for record in _records_from_payload(payload):
@@ -189,6 +239,43 @@ def normalize_historical_market_cap_payload(payload: Any, provider_symbol: str) 
             "date": row_date,
             "market_cap": market_cap,
             "currency": str(record.get("currency") or ""),
+            "provider_symbol": provider_symbol,
+            "source_payload": record,
+        })
+    return rows
+
+
+def normalize_historical_ohlc_payload(payload: Any, provider_symbol: str) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for record in _records_from_payload(payload):
+        if not isinstance(record, dict):
+            continue
+        row_date = _date_from_record(record.get("date") or record.get("datetime"))
+        open_price = _decimal_from_record(record, ("open", "Open"))
+        high_price = _decimal_from_record(record, ("high", "High"))
+        low_price = _decimal_from_record(record, ("low", "Low"))
+        close_price = _decimal_from_record(record, ("close", "Close"))
+        volume = _int_from_record(record, ("volume", "Volume"))
+        if (
+            not row_date
+            or open_price is None
+            or high_price is None
+            or low_price is None
+            or close_price is None
+            or volume is None
+        ):
+            continue
+        rows.append({
+            "date": row_date,
+            "open": open_price,
+            "high": high_price,
+            "low": low_price,
+            "close": close_price,
+            "adjusted_close": _decimal_from_record(
+                record,
+                ("adjusted_close", "adjustedClose", "adjustedCloseValue"),
+            ),
+            "volume": volume,
             "provider_symbol": provider_symbol,
             "source_payload": record,
         })
@@ -226,6 +313,29 @@ def _unsupported_payload_message(payload: Any) -> str:
     return (
         "Unsupported EODHD historical market cap payload shape: "
         f"type={type(payload).__name__}"
+    )
+
+
+def _unsupported_ohlc_payload_message(payload: Any) -> str:
+    if isinstance(payload, dict):
+        sample_keys = list(payload.keys())[:5]
+        return (
+            "Unsupported EODHD historical OHLC payload shape: "
+            f"dict keys={sample_keys}"
+        )
+    return (
+        "Unsupported EODHD historical OHLC payload shape: "
+        f"type={type(payload).__name__}"
+    )
+
+
+def sanitize_provider_error_message(error: Exception | str) -> str:
+    message = str(error)
+    return re.sub(
+        r"((?:\?|&)?(?:api_token|apikey)=)[^&\s]+",
+        r"\1***",
+        message,
+        flags=re.IGNORECASE,
     )
 
 
