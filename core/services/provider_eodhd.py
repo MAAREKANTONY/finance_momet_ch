@@ -98,7 +98,7 @@ class EODHDClient:
                 if attempt < self.max_retries:
                     self._sleep_before_retry(attempt)
                     continue
-                raise EODHDError(str(exc)) from exc
+                raise EODHDError(sanitize_provider_error_message(exc)) from exc
 
         raise EODHDError("EODHD request failed after retries")
 
@@ -109,9 +109,10 @@ class EODHDClient:
         return status_code == 429 or bool(status_code and 500 <= status_code <= 599)
 
     def _http_error_message(self, status_code: int | None, exc: Exception) -> str:
+        sanitized_error = sanitize_provider_error_message(exc)
         if status_code is None:
-            return f"EODHD HTTP error: {exc}"
-        return f"EODHD HTTP {status_code}: {exc}"
+            return f"EODHD HTTP error: {sanitized_error}"
+        return f"EODHD HTTP {status_code}: {sanitized_error}"
 
     def fetch_historical_market_cap(
         self,

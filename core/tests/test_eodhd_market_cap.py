@@ -311,6 +311,35 @@ class EODHDMarketCapClientTests(TestCase):
         mock_sleep.assert_not_called()
         self.assertEqual(mock_get.call_count, 1)
 
+    @override_settings(EODHD_API_KEY="secret-token", EODHD_BASE_URL="https://example.test/api", EODHD_MAX_RETRIES=0)
+    @patch("core.services.provider_eodhd.requests.get")
+    def test_http_error_masks_api_token_from_exception_text(self, mock_get):
+        response = Mock()
+        response.status_code = 403
+        response.raise_for_status.side_effect = requests.HTTPError(
+            "403 Client Error for url: https://eodhd.com/api/eod/AAPL.US?api_token=secret-token&fmt=json"
+        )
+        mock_get.return_value = response
+
+        with self.assertRaises(EODHDError) as ctx:
+            EODHDClient().fetch_historical_ohlc("AAPL.US", date(2024, 1, 1), date(2024, 1, 2))
+
+        self.assertIn("api_token=***", str(ctx.exception))
+        self.assertNotIn("secret-token", str(ctx.exception))
+
+    @override_settings(EODHD_API_KEY="secret-token", EODHD_BASE_URL="https://example.test/api", EODHD_MAX_RETRIES=0)
+    @patch("core.services.provider_eodhd.requests.get")
+    def test_network_error_masks_api_token_from_exception_text(self, mock_get):
+        mock_get.side_effect = requests.ConnectionError(
+            "Failed to establish connection to https://eodhd.com/api/eod/AAPL.US?api_token=secret-token&fmt=json"
+        )
+
+        with self.assertRaises(EODHDError) as ctx:
+            EODHDClient().fetch_historical_ohlc("AAPL.US", date(2024, 1, 1), date(2024, 1, 2))
+
+        self.assertIn("api_token=***", str(ctx.exception))
+        self.assertNotIn("secret-token", str(ctx.exception))
+
     @override_settings(
         EODHD_API_KEY="token",
         EODHD_BASE_URL="https://example.test/api",
