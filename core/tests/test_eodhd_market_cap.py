@@ -15,13 +15,86 @@ from core.services.provider_eodhd import (
     EODHDClient,
     EODHDError,
     UnsupportedEODHDSymbolError,
+    normalize_historical_ohlc_payload,
     normalize_historical_market_cap_payload,
     normalize_sp500_historical_components_payload,
+    sanitize_provider_error_message,
     to_eodhd_symbol,
 )
 
 
 class EODHDMarketCapClientTests(TestCase):
+    def test_normalize_historical_ohlc_payload_handles_valid_rows(self):
+        payload = {
+            "0": {
+                "date": "2024-01-02",
+                "open": "10.1",
+                "high": "11.2",
+                "low": "9.8",
+                "close": "10.9",
+                "adjusted_close": "10.7",
+                "volume": "12345",
+            }
+        }
+
+        rows = normalize_historical_ohlc_payload(payload, "AAPL.US")
+
+        self.assertEqual(rows[0]["date"], date(2024, 1, 2))
+        self.assertEqual(rows[0]["open"], Decimal("10.1"))
+        self.assertEqual(rows[0]["high"], Decimal("11.2"))
+        self.assertEqual(rows[0]["low"], Decimal("9.8"))
+        self.assertEqual(rows[0]["close"], Decimal("10.9"))
+        self.assertEqual(rows[0]["adjusted_close"], Decimal("10.7"))
+        self.assertEqual(rows[0]["volume"], 12345)
+        self.assertEqual(rows[0]["provider_symbol"], "AAPL.US")
+
+    def test_normalize_historical_ohlc_payload_skips_invalid_rows(self):
+        payload = [
+            {"date": "bad", "open": "10", "high": "11", "low": "9", "close": "10", "volume": "100"},
+            {"date": "2024-01-02", "open": "10", "high": "", "low": "9", "close": "10", "volume": "100"},
+            {"date": "2024-01-03", "open": "10", "high": "11", "low": "9", "close": "10", "volume": "100"},
+        ]
+
+        rows = normalize_historical_ohlc_payload(payload, "AAPL.US")
+
+        self.assertEqual([row["date"] for row in rows], [date(2024, 1, 3)])
+
+    def test_normalize_historical_ohlc_payload_empty_payload_returns_empty_list(self):
+        self.assertEqual(normalize_historical_ohlc_payload([], "AAPL.US"), [])
+        self.assertEqual(normalize_historical_ohlc_payload({"data": []}, "AAPL.US"), [])
+
+    @override_settings(EODHD_API_KEY="token", EODHD_BASE_URL="https://example.test/api")
+    @patch("core.services.provider_eodhd.requests.get")
+    def test_client_fetch_historical_ohlc_uses_eod_endpoint(self, mock_get):
+        response = Mock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = [
+            {"date": "2024-01-02", "open": "10", "high": "11", "low": "9", "close": "10.5", "volume": "1000"},
+        ]
+        mock_get.return_value = response
+
+        rows = EODHDClient().fetch_historical_ohlc("AAPL.US", date(2024, 1, 1), date(2024, 1, 31))
+
+        self.assertEqual(rows[0]["date"], date(2024, 1, 2))
+        mock_get.assert_called_once()
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "https://example.test/api/eod/AAPL.US")
+        self.assertEqual(kwargs["params"]["from"], "2024-01-01")
+        self.assertEqual(kwargs["params"]["to"], "2024-01-31")
+        self.assertEqual(kwargs["params"]["period"], "d")
+        self.assertEqual(kwargs["params"]["fmt"], "json")
+
+    def test_sanitize_provider_error_message_masks_api_keys(self):
+        message = sanitize_provider_error_message(
+            "GET /eod/AAPL.US?api_token=secret-token&fmt=json apikey=other-secret"
+        )
+
+        self.assertIn("api_token=***", message)
+        self.assertIn("apikey=***", message)
+        self.assertNotIn("secret-token", message)
+        self.assertNotIn("other-secret", message)
+
     def test_normalize_sp500_historical_components_payload_handles_dict_indexed_payload(self):
         payload = {
             "0": {"Code": "AAPL", "Name": "Apple Inc", "StartDate": "1982-11-30", "EndDate": None, "IsActiveNow": 1, "IsDelisted": 0},
@@ -237,6 +310,35 @@ class EODHDMarketCapClientTests(TestCase):
 
         mock_sleep.assert_not_called()
         self.assertEqual(mock_get.call_count, 1)
+
+    @override_settings(EODHD_API_KEY="secret-token", EODHD_BASE_URL="https://example.test/api", EODHD_MAX_RETRIES=0)
+    @patch("core.services.provider_eodhd.requests.get")
+    def test_http_error_masks_api_token_from_exception_text(self, mock_get):
+        response = Mock()
+        response.status_code = 403
+        response.raise_for_status.side_effect = requests.HTTPError(
+            "403 Client Error for url: https://eodhd.com/api/eod/AAPL.US?api_token=secret-token&fmt=json"
+        )
+        mock_get.return_value = response
+
+        with self.assertRaises(EODHDError) as ctx:
+            EODHDClient().fetch_historical_ohlc("AAPL.US", date(2024, 1, 1), date(2024, 1, 2))
+
+        self.assertIn("api_token=***", str(ctx.exception))
+        self.assertNotIn("secret-token", str(ctx.exception))
+
+    @override_settings(EODHD_API_KEY="secret-token", EODHD_BASE_URL="https://example.test/api", EODHD_MAX_RETRIES=0)
+    @patch("core.services.provider_eodhd.requests.get")
+    def test_network_error_masks_api_token_from_exception_text(self, mock_get):
+        mock_get.side_effect = requests.ConnectionError(
+            "Failed to establish connection to https://eodhd.com/api/eod/AAPL.US?api_token=secret-token&fmt=json"
+        )
+
+        with self.assertRaises(EODHDError) as ctx:
+            EODHDClient().fetch_historical_ohlc("AAPL.US", date(2024, 1, 1), date(2024, 1, 2))
+
+        self.assertIn("api_token=***", str(ctx.exception))
+        self.assertNotIn("secret-token", str(ctx.exception))
 
     @override_settings(
         EODHD_API_KEY="token",

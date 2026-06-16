@@ -1,0 +1,330 @@
+from __future__ import annotations
+
+from datetime import date, timedelta
+from decimal import Decimal
+from unittest.mock import patch
+
+from django.test import TestCase
+from django.utils import timezone
+
+from core.models import (
+    Backtest,
+    DailyBar,
+    ProcessingJob,
+    Scenario,
+    Symbol,
+    UniverseCoverageSnapshot,
+    UniverseCoverageStatus,
+    UniverseDefinition,
+    UniverseImportBatch,
+    UniverseMembership,
+)
+from core.services.dynamic_universe_ohlc_prepare import prepare_dynamic_universe_ohlc
+from core.services.provider_eodhd import EODHDError
+from core.tasks import prepare_dynamic_universe_ohlc_job_task
+
+
+class FakeEODHDClient:
+    def __init__(self, responses: dict[str, object]):
+        self.responses = responses
+        self.calls: list[tuple[str, date, date]] = []
+
+    def fetch_historical_ohlc(self, provider_symbol, from_date, to_date):
+        self.calls.append((provider_symbol, from_date, to_date))
+        response = self.responses.get(provider_symbol, [])
+        if isinstance(response, Exception):
+            raise response
+        return response
+
+
+class DynamicUniverseOHLCTestCase(TestCase):
+    start = date(2024, 1, 1)
+    end = date(2024, 1, 5)
+
+    def setUp(self):
+        self.scenario = Scenario.objects.create(
+            name="Dynamic SP500",
+            universe_mode=Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+        self.backtest = Backtest.objects.create(
+            name="Dynamic OHLC",
+            scenario=self.scenario,
+            start_date=self.start,
+            end_date=self.end,
+            capital_total=Decimal("10000"),
+            capital_per_ticker=Decimal("1000"),
+            capital_mode=Backtest.CapitalMode.FIXED,
+            ratio_threshold=Decimal("0"),
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            warmup_days=0,
+        )
+        self.ready = Symbol.objects.create(ticker="READY", exchange="NYSE", instrument_type="Common Stock", active=True)
+        self.missing = Symbol.objects.create(ticker="MISS", exchange="US", instrument_type="Common Stock", active=True)
+        self.extra = Symbol.objects.create(ticker="EXTRA", exchange="NASDAQ", instrument_type="Common Stock", active=True)
+        self._validated_sp500(self.ready, self.missing, self.extra)
+
+    def _validated_sp500(self, *symbols: Symbol):
+        universe = UniverseDefinition.objects.create(
+            code="SP500",
+            name="S&P 500",
+            source="test",
+            active=True,
+        )
+        for symbol in symbols:
+            UniverseMembership.objects.create(
+                universe=universe,
+                symbol=symbol,
+                ticker=symbol.ticker,
+                exchange=symbol.exchange,
+                provider_symbol=f"{symbol.ticker}.US",
+                valid_from=self.start,
+                valid_to=None,
+                source="test",
+            )
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="test",
+            source_name="test",
+            period_start=self.start,
+            period_end=self.end,
+            expected_member_count=len(symbols),
+            imported_member_count=len(symbols),
+            mapped_member_count=len(symbols),
+            unmapped_member_count=0,
+            status=UniverseCoverageStatus.VALIDATED,
+            validated_at=timezone.now(),
+        )
+        current = self.start
+        while current <= self.end:
+            UniverseCoverageSnapshot.objects.create(
+                universe=universe,
+                import_batch=batch,
+                coverage_date=current,
+                expected_member_count=len(symbols),
+                actual_member_count=len(symbols),
+                mapped_member_count=len(symbols),
+                unmapped_member_count=0,
+                status=UniverseCoverageStatus.VALIDATED,
+            )
+            current += timedelta(days=1)
+
+    def _bars(self, symbol: Symbol, *, close: str = "10"):
+        for current in (self.start, self.end):
+            DailyBar.objects.create(
+                symbol=symbol,
+                date=current,
+                open=Decimal(close),
+                high=Decimal(close),
+                low=Decimal(close),
+                close=Decimal(close),
+                volume=1000,
+                source="test",
+            )
+
+    def _rows(self, *, close: str = "20"):
+        return [
+            {
+                "date": self.start,
+                "open": Decimal(close),
+                "high": Decimal(close),
+                "low": Decimal(close),
+                "close": Decimal(close),
+                "volume": 2000,
+                "provider_symbol": "TEST.US",
+                "source_payload": {},
+            },
+            {
+                "date": self.end,
+                "open": Decimal(close),
+                "high": Decimal(close),
+                "low": Decimal(close),
+                "close": Decimal(close),
+                "volume": 2000,
+                "provider_symbol": "TEST.US",
+                "source_payload": {},
+            },
+        ]
+
+
+class DynamicUniverseOHLCPrepareServiceTests(DynamicUniverseOHLCTestCase):
+    def test_already_ready_symbols_do_not_fetch(self):
+        for symbol in (self.ready, self.missing, self.extra):
+            self._bars(symbol)
+        client = FakeEODHDClient({})
+
+        result = prepare_dynamic_universe_ohlc(
+            backtest_id=self.backtest.id,
+            client=client,
+        )
+
+        self.assertEqual(result.missing_before, [])
+        self.assertEqual(client.calls, [])
+        self.assertEqual(result.ready_after, 3)
+
+    def test_missing_symbols_fetch_eodhd_and_upsert_daily_bars(self):
+        self._bars(self.ready)
+        client = FakeEODHDClient({
+            "MISS.US": self._rows(),
+            "EXTRA.US": self._rows(close="30"),
+        })
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual([call[0] for call in client.calls], ["EXTRA.US", "MISS.US"])
+        self.assertEqual(result.inserted_bars, 4)
+        self.assertEqual(result.missing_after, [])
+        self.assertEqual(DailyBar.objects.filter(symbol=self.missing).count(), 2)
+
+    def test_prepare_is_idempotent_when_rerun(self):
+        self._bars(self.ready)
+        client = FakeEODHDClient({
+            "MISS.US": self._rows(),
+            "EXTRA.US": self._rows(close="30"),
+        })
+
+        first = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+        second = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual(first.missing_after, [])
+        self.assertEqual(second.missing_before, [])
+        self.assertEqual(DailyBar.objects.filter(symbol=self.missing, date=self.start).count(), 1)
+
+    def test_empty_provider_response_records_no_data_symbol(self):
+        self._bars(self.ready)
+        self._bars(self.extra)
+        client = FakeEODHDClient({"MISS.US": []})
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual(result.no_data_symbols, ["MISS"])
+        self.assertEqual(result.missing_after, ["MISS"])
+
+    def test_provider_exception_is_reported_without_raw_api_key(self):
+        self._bars(self.ready)
+        self._bars(self.extra)
+        client = FakeEODHDClient({
+            "MISS.US": EODHDError("boom api_token=secret-token"),
+        })
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertIn("MISS", result.provider_error_symbols)
+        self.assertIn("api_token=***", result.provider_error_symbols["MISS"])
+        self.assertNotIn("secret-token", result.provider_error_symbols["MISS"])
+
+    def test_network_exception_is_classified_separately(self):
+        self._bars(self.ready)
+        self._bars(self.extra)
+        client = FakeEODHDClient({
+            "MISS.US": EODHDError("Failed to resolve api.eodhd.com"),
+        })
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertIn("MISS", result.network_error_symbols)
+        self.assertEqual(result.provider_error_symbols, {})
+
+    def test_max_symbols_limits_fetch_scope(self):
+        self._bars(self.ready)
+        client = FakeEODHDClient({
+            "EXTRA.US": self._rows(),
+            "MISS.US": self._rows(),
+        })
+
+        result = prepare_dynamic_universe_ohlc(
+            backtest_id=self.backtest.id,
+            client=client,
+            max_symbols=1,
+        )
+
+        self.assertEqual(len(client.calls), 1)
+        self.assertEqual(result.inserted_bars, 2)
+        self.assertEqual(len(result.missing_after), 1)
+
+    def test_force_refresh_updates_existing_rows_without_duplicates(self):
+        for symbol in (self.ready, self.missing, self.extra):
+            self._bars(symbol, close="10")
+        client = FakeEODHDClient({
+            "READY.US": self._rows(close="42"),
+            "MISS.US": self._rows(close="42"),
+            "EXTRA.US": self._rows(close="42"),
+        })
+
+        result = prepare_dynamic_universe_ohlc(
+            backtest_id=self.backtest.id,
+            client=client,
+            force_refresh=True,
+        )
+
+        self.assertEqual(len(client.calls), 3)
+        self.assertEqual(result.updated_bars, 6)
+        self.assertEqual(DailyBar.objects.filter(symbol=self.ready, date=self.start).count(), 1)
+        self.assertEqual(DailyBar.objects.get(symbol=self.ready, date=self.start).close, Decimal("42"))
+
+    def test_static_scenario_is_rejected_without_mutating_backtest(self):
+        static = Scenario.objects.create(name="Static", universe_mode=Scenario.UniverseMode.STATIC_TICKERS)
+        self.backtest.scenario = static
+        self.backtest.save(update_fields=["scenario"])
+
+        with self.assertRaisesMessage(Exception, "SP500_HISTORICAL_DYNAMIC"):
+            prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=FakeEODHDClient({}))
+
+        self.backtest.refresh_from_db()
+        self.assertEqual(self.backtest.scenario, static)
+
+
+class DynamicUniverseOHLCPrepareJobTests(DynamicUniverseOHLCTestCase):
+    def test_job_marks_done_when_preparation_completes(self):
+        self._bars(self.ready)
+        fake_client = FakeEODHDClient({
+            "MISS.US": self._rows(),
+            "EXTRA.US": self._rows(close="30"),
+        })
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.PENDING,
+            backtest=self.backtest,
+            scenario=self.scenario,
+        )
+
+        with patch("core.services.dynamic_universe_ohlc_prepare.EODHDClient", return_value=fake_client), \
+                patch("core.tasks._fetch_daily_bars_for_symbols") as twelvedata_fetch, \
+                patch("core.tasks.run_backtest_task") as run_backtest:
+            message = prepare_dynamic_universe_ohlc_job_task.apply(kwargs={
+                "job_id": job.id,
+                "backtest_id": self.backtest.id,
+            }).get(propagate=True)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.DONE)
+        self.assertIn("Dynamic Universe OHLC preparation", message)
+        self.assertIn("missing_after=0", job.message)
+        self.assertTrue(job.last_checkpoint.startswith("dynamic_universe_ohlc"))
+        twelvedata_fetch.assert_not_called()
+        run_backtest.assert_not_called()
+
+    def test_job_marks_failed_when_ohlc_remains_missing(self):
+        self._bars(self.ready)
+        self._bars(self.extra)
+        fake_client = FakeEODHDClient({"MISS.US": []})
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.PENDING,
+            backtest=self.backtest,
+            scenario=self.scenario,
+        )
+
+        with patch("core.services.dynamic_universe_ohlc_prepare.EODHDClient", return_value=fake_client), \
+                patch("core.tasks._fetch_daily_bars_for_symbols") as twelvedata_fetch:
+            message = prepare_dynamic_universe_ohlc_job_task.apply(kwargs={
+                "job_id": job.id,
+                "backtest_id": self.backtest.id,
+            }).get(propagate=True)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertIn("incomplete", message)
+        self.assertIn("MISS", job.error)
+        twelvedata_fetch.assert_not_called()
