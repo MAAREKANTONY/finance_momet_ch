@@ -25,6 +25,7 @@ from core.models import (
 )
 from core.services.backtesting.engine import run_backtest, run_backtest_kpi_only
 from core.services.backtesting.prep import prepare_backtest_data
+from core.services.provider_eodhd import EODHDError
 from core.services.universe_resolver import UniverseResolver
 from core.tasks import DYNAMIC_UNIVERSE_USER_ERROR, compute_metrics_job_task, run_backtest_task
 
@@ -183,19 +184,76 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         self.assertNotIn("buy_blocked_by_universe", old_daily[0])
         self.assertNotIn("buy_blocked_reason", old_daily[0])
 
-    def test_dynamic_resolver_error_fails_backtest_before_prep(self):
+    def test_dynamic_auto_prepare_error_fails_backtest_before_prep(self):
         self.scenario = self._scenario(dynamic=True)
         bt = self._backtest(self.scenario)
 
-        with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock:
-            with self.assertRaisesMessage(Exception, DYNAMIC_UNIVERSE_USER_ERROR):
-                run_backtest_task(bt.id)
+        with patch(
+            "core.services.dynamic_universe_auto_prepare.bootstrap_sp500_symbols_from_eodhd",
+            side_effect=EODHDError("EODHD_API_KEY is missing"),
+        ):
+            with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock:
+                with self.assertRaisesMessage(Exception, DYNAMIC_UNIVERSE_USER_ERROR):
+                    run_backtest_task(bt.id)
 
         prep_mock.assert_not_called()
         bt.refresh_from_db()
         self.assertEqual(bt.status, Backtest.Status.FAILED)
-        self.assertIn(DYNAMIC_UNIVERSE_USER_ERROR, bt.error_message)
-        self.assertIn("UniverseDefinition SP500 is missing or inactive", bt.error_message)
+        self.assertEqual(bt.error_message, DYNAMIC_UNIVERSE_USER_ERROR)
+        self.assertNotIn("Importez le fichier historique", bt.error_message)
+
+    def test_dynamic_auto_prepare_missing_coverage_then_backtest_continues(self):
+        self.scenario = self._scenario(dynamic=True)
+        self._market_data()
+        Alert.objects.create(symbol=self.keep, scenario=self.scenario, date=self.start, alerts="A1")
+        bt = self._backtest(self.scenario, close_positions_at_end=True)
+
+        def sync_memberships(**_kwargs):
+            self._validated_sp500_universe()
+            return SimpleNamespace(status=UniverseCoverageStatus.VALIDATED, warnings=[])
+
+        with patch(
+            "core.services.dynamic_universe_auto_prepare.bootstrap_sp500_symbols_from_eodhd",
+            return_value=SimpleNamespace(created=0, warnings=[]),
+        ) as bootstrap_mock:
+            with patch(
+                "core.services.dynamic_universe_auto_prepare.sync_sp500_historical_memberships_from_eodhd",
+                side_effect=sync_memberships,
+            ) as sync_mock:
+                with patch("core.services.backtesting.prep.prepare_backtest_data", return_value=self._fake_prep()):
+                    run_backtest_task(bt.id)
+
+        bootstrap_mock.assert_called_once()
+        sync_mock.assert_called_once()
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.DONE)
+        self.assertEqual({row["ticker"] for row in bt.universe_snapshot}, {"KEEP", "NEW", "OLD"})
+
+    def test_dynamic_auto_prepare_partial_sync_fails_with_user_friendly_error(self):
+        self.scenario = self._scenario(dynamic=True)
+        bt = self._backtest(self.scenario)
+
+        with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock:
+            with patch(
+                "core.services.dynamic_universe_auto_prepare.bootstrap_sp500_symbols_from_eodhd",
+                return_value=SimpleNamespace(created=0, warnings=[]),
+            ):
+                with patch(
+                    "core.services.dynamic_universe_auto_prepare.sync_sp500_historical_memberships_from_eodhd",
+                    return_value=SimpleNamespace(
+                        status=UniverseCoverageStatus.PARTIAL,
+                        mapped_member_count=505,
+                        unmapped_member_count=1,
+                        warnings=["unmapped symbol XYZ"],
+                    ),
+                ):
+                    with self.assertRaisesMessage(Exception, DYNAMIC_UNIVERSE_USER_ERROR):
+                        run_backtest_task(bt.id)
+
+        prep_mock.assert_not_called()
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.FAILED)
+        self.assertEqual(bt.error_message, DYNAMIC_UNIVERSE_USER_ERROR)
 
     def test_static_compute_metrics_without_symbols_still_blocks(self):
         self.scenario = Scenario.objects.create(
@@ -258,19 +316,60 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
             backtest=bt,
         )
 
-        with self.assertRaisesMessage(ValueError, DYNAMIC_UNIVERSE_USER_ERROR):
-            compute_metrics_job_task.run(
-                job_id=job.id,
-                scenario_id=self.scenario.id,
-                symbol_ids=None,
-                recompute_all=True,
-                backtest_id=bt.id,
-            )
+        with patch(
+            "core.services.dynamic_universe_auto_prepare.bootstrap_sp500_symbols_from_eodhd",
+            side_effect=EODHDError("EODHD_API_KEY is missing"),
+        ):
+            with self.assertRaisesMessage(ValueError, DYNAMIC_UNIVERSE_USER_ERROR):
+                compute_metrics_job_task.run(
+                    job_id=job.id,
+                    scenario_id=self.scenario.id,
+                    symbol_ids=None,
+                    recompute_all=True,
+                    backtest_id=bt.id,
+                )
 
         job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.FAILED)
-        self.assertIn(DYNAMIC_UNIVERSE_USER_ERROR, job.error)
-        self.assertIn("UniverseDefinition SP500 is missing or inactive", job.error)
+        self.assertEqual(job.error, DYNAMIC_UNIVERSE_USER_ERROR)
+
+    def test_dynamic_compute_metrics_missing_coverage_auto_prepares_then_computes(self):
+        self.scenario = self._scenario(dynamic=True)
+        bt = self._backtest(self.scenario)
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.COMPUTE_METRICS,
+            status=ProcessingJob.Status.PENDING,
+            scenario=self.scenario,
+            backtest=bt,
+        )
+
+        def sync_memberships(**_kwargs):
+            self._validated_sp500_universe()
+            return SimpleNamespace(status=UniverseCoverageStatus.VALIDATED, warnings=[])
+
+        with patch(
+            "core.services.dynamic_universe_auto_prepare.bootstrap_sp500_symbols_from_eodhd",
+            return_value=SimpleNamespace(created=0, warnings=[]),
+        ) as bootstrap_mock:
+            with patch(
+                "core.services.dynamic_universe_auto_prepare.sync_sp500_historical_memberships_from_eodhd",
+                side_effect=sync_memberships,
+            ) as sync_mock:
+                with patch("core.tasks._compute_metrics_for_scenario", return_value={"symbols": 3, "rows": 0, "full": True}) as compute_mock:
+                    message = compute_metrics_job_task.run(
+                        job_id=job.id,
+                        scenario_id=self.scenario.id,
+                        symbol_ids=None,
+                        recompute_all=True,
+                        backtest_id=bt.id,
+                    )
+
+        bootstrap_mock.assert_called_once()
+        sync_mock.assert_called_once()
+        compute_mock.assert_called_once()
+        self.assertIn("dynamic_sp500=3", message)
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.DONE)
 
     def test_dynamic_task_sets_superset_snapshot_and_metadata(self):
         self.scenario = self._scenario(dynamic=True)
