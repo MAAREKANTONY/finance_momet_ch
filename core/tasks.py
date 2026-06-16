@@ -29,6 +29,7 @@ import json
 import csv
 import io
 import zipfile
+import re
 from pathlib import Path
 
 import time
@@ -43,6 +44,12 @@ DYNAMIC_UNIVERSE_USER_ERROR = (
     "Certains symboles ne sont pas disponibles ou la couverture n’est pas validée. "
     "Vérifiez la synchronisation S&P 500 dans l’administration."
 )
+
+
+def _sanitize_provider_error_message(error) -> str:
+    message = str(error)
+    message = re.sub(r"([?&](?:apikey|api_token)=)[^&\s]+", r"\1***", message, flags=re.IGNORECASE)
+    return message
 
 
 def _with_db_retries(fn, *, attempts: int | None = None):
@@ -240,13 +247,19 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
 
     pulse = JobCheckpointPulse(job, every_n=1, every_seconds=20, task_request=task_request, base_label="fetch_bars")
 
+    def _is_us_common_stock(sym) -> bool:
+        instrument_type = str(getattr(sym, "instrument_type", "") or "").strip().upper()
+        exchange = str(getattr(sym, "exchange", "") or "").strip().upper()
+        return exchange == "US" and instrument_type in {"COMMON STOCK", "COMMON", "STOCK"}
+
     def _should_retry_without_exchange(sym) -> bool:
         return str(getattr(sym, "instrument_type", "") or "").strip().upper() == "ETF"
 
     for idx, sym in enumerate(symbols, start=1):
         # Cooperative cancel/kill + heartbeat
         pulse.hit(checkpoint=f"symbol {idx}/{len(symbols)} {sym.ticker}", force=True)
-        exchange = sym.exchange or getattr(settings, "DEFAULT_EXCHANGE", "")
+        raw_exchange = sym.exchange or getattr(settings, "DEFAULT_EXCHANGE", "")
+        exchange = "" if _is_us_common_stock(sym) else raw_exchange
         # Delta fetch by default: if we already have bars, only request dates after the last stored bar.
         # This avoids re-downloading years of history each day.
         start_date = None
@@ -270,7 +283,12 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
             )
         except Exception as e:
             if exchange and _should_retry_without_exchange(sym):
-                logger.warning("[fetch] exchange-qualified fetch failed for ETF %s:%s (%s); retrying ticker-only", sym.ticker, exchange, e)
+                logger.warning(
+                    "[fetch] exchange-qualified fetch failed for %s:%s (%s); retrying ticker-only",
+                    sym.ticker,
+                    exchange,
+                    _sanitize_provider_error_message(e),
+                )
                 try:
                     values = client.time_series_daily(
                         sym.ticker,
@@ -279,14 +297,14 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
                         start_date=start_date,
                     )
                 except Exception as fallback_error:
-                    print(f"[fetch] error {sym}: {fallback_error}")
+                    print(f"[fetch] error {sym}: {_sanitize_provider_error_message(fallback_error)}")
                     continue
             else:
-                print(f"[fetch] error {sym}: {e}")
+                print(f"[fetch] error {sym}: {_sanitize_provider_error_message(e)}")
                 continue
 
         if not values and exchange and _should_retry_without_exchange(sym):
-            logger.warning("[fetch] no bars returned for ETF %s:%s; retrying ticker-only", sym.ticker, exchange)
+            logger.warning("[fetch] no bars returned for %s:%s; retrying ticker-only", sym.ticker, exchange)
             try:
                 values = client.time_series_daily(
                     sym.ticker,
@@ -295,7 +313,7 @@ def _fetch_daily_bars_for_symbols(*, symbol_qs, outputsize: int, force_full: boo
                     start_date=start_date,
                 )
             except Exception as fallback_error:
-                print(f"[fetch] error {sym}: {fallback_error}")
+                print(f"[fetch] error {sym}: {_sanitize_provider_error_message(fallback_error)}")
                 continue
 
         if not values:

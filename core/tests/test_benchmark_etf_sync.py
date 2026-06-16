@@ -8,7 +8,8 @@ from django.test import TestCase
 
 from core.models import DailyBar, Symbol
 from core.services.benchmark_etf_sync import required_benchmark_tickers_for_symbols, sync_benchmark_etfs_for_symbols
-from core.tasks import _fetch_daily_bars_for_symbols
+from core.services.provider_twelvedata import sanitize_provider_error_message
+from core.tasks import _fetch_daily_bars_for_symbols, _sanitize_provider_error_message
 
 
 class BenchmarkEtfSyncServiceTests(TestCase):
@@ -143,6 +144,41 @@ class BenchmarkEtfSyncServiceTests(TestCase):
         self.assertEqual(stats["bars"], 0)
         self.assertEqual(time_series_mock.call_count, 1)
         self.assertEqual(time_series_mock.call_args.kwargs["exchange"], "NASDAQ")
+
+    @patch("core.tasks.TwelveDataClient.time_series_daily")
+    def test_us_exchange_common_stock_uses_ticker_only_directly(self, time_series_mock):
+        stock = Symbol.objects.create(
+            ticker="AAPL",
+            exchange="US",
+            country="US",
+            instrument_type="Common Stock",
+            active=True,
+        )
+        time_series_mock.return_value = [
+            {"datetime": "2024-01-02", "open": "10", "high": "11", "low": "9", "close": "10.5", "volume": "1000"}
+        ]
+
+        stats = _fetch_daily_bars_for_symbols(symbol_qs=[stock], outputsize=30)
+
+        self.assertEqual(stats["bars"], 1)
+        self.assertEqual(DailyBar.objects.filter(symbol=stock).count(), 1)
+        self.assertEqual(time_series_mock.call_count, 1)
+        self.assertEqual(time_series_mock.call_args.kwargs["exchange"], "")
+
+    def test_provider_error_sanitizers_mask_api_keys(self):
+        error = (
+            "404 Client Error for url: "
+            "https://api.twelvedata.com/time_series?symbol=AAPL&apikey=secret123&api_token=secret456"
+        )
+
+        task_message = _sanitize_provider_error_message(error)
+        provider_message = sanitize_provider_error_message(error)
+
+        self.assertNotIn("secret123", task_message)
+        self.assertNotIn("secret456", task_message)
+        self.assertIn("apikey=***", task_message)
+        self.assertIn("api_token=***", task_message)
+        self.assertEqual(task_message, provider_message)
 
     @patch("core.services.benchmark_etf_sync.enrich_symbols_metadata")
     @patch("core.tasks.TwelveDataClient.time_series_daily")

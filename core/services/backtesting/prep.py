@@ -2,7 +2,7 @@
 Prerequisites preparation for backtests.
 
 When a backtest is launched, we must ensure:
-- DailyBar data is available for the universe and date range (Twelve Data sync)
+- DailyBar data is available for the universe and date range
 - DailyMetric + Alert computations are available for the scenario configuration (same computations as alerts)
 
 This module provides a conservative implementation that reuses existing tasks.
@@ -18,7 +18,8 @@ from datetime import date
 
 from django.db.models import Min, Max
 
-from core.models import Backtest, DailyBar, DailyMetric, Symbol
+from core.models import Backtest, DailyBar, DailyMetric, Scenario, Symbol
+from core.services.backtesting.ohlc_readiness import ensure_ohlc_ready_for_backtest
 from core.services.metrics_depth import check_metrics_depth
 
 
@@ -59,7 +60,9 @@ def prepare_backtest_data(backtest: Backtest, *, force_full_recompute: bool = Fa
     """
     Ensure data required for the backtest exists.
 
-    - If DailyBar coverage is missing for at least one symbol, run fetch_daily_bars_task().
+    - For dynamic S&P 500 universes, block cleanly if OHLC coverage is missing.
+    - For static universes, keep the historical behavior and run fetch_daily_bars_task()
+      when DailyBar coverage is missing.
     - If DailyMetric/Alert coverage is missing for at least one symbol, run compute_metrics_task(recompute_all=False).
 
     Returns a report explaining what was executed.
@@ -76,20 +79,35 @@ def prepare_backtest_data(backtest: Backtest, *, force_full_recompute: bool = Fa
     tickers = _tickers_from_universe_snapshot(backtest.universe_snapshot or [])
     symbols = Symbol.objects.filter(ticker__in=tickers).all() if tickers else backtest.scenario.symbols.all()
 
-    # Check bars coverage
-    missing_bars = []
-    for s in symbols:
-        if not _bars_cover_range(s.id, backtest.start_date, backtest.end_date):
-            missing_bars.append(s.ticker)
+    is_dynamic_sp500 = (
+        backtest.scenario.universe_mode == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+    )
 
-    if missing_bars:
-        notes.append(
-            f"Missing DailyBar coverage for {len(missing_bars)} symbols (sample: {', '.join(missing_bars[:10])}{'...' if len(missing_bars) > 10 else ''})."
+    if is_dynamic_sp500:
+        ohlc_report = ensure_ohlc_ready_for_backtest(
+            backtest=backtest,
+            symbols=symbols,
+            start_date=backtest.start_date,
+            end_date=backtest.end_date,
         )
-        # Run synchronously (we are already in a background task when called from run_backtest_task)
-        fetch_daily_bars_task()
-        did_fetch = True
-        notes.append("Ran fetch_daily_bars_task().")
+        did_fetch = ohlc_report.did_fetch
+        notes.extend(ohlc_report.notes)
+        missing_bars = ohlc_report.missing_after
+    else:
+        # Check bars coverage
+        missing_bars = []
+        for s in symbols:
+            if not _bars_cover_range(s.id, backtest.start_date, backtest.end_date):
+                missing_bars.append(s.ticker)
+
+        if missing_bars:
+            notes.append(
+                f"Missing DailyBar coverage for {len(missing_bars)} symbols (sample: {', '.join(missing_bars[:10])}{'...' if len(missing_bars) > 10 else ''})."
+            )
+            # Run synchronously (we are already in a background task when called from run_backtest_task)
+            fetch_daily_bars_task()
+            did_fetch = True
+            notes.append("Ran fetch_daily_bars_task().")
 
     # Check metrics depth (single grouped query) and decide whether we must full recompute.
     symbol_ids = list(symbols.values_list("id", flat=True))

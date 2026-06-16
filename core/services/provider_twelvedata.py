@@ -1,4 +1,5 @@
 import logging
+import re
 import time
 from typing import Any
 
@@ -8,6 +9,11 @@ from django.conf import settings
 from .twelvedata_rate_limiter import get_twelvedata_rate_limiter
 
 logger = logging.getLogger(__name__)
+
+
+def sanitize_provider_error_message(error) -> str:
+    message = str(error)
+    return re.sub(r"([?&](?:apikey|api_token)=)[^&\s]+", r"\1***", message, flags=re.IGNORECASE)
 
 
 class TwelveDataRateLimitError(RuntimeError):
@@ -78,7 +84,7 @@ class TwelveDataClient:
                     attempt,
                     attempts,
                     self.backoff_seconds,
-                    e,
+                    sanitize_provider_error_message(e),
                 )
                 time.sleep(self.backoff_seconds)
         if last_error is not None:
@@ -181,7 +187,7 @@ class TwelveDataClient:
                 "[twelvedata] profile metadata lookup failed for %s%s: %s",
                 symbol,
                 f":{exchange}" if exchange else "",
-                exc,
+                sanitize_provider_error_message(exc),
             )
         if isinstance(profile_payload, dict) and profile_payload and profile_payload.get("status") != "error":
             normalized = self._normalize_reference_metadata(profile_payload)
