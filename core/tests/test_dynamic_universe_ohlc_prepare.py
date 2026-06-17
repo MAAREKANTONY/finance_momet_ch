@@ -177,6 +177,65 @@ class DynamicUniverseOHLCPrepareServiceTests(DynamicUniverseOHLCTestCase):
         self.assertEqual(result.missing_after, [])
         self.assertEqual(DailyBar.objects.filter(symbol=self.missing).count(), 2)
 
+    def test_delisted_symbol_ready_on_membership_interval_is_not_fetched(self):
+        delist_date = self.start + timedelta(days=1)
+        UniverseMembership.objects.filter(ticker=self.missing.ticker).update(valid_to=delist_date)
+        self._bars(self.ready)
+        for current in (self.start, delist_date):
+            DailyBar.objects.create(
+                symbol=self.missing,
+                date=current,
+                open=Decimal("10"),
+                high=Decimal("10"),
+                low=Decimal("10"),
+                close=Decimal("10"),
+                volume=1000,
+            )
+        client = FakeEODHDClient({
+            "EXTRA.US": self._rows(close="30"),
+        })
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual([call[0] for call in client.calls], ["EXTRA.US"])
+        self.assertNotIn("MISS", result.missing_before)
+        self.assertEqual(result.missing_after, [])
+
+    def test_new_entrant_fetch_uses_membership_window(self):
+        valid_from = self.start + timedelta(days=2)
+        UniverseMembership.objects.filter(ticker=self.extra.ticker).update(valid_from=valid_from)
+        self._bars(self.ready)
+        self._bars(self.missing)
+        client = FakeEODHDClient({
+            "EXTRA.US": [
+                {
+                    "date": valid_from,
+                    "open": Decimal("30"),
+                    "high": Decimal("30"),
+                    "low": Decimal("30"),
+                    "close": Decimal("30"),
+                    "volume": 2000,
+                    "provider_symbol": "EXTRA.US",
+                    "source_payload": {},
+                },
+                {
+                    "date": self.end,
+                    "open": Decimal("30"),
+                    "high": Decimal("30"),
+                    "low": Decimal("30"),
+                    "close": Decimal("30"),
+                    "volume": 2000,
+                    "provider_symbol": "EXTRA.US",
+                    "source_payload": {},
+                },
+            ],
+        })
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual(client.calls, [("EXTRA.US", valid_from, self.end)])
+        self.assertEqual(result.missing_after, [])
+
     def test_prepare_is_idempotent_when_rerun(self):
         self._bars(self.ready)
         client = FakeEODHDClient({

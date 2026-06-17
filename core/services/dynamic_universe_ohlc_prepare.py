@@ -9,7 +9,11 @@ from typing import Any, Callable
 from django.db import transaction
 
 from core.models import Backtest, DailyBar, Scenario, Symbol
-from core.services.backtesting.ohlc_readiness import _missing_symbols
+from core.services.backtesting.ohlc_readiness import (
+    OHLCRequiredRange,
+    get_missing_ohlc_symbols_for_dynamic_universe,
+    get_required_ohlc_ranges_for_dynamic_universe,
+)
 from core.services.provider_eodhd import (
     EODHDClient,
     EODHDError,
@@ -157,6 +161,16 @@ def _upsert_daily_bars(symbol: Symbol, rows: list[dict[str, Any]]) -> tuple[int,
     return inserted, updated, unchanged
 
 
+def _fetch_window_for_symbol(symbol: Symbol, ranges_by_symbol_id: dict[int, list[OHLCRequiredRange]]) -> tuple[date, date]:
+    required_ranges = ranges_by_symbol_id.get(symbol.id) or []
+    if not required_ranges:
+        raise DynamicUniverseOHLCPrepareError(f"No OHLC range resolved for symbol {symbol.ticker}.")
+    return (
+        min(required_range.start for required_range in required_ranges),
+        max(required_range.end for required_range in required_ranges),
+    )
+
+
 def prepare_dynamic_universe_ohlc(
     *,
     universe_code: str = SP500_UNIVERSE_CODE,
@@ -190,7 +204,18 @@ def prepare_dynamic_universe_ohlc(
         warmup_start_date=coverage_start,
     )
     symbols = list(resolved_universe.symbols)
-    missing_before_symbols = _missing_symbols(symbols, coverage_start, scoped_end)
+    ranges_by_symbol_id = get_required_ohlc_ranges_for_dynamic_universe(
+        symbols=symbols,
+        start_date=coverage_start,
+        end_date=scoped_end,
+        membership_by_ticker=resolved_universe.membership_by_ticker,
+    )
+    missing_before_symbols = get_missing_ohlc_symbols_for_dynamic_universe(
+        symbols=symbols,
+        start_date=coverage_start,
+        end_date=scoped_end,
+        membership_by_ticker=resolved_universe.membership_by_ticker,
+    )
     missing_before = [symbol.ticker for symbol in missing_before_symbols]
     target_symbols = symbols if force_refresh else missing_before_symbols
     if max_symbols is not None:
@@ -218,7 +243,8 @@ def prepare_dynamic_universe_ohlc(
             continue
 
         try:
-            rows = eodhd_client.fetch_historical_ohlc(provider_symbol, coverage_start, scoped_end)
+            fetch_start, fetch_end = _fetch_window_for_symbol(symbol, ranges_by_symbol_id)
+            rows = eodhd_client.fetch_historical_ohlc(provider_symbol, fetch_start, fetch_end)
         except EODHDError as exc:
             message = sanitize_provider_error_message(exc)
             if _is_network_error(exc):
@@ -238,7 +264,12 @@ def prepare_dynamic_universe_ohlc(
         result.updated_bars += updated
         result.unchanged_bars += unchanged
 
-    missing_after_symbols = _missing_symbols(symbols, coverage_start, scoped_end)
+    missing_after_symbols = get_missing_ohlc_symbols_for_dynamic_universe(
+        symbols=symbols,
+        start_date=coverage_start,
+        end_date=scoped_end,
+        membership_by_ticker=resolved_universe.membership_by_ticker,
+    )
     result.missing_after = [symbol.ticker for symbol in missing_after_symbols]
     result.ready_after = len(symbols) - len(missing_after_symbols)
     return result
