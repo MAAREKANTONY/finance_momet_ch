@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from django.conf import settings
 from django.db.models import Max, Min
 
-from core.models import Backtest, DailyBar, Symbol
+from core.models import Backtest, DailyBar, Scenario, Symbol
 
 
 OHLC_READINESS_USER_MESSAGE = (
@@ -40,6 +40,14 @@ class OHLCReadinessResult:
     notes: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class OHLCRequiredRange:
+    symbol_id: int
+    ticker: str
+    start: date
+    end: date
+
+
 def _boundary_tolerance_days() -> int:
     return int(getattr(settings, "DYNAMIC_UNIVERSE_OHLC_BOUNDARY_TOLERANCE_DAYS", 3))
 
@@ -66,6 +74,94 @@ def _bars_cover_range(symbol_id: int, start: date, end: date) -> bool:
 
 def _missing_symbols(symbols: Iterable[Symbol], start: date, end: date) -> list[Symbol]:
     return [symbol for symbol in symbols if not _bars_cover_range(symbol.id, start, end)]
+
+
+def _membership_intervals_by_symbol_id(membership_by_ticker) -> dict[int, list]:
+    intervals_by_symbol_id: dict[int, list] = {}
+    for intervals in (membership_by_ticker or {}).values():
+        for interval in intervals:
+            symbol_id = getattr(interval, "symbol_id", None)
+            if symbol_id is None:
+                continue
+            intervals_by_symbol_id.setdefault(int(symbol_id), []).append(interval)
+    return intervals_by_symbol_id
+
+
+def get_required_ohlc_ranges_for_dynamic_universe(
+    *,
+    symbols: Iterable[Symbol],
+    start_date: date,
+    end_date: date,
+    membership_by_ticker=None,
+) -> dict[int, list[OHLCRequiredRange]]:
+    """Return OHLC ranges required for each symbol in a dynamic universe.
+
+    When memberships are unavailable, the function deliberately falls back to the
+    historical global range. That is conservative: it may block, but it cannot
+    allow a partial backtest silently.
+    """
+    scoped_symbols = list(symbols)
+    if not membership_by_ticker:
+        return {
+            symbol.id: [OHLCRequiredRange(symbol_id=symbol.id, ticker=symbol.ticker, start=start_date, end=end_date)]
+            for symbol in scoped_symbols
+        }
+
+    intervals_by_symbol_id = _membership_intervals_by_symbol_id(membership_by_ticker)
+    ranges_by_symbol_id: dict[int, list[OHLCRequiredRange]] = {}
+    for symbol in scoped_symbols:
+        ranges: list[OHLCRequiredRange] = []
+        for interval in intervals_by_symbol_id.get(symbol.id, []):
+            effective_start = max(start_date, getattr(interval, "valid_from"))
+            raw_valid_to = getattr(interval, "valid_to", None)
+            effective_end = min(end_date, raw_valid_to or end_date)
+            if effective_end < effective_start:
+                continue
+            ranges.append(
+                OHLCRequiredRange(
+                    symbol_id=symbol.id,
+                    ticker=symbol.ticker,
+                    start=effective_start,
+                    end=effective_end,
+                )
+            )
+        if not ranges:
+            ranges.append(OHLCRequiredRange(symbol_id=symbol.id, ticker=symbol.ticker, start=start_date, end=end_date))
+        ranges_by_symbol_id[symbol.id] = ranges
+    return ranges_by_symbol_id
+
+
+def get_missing_ohlc_symbols_for_dynamic_universe(
+    *,
+    symbols: Iterable[Symbol],
+    start_date: date,
+    end_date: date,
+    membership_by_ticker=None,
+) -> list[Symbol]:
+    scoped_symbols = list(symbols)
+    ranges_by_symbol_id = get_required_ohlc_ranges_for_dynamic_universe(
+        symbols=scoped_symbols,
+        start_date=start_date,
+        end_date=end_date,
+        membership_by_ticker=membership_by_ticker,
+    )
+    missing: list[Symbol] = []
+    for symbol in scoped_symbols:
+        required_ranges = ranges_by_symbol_id.get(symbol.id, [])
+        if not required_ranges or any(
+            not _bars_cover_range(symbol.id, required_range.start, required_range.end)
+            for required_range in required_ranges
+        ):
+            missing.append(symbol)
+    return missing
+
+
+def _max_required_days_for_symbols(missing: list[Symbol], ranges_by_symbol_id: Mapping[int, list[OHLCRequiredRange]]) -> int:
+    max_days = 0
+    for symbol in missing:
+        for required_range in ranges_by_symbol_id.get(symbol.id, []):
+            max_days = max(max_days, (required_range.end - required_range.start).days + 1)
+    return max(1, max_days)
 
 
 def _raise_not_ready(missing: list[Symbol]) -> None:
@@ -100,21 +196,60 @@ def ensure_ohlc_ready_for_backtest(
     must be prepared by an explicit job before launching a dynamic S&P 500 backtest.
     """
     scoped_symbols = list(symbols)
-    missing_before = _missing_symbols(scoped_symbols, start_date, end_date)
+    notes: list[str] = []
+    ranges_by_symbol_id = get_required_ohlc_ranges_for_dynamic_universe(
+        symbols=scoped_symbols,
+        start_date=start_date,
+        end_date=end_date,
+    )
+    is_dynamic_sp500 = (
+        getattr(getattr(backtest, "scenario", None), "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
+        == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+    )
+    if is_dynamic_sp500:
+        try:
+            from core.services.universe_resolver import UniverseResolver
+
+            resolved_universe = UniverseResolver().resolve(
+                scenario=backtest.scenario,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            ranges_by_symbol_id = get_required_ohlc_ranges_for_dynamic_universe(
+                symbols=scoped_symbols,
+                start_date=start_date,
+                end_date=end_date,
+                membership_by_ticker=resolved_universe.membership_by_ticker,
+            )
+            missing_before = get_missing_ohlc_symbols_for_dynamic_universe(
+                symbols=scoped_symbols,
+                start_date=start_date,
+                end_date=end_date,
+                membership_by_ticker=resolved_universe.membership_by_ticker,
+            )
+        except Exception as exc:
+            notes.append(
+                "Dynamic OHLC readiness could not resolve membership intervals; "
+                f"falling back to global coverage check ({type(exc).__name__})."
+            )
+            missing_before = _missing_symbols(scoped_symbols, start_date, end_date)
+    else:
+        missing_before = _missing_symbols(scoped_symbols, start_date, end_date)
+
     if not missing_before:
         return OHLCReadinessResult(
             ready=True,
             checked_symbols=len(scoped_symbols),
-            notes=["OHLC coverage already present for the dynamic universe scope."],
+            notes=[*notes, "OHLC coverage already present for the dynamic universe scope."],
         )
 
     max_symbols = int(getattr(settings, "DYNAMIC_UNIVERSE_OHLC_AUTO_FETCH_MAX_SYMBOLS", 25))
     max_days = int(getattr(settings, "DYNAMIC_UNIVERSE_OHLC_AUTO_FETCH_MAX_DAYS", 730))
-    requested_days = max(1, (end_date - start_date).days + 1)
-    notes = [
+    requested_days = _max_required_days_for_symbols(missing_before, ranges_by_symbol_id)
+    notes.extend([
         f"Missing DailyBar coverage for {len(missing_before)} dynamic universe symbols "
         f"(sample: {', '.join(symbol.ticker for symbol in missing_before[:10])}{'...' if len(missing_before) > 10 else ''})."
-    ]
+    ])
     if len(missing_before) > max_symbols or requested_days > max_days:
         notes.append(
             f"Scoped OHLC readiness blocked: {len(missing_before)} symbols over {requested_days} days exceeds guardrails."

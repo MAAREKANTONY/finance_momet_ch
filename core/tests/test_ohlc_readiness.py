@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.test import TestCase, override_settings
@@ -12,6 +13,7 @@ from core.services.backtesting.ohlc_readiness import (
     OHLC_READINESS_TOO_MANY_MISSING_MESSAGE,
     OHLCReadinessError,
     ensure_ohlc_ready_for_backtest,
+    get_missing_ohlc_symbols_for_dynamic_universe,
 )
 
 
@@ -52,6 +54,27 @@ class OHLCReadinessTests(TestCase):
                 close=Decimal("10"),
                 volume=1000,
             )
+
+    def _create_boundary_bars_for_range(self, symbol: Symbol, start: date, end: date):
+        for current in [start, end]:
+            DailyBar.objects.create(
+                symbol=symbol,
+                date=current,
+                open=Decimal("10"),
+                high=Decimal("10"),
+                low=Decimal("10"),
+                close=Decimal("10"),
+                volume=1000,
+            )
+
+    def _interval(self, symbol: Symbol, valid_from: date, valid_to: date | None = None):
+        return SimpleNamespace(
+            ticker=symbol.ticker,
+            exchange=symbol.exchange,
+            symbol_id=symbol.id,
+            valid_from=valid_from,
+            valid_to=valid_to,
+        )
 
     def test_ready_scope_does_not_fetch(self):
         self._create_boundary_bars(self.ready_symbol)
@@ -243,3 +266,121 @@ class OHLCReadinessTests(TestCase):
             )
 
         self.assertEqual(ctx.exception.missing_tickers, ["READY"])
+
+    def test_dynamic_delisted_member_ready_on_membership_interval_only(self):
+        global_start = date(2022, 1, 1)
+        global_end = date(2026, 6, 16)
+        valid_to = date(2022, 12, 23)
+        self._create_boundary_bars_for_range(self.ready_symbol, date(2022, 1, 3), valid_to)
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=global_start,
+            end_date=global_end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, global_start, valid_to),),
+            },
+        )
+
+        self.assertEqual(missing, [])
+
+    def test_dynamic_acquired_member_does_not_require_bars_after_valid_to(self):
+        global_start = date(2022, 1, 1)
+        global_end = date(2026, 6, 16)
+        valid_to = date(2023, 10, 13)
+        self._create_boundary_bars_for_range(self.ready_symbol, date(2022, 1, 3), valid_to)
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=global_start,
+            end_date=global_end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, global_start, valid_to),),
+            },
+        )
+
+        self.assertEqual(missing, [])
+
+    def test_dynamic_new_entrant_does_not_require_bars_before_valid_from(self):
+        global_start = date(2022, 1, 1)
+        global_end = date(2026, 6, 16)
+        valid_from = date(2024, 1, 2)
+        self._create_boundary_bars_for_range(self.ready_symbol, valid_from, global_end)
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=global_start,
+            end_date=global_end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, valid_from, None),),
+            },
+        )
+
+        self.assertEqual(missing, [])
+
+    def test_dynamic_active_member_still_requires_end_date_coverage(self):
+        global_start = date(2022, 1, 1)
+        global_end = date(2026, 6, 16)
+        self._create_boundary_bars_for_range(self.ready_symbol, date(2022, 1, 3), date(2025, 12, 31))
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=global_start,
+            end_date=global_end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, global_start, None),),
+            },
+        )
+
+        self.assertEqual([symbol.ticker for symbol in missing], ["READY"])
+
+    def test_dynamic_weekend_membership_start_accepts_first_market_bar(self):
+        weekend_start = date(2022, 1, 1)
+        end = date(2022, 1, 7)
+        self._create_boundary_bars_for_range(self.ready_symbol, date(2022, 1, 3), end)
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=weekend_start,
+            end_date=end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, weekend_start, None),),
+            },
+        )
+
+        self.assertEqual(missing, [])
+
+    def test_dynamic_fake_symbol_remains_missing_without_bars(self):
+        fake = Symbol.objects.create(ticker="OLD", exchange="NYSE", active=True)
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[fake],
+            start_date=self.start,
+            end_date=self.end,
+            membership_by_ticker={
+                "OLD": (self._interval(fake, self.start, None),),
+            },
+        )
+
+        self.assertEqual([symbol.ticker for symbol in missing], ["OLD"])
+
+    def test_ensure_ohlc_ready_uses_resolved_membership_intervals(self):
+        valid_to = self.start + timedelta(days=1)
+        self._create_boundary_bars_for_range(self.ready_symbol, self.start, valid_to)
+        resolved = SimpleNamespace(
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, self.start, valid_to),),
+            }
+        )
+
+        with patch("core.services.universe_resolver.UniverseResolver") as resolver_cls:
+            resolver_cls.return_value.resolve.return_value = resolved
+            result = ensure_ohlc_ready_for_backtest(
+                backtest=self.backtest,
+                symbols=[self.ready_symbol],
+                start_date=self.start,
+                end_date=self.end,
+            )
+
+        self.assertTrue(result.ready)
+        self.assertFalse(result.did_fetch)
