@@ -33,6 +33,59 @@ Conclusion technique :
 
 Recommandation : GO pour un sprint d'implementation Backtest-only, sous reserve de valider d'abord la disponibilite locale/importable des constituents historiques S&P500.
 
+## 1.1 Cloture de livraison
+
+Dynamic Universe S&P500 V1 est maintenant implemente, valide et livre sur `main`.
+
+Merges de reference :
+
+- `7d53f59` - Phase 6B.4, tolerance de fin de cotation OHLC pour memberships fermes ;
+- `27b92a3194fe87a60e3660db4adba604488b1d25` - Phase 6C, UI minimale de preparation OHLC Dynamic Universe.
+
+Commits fonctionnels principaux :
+
+- `e5dbf1f56da58dae67b6a0172899ab10ac4b4726` - job backend explicite de preparation OHLC Dynamic Universe ;
+- `47cbc0bf09f79e2e6ba554e354fbef88893aa4ec` - readiness OHLC par intervalles de membership ;
+- `2606d32cc5ad5919508f4d6464c4f66f670444c6` - support `exclude_tickers` ;
+- `5bb9cbc22465063668ee75119f3abea9ffeeb4a4` - tolerance fin de cotation pour memberships fermes ;
+- `3a745ce03e4cb36162babc2faccc0ef2fb7655f3` - action UI de preparation OHLC.
+
+Validation finale sur `backtest_id=7` :
+
+- scenario : `test 1 snp` ;
+- mode : `SP500_HISTORICAL_DYNAMIC` ;
+- periode : `2022-01-01` a `2026-06-16` ;
+- readiness finale : `checked=582`, `ready=582`, `missing=0` ;
+- job OHLC final : `ProcessingJob id=107`, `DONE`, `fetched_symbols=21`, `inserted_bars=18444`, `provider_errors=0`, `network_errors=0` ;
+- backtest final : `ProcessingJob id=108`, `DONE`, `did_fetch_bars=False`, `did_compute_metrics=True`.
+
+Resultats observes :
+
+- `portfolio_daily` : 1151 lignes ;
+- dates portefeuille : `2022-01-03` a `2026-06-16` ;
+- `equity_start=10000` ;
+- `invested_end=1950000` ;
+- `equity_end=2402829.18558` ;
+- `bt_return` environ `23.22%` ;
+- `max_drawdown` environ `-12.67%` ;
+- total trades : 962.
+
+Controle metier final :
+
+- BUY hors membership detecte : 0 ;
+- faux/test symbols dans resolver/snapshot/results : 0 ;
+- aucun forced sell specifique a une sortie d'indice detecte ;
+- GET de la page Backtest : aucun job, aucun provider ;
+- UI Phase 6C : bloc OHLC visible, etat pret visible, bouton absent quand `missing=0` ;
+- audit Phase 6C : 619 tests OK.
+
+Cleanup data realise avant validation finale :
+
+- 8 `UniverseMembership` `manual_csv` faux/test supprimes du vrai univers `SP500` ;
+- aucun `Symbol` supprime ;
+- aucune `DailyBar` supprimee ;
+- fallback CSV admin/dev conserve.
+
 ## 2. Fichiers et fonctions inspectes
 
 Modeles :

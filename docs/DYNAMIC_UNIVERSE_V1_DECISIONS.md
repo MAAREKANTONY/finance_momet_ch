@@ -125,3 +125,105 @@ Ce document ne demande pas :
 Ce document est uniquement une clarification produit.
 
 Il ne doit introduire aucun changement fonctionnel.
+
+## Clôture V1 livrable
+
+Dynamic Universe S&P500 V1 est livré sur `main`.
+
+Commits de référence :
+
+- `e5dbf1f56da58dae67b6a0172899ab10ac4b4726` - job explicite de préparation OHLC Dynamic Universe ;
+- `47cbc0bf09f79e2e6ba554e354fbef88893aa4ec` - readiness OHLC par intervalles de membership ;
+- `2606d32cc5ad5919508f4d6464c4f66f670444c6` - `exclude_tickers` pour la préparation OHLC ;
+- `5bb9cbc22465063668ee75119f3abea9ffeeb4a4` - tolérance de fin de cotation pour memberships fermés ;
+- `3a745ce03e4cb36162babc2faccc0ef2fb7655f3` - UI de préparation OHLC Dynamic Universe.
+
+Merges de clôture :
+
+- `7d53f59` - Phase 6B.4 ;
+- `27b92a3194fe87a60e3660db4adba604488b1d25` - Phase 6C.
+
+### Scope final V1
+
+V1 couvre :
+
+- S&P500 historique uniquement ;
+- Backtests uniquement ;
+- mode scénario `SP500_HISTORICAL_DYNAMIC` ;
+- mode `STATIC_TICKERS` conservé comme comportement par défaut ;
+- UI minimale de préparation OHLC sur la page Backtest.
+
+V1 ne couvre pas :
+
+- Game ;
+- Nasdaq ;
+- secteurs ou sous-secteurs ;
+- Europe ;
+- multi-indices ;
+- univers custom historiques ;
+- forced sell à la sortie d'indice.
+
+### Règles métier finales
+
+- L'univers est résolu historiquement via `UniverseMembership`.
+- Un BUY est autorisé uniquement si le ticker est membre de l'univers à la date d'achat.
+- Les SELL naturels restent inchangés.
+- La sortie du S&P500 ne force pas la vente.
+- `run_backtest` ne fait aucun appel provider.
+- Aucun backtest dynamique ne doit tourner partiellement avec des OHLC manquants.
+- Le backtest dynamique bloque tant que la readiness OHLC est incomplète.
+
+### Données et providers
+
+- EODHD est utilisé pour les constituants historiques S&P500.
+- EODHD est le provider par défaut de la préparation OHLC Dynamic Universe.
+- TwelveData reste inchangé pour les flux existants hors préparation dynamique.
+- Le fallback CSV admin/dev Dynamic Universe est conservé.
+- `exclude_tickers` permet d'éviter les faux/test symbols lors des jobs OHLC ciblés.
+
+### Readiness OHLC
+
+- La readiness Dynamic Universe est vérifiée sur les intervalles utiles de membership.
+- Pour un membership fermé, la borne de fin accepte une tolérance maximale de 10 jours calendaires.
+- Cette tolérance ne s'applique pas aux memberships ouverts ni aux actifs courants.
+- La tolérance ne s'applique pas au début de période au-delà de la tolérance existante.
+- Les faux/test symbols sans données restent bloquants tant qu'ils sont dans le scope.
+
+### UI Phase 6C
+
+La page Backtest dynamique affiche un bloc :
+
+```text
+Préparation des données OHLC — Univers dynamique
+```
+
+Le bloc indique :
+
+- l'état prêt/incomplet ;
+- le compteur ready/checked/missing ;
+- les premiers tickers manquants ;
+- le dernier job OHLC ;
+- un bouton `Préparer les données OHLC` si `missing > 0`.
+
+Le GET de la page ne lance aucun job et n'appelle aucun provider.
+
+Le POST de préparation lance explicitement le job OHLC existant avec :
+
+- `provider="eodhd"` ;
+- `force_refresh=False` ;
+- `max_symbols=50` ;
+- exclusion des faux/test symbols connus : `DKEEP`, `DNEW`, `KEEP`, `NEW`, `OLD`, `DOLD`.
+
+### Dette post-MVP
+
+- Le message metrics depth suivant est ambigu et doit être clarifié :
+
+```text
+Insufficient metrics depth for date range: missing coverage on 582/582 symbols
+```
+
+- `max_symbols=50` est hardcodé côté UI.
+- `provider=eodhd` est hardcodé côté UI.
+- La liste `exclude_tickers` est hardcodée côté UI.
+- Le debug des daily rows détaillées est limité en large-result mode.
+- Le multi-indices reste hors V1.
