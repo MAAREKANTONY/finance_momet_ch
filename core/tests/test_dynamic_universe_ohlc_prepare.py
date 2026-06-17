@@ -147,6 +147,26 @@ class DynamicUniverseOHLCTestCase(TestCase):
             },
         ]
 
+    def _add_universe_symbol(self, ticker: str, *, exchange: str = "NYSE") -> Symbol:
+        symbol = Symbol.objects.create(
+            ticker=ticker,
+            exchange=exchange,
+            instrument_type="Common Stock",
+            active=True,
+        )
+        universe = UniverseDefinition.objects.get(code="SP500")
+        UniverseMembership.objects.create(
+            universe=universe,
+            symbol=symbol,
+            ticker=ticker,
+            exchange=exchange,
+            provider_symbol=f"{ticker}.US",
+            valid_from=self.start,
+            valid_to=None,
+            source="test",
+        )
+        return symbol
+
 
 class DynamicUniverseOHLCPrepareServiceTests(DynamicUniverseOHLCTestCase):
     def test_already_ready_symbols_do_not_fetch(self):
@@ -302,6 +322,53 @@ class DynamicUniverseOHLCPrepareServiceTests(DynamicUniverseOHLCTestCase):
         self.assertEqual(result.inserted_bars, 2)
         self.assertEqual(len(result.missing_after), 1)
 
+    def test_exclude_tickers_removes_requested_symbols_from_fetch_scope(self):
+        fake_tickers = ["DKEEP", "DNEW", "KEEP", "NEW"]
+        for ticker in fake_tickers:
+            self._add_universe_symbol(ticker)
+        self._bars(self.ready)
+        client = FakeEODHDClient({
+            "EXTRA.US": self._rows(close="30"),
+            "MISS.US": self._rows(),
+            **{f"{ticker}.US": self._rows(close="99") for ticker in fake_tickers},
+        })
+
+        result = prepare_dynamic_universe_ohlc(
+            backtest_id=self.backtest.id,
+            client=client,
+            exclude_tickers=fake_tickers,
+        )
+
+        called_provider_symbols = [call[0] for call in client.calls]
+        self.assertEqual(called_provider_symbols, ["EXTRA.US", "MISS.US"])
+        for ticker in fake_tickers:
+            self.assertEqual(result.skipped_symbols[ticker], "excluded_by_request")
+            self.assertIn(ticker, result.missing_after)
+            self.assertNotIn(f"{ticker}.US", called_provider_symbols)
+            self.assertFalse(DailyBar.objects.filter(symbol__ticker=ticker).exists())
+        self.assertEqual(result.provider_error_symbols, {})
+        self.assertEqual(result.no_data_symbols, [])
+        self.assertEqual(result.network_error_symbols, {})
+
+    def test_max_symbols_applies_after_exclude_tickers(self):
+        self._bars(self.ready)
+        client = FakeEODHDClient({
+            "EXTRA.US": self._rows(close="30"),
+            "MISS.US": self._rows(),
+        })
+
+        result = prepare_dynamic_universe_ohlc(
+            backtest_id=self.backtest.id,
+            client=client,
+            exclude_tickers=["EXTRA"],
+            max_symbols=1,
+        )
+
+        self.assertEqual([call[0] for call in client.calls], ["MISS.US"])
+        self.assertEqual(result.skipped_symbols, {"EXTRA": "excluded_by_request"})
+        self.assertIn("EXTRA", result.missing_after)
+        self.assertNotIn("MISS", result.missing_after)
+
     def test_force_refresh_updates_existing_rows_without_duplicates(self):
         for symbol in (self.ready, self.missing, self.extra):
             self._bars(symbol, close="10")
@@ -387,3 +454,33 @@ class DynamicUniverseOHLCPrepareJobTests(DynamicUniverseOHLCTestCase):
         self.assertIn("incomplete", message)
         self.assertIn("MISS", job.error)
         twelvedata_fetch.assert_not_called()
+
+    def test_job_passes_exclude_tickers_and_does_not_fetch_excluded_symbols(self):
+        self._bars(self.ready)
+        self._bars(self.extra)
+        fake_client = FakeEODHDClient({"MISS.US": self._rows()})
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.PENDING,
+            backtest=self.backtest,
+            scenario=self.scenario,
+        )
+
+        with patch("core.services.dynamic_universe_ohlc_prepare.EODHDClient", return_value=fake_client), \
+                patch("core.tasks._fetch_daily_bars_for_symbols") as twelvedata_fetch, \
+                patch("core.tasks.run_backtest_task") as run_backtest:
+            message = prepare_dynamic_universe_ohlc_job_task.apply(kwargs={
+                "job_id": job.id,
+                "backtest_id": self.backtest.id,
+                "exclude_tickers": ["MISS"],
+            }).get(propagate=True)
+
+        job.refresh_from_db()
+        self.assertEqual(fake_client.calls, [])
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertIn("incomplete", message)
+        self.assertIn("MISS", job.error)
+        self.assertIn("skipped=1", job.message)
+        self.assertIn("excluded=1", job.message)
+        twelvedata_fetch.assert_not_called()
+        run_backtest.assert_not_called()
