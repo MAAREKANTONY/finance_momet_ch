@@ -171,6 +171,20 @@ def _fetch_window_for_symbol(symbol: Symbol, ranges_by_symbol_id: dict[int, list
     )
 
 
+def _normalize_ticker_set(tickers: Any | None) -> set[str]:
+    if not tickers:
+        return set()
+    if isinstance(tickers, str):
+        raw_values = [tickers]
+    else:
+        raw_values = tickers
+    return {
+        str(ticker).strip().upper()
+        for ticker in raw_values
+        if str(ticker).strip()
+    }
+
+
 def prepare_dynamic_universe_ohlc(
     *,
     universe_code: str = SP500_UNIVERSE_CODE,
@@ -181,6 +195,7 @@ def prepare_dynamic_universe_ohlc(
     provider: str = "eodhd",
     force_refresh: bool = False,
     max_symbols: int | None = None,
+    exclude_tickers: Any | None = None,
     job: Any | None = None,
     client: EODHDClient | None = None,
     progress_callback: Callable[[str], None] | None = None,
@@ -218,6 +233,18 @@ def prepare_dynamic_universe_ohlc(
     )
     missing_before = [symbol.ticker for symbol in missing_before_symbols]
     target_symbols = symbols if force_refresh else missing_before_symbols
+    excluded_tickers = _normalize_ticker_set(exclude_tickers)
+    skipped_by_request = [
+        symbol.ticker
+        for symbol in target_symbols
+        if symbol.ticker.strip().upper() in excluded_tickers
+    ]
+    if excluded_tickers:
+        target_symbols = [
+            symbol
+            for symbol in target_symbols
+            if symbol.ticker.strip().upper() not in excluded_tickers
+        ]
     if max_symbols is not None:
         target_symbols = target_symbols[: max(0, int(max_symbols))]
 
@@ -229,6 +256,8 @@ def prepare_dynamic_universe_ohlc(
         missing_after=missing_before,
         provider=provider_key,
     )
+    for ticker in skipped_by_request:
+        result.skipped_symbols[ticker] = "excluded_by_request"
     if not target_symbols:
         return result
 

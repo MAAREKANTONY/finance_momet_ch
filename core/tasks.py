@@ -764,6 +764,7 @@ def prepare_dynamic_universe_ohlc_job_task(
     provider="eodhd",
     force_refresh: bool = False,
     max_symbols=None,
+    exclude_tickers=None,
     user_id=None,
     job_id=None,
 ):
@@ -809,9 +810,11 @@ def prepare_dynamic_universe_ohlc_job_task(
             provider=provider,
             force_refresh=bool(force_refresh),
             max_symbols=max_symbols,
+            exclude_tickers=exclude_tickers,
             job=job,
             progress_callback=lambda checkpoint: pulse.hit(checkpoint=checkpoint, force=True),
         )
+        excluded_count = sum(1 for reason in result.skipped_symbols.values() if reason == "excluded_by_request")
         summary = (
             "Dynamic Universe OHLC preparation: "
             f"provider={result.provider} checked={result.checked_symbols} "
@@ -820,6 +823,7 @@ def prepare_dynamic_universe_ohlc_job_task(
             f"updated_bars={result.updated_bars} unchanged_bars={result.unchanged_bars} "
             f"no_data={len(result.no_data_symbols)} provider_errors={len(result.provider_error_symbols)} "
             f"network_errors={len(result.network_error_symbols)} skipped={len(result.skipped_symbols)} "
+            f"excluded={excluded_count} "
             f"ready_after={result.ready_after} missing_after={len(result.missing_after)}"
         )
         if result.missing_after:
