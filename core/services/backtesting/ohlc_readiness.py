@@ -46,10 +46,15 @@ class OHLCRequiredRange:
     ticker: str
     start: date
     end: date
+    closed_membership: bool = False
 
 
 def _boundary_tolerance_days() -> int:
     return int(getattr(settings, "DYNAMIC_UNIVERSE_OHLC_BOUNDARY_TOLERANCE_DAYS", 3))
+
+
+def _closed_membership_end_tolerance_days() -> int:
+    return int(getattr(settings, "DYNAMIC_UNIVERSE_OHLC_CLOSED_MEMBERSHIP_END_TOLERANCE_DAYS", 10))
 
 
 def _latest_acceptable_start_bar(start: date, end: date) -> date:
@@ -57,18 +62,23 @@ def _latest_acceptable_start_bar(start: date, end: date) -> date:
     return min(end, start + timedelta(days=max(0, _boundary_tolerance_days())))
 
 
-def _earliest_acceptable_end_bar(start: date, end: date) -> date:
-    return max(start, end - timedelta(days=max(0, _boundary_tolerance_days())))
+def _earliest_acceptable_end_bar(start: date, end: date, *, closed_membership: bool = False) -> date:
+    tolerance_days = (
+        _closed_membership_end_tolerance_days()
+        if closed_membership
+        else _boundary_tolerance_days()
+    )
+    return max(start, end - timedelta(days=max(0, tolerance_days)))
 
 
-def _bars_cover_range(symbol_id: int, start: date, end: date) -> bool:
+def _bars_cover_range(symbol_id: int, start: date, end: date, *, closed_membership: bool = False) -> bool:
     qs = DailyBar.objects.filter(symbol_id=symbol_id, date__gte=start, date__lte=end)
     agg = qs.aggregate(mn=Min("date"), mx=Max("date"))
     return bool(
         agg["mn"]
         and agg["mx"]
         and agg["mn"] <= _latest_acceptable_start_bar(start, end)
-        and agg["mx"] >= _earliest_acceptable_end_bar(start, end)
+        and agg["mx"] >= _earliest_acceptable_end_bar(start, end, closed_membership=closed_membership)
     )
 
 
@@ -123,6 +133,7 @@ def get_required_ohlc_ranges_for_dynamic_universe(
                     ticker=symbol.ticker,
                     start=effective_start,
                     end=effective_end,
+                    closed_membership=raw_valid_to is not None,
                 )
             )
         if not ranges:
@@ -149,7 +160,12 @@ def get_missing_ohlc_symbols_for_dynamic_universe(
     for symbol in scoped_symbols:
         required_ranges = ranges_by_symbol_id.get(symbol.id, [])
         if not required_ranges or any(
-            not _bars_cover_range(symbol.id, required_range.start, required_range.end)
+            not _bars_cover_range(
+                symbol.id,
+                required_range.start,
+                required_range.end,
+                closed_membership=required_range.closed_membership,
+            )
             for required_range in required_ranges
         ):
             missing.append(symbol)
