@@ -171,6 +171,61 @@
   </table>
 </div>
 
+{% if dynamic_ohlc.enabled %}
+<div class="card" style="margin-top:12px;">
+  <strong>Préparation des données OHLC — Univers dynamique</strong>
+  {% if dynamic_ohlc.error %}
+    <div class="muted" style="margin-top:6px; color:#b00;">État indisponible : {{ dynamic_ohlc.error }}</div>
+  {% else %}
+    <div style="margin-top:8px;">
+      {% if dynamic_ohlc.is_ready %}
+        <span class="pill">prêt</span>
+      {% else %}
+        <span class="pill">incomplet</span>
+      {% endif %}
+      <span class="muted" style="margin-left:8px;">{{ dynamic_ohlc.ready }} / {{ dynamic_ohlc.checked }} prêts · {{ dynamic_ohlc.missing }} manquants</span>
+    </div>
+    {% if dynamic_ohlc.missing %}
+      <div style="margin-top:8px;">
+        {% for ticker in dynamic_ohlc.missing_tickers %}
+          <span class="pill">{{ ticker }}</span>
+        {% endfor %}
+        {% if dynamic_ohlc.missing_extra_count %}
+          <span class="muted">+{{ dynamic_ohlc.missing_extra_count }} autres</span>
+        {% endif %}
+      </div>
+    {% endif %}
+  {% endif %}
+
+  <div style="margin-top:10px;">
+    <strong>Dernier job OHLC</strong>
+    {% with j=dynamic_ohlc.last_job %}
+      {% if j %}
+        <span class="pill">{{ j.status }}</span>
+        <span class="muted">#{{ j.id }} · {{ j.started_at|default:j.created_at|date:"Y-m-d H:i" }}{% if j.finished_at %} → {{ j.finished_at|date:"Y-m-d H:i" }}{% endif %}</span>
+        {% if j.message %}<div class="muted" style="margin-top:4px;">{{ j.message|truncatechars:220 }}</div>{% endif %}
+      {% else %}
+        <span class="muted">aucun</span>
+      {% endif %}
+    {% endwith %}
+  </div>
+
+  <div style="margin-top:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+    {% if dynamic_ohlc.last_job_active %}
+      <span class="muted">Préparation en cours. Consultez la page <a href="{% url 'jobs_page' %}">Traitements</a>.</span>
+    {% elif dynamic_ohlc.is_ready %}
+      <span class="muted">Données OHLC prêtes. Vous pouvez lancer le backtest.</span>
+    {% else %}
+      <form method="post" action="{% url 'backtest_prepare_dynamic_universe_ohlc' bt.id %}">
+        {% csrf_token %}
+        <button class="btn" type="submit" {% if bt.status == 'RUNNING' %}disabled{% endif %}>Préparer les données OHLC</button>
+      </form>
+    {% endif %}
+  </div>
+</div>
+
+{% endif %}
+
 <div style="margin-top:12px; display:flex; gap:8px; align-items:center;">
       <form method="post" action="{% url 'backtest_fetch_data' bt.id %}">
         {% csrf_token %}

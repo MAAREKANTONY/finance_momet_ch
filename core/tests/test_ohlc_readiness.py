@@ -115,7 +115,7 @@ class OHLCReadinessTests(TestCase):
             )
 
         fetch_mock.assert_not_called()
-        self.assertIn("préparation OHLC dynamique dédiée", str(ctx.exception))
+        self.assertIn("Préparer les données OHLC", str(ctx.exception))
         self.assertEqual(ctx.exception.missing_tickers, ["MISS"])
 
     def test_missing_raises_user_friendly_error(self):
