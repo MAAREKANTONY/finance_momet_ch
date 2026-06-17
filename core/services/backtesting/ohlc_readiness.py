@@ -12,7 +12,8 @@ from core.models import Backtest, DailyBar, Scenario, Symbol
 
 OHLC_READINESS_USER_MESSAGE = (
     "Les prix historiques nécessaires au backtest ne sont pas encore tous disponibles. "
-    "Lancez la préparation OHLC dynamique dédiée avant de relancer. "
+    "Ce backtest utilise un univers dynamique: cliquez sur « Préparer les données OHLC », "
+    "puis relancez le backtest lorsque la préparation est terminée. "
     "Le backtest n’est pas lancé pour éviter un résultat partiel."
 )
 

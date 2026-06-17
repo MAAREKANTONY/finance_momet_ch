@@ -1,4 +1,6 @@
 from decimal import Decimal
+from datetime import date, timedelta
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -6,7 +8,7 @@ from django.test import Client, TestCase
 from django.urls import reverse
 import json
 
-from core.models import Alert, Backtest, BacktestPortfolioKPI, DailyBar, DailyMetric, GameScenario, HistoricalMarketCap, ProcessingJob, Scenario, Study, Symbol, Universe
+from core.models import Alert, Backtest, BacktestPortfolioKPI, DailyBar, DailyMetric, GameScenario, HistoricalMarketCap, ProcessingJob, Scenario, Study, Symbol, Universe, UniverseCoverageSnapshot, UniverseCoverageStatus, UniverseDefinition, UniverseImportBatch, UniverseMembership
 from core.views import _build_realized_gains_cumulative_series
 
 
@@ -1383,6 +1385,65 @@ class BacktestResultsRenderTests(TestCase):
             results=results or self._minimal_results(),
         )
 
+    def _create_validated_sp500_membership(self, symbol=None, *, valid_from=None, valid_to=None):
+        symbol = symbol or self.symbol
+        start = valid_from or date(2024, 1, 1)
+        end = valid_to or date(2024, 1, 31)
+        universe = UniverseDefinition.objects.create(
+            code="SP500",
+            name="S&P 500",
+            source="test",
+            active=True,
+        )
+        UniverseMembership.objects.create(
+            universe=universe,
+            symbol=symbol,
+            ticker=symbol.ticker,
+            exchange=symbol.exchange,
+            provider_symbol=f"{symbol.ticker}.US",
+            valid_from=start,
+            valid_to=valid_to,
+            source="test",
+        )
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="test",
+            source_name="test",
+            period_start=start,
+            period_end=end,
+            expected_member_count=1,
+            imported_member_count=1,
+            mapped_member_count=1,
+            unmapped_member_count=0,
+            status=UniverseCoverageStatus.VALIDATED,
+        )
+        current = start
+        while current <= end:
+            UniverseCoverageSnapshot.objects.create(
+                universe=universe,
+                import_batch=batch,
+                coverage_date=current,
+                expected_member_count=1,
+                actual_member_count=1,
+                mapped_member_count=1,
+                unmapped_member_count=0,
+                status=UniverseCoverageStatus.VALIDATED,
+            )
+            current += timedelta(days=1)
+        return universe
+
+    def _create_daily_bar(self, symbol, value_date):
+        return DailyBar.objects.create(
+            symbol=symbol,
+            date=value_date,
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=100,
+            source="test",
+        )
+
     def test_backtest_detail_displays_dynamic_universe_metadata_with_business_wording(self):
         self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
         self.scenario.save(update_fields=["universe_mode"])
@@ -1472,6 +1533,85 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("Univers du backtest", body)
         self.assertNotIn("S&P500 historique dynamique", body)
         self.assertNotIn("Superset de tickers du backtest", body)
+        self.assertNotIn("Préparation des données OHLC", body)
+
+    def test_backtest_detail_displays_dynamic_ohlc_ready_state(self):
+        self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        self._create_validated_sp500_membership(self.symbol)
+        self._create_daily_bar(self.symbol, date(2024, 1, 1))
+        self._create_daily_bar(self.symbol, date(2024, 1, 31))
+        bt = self._create_done_backtest()
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Préparation des données OHLC — Univers dynamique", body)
+        self.assertIn("1 / 1 prêts", body)
+        self.assertIn("Données OHLC prêtes. Vous pouvez lancer le backtest.", body)
+        self.assertNotIn("Préparer les données OHLC</button>", body)
+
+    @patch("core.views.launch_processing_job")
+    def test_backtest_detail_displays_dynamic_ohlc_missing_without_launching_job(self, launch_mock):
+        self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        self._create_validated_sp500_membership(self.symbol)
+        bt = self._create_done_backtest()
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        body = response.content.decode()
+        self.assertIn("Préparation des données OHLC — Univers dynamique", body)
+        self.assertIn("0 / 1 prêts", body)
+        self.assertIn("AAA", body)
+        self.assertIn("Préparer les données OHLC", body)
+
+    @patch("core.views.launch_processing_job")
+    def test_prepare_dynamic_universe_ohlc_post_launches_existing_job_with_safe_defaults(self, launch_mock):
+        self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        bt = self._create_done_backtest()
+        launch_mock.return_value = SimpleNamespace(
+            job=SimpleNamespace(id=123),
+            dispatch_error=None,
+        )
+
+        response = self.client.post(reverse("backtest_prepare_dynamic_universe_ohlc", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(response.url, reverse("backtest_detail", args=[bt.pk]))
+        launch_mock.assert_called_once()
+        kwargs = launch_mock.call_args.kwargs
+        self.assertEqual(kwargs["job_type"], ProcessingJob.JobType.FETCH_BARS)
+        self.assertEqual(kwargs["backtest"], bt)
+        self.assertEqual(kwargs["scenario"], self.scenario)
+        self.assertEqual(
+            kwargs["message"],
+            "Dynamic Universe OHLC preparation queued",
+        )
+        self.assertEqual(
+            kwargs["task_kwargs"],
+            {
+                "backtest_id": bt.id,
+                "provider": "eodhd",
+                "force_refresh": False,
+                "max_symbols": 50,
+                "exclude_tickers": ["DKEEP", "DNEW", "KEEP", "NEW", "OLD", "DOLD"],
+                "user_id": self.user.id,
+            },
+        )
+
+    @patch("core.views.launch_processing_job")
+    def test_prepare_dynamic_universe_ohlc_post_rejects_static_backtest(self, launch_mock):
+        bt = self._create_done_backtest()
+
+        response = self.client.post(reverse("backtest_prepare_dynamic_universe_ohlc", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 302)
+        launch_mock.assert_not_called()
 
     def _add_historical_market_cap(self, symbol, dt, value, provider="eodhd"):
         return HistoricalMarketCap.objects.create(

@@ -99,6 +99,7 @@ urlpatterns = [
     path("backtests/<int:pk>/debug/", views.backtest_debug, name="backtest_debug"),
     path("backtests/<int:pk>/delete/", views.backtest_delete, name="backtest_delete"),
     path("backtests/<int:pk>/fetch_data/", views.backtest_fetch_data, name="backtest_fetch_data"),
+    path("backtests/<int:pk>/prepare_dynamic_ohlc/", views.backtest_prepare_dynamic_universe_ohlc, name="backtest_prepare_dynamic_universe_ohlc"),
     path("backtests/<int:pk>/sync_market_caps/", views.backtest_sync_market_caps, name="backtest_sync_market_caps"),
     path("backtests/<int:pk>/compute_metrics/", views.backtest_compute_metrics, name="backtest_compute_metrics"),
     path("backtests/<int:pk>/recompute_metrics/", views.backtest_recompute_metrics, name="backtest_recompute_metrics"),

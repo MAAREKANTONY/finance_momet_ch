@@ -3,6 +3,7 @@ import os
 from io import BytesIO
 from typing import Iterable
 from decimal import Decimal
+from datetime import timedelta
 from django.conf import settings
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -64,6 +65,8 @@ from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
 from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
+from .services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
+from .services.universe_resolver import UniverseResolver
 from .templatetags.backtest_extras import (
     line_gm_push_buy_display,
     line_gm_push_sell_market_exit_display,
@@ -93,6 +96,9 @@ TRADING_SIGNAL_CHOICES = [
     if choice[0] not in {"GM_POS", "GM_NEG", "GM_NEU"}
 ]
 
+DYNAMIC_UNIVERSE_OHLC_DEFAULT_MAX_SYMBOLS = 50
+DYNAMIC_UNIVERSE_OHLC_EXCLUDE_TICKERS = ["DKEEP", "DNEW", "KEEP", "NEW", "OLD", "DOLD"]
+
 
 def _refresh_backtest_universe_snapshot(bt: Backtest) -> None:
     """Refresh the backtest universe_snapshot from the current Scenario symbols.
@@ -112,6 +118,83 @@ def _refresh_backtest_universe_snapshot(bt: Backtest) -> None:
     )
     bt.universe_snapshot = [{"ticker": t, "exchange": e, "sector": s} for t, e, s in symbols]
     bt.save(update_fields=["universe_snapshot", "updated_at"])
+
+
+def _dynamic_ohlc_coverage_start(bt: Backtest):
+    if not bt.start_date:
+        return None
+    warmup_days = int(getattr(bt, "warmup_days", 0) or 0)
+    if warmup_days > 0:
+        return bt.start_date - timedelta(days=warmup_days)
+    return bt.start_date
+
+
+def _latest_dynamic_ohlc_job(bt: Backtest) -> ProcessingJob | None:
+    return (
+        ProcessingJob.objects.filter(
+            backtest=bt,
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            message__icontains="Dynamic Universe OHLC preparation",
+        )
+        .order_by("-created_at")
+        .first()
+    )
+
+
+def _dynamic_ohlc_readiness_state(bt: Backtest) -> dict:
+    mode = getattr(getattr(bt, "scenario", None), "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
+    if mode != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+        return {"enabled": False}
+
+    state = {
+        "enabled": True,
+        "checked": 0,
+        "ready": 0,
+        "missing": 0,
+        "missing_tickers": [],
+        "missing_extra_count": 0,
+        "is_ready": False,
+        "error": "",
+        "last_job": _latest_dynamic_ohlc_job(bt),
+    }
+    last_job = state["last_job"]
+    state["last_job_active"] = bool(
+        last_job and last_job.status in {ProcessingJob.Status.PENDING, ProcessingJob.Status.RUNNING}
+    )
+
+    coverage_start = _dynamic_ohlc_coverage_start(bt)
+    if not coverage_start or not bt.end_date:
+        state["error"] = "Dates de backtest incomplètes."
+        return state
+
+    try:
+        resolved_universe = UniverseResolver().resolve(
+            scenario=bt.scenario,
+            start_date=bt.start_date,
+            end_date=bt.end_date,
+            warmup_start_date=coverage_start,
+        )
+        symbols = list(resolved_universe.symbols)
+        missing_symbols = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=symbols,
+            start_date=coverage_start,
+            end_date=bt.end_date,
+            membership_by_ticker=resolved_universe.membership_by_ticker,
+        )
+        missing_tickers = [symbol.ticker for symbol in missing_symbols]
+        state.update(
+            {
+                "checked": len(symbols),
+                "ready": len(symbols) - len(missing_symbols),
+                "missing": len(missing_symbols),
+                "missing_tickers": missing_tickers[:20],
+                "missing_extra_count": max(0, len(missing_tickers) - 20),
+                "is_ready": not missing_symbols,
+            }
+        )
+    except Exception as exc:
+        state["error"] = str(exc)
+    return state
 
 
 @login_required
@@ -2439,7 +2522,56 @@ def backtest_detail(request, pk: int):
     ]:
         latest_by_type[jt] = ProcessingJob.objects.filter(backtest=bt, job_type=jt).order_by("-created_at").first()
 
-    return render(request, "backtest_detail.html", {"bt": bt, "jobs": jobs, "latest_by_type": latest_by_type})
+    return render(
+        request,
+        "backtest_detail.html",
+        {
+            "bt": bt,
+            "jobs": jobs,
+            "latest_by_type": latest_by_type,
+            "dynamic_ohlc": _dynamic_ohlc_readiness_state(bt),
+        },
+    )
+
+
+@login_required
+@require_POST
+def backtest_prepare_dynamic_universe_ohlc(request, pk: int):
+    bt = get_object_or_404(Backtest.objects.select_related("scenario"), pk=pk)
+    if bt.scenario.universe_mode != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+        messages.warning(request, "Ce backtest n'utilise pas l'univers dynamique S&P500.")
+        return redirect("backtest_detail", pk=pk)
+    if bt.status == Backtest.Status.RUNNING:
+        messages.warning(request, "Impossible de préparer les OHLC pendant qu'un backtest est en cours.")
+        return redirect("backtest_detail", pk=pk)
+
+    from .tasks import prepare_dynamic_universe_ohlc_job_task
+
+    launch = launch_processing_job(
+        task=prepare_dynamic_universe_ohlc_job_task,
+        job_type=ProcessingJob.JobType.FETCH_BARS,
+        backtest=bt,
+        scenario=bt.scenario,
+        created_by=request.user if request.user.is_authenticated else None,
+        message="Dynamic Universe OHLC preparation queued",
+        task_kwargs={
+            "backtest_id": bt.id,
+            "provider": "eodhd",
+            "force_refresh": False,
+            "max_symbols": DYNAMIC_UNIVERSE_OHLC_DEFAULT_MAX_SYMBOLS,
+            "exclude_tickers": DYNAMIC_UNIVERSE_OHLC_EXCLUDE_TICKERS,
+            "user_id": request.user.id if request.user.is_authenticated else None,
+        },
+    )
+    if launch.dispatch_error:
+        messages.error(request, f"Impossible de lancer la préparation OHLC dynamique: {launch.dispatch_error}")
+        return redirect("backtest_detail", pk=pk)
+
+    messages.success(
+        request,
+        f"Préparation OHLC Dynamic Universe lancée en arrière-plan (job #{launch.job.id}).",
+    )
+    return redirect("backtest_detail", pk=pk)
 
 
 @login_required

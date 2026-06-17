@@ -410,7 +410,7 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
 
         with patch("core.tasks.fetch_daily_bars_task") as fetch_mock:
             with patch("core.tasks._compute_metrics_for_scenario") as compute_mock:
-                with self.assertRaisesMessage(Exception, "préparation OHLC dynamique dédiée"):
+                with self.assertRaisesMessage(Exception, "Préparer les données OHLC"):
                     prepare_backtest_data(bt)
 
         fetch_mock.assert_not_called()
