@@ -301,6 +301,57 @@ class OHLCReadinessTests(TestCase):
 
         self.assertEqual(missing, [])
 
+    def test_dynamic_closed_membership_accepts_five_day_end_gap(self):
+        global_start = date(2022, 1, 1)
+        global_end = date(2026, 6, 16)
+        valid_to = date(2023, 10, 18)
+        self._create_boundary_bars_for_range(self.ready_symbol, date(2022, 1, 3), date(2023, 10, 13))
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=global_start,
+            end_date=global_end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, global_start, valid_to),),
+            },
+        )
+
+        self.assertEqual(missing, [])
+
+    def test_dynamic_closed_membership_accepts_ten_day_end_gap(self):
+        global_start = date(2022, 1, 1)
+        global_end = date(2026, 6, 16)
+        valid_to = date(2023, 10, 18)
+        self._create_boundary_bars_for_range(self.ready_symbol, date(2022, 1, 3), date(2023, 10, 8))
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=global_start,
+            end_date=global_end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, global_start, valid_to),),
+            },
+        )
+
+        self.assertEqual(missing, [])
+
+    def test_dynamic_closed_membership_blocks_eleven_day_end_gap(self):
+        global_start = date(2022, 1, 1)
+        global_end = date(2026, 6, 16)
+        valid_to = date(2023, 10, 18)
+        self._create_boundary_bars_for_range(self.ready_symbol, date(2022, 1, 3), date(2023, 10, 7))
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=global_start,
+            end_date=global_end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, global_start, valid_to),),
+            },
+        )
+
+        self.assertEqual([symbol.ticker for symbol in missing], ["READY"])
+
     def test_dynamic_new_entrant_does_not_require_bars_before_valid_from(self):
         global_start = date(2022, 1, 1)
         global_end = date(2026, 6, 16)
@@ -329,6 +380,39 @@ class OHLCReadinessTests(TestCase):
             end_date=global_end,
             membership_by_ticker={
                 "READY": (self._interval(self.ready_symbol, global_start, None),),
+            },
+        )
+
+        self.assertEqual([symbol.ticker for symbol in missing], ["READY"])
+
+    def test_dynamic_active_member_does_not_get_closed_membership_end_tolerance(self):
+        global_start = date(2022, 1, 1)
+        global_end = date(2026, 6, 16)
+        self._create_boundary_bars_for_range(self.ready_symbol, date(2022, 1, 3), date(2026, 6, 11))
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=global_start,
+            end_date=global_end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, global_start, None),),
+            },
+        )
+
+        self.assertEqual([symbol.ticker for symbol in missing], ["READY"])
+
+    def test_dynamic_closed_membership_start_boundary_still_blocks_when_too_late(self):
+        global_start = date(2022, 1, 1)
+        global_end = date(2026, 6, 16)
+        valid_to = date(2023, 10, 18)
+        self._create_boundary_bars_for_range(self.ready_symbol, date(2022, 1, 5), valid_to)
+
+        missing = get_missing_ohlc_symbols_for_dynamic_universe(
+            symbols=[self.ready_symbol],
+            start_date=global_start,
+            end_date=global_end,
+            membership_by_ticker={
+                "READY": (self._interval(self.ready_symbol, global_start, valid_to),),
             },
         )
 

@@ -221,6 +221,61 @@ class DynamicUniverseOHLCPrepareServiceTests(DynamicUniverseOHLCTestCase):
         self.assertNotIn("MISS", result.missing_before)
         self.assertEqual(result.missing_after, [])
 
+    def test_delisted_symbol_with_small_end_gap_is_not_fetched(self):
+        UniverseMembership.objects.filter(ticker=self.missing.ticker).update(valid_to=self.end)
+        self._bars(self.ready)
+        DailyBar.objects.create(
+            symbol=self.missing,
+            date=self.start,
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=1000,
+        )
+        client = FakeEODHDClient({
+            "EXTRA.US": self._rows(close="30"),
+            "MISS.US": self._rows(),
+        })
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual([call[0] for call in client.calls], ["EXTRA.US"])
+        self.assertNotIn("MISS", result.missing_before)
+        self.assertEqual(result.missing_after, [])
+
+    def test_active_symbol_with_end_gap_is_still_fetched(self):
+        self._bars(self.ready)
+        self._bars(self.extra)
+        DailyBar.objects.create(
+            symbol=self.missing,
+            date=self.start,
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=1000,
+        )
+        client = FakeEODHDClient({
+            "MISS.US": [
+                {
+                    "date": self.end,
+                    "open": Decimal("20"),
+                    "high": Decimal("20"),
+                    "low": Decimal("20"),
+                    "close": Decimal("20"),
+                    "volume": 2000,
+                    "provider_symbol": "MISS.US",
+                    "source_payload": {},
+                },
+            ],
+        })
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual([call[0] for call in client.calls], ["MISS.US"])
+        self.assertNotIn("MISS", result.missing_after)
+
     def test_new_entrant_fetch_uses_membership_window(self):
         valid_from = self.start + timedelta(days=2)
         UniverseMembership.objects.filter(ticker=self.extra.ticker).update(valid_from=valid_from)
