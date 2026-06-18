@@ -378,6 +378,35 @@ class TrendFilterEngineTests(TestCase):
             self.assertNotIn("sell_market_gm_current_max_threshold", source)
             self.assertNotIn("gm_push_sell_current_max_threshold", source)
 
+    def test_gm_simple_ui_uses_activation_controls_in_primary_path(self):
+        for relative_path in (
+            "templates/backtest_create.html",
+            "templates/backtest_edit.html",
+            "templates/game_scenario_form.html",
+        ):
+            source = Path(relative_path).read_text()
+            self.assertIn("Activer le filtre d'achat", source)
+            self.assertIn("Activer le filtre de vente", source)
+            self.assertIn("Seuil d'autorisation d'achat", source)
+            self.assertIn("Seuil de vente", source)
+            self.assertIn("return isBuyMarketConditionRole(role) ? 'GM_POS' : 'GM_NEG';", source)
+            self.assertIn('hidden.setAttribute("data-role", role)', source)
+            self.assertNotIn('sel.setAttribute("data-role", role)', source)
+
+    def test_gm_simple_ui_keeps_legacy_modes_in_compatibility_section(self):
+        for relative_path in (
+            "templates/backtest_create.html",
+            "templates/backtest_edit.html",
+            "templates/game_scenario_form.html",
+        ):
+            source = Path(relative_path).read_text()
+            self.assertIn("Configuration avancée existante", source)
+            self.assertIn("Options avancées / compatibilité", source)
+            self.assertIn('advancedSelect = document.createElement("select")', source)
+            self.assertIn("advancedSelect ? normalizeLegacyGmFilter(advancedSelect.value) : standardMode", source)
+            self.assertIn("const gmBuyCurrent = normalizeGmCondition(item, 'current', gmBuyCurrentLegacy);", source)
+            self.assertIn("makeMarketConditionSelect(gmBuyCurrent.mode, 'buy_market_gm_current')", source)
+
     def test_gm_push_state_crosses_zero_with_default_thresholds(self):
         positive_values = {
             self.start: Decimal("-0.01"),

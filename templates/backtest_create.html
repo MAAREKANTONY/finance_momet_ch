@@ -372,23 +372,94 @@
     }
     return sel;
   }
+  function isBuyMarketConditionRole(role) {
+    return String(role || '').startsWith('buy_market_') || String(role || '').startsWith('gm_push_buy_');
+  }
+  function standardMarketConditionForRole(role) {
+    return isBuyMarketConditionRole(role) ? 'GM_POS' : 'GM_NEG';
+  }
+  function isAdvancedMarketCondition(value, role) {
+    const mode = normalizeLegacyGmFilter(value);
+    return mode !== 'IGNORE' && mode !== standardMarketConditionForRole(role);
+  }
   function makeMarketConditionSelect(value, role) {
-    const sel = document.createElement("select");
-    sel.setAttribute("data-role", role);
-    MARKET_CONDITION_CHOICES.forEach(([code, label]) => {
-      const opt = document.createElement("option");
-      opt.value = code;
-      opt.textContent = label;
-      sel.appendChild(opt);
+    const normalized = normalizeLegacyGmFilter(value);
+    const standardMode = standardMarketConditionForRole(role);
+    const advancedMode = isAdvancedMarketCondition(normalized, role);
+    const wrap = document.createElement("div");
+    wrap.className = "gm-simple-filter";
+    wrap.style.display = "flex";
+    wrap.style.flexDirection = "column";
+    wrap.style.gap = "4px";
+
+    const hidden = document.createElement("input");
+    hidden.type = "hidden";
+    hidden.setAttribute("data-role", role);
+    hidden.value = normalized;
+    Object.defineProperty(wrap, "value", {
+      get() { return hidden.value; },
+      set(nextValue) { hidden.value = normalizeLegacyGmFilter(nextValue); },
     });
-    sel.value = normalizeLegacyGmFilter(value);
-    return sel;
+
+    const toggleLabel = document.createElement("label");
+    toggleLabel.style.display = "inline-flex";
+    toggleLabel.style.alignItems = "center";
+    toggleLabel.style.gap = "6px";
+    const toggle = document.createElement("input");
+    toggle.type = "checkbox";
+    toggle.checked = normalized !== "IGNORE";
+    const toggleText = document.createElement("span");
+    toggleText.textContent = isBuyMarketConditionRole(role) ? "Activer le filtre d'achat" : "Activer le filtre de vente";
+    toggleLabel.append(toggle, toggleText);
+
+    const help = document.createElement("div");
+    help.className = "muted";
+    help.textContent = isBuyMarketConditionRole(role)
+      ? "L'achat est autorisé quand la courbe passe au-dessus du seuil. Le seuil haut bloque seulement les nouveaux achats."
+      : "La vente est déclenchée quand la courbe repasse sous le seuil.";
+
+    let advancedSelect = null;
+    const advancedNodes = [];
+    if (advancedMode) {
+      const notice = document.createElement("div");
+      notice.className = "muted";
+      notice.textContent = "Configuration avancée existante";
+      const details = document.createElement("details");
+      const summary = document.createElement("summary");
+      summary.textContent = "Options avancées / compatibilité";
+      advancedSelect = document.createElement("select");
+      MARKET_CONDITION_CHOICES.filter(([code]) => code !== "IGNORE").forEach(([code, label]) => {
+        const opt = document.createElement("option");
+        opt.value = code;
+        opt.textContent = label;
+        advancedSelect.appendChild(opt);
+      });
+      advancedSelect.value = normalized;
+      details.append(summary, advancedSelect);
+      advancedNodes.push(notice, details);
+    }
+
+    function syncValue() {
+      if (!toggle.checked) {
+        hidden.value = "IGNORE";
+      } else {
+        hidden.value = advancedSelect ? normalizeLegacyGmFilter(advancedSelect.value) : standardMode;
+      }
+    }
+    toggle.addEventListener("change", syncValue);
+    advancedSelect?.addEventListener("change", syncValue);
+    wrap.append(hidden, toggleLabel, help, ...advancedNodes);
+    syncValue();
+    return wrap;
+  }
+  function marketThresholdPlaceholder(role) {
+    return isBuyMarketConditionRole(role) ? "Seuil d'autorisation d'achat" : "Seuil de vente";
   }
   function makeThresholdInput(value, role) {
     const input = document.createElement("input");
     input.type = "number";
     input.step = "0.0001";
-    input.placeholder = "Seuil en décimal : 0.03 = 3 %";
+    input.placeholder = marketThresholdPlaceholder(role);
     input.value = value || "";
     input.setAttribute("data-role", role);
     input.style.maxWidth = "140px";
@@ -497,12 +568,15 @@
     marketFields.style.gridTemplateColumns = 'repeat(auto-fit, minmax(160px, 1fr))';
     marketFields.style.gap = '8px';
     marketFields.style.marginTop = '8px';
-    const gmCurrent = makeMarketConditionSelect(normalizeLineMarketValue(item, 'buy_market_gm_current', item.buy_gm_filter), 'buy_market_gm_current');
-    const gmMarket = makeMarketConditionSelect(normalizeLineMarketValue(item, 'buy_market_gm_market'), 'buy_market_gm_market');
-    const gmSector = makeMarketConditionSelect(normalizeLineMarketValue(item, 'buy_market_gm_sector'), 'buy_market_gm_sector');
-    const gmBuyCurrent = normalizeGmCondition(item, 'current', gmCurrent.value);
-    const gmBuyMarket = normalizeGmCondition(item, 'market', gmMarket.value);
-    const gmBuySector = normalizeGmCondition(item, 'sector', gmSector.value);
+    const gmBuyCurrentLegacy = normalizeLineMarketValue(item, 'buy_market_gm_current', item.buy_gm_filter);
+    const gmBuyMarketLegacy = normalizeLineMarketValue(item, 'buy_market_gm_market');
+    const gmBuySectorLegacy = normalizeLineMarketValue(item, 'buy_market_gm_sector');
+    const gmBuyCurrent = normalizeGmCondition(item, 'current', gmBuyCurrentLegacy);
+    const gmBuyMarket = normalizeGmCondition(item, 'market', gmBuyMarketLegacy);
+    const gmBuySector = normalizeGmCondition(item, 'sector', gmBuySectorLegacy);
+    const gmCurrent = makeMarketConditionSelect(gmBuyCurrent.mode, 'buy_market_gm_current');
+    const gmMarket = makeMarketConditionSelect(gmBuyMarket.mode, 'buy_market_gm_market');
+    const gmSector = makeMarketConditionSelect(gmBuySector.mode, 'buy_market_gm_sector');
     const gmCurrentThreshold = makeThresholdInput(gmBuyCurrent.threshold, 'buy_market_gm_current_threshold');
     const gmMarketThreshold = makeThresholdInput(gmBuyMarket.threshold, 'buy_market_gm_market_threshold');
     const gmSectorThreshold = makeThresholdInput(gmBuySector.threshold, 'buy_market_gm_sector_threshold');

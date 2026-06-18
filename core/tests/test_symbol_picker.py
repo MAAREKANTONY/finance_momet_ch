@@ -229,7 +229,8 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
             self.assertIn("GM Push — impulsion marché BUY", content)
             self.assertIn("GM Push — protection impulsion marché", content)
             self.assertIn("GM Push mémorise les impulsions de marché.", content)
-            self.assertIn("Seuil en décimal : 0.03 = 3 %", content)
+            self.assertIn("Seuil d'autorisation d'achat", content)
+            self.assertIn("Seuil de vente", content)
             self.assertNotIn('data-role="sell_gm_filter"', content)
 
     def test_new_default_game_lines_use_progressive_auto_sell_model(self):
@@ -258,7 +259,8 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
         self.assertIn("GM Push — impulsion marché BUY", content)
         self.assertIn("GM Push — protection impulsion marché", content)
         self.assertIn("GM Push mémorise les impulsions de marché.", content)
-        self.assertIn("Seuil en décimal : 0.03 = 3 %", content)
+        self.assertIn("Seuil d'autorisation d'achat", content)
+        self.assertIn("Seuil de vente", content)
         self.assertNotIn('data-role="sell_gm_filter"', content)
 
     def test_price_range_fields_and_help_text_are_rendered_in_forms(self):
