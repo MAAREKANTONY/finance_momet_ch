@@ -305,19 +305,23 @@ def _normalize_gm_condition_entry(raw: Any = None, *, legacy_code: Any = None) -
     if isinstance(raw, dict):
         mode = _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code"))
         threshold = raw.get("threshold")
+        buy_max_threshold = raw.get("buy_max_threshold")
         explicit_raw = raw.get("explicit_threshold")
     else:
         mode = _normalize_gm_condition_mode(raw if raw not in (None, "") else legacy_code)
         threshold = None
+        buy_max_threshold = None
         explicit_raw = False
 
     threshold_dec = _to_dec(threshold)
+    buy_max_threshold_dec = _to_dec(buy_max_threshold)
     explicit_threshold = bool(explicit_raw) or threshold not in (None, "")
     if threshold_dec is None:
         explicit_threshold = False
     return {
         "mode": mode,
         "threshold": None if threshold_dec is None else str(threshold_dec),
+        "buy_max_threshold": None if mode != "POS" or buy_max_threshold_dec is None else str(buy_max_threshold_dec),
         "explicit_threshold": bool(explicit_threshold),
     }
 
@@ -350,6 +354,7 @@ def _normalize_gm_push_condition_entry(raw: Any = None) -> dict[str, Any]:
     threshold = _to_dec(raw.get("threshold"))
     buy_threshold = _to_dec(raw.get("buy_threshold"))
     sell_threshold = _to_dec(raw.get("sell_threshold"))
+    buy_max_threshold = _to_dec(raw.get("buy_max_threshold"))
     if threshold is not None:
         buy_threshold = threshold
         sell_threshold = threshold
@@ -369,6 +374,7 @@ def _normalize_gm_push_condition_entry(raw: Any = None) -> dict[str, Any]:
         "threshold": None if threshold is None else str(threshold),
         "buy_threshold": None if buy_threshold is None else str(buy_threshold),
         "sell_threshold": None if sell_threshold is None else str(sell_threshold),
+        "buy_max_threshold": None if normalized_mode != "POS" or buy_max_threshold is None else str(buy_max_threshold),
         "explicit_threshold": bool(explicit_threshold and buy_threshold is not None and sell_threshold is not None),
     }
 
@@ -1047,6 +1053,9 @@ def _gm_condition_entry_label(entry: dict[str, Any] | None) -> str:
     if entry.get("explicit_threshold"):
         threshold = entry.get("threshold")
         if threshold not in (None, ""):
+            buy_max = entry.get("buy_max_threshold") if mode == "POS" else None
+            if buy_max not in (None, ""):
+                return f"{label} (> {threshold}, achat bloqué > {buy_max})"
             op = ">" if mode == "POS" else "<" if mode == "NEG" else "autour de"
             return f"{label} ({op} {threshold})"
     return label
@@ -1073,6 +1082,9 @@ def _gm_push_condition_entry_label(entry: dict[str, Any] | None) -> str:
     threshold = entry.get("buy_threshold") if mode == "POS" else entry.get("sell_threshold")
     if threshold not in (None, ""):
         op = ">" if mode == "POS" else "<"
+        buy_max = entry.get("buy_max_threshold") if mode == "POS" else None
+        if buy_max not in (None, ""):
+            return f"{label} ({op} {threshold}, achat bloqué > {buy_max})"
         return f"{label} ({op} {threshold})"
     return label
 
@@ -1161,6 +1173,23 @@ def _gm_push_thresholds_for_entry(entry: dict[str, Any]) -> tuple[Decimal | None
     return buy_threshold, sell_threshold
 
 
+def _buy_condition_exceeds_max_threshold(*, mode: Any, actual_value: Decimal | None, buy_max_threshold: Any) -> bool:
+    if _normalize_gm_condition_mode(mode) != "POS":
+        return False
+    max_threshold = _to_dec(buy_max_threshold)
+    if actual_value is None or max_threshold is None:
+        return False
+    return actual_value > max_threshold
+
+
+def _evaluation_blocked_by_buy_max_threshold(evaluation: dict[str, Any]) -> bool:
+    return any(
+        bool((family or {}).get("blocked_by_buy_max_threshold"))
+        for family in (evaluation.get("families") or {}).values()
+        if isinstance(family, dict)
+    )
+
+
 def _evaluate_gm_push_conditions(
     *,
     config: dict[str, Any] | None,
@@ -1169,6 +1198,7 @@ def _evaluate_gm_push_conditions(
     gm_push_current_values: dict[date, Decimal | None] | None,
     gm_push_benchmark_values_by_ticker: dict[str, dict[date, Decimal | None]] | None,
     gm_push_state_cache: dict[tuple[Any, ...], dict[date, str]],
+    apply_buy_max_threshold: bool = False,
 ) -> dict[str, Any]:
     config = config if isinstance(config, dict) else {}
     active_results = []
@@ -1200,21 +1230,34 @@ def _evaluate_gm_push_conditions(
                 sell_threshold=sell_threshold,
             )
         state_value = gm_push_state_cache[series_key].get(as_of, GM_PUSH_UNKNOWN)
-        passed = (
+        passed_before_buy_max_threshold = (
             state_value == GM_PUSH_POS_ACTIVE
             if mode == "POS"
             else state_value == GM_PUSH_NEG_ACTIVE
         )
+        blocked_by_buy_max_threshold = bool(
+            apply_buy_max_threshold
+            and passed_before_buy_max_threshold
+            and _buy_condition_exceeds_max_threshold(
+                mode=mode,
+                actual_value=actual_value,
+                buy_max_threshold=entry.get("buy_max_threshold"),
+            )
+        )
+        passed = passed_before_buy_max_threshold and not blocked_by_buy_max_threshold
         payload = {
             "active": True,
             "mode": mode,
             "threshold": entry.get("threshold"),
             "buy_threshold": entry.get("buy_threshold"),
             "sell_threshold": entry.get("sell_threshold"),
+            "buy_max_threshold": entry.get("buy_max_threshold"),
             "explicit_threshold": bool(entry.get("explicit_threshold")),
             "value": None if actual_value is None else str(actual_value),
             "state": state_value,
             "benchmark_ticker": benchmark_ticker,
+            "passed_before_buy_max_threshold": bool(passed_before_buy_max_threshold),
+            "blocked_by_buy_max_threshold": bool(blocked_by_buy_max_threshold),
             "passed": bool(passed),
         }
         family_results[family] = payload
@@ -1243,6 +1286,7 @@ def _evaluate_gm_conditions(
     gm_current_value: Decimal | None,
     gm_current_regime: str | None = None,
     benchmark_cache_by_ticker: dict[str, dict[str, list[Any]]] | None,
+    apply_buy_max_threshold: bool = False,
 ) -> dict[str, Any]:
     config = config if isinstance(config, dict) else {}
     active_results = []
@@ -1270,13 +1314,27 @@ def _evaluate_gm_conditions(
                 threshold=_to_dec(entry.get("threshold")),
                 explicit_threshold=bool(entry.get("explicit_threshold")),
             )
+        passed_before_buy_max_threshold = bool(passed)
+        blocked_by_buy_max_threshold = bool(
+            apply_buy_max_threshold
+            and passed_before_buy_max_threshold
+            and _buy_condition_exceeds_max_threshold(
+                mode=mode,
+                actual_value=actual_value,
+                buy_max_threshold=entry.get("buy_max_threshold"),
+            )
+        )
+        passed = passed_before_buy_max_threshold and not blocked_by_buy_max_threshold
         payload = {
             "active": True,
             "mode": mode,
             "threshold": entry.get("threshold"),
+            "buy_max_threshold": entry.get("buy_max_threshold"),
             "explicit_threshold": bool(entry.get("explicit_threshold")),
             "value": None if actual_value is None else str(actual_value),
             "benchmark_ticker": benchmark_ticker,
+            "passed_before_buy_max_threshold": bool(passed_before_buy_max_threshold),
+            "blocked_by_buy_max_threshold": bool(blocked_by_buy_max_threshold),
             "passed": bool(passed),
         }
         family_results[family] = payload
@@ -1578,6 +1636,19 @@ def run_backtest(
         last["buy_blocked_by_universe"] = True
         last["buy_blocked_reason"] = "not_active_in_universe"
 
+    def _mark_gm_buy_max_blocked(st: dict[str, Any], as_of: date) -> None:
+        if large_result_mode:
+            return
+        rows = st.get("daily_rows") or []
+        if not rows:
+            return
+        last = rows[-1]
+        if str(last.get("date") or "") != str(as_of):
+            return
+        last["buy_blocked_by_gm_buy_max"] = True
+        last["buy_blocked_reason"] = "gm_buy_max_threshold"
+        last["buy_blocked_message"] = "Achat bloqué : GM au-dessus du seuil haut d’achat."
+
     def _resolved_universe_meta() -> dict[str, Any] | None:
         if resolved_universe is None:
             return None
@@ -1825,6 +1896,7 @@ def run_backtest(
         )
 
     def _line_market_conditions_allow_buy(st: dict[str, Any], ticker: str, d, gm_code: str | None) -> bool:
+        st["_last_gm_buy_max_blocked"] = False
         gm_buy_conditions = st.get("gm_buy_conditions") or _normalize_gm_conditions_config(
             operator=st.get("buy_market_operator"),
             current=st.get("buy_market_gm_current"),
@@ -1833,17 +1905,18 @@ def run_backtest(
         )
         if not _gm_conditions_has_active(gm_buy_conditions):
             return True
-        return bool(
-            _evaluate_gm_conditions(
-                config=gm_buy_conditions,
-                symbol=sym_by_ticker.get(ticker),
-                as_of=d,
-                nglobal=nglobal,
-                gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
-                gm_current_regime=gm_code,
-                benchmark_cache_by_ticker=benchmark_price_cache,
-            )["passed"]
+        evaluation = _evaluate_gm_conditions(
+            config=gm_buy_conditions,
+            symbol=sym_by_ticker.get(ticker),
+            as_of=d,
+            nglobal=nglobal,
+            gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
+            gm_current_regime=gm_code,
+            benchmark_cache_by_ticker=benchmark_price_cache,
+            apply_buy_max_threshold=True,
         )
+        st["_last_gm_buy_max_blocked"] = _evaluation_blocked_by_buy_max_threshold(evaluation)
+        return bool(evaluation["passed"])
 
     def _gm_market_exit_sell_evaluation(st: dict[str, Any], ticker: str, d) -> dict[str, Any]:
         gm_sell_conditions = st.get("gm_sell_market_exit_conditions") or _normalize_gm_conditions_config()
@@ -1862,19 +1935,21 @@ def run_backtest(
         return evaluation
 
     def _line_gm_push_conditions_allow_buy(st: dict[str, Any], ticker: str, d) -> bool:
+        st["_last_gm_buy_max_blocked"] = False
         gm_push_buy_conditions = st.get("gm_push_buy_conditions") or _normalize_gm_push_conditions_config()
         if not _gm_push_conditions_has_active(gm_push_buy_conditions):
             return True
-        return bool(
-            _evaluate_gm_push_conditions(
-                config=gm_push_buy_conditions,
-                symbol=sym_by_ticker.get(ticker),
-                as_of=d,
-                gm_push_current_values=gm_push_current_values_by_date,
-                gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
-                gm_push_state_cache=gm_push_state_cache,
-            )["passed"]
+        evaluation = _evaluate_gm_push_conditions(
+            config=gm_push_buy_conditions,
+            symbol=sym_by_ticker.get(ticker),
+            as_of=d,
+            gm_push_current_values=gm_push_current_values_by_date,
+            gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
+            gm_push_state_cache=gm_push_state_cache,
+            apply_buy_max_threshold=True,
         )
+        st["_last_gm_buy_max_blocked"] = _evaluation_blocked_by_buy_max_threshold(evaluation)
+        return bool(evaluation["passed"])
 
     def _gm_push_market_exit_sell_evaluation(st: dict[str, Any], ticker: str, d) -> dict[str, Any]:
         gm_push_sell_conditions = st.get("gm_push_sell_market_exit_conditions") or _normalize_gm_push_conditions_config()
@@ -2363,8 +2438,12 @@ def run_backtest(
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                if st.get("_last_gm_buy_max_blocked"):
+                    _mark_gm_buy_max_blocked(st, d)
                 continue
             if not _line_gm_push_conditions_allow_buy(st, ticker, d):
+                if st.get("_last_gm_buy_max_blocked"):
+                    _mark_gm_buy_max_blocked(st, d)
                 continue
 
             if not st["allocated"]:
@@ -2443,8 +2522,12 @@ def run_backtest(
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                if st.get("_last_gm_buy_max_blocked"):
+                    _mark_gm_buy_max_blocked(st, d)
                 continue
             if not _line_gm_push_conditions_allow_buy(st, ticker, d):
+                if st.get("_last_gm_buy_max_blocked"):
+                    _mark_gm_buy_max_blocked(st, d)
                 continue
 
             if not st["allocated"]:
@@ -3291,6 +3374,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         )
 
     def _line_market_conditions_allow_buy(st: dict[str, Any], ticker: str, d, gm_code: str | None) -> bool:
+        st["_last_gm_buy_max_blocked"] = False
         gm_buy_conditions = st.get("gm_buy_conditions") or _normalize_gm_conditions_config(
             operator=st.get("buy_market_operator"),
             current=st.get("buy_market_gm_current"),
@@ -3299,17 +3383,18 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         )
         if not _gm_conditions_has_active(gm_buy_conditions):
             return True
-        return bool(
-            _evaluate_gm_conditions(
-                config=gm_buy_conditions,
-                symbol=sym_by_ticker.get(ticker),
-                as_of=d,
-                nglobal=nglobal,
-                gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
-                gm_current_regime=gm_code,
-                benchmark_cache_by_ticker=benchmark_price_cache,
-            )["passed"]
+        evaluation = _evaluate_gm_conditions(
+            config=gm_buy_conditions,
+            symbol=sym_by_ticker.get(ticker),
+            as_of=d,
+            nglobal=nglobal,
+            gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
+            gm_current_regime=gm_code,
+            benchmark_cache_by_ticker=benchmark_price_cache,
+            apply_buy_max_threshold=True,
         )
+        st["_last_gm_buy_max_blocked"] = _evaluation_blocked_by_buy_max_threshold(evaluation)
+        return bool(evaluation["passed"])
 
     def _gm_market_exit_sell_evaluation(st: dict[str, Any], ticker: str, d) -> dict[str, Any]:
         gm_sell_conditions = st.get("gm_sell_market_exit_conditions") or _normalize_gm_conditions_config()
@@ -3328,19 +3413,21 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         return evaluation
 
     def _line_gm_push_conditions_allow_buy(st: dict[str, Any], ticker: str, d) -> bool:
+        st["_last_gm_buy_max_blocked"] = False
         gm_push_buy_conditions = st.get("gm_push_buy_conditions") or _normalize_gm_push_conditions_config()
         if not _gm_push_conditions_has_active(gm_push_buy_conditions):
             return True
-        return bool(
-            _evaluate_gm_push_conditions(
-                config=gm_push_buy_conditions,
-                symbol=sym_by_ticker.get(ticker),
-                as_of=d,
-                gm_push_current_values=gm_push_current_values_by_date,
-                gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
-                gm_push_state_cache=gm_push_state_cache,
-            )["passed"]
+        evaluation = _evaluate_gm_push_conditions(
+            config=gm_push_buy_conditions,
+            symbol=sym_by_ticker.get(ticker),
+            as_of=d,
+            gm_push_current_values=gm_push_current_values_by_date,
+            gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
+            gm_push_state_cache=gm_push_state_cache,
+            apply_buy_max_threshold=True,
         )
+        st["_last_gm_buy_max_blocked"] = _evaluation_blocked_by_buy_max_threshold(evaluation)
+        return bool(evaluation["passed"])
 
     def _gm_push_market_exit_sell_evaluation(st: dict[str, Any], ticker: str, d) -> dict[str, Any]:
         gm_push_sell_conditions = st.get("gm_push_sell_market_exit_conditions") or _normalize_gm_push_conditions_config()

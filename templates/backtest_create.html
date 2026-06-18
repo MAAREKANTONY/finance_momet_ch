@@ -183,12 +183,12 @@
   const SPECIAL_SELL = "AUTO_K1F_UPPER_DOWN_B1F";
   const LOGIC_CHOICES = [["AND", "ET"], ["OR", "OU"]];
   const MARKET_CONDITION_CHOICES = [
-    ["IGNORE", "Ignorer"],
-    ["GM_POS", "Positif"],
-    ["GM_NEG", "Négatif"],
-    ["GM_NEU", "Neutre"],
-    ["GM_POS_OR_NEU", "Positif ou neutre"],
-    ["GM_NEG_OR_NEU", "Négatif ou neutre"]
+    ["IGNORE", "Désactivé"],
+    ["GM_POS", "Au-dessus du seuil"],
+    ["GM_NEG", "Sous le seuil"],
+    ["GM_NEU", "Autour du seuil"],
+    ["GM_POS_OR_NEU", "Au-dessus ou autour du seuil"],
+    ["GM_NEG_OR_NEU", "Sous le seuil ou autour du seuil"]
   ];
   const body = document.getElementById("signal-lines-body");
   const hidden = document.getElementById("id_signal_lines");
@@ -262,7 +262,8 @@
     const entry = config[family] || {};
     return {
       mode: normalizeLegacyGmFilter(entry.mode || legacyValue || 'IGNORE'),
-      threshold: entry.threshold || ''
+      threshold: entry.threshold || '',
+      buyMaxThreshold: entry.buy_max_threshold || ''
     };
   }
   function normalizeSellMarketExitCondition(item, family) {
@@ -278,7 +279,8 @@
     const entry = config[family] || {};
     return {
       mode: normalizeLegacyGmFilter(entry.mode || 'IGNORE'),
-      threshold: entry.threshold || entry.buy_threshold || (entry.sell_threshold ? String(Math.abs(Number(entry.sell_threshold))) : '') || ''
+      threshold: entry.threshold || entry.buy_threshold || (entry.sell_threshold ? String(Math.abs(Number(entry.sell_threshold))) : '') || '',
+      buyMaxThreshold: entry.buy_max_threshold || ''
     };
   }
   function makeCheckboxList(values, role) {
@@ -392,6 +394,11 @@
     input.style.maxWidth = "140px";
     return input;
   }
+  function makeBuyMaxThresholdInput(value, role) {
+    const input = makeThresholdInput(value, role);
+    input.placeholder = "Seuil haut optionnel";
+    return input;
+  }
   function tradingModelLabel(value) {
     if (value === 'LEGACY_DAILY') return 'Mode legacy classique';
     if (value === 'PROGRESSIVE_EXPLICIT_SELL') return 'Progressif avec vente explicite';
@@ -499,16 +506,19 @@
     const gmCurrentThreshold = makeThresholdInput(gmBuyCurrent.threshold, 'buy_market_gm_current_threshold');
     const gmMarketThreshold = makeThresholdInput(gmBuyMarket.threshold, 'buy_market_gm_market_threshold');
     const gmSectorThreshold = makeThresholdInput(gmBuySector.threshold, 'buy_market_gm_sector_threshold');
+    const gmCurrentBuyMaxThreshold = makeBuyMaxThresholdInput(gmBuyCurrent.buyMaxThreshold, 'buy_market_gm_current_max_threshold');
+    const gmMarketBuyMaxThreshold = makeBuyMaxThresholdInput(gmBuyMarket.buyMaxThreshold, 'buy_market_gm_market_max_threshold');
+    const gmSectorBuyMaxThreshold = makeBuyMaxThresholdInput(gmBuySector.buyMaxThreshold, 'buy_market_gm_sector_max_threshold');
     const gmOperator = document.createElement('select');
     gmOperator.setAttribute('data-role', 'buy_market_operator');
     gmOperator.innerHTML = '<option value="AND">ET</option><option value="OR">OU</option>';
     gmOperator.value = normalizeLogic(item.buy_market_operator || item.buy_gm_operator, 'AND');
     [
-      ['GM actuel', gmCurrent, gmCurrentThreshold],
-      ['GM marché', gmMarket, gmMarketThreshold],
-      ['GM secteur', gmSector, gmSectorThreshold],
-      ['Opérateur', gmOperator, null],
-    ].forEach(([label, input, thresholdInput]) => {
+      ['GM actuel', gmCurrent, gmCurrentThreshold, gmCurrentBuyMaxThreshold],
+      ['GM marché', gmMarket, gmMarketThreshold, gmMarketBuyMaxThreshold],
+      ['GM secteur', gmSector, gmSectorThreshold, gmSectorBuyMaxThreshold],
+      ['Opérateur', gmOperator, null, null],
+    ].forEach(([label, input, thresholdInput, buyMaxInput]) => {
       const block = document.createElement('label');
       block.style.display = 'flex';
       block.style.flexDirection = 'column';
@@ -517,6 +527,7 @@
       text.textContent = label;
       block.append(text, input);
       if (thresholdInput) block.appendChild(thresholdInput);
+      if (buyMaxInput) block.appendChild(buyMaxInput);
       marketFields.appendChild(block);
     });
     marketBox.append(marketTitle, marketHelp, marketFields);
@@ -541,16 +552,19 @@
     const gmPushBuyCurrentThreshold = makeThresholdInput(gmPushBuyCurrent.threshold, 'gm_push_buy_current_threshold');
     const gmPushBuyMarketThreshold = makeThresholdInput(gmPushBuyMarket.threshold, 'gm_push_buy_market_threshold');
     const gmPushBuySectorThreshold = makeThresholdInput(gmPushBuySector.threshold, 'gm_push_buy_sector_threshold');
+    const gmPushBuyCurrentMaxThreshold = makeBuyMaxThresholdInput(gmPushBuyCurrent.buyMaxThreshold, 'gm_push_buy_current_max_threshold');
+    const gmPushBuyMarketMaxThreshold = makeBuyMaxThresholdInput(gmPushBuyMarket.buyMaxThreshold, 'gm_push_buy_market_max_threshold');
+    const gmPushBuySectorMaxThreshold = makeBuyMaxThresholdInput(gmPushBuySector.buyMaxThreshold, 'gm_push_buy_sector_max_threshold');
     const gmPushBuyOperator = document.createElement('select');
     gmPushBuyOperator.setAttribute('data-role', 'gm_push_buy_operator');
     gmPushBuyOperator.innerHTML = '<option value="AND">ET</option><option value="OR">OU</option>';
     gmPushBuyOperator.value = normalizeLogic(item.gm_push_buy_conditions?.operator, 'AND');
     [
-      ['GM_push actuel', gmPushBuyCurrentSel, gmPushBuyCurrentThreshold],
-      ['GM_push marché', gmPushBuyMarketSel, gmPushBuyMarketThreshold],
-      ['GM_push secteur', gmPushBuySectorSel, gmPushBuySectorThreshold],
-      ['Opérateur', gmPushBuyOperator, null],
-    ].forEach(([label, input, thresholdInput]) => {
+      ['GM_push actuel', gmPushBuyCurrentSel, gmPushBuyCurrentThreshold, gmPushBuyCurrentMaxThreshold],
+      ['GM_push marché', gmPushBuyMarketSel, gmPushBuyMarketThreshold, gmPushBuyMarketMaxThreshold],
+      ['GM_push secteur', gmPushBuySectorSel, gmPushBuySectorThreshold, gmPushBuySectorMaxThreshold],
+      ['Opérateur', gmPushBuyOperator, null, null],
+    ].forEach(([label, input, thresholdInput, buyMaxInput]) => {
       const block = document.createElement('label');
       block.style.display = 'flex';
       block.style.flexDirection = 'column';
@@ -559,6 +573,7 @@
       text.textContent = label;
       block.append(text, input);
       if (thresholdInput) block.appendChild(thresholdInput);
+      if (buyMaxInput) block.appendChild(buyMaxInput);
       gmPushBuyFields.appendChild(block);
     });
     gmPushBuyBox.append(gmPushBuyTitle, gmPushBuyHelp, gmPushBuyFields);
@@ -700,7 +715,7 @@
     }
     modeSel.addEventListener('change', () => { applyMode(); serialize(); });
     tradingModelSel.addEventListener('change', () => { applyMode(); serialize(); });
-    [buySel, sellSel, buyLogicSel, sellLogicSel, gmCurrent, gmMarket, gmSector, gmOperator, gmCurrentThreshold, gmMarketThreshold, gmSectorThreshold, gmPushBuyCurrentSel, gmPushBuyMarketSel, gmPushBuySectorSel, gmPushBuyOperator, gmPushBuyCurrentThreshold, gmPushBuyMarketThreshold, gmPushBuySectorThreshold, sellGmCurrent, sellGmMarket, sellGmSector, sellGmOperator, sellGmCurrentThreshold, sellGmMarketThreshold, sellGmSectorThreshold, gmPushSellCurrentSel, gmPushSellMarketSel, gmPushSellSectorSel, gmPushSellOperator, gmPushSellCurrentThreshold, gmPushSellMarketThreshold, gmPushSellSectorThreshold].forEach((container) => container.addEventListener('change', serialize));
+    [buySel, sellSel, buyLogicSel, sellLogicSel, gmCurrent, gmMarket, gmSector, gmOperator, gmCurrentThreshold, gmMarketThreshold, gmSectorThreshold, gmCurrentBuyMaxThreshold, gmMarketBuyMaxThreshold, gmSectorBuyMaxThreshold, gmPushBuyCurrentSel, gmPushBuyMarketSel, gmPushBuySectorSel, gmPushBuyOperator, gmPushBuyCurrentThreshold, gmPushBuyMarketThreshold, gmPushBuySectorThreshold, gmPushBuyCurrentMaxThreshold, gmPushBuyMarketMaxThreshold, gmPushBuySectorMaxThreshold, sellGmCurrent, sellGmMarket, sellGmSector, sellGmOperator, sellGmCurrentThreshold, sellGmMarketThreshold, sellGmSectorThreshold, gmPushSellCurrentSel, gmPushSellMarketSel, gmPushSellSectorSel, gmPushSellOperator, gmPushSellCurrentThreshold, gmPushSellMarketThreshold, gmPushSellSectorThreshold].forEach((container) => container.addEventListener('change', serialize));
     body.appendChild(tr);
     applyMode();
   }
@@ -722,6 +737,9 @@
       const buyCurrentThreshold = tr.querySelector('[data-role="buy_market_gm_current_threshold"]')?.value || '';
       const buyMarketThreshold = tr.querySelector('[data-role="buy_market_gm_market_threshold"]')?.value || '';
       const buySectorThreshold = tr.querySelector('[data-role="buy_market_gm_sector_threshold"]')?.value || '';
+      const buyCurrentMaxThreshold = tr.querySelector('[data-role="buy_market_gm_current_max_threshold"]')?.value || '';
+      const buyMarketMaxThreshold = tr.querySelector('[data-role="buy_market_gm_market_max_threshold"]')?.value || '';
+      const buySectorMaxThreshold = tr.querySelector('[data-role="buy_market_gm_sector_max_threshold"]')?.value || '';
       const sellMarketGmCurrent = tr.querySelector('[data-role="sell_market_gm_current"]')?.value || 'IGNORE';
       const sellMarketGmMarket = tr.querySelector('[data-role="sell_market_gm_market"]')?.value || 'IGNORE';
       const sellMarketGmSector = tr.querySelector('[data-role="sell_market_gm_sector"]')?.value || 'IGNORE';
@@ -736,6 +754,9 @@
       const gmPushBuyCurrentThreshold = tr.querySelector('[data-role="gm_push_buy_current_threshold"]')?.value || '';
       const gmPushBuyMarketThreshold = tr.querySelector('[data-role="gm_push_buy_market_threshold"]')?.value || '';
       const gmPushBuySectorThreshold = tr.querySelector('[data-role="gm_push_buy_sector_threshold"]')?.value || '';
+      const gmPushBuyCurrentMaxThreshold = tr.querySelector('[data-role="gm_push_buy_current_max_threshold"]')?.value || '';
+      const gmPushBuyMarketMaxThreshold = tr.querySelector('[data-role="gm_push_buy_market_max_threshold"]')?.value || '';
+      const gmPushBuySectorMaxThreshold = tr.querySelector('[data-role="gm_push_buy_sector_max_threshold"]')?.value || '';
       const gmPushSellCurrent = tr.querySelector('[data-role="gm_push_sell_current"]')?.value || 'IGNORE';
       const gmPushSellMarket = tr.querySelector('[data-role="gm_push_sell_market"]')?.value || 'IGNORE';
       const gmPushSellSector = tr.querySelector('[data-role="gm_push_sell_sector"]')?.value || 'IGNORE';
@@ -749,8 +770,8 @@
       const hasSellMarketExit = [sellMarketGmCurrent, sellMarketGmMarket, sellMarketGmSector].some((value) => value !== 'IGNORE');
       const hasGmPushBuy = [gmPushBuyCurrent, gmPushBuyMarket, gmPushBuySector].some((value) => value !== 'IGNORE');
       const hasGmPushSell = [gmPushSellCurrent, gmPushSellMarket, gmPushSellSector].some((value) => value !== 'IGNORE');
-      const gmEntry = (mode, threshold) => ({mode, threshold: threshold || null, explicit_threshold: !!threshold});
-      const gmPushEntry = (mode, threshold) => ({mode, threshold: threshold || null, explicit_threshold: !!threshold});
+      const gmEntry = (mode, threshold, buyMaxThreshold = '') => ({mode, threshold: threshold || null, buy_max_threshold: mode === 'GM_POS' ? (buyMaxThreshold || null) : null, explicit_threshold: !!threshold});
+      const gmPushEntry = (mode, threshold, buyMaxThreshold = '') => ({mode, threshold: threshold || null, buy_max_threshold: mode === 'GM_POS' ? (buyMaxThreshold || null) : null, explicit_threshold: !!threshold});
       if (buy.length || sell.length || hasMarketConditions || hasSellMarketExit || hasGmPushBuy || hasGmPushSell || tradingModel) {
         const payload = {
           mode,
@@ -768,9 +789,9 @@
           buy_market_operator: buyMarketOperator,
           gm_buy_conditions: {
             operator: buyMarketOperator,
-            current: gmEntry(buyMarketGmCurrent, buyCurrentThreshold),
-            market: gmEntry(buyMarketGmMarket, buyMarketThreshold),
-            sector: gmEntry(buyMarketGmSector, buySectorThreshold)
+            current: gmEntry(buyMarketGmCurrent, buyCurrentThreshold, buyCurrentMaxThreshold),
+            market: gmEntry(buyMarketGmMarket, buyMarketThreshold, buyMarketMaxThreshold),
+            sector: gmEntry(buyMarketGmSector, buySectorThreshold, buySectorMaxThreshold)
           },
           gm_sell_market_exit_conditions: {
             operator: sellMarketOperator,
@@ -780,9 +801,9 @@
           },
           gm_push_buy_conditions: {
             operator: gmPushBuyOperator,
-            current: gmPushEntry(gmPushBuyCurrent, gmPushBuyCurrentThreshold),
-            market: gmPushEntry(gmPushBuyMarket, gmPushBuyMarketThreshold),
-            sector: gmPushEntry(gmPushBuySector, gmPushBuySectorThreshold)
+            current: gmPushEntry(gmPushBuyCurrent, gmPushBuyCurrentThreshold, gmPushBuyCurrentMaxThreshold),
+            market: gmPushEntry(gmPushBuyMarket, gmPushBuyMarketThreshold, gmPushBuyMarketMaxThreshold),
+            sector: gmPushEntry(gmPushBuySector, gmPushBuySectorThreshold, gmPushBuySectorMaxThreshold)
           },
           gm_push_sell_market_exit_conditions: {
             operator: gmPushSellOperator,
