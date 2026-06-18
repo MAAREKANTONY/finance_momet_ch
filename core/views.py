@@ -4,6 +4,7 @@ from io import BytesIO, StringIO
 from typing import Iterable
 from decimal import Decimal
 from datetime import date, timedelta
+from urllib.parse import urlencode
 from django.conf import settings
 from django.core.management import call_command
 from django.core.management.base import CommandError
@@ -11,6 +12,7 @@ from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, JsonResponse, HttpResponse, FileResponse
 from django.shortcuts import render, redirect, get_object_or_404
+from django.urls import reverse
 from django.db.models import Max, Q
 from django.db.models.deletion import ProtectedError
 from django.views.decorators.http import require_POST, require_GET, require_http_methods
@@ -69,7 +71,7 @@ from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
 from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
 from .services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
 from .services.universe_resolver import UniverseResolver
-from .services.dynamic_universe_readiness import check_dynamic_universe_readiness
+from .services.dynamic_universe_readiness import check_dynamic_universe_readiness, _gm_requirements_from_signal_lines
 from .templatetags.backtest_extras import (
     line_gm_push_buy_display,
     line_gm_push_sell_market_exit_display,
@@ -198,6 +200,46 @@ def _dynamic_ohlc_readiness_state(bt: Backtest) -> dict:
     except Exception as exc:
         state["error"] = str(exc)
     return state
+
+
+def _dynamic_universe_readiness_panel(bt: Backtest) -> dict:
+    mode = getattr(getattr(bt, "scenario", None), "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
+    if mode != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+        return {"enabled": False}
+
+    trigger_params = {"universe": "SP500"}
+    if bt.start_date:
+        trigger_params["start"] = bt.start_date.isoformat()
+    if bt.end_date:
+        trigger_params["end"] = bt.end_date.isoformat()
+    trigger_url = f"{reverse('trigger_page')}?{urlencode(trigger_params)}"
+
+    panel = {
+        "enabled": True,
+        "report": None,
+        "error": "",
+        "needs_dates": False,
+        "trigger_url": trigger_url,
+    }
+    if not bt.start_date or not bt.end_date:
+        panel["needs_dates"] = True
+        panel["message"] = "Renseignez une date de début et une date de fin pour vérifier la readiness."
+        return panel
+
+    require_gm_market, require_gm_sector = _gm_requirements_from_signal_lines(bt.signal_lines)
+    try:
+        panel["report"] = check_dynamic_universe_readiness(
+            universe="SP500",
+            start=bt.start_date,
+            end=bt.end_date,
+            warmup_days=int(getattr(bt, "warmup_days", 0) or 0),
+            require_gm_market=require_gm_market,
+            require_gm_sector=require_gm_sector,
+            backtest_id=bt.id,
+        )
+    except Exception as exc:
+        panel["error"] = str(exc)
+    return panel
 
 
 @login_required
@@ -2532,7 +2574,7 @@ def backtest_detail(request, pk: int):
             "bt": bt,
             "jobs": jobs,
             "latest_by_type": latest_by_type,
-            "dynamic_ohlc": _dynamic_ohlc_readiness_state(bt),
+            "dynamic_universe_readiness": _dynamic_universe_readiness_panel(bt),
         },
     )
 

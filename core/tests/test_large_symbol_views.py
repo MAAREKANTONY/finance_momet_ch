@@ -1547,9 +1547,10 @@ class BacktestResultsRenderTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Préparation des données OHLC — Univers dynamique", body)
-        self.assertIn("1 / 1 prêts", body)
-        self.assertIn("Données OHLC prêtes. Vous pouvez lancer le backtest.", body)
+        self.assertIn("Préparation Dynamic Universe S&amp;P500", body)
+        self.assertIn("READY", body)
+        self.assertIn("Prêt pour backtest", body)
+        self.assertIn("DailyBars membres prêtes pour 1 symbols", body)
         self.assertNotIn("Préparer les données OHLC</button>", body)
 
     @patch("core.views.launch_processing_job")
@@ -1564,10 +1565,13 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         launch_mock.assert_not_called()
         body = response.content.decode()
-        self.assertIn("Préparation des données OHLC — Univers dynamique", body)
-        self.assertIn("0 / 1 prêts", body)
+        self.assertIn("Préparation Dynamic Universe S&amp;P500", body)
+        self.assertIn("NOT_READY", body)
+        self.assertIn("DailyBars membres manquantes pour 1 symbols", body)
         self.assertIn("AAA", body)
-        self.assertIn("Préparer les données OHLC", body)
+        self.assertIn("prepare_dynamic_universe_ohlc", body)
+        self.assertIn("Trigger", body)
+        self.assertNotIn("Préparer les données OHLC</button>", body)
 
     @patch("core.views.launch_processing_job")
     def test_prepare_dynamic_universe_ohlc_post_launches_existing_job_with_safe_defaults(self, launch_mock):
