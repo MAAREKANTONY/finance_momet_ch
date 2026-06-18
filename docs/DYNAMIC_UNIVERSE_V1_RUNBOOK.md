@@ -85,6 +85,59 @@ Préparation des données OHLC — Univers dynamique
 8. Relancer le backtest.
 9. Vérifier que le backtest termine en `DONE`.
 
+## Fresh install
+
+Après une fresh install ou un `docker compose down -v`, appliquer d'abord les migrations :
+
+```bash
+python manage.py migrate
+```
+
+Puis initialiser les données de référence minimales :
+
+```bash
+python manage.py init_reference_data
+```
+
+Cette commande est idempotente. Elle crée ou réactive uniquement les références minimales :
+
+```text
+UniverseDefinition(code="SP500", active=True)
+Symbol ETF de référence marchés US : SPY, QQQ, DIA, IWM
+Symbol ETF de référence secteurs US : XLK, XLF, XLE, XLV, XLY, XLP, XLI, XLB, XLU, XLRE, XLC
+Symbol ETF de référence Europe listés US : VGK, FEZ, EZU, EWU, EWQ, EWG, EWI, EWP, EWN, EWD, EWL
+```
+
+Les symbols créés sont des références de tickers seulement. Ils n'ont pas d'OHLC, pas de market cap, pas de membership et pas de coverage validée.
+
+Elle ne fait pas :
+
+- d'appel EODHD ;
+- d'appel TwelveData ;
+- d'import CSV ;
+- d'import de constituants historiques ;
+- d'import massif NYSE/NASDAQ ;
+- de création de `UniverseMembership` ;
+- de création de `UniverseCoverageSnapshot` validée ;
+- de création de `DailyBar` ou de données OHLC ;
+- de création de market cap ;
+- de préparation OHLC ;
+- de lancement de job ou backtest.
+
+Elle évite l'erreur de configuration de base :
+
+```text
+UniverseDefinition SP500 is missing or inactive.
+```
+
+Pour rendre un backtest Dynamic Universe réellement exploitable, il faut ensuite importer ou synchroniser les constituants historiques S&P500 avec la commande dédiée, puis préparer les OHLC via l'UI ou le job explicite.
+
+Dry-run :
+
+```bash
+python manage.py init_reference_data --dry-run
+```
+
 ## UI Phase 6C
 
 La page Backtest dynamique affiche :
