@@ -99,19 +99,28 @@ Puis initialiser les données de référence minimales :
 python manage.py init_reference_data
 ```
 
-Cette commande est idempotente. Elle crée ou réactive uniquement :
+Cette commande est idempotente. Elle crée ou réactive uniquement les références minimales :
 
 ```text
 UniverseDefinition(code="SP500", active=True)
+Symbol ETF de référence marchés US : SPY, QQQ, DIA, IWM
+Symbol ETF de référence secteurs US : XLK, XLF, XLE, XLV, XLY, XLP, XLI, XLB, XLU, XLRE, XLC
+Symbol ETF de référence Europe listés US : VGK, FEZ, EZU, EWU, EWQ, EWG, EWI, EWP, EWN, EWD, EWL
 ```
+
+Les symbols créés sont des références de tickers seulement. Ils n'ont pas d'OHLC, pas de market cap, pas de membership et pas de coverage validée.
 
 Elle ne fait pas :
 
 - d'appel EODHD ;
 - d'appel TwelveData ;
+- d'import CSV ;
 - d'import de constituants historiques ;
+- d'import massif NYSE/NASDAQ ;
 - de création de `UniverseMembership` ;
 - de création de `UniverseCoverageSnapshot` validée ;
+- de création de `DailyBar` ou de données OHLC ;
+- de création de market cap ;
 - de préparation OHLC ;
 - de lancement de job ou backtest.
 
