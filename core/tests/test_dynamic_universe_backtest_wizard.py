@@ -95,7 +95,7 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertNotIn("Préparation Dynamic Universe S&amp;P500", body)
+        self.assertNotIn("Préparation du S&amp;P500 historique", body)
         readiness_mock.assert_not_called()
 
     @patch("core.views.check_dynamic_universe_readiness")
@@ -107,8 +107,8 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Préparation Dynamic Universe S&amp;P500", body)
-        self.assertIn("NOT_READY", body)
+        self.assertIn("Préparation du S&amp;P500 historique", body)
+        self.assertIn("Données à compléter", body)
         self.assertIn("Trigger", body)
         readiness_mock.assert_called_once()
 
@@ -130,7 +130,7 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
 
-        self.assertContains(response, "Backtest non prêt : compléter les étapes ci-dessous")
+        self.assertContains(response, "Certaines données doivent être préparées avant de lancer le backtest")
 
     @patch("core.views.check_dynamic_universe_readiness")
     def test_wizard_ready_status_is_rendered(self, readiness_mock):
@@ -139,8 +139,8 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
 
-        self.assertContains(response, "READY")
-        self.assertContains(response, "Prêt pour backtest")
+        self.assertContains(response, "Prêt")
+        self.assertContains(response, "Prêt pour le backtest")
 
     def test_missing_universe_definition_shows_init_reference_data_action(self):
         bt = self._backtest()
@@ -149,8 +149,8 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("UniverseDefinition SP500 est absent", body)
-        self.assertIn("init_reference_data", body)
+        self.assertIn("Le référentiel de base doit être initialisé", body)
+        self.assertIn("Initialiser le référentiel", body)
         self.assertIn(reverse("trigger_page"), body)
 
     def test_missing_coverage_message_is_visible(self):
@@ -181,7 +181,8 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
 
-        self.assertContains(response, "Coverage non validée: missing coverage snapshot for 2024-01-01")
+        self.assertContains(response, "La période demandée")
+        self.assertContains(response, "2024-01-01")
 
     @patch("core.views.check_dynamic_universe_readiness")
     def test_gm_market_check_is_requested_when_backtest_signal_requires_it(self, readiness_mock):
@@ -200,7 +201,7 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
 
-        self.assertContains(response, "DailyBars GM_market")
+        self.assertContains(response, "Prix du filtre marché")
         self.assertTrue(readiness_mock.call_args.kwargs["require_gm_market"])
 
     @patch("core.views.check_dynamic_universe_readiness")
@@ -220,8 +221,85 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
 
-        self.assertContains(response, "DailyBars GM_sector")
+        self.assertContains(response, "Prix du filtre secteur")
         self.assertTrue(readiness_mock.call_args.kwargs["require_gm_sector"])
+
+
+    @patch("core.views.check_dynamic_universe_readiness")
+    def test_wizard_uses_business_labels_and_hides_commands(self, readiness_mock):
+        readiness_mock.return_value = ReadinessReport(
+            universe="SP500",
+            start=date(2024, 1, 1),
+            end=date(2024, 1, 3),
+            ready=True,
+            status="READY_WITH_WARNINGS",
+            checks=[
+                ReadinessCheck(
+                    code="universe_definition",
+                    label="Référentiel SP500",
+                    status="OK",
+                    message="Référentiel SP500 actif.",
+                ),
+                ReadinessCheck(
+                    code="memberships",
+                    label="Memberships historiques",
+                    status="OK",
+                    message="2 memberships recouvrent la période.",
+                ),
+                ReadinessCheck(
+                    code="import_batch",
+                    label="Batch d'import validé",
+                    status="OK",
+                    message="UniverseImportBatch VALIDATED couvre la période.",
+                ),
+                ReadinessCheck(
+                    code="coverage_snapshots",
+                    label="Coverage snapshots",
+                    status="OK",
+                    message="3 coverage snapshots validés.",
+                ),
+                ReadinessCheck(
+                    code="historical_symbols",
+                    label="Symbols historiques",
+                    status="OK",
+                    message="2 memberships sont mappés vers des Symbols.",
+                ),
+                ReadinessCheck(
+                    code="member_daily_bars",
+                    label="DailyBars membres",
+                    status="WARNING",
+                    message="Prix manquants.",
+                    details={"expected_symbols": 606, "ready_symbols": 603, "missing_symbols": 3, "missing_examples": ["AGN", "BF.B", "BRK.B"]},
+                    suggested_actions=[ReadinessAction(code="prepare_dynamic_universe_ohlc", label="tech", command="python manage.py hidden")],
+                ),
+                ReadinessCheck(code="gm_market_daily_bars", label="DailyBars GM_market", status="SKIPPED", message="GM_market non demandé."),
+                ReadinessCheck(code="gm_sector_daily_bars", label="DailyBars GM_sector", status="SKIPPED", message="GM_sector non demandé."),
+            ],
+            suggested_actions=[ReadinessAction(code="prepare_dynamic_universe_ohlc", label="tech", command="python manage.py hidden")],
+        )
+        bt = self._backtest()
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        body = response.content.decode()
+        for label in (
+            "Référentiel de base",
+            "Composition historique",
+            "Import de composition validé",
+            "Couverture de la période",
+            "Actions historiques",
+            "Prix des actions",
+            "Prix du filtre marché",
+            "Prix du filtre secteur",
+        ):
+            self.assertIn(label, body)
+        self.assertIn("Actions recommandées", body)
+        self.assertIn("Prêt avec avertissement", body)
+        self.assertIn("603 actions sur 606 ont des prix disponibles", body)
+        self.assertIn("AGN, BF.B, BRK.B", body)
+        self.assertIn("Télécharger les prix des actions", body)
+        for technical in ("Coverage snapshots", "DailyBars", "Symbols", "GM_market non demandé", "GM_sector non demandé", "python manage.py"):
+            self.assertNotIn(technical, body)
 
     @patch("core.views.launch_processing_job")
     @patch("core.services.dynamic_universe_ohlc_prepare.prepare_dynamic_universe_ohlc")

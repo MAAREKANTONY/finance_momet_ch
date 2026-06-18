@@ -370,7 +370,7 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         self.assertEqual(universe_meta["coverage_start"], self.start.isoformat())
         self.assertEqual(universe_meta["coverage_end"], self.end.isoformat())
 
-    def test_prepare_backtest_data_dynamic_missing_ohlc_blocks_without_hidden_fetch(self):
+    def test_prepare_backtest_data_dynamic_missing_ohlc_warns_without_hidden_fetch(self):
         self.scenario = self._scenario(dynamic=True)
         self._validated_sp500_universe()
         self._bars_metrics(self.keep)
@@ -384,11 +384,14 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
 
         with patch("core.tasks.fetch_daily_bars_task") as fetch_mock:
             with patch("core.tasks._compute_metrics_for_scenario") as compute_mock:
-                with self.assertRaisesMessage(Exception, "Préparer les données OHLC"):
-                    prepare_backtest_data(bt)
+                report = prepare_backtest_data(bt)
 
         fetch_mock.assert_not_called()
-        compute_mock.assert_not_called()
+        compute_mock.assert_called_once()
+        self.assertTrue(report.did_compute_metrics)
+        self.assertFalse(report.did_fetch_bars)
+        self.assertTrue(any("actions n'ont pas de prix" in note for note in report.notes))
+        self.assertTrue(any("seront ignorées" in note for note in report.notes))
 
     def test_prepare_backtest_data_static_mode_keeps_global_fetch_behavior(self):
         self.scenario = self._scenario(dynamic=False)

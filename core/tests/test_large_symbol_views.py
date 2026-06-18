@@ -1547,10 +1547,10 @@ class BacktestResultsRenderTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Préparation Dynamic Universe S&amp;P500", body)
-        self.assertIn("READY", body)
-        self.assertIn("Prêt pour backtest", body)
-        self.assertIn("DailyBars membres prêtes pour 1 symbols", body)
+        self.assertIn("Préparation du S&amp;P500 historique", body)
+        self.assertIn("Prêt", body)
+        self.assertIn("Prêt pour le backtest", body)
+        self.assertIn("Les prix sont disponibles pour les 1 actions attendues", body)
         self.assertNotIn("Préparer les données OHLC</button>", body)
 
     @patch("core.views.launch_processing_job")
@@ -1565,11 +1565,11 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         launch_mock.assert_not_called()
         body = response.content.decode()
-        self.assertIn("Préparation Dynamic Universe S&amp;P500", body)
-        self.assertIn("NOT_READY", body)
-        self.assertIn("DailyBars membres manquantes pour 1 symbols", body)
+        self.assertIn("Préparation du S&amp;P500 historique", body)
+        self.assertIn("Prêt avec avertissement", body)
+        self.assertIn("0 actions sur 1 ont des prix disponibles", body)
         self.assertIn("AAA", body)
-        self.assertIn("prepare_dynamic_universe_ohlc", body)
+        self.assertIn("Télécharger les prix des actions", body)
         self.assertIn("Trigger", body)
         self.assertNotIn("Préparer les données OHLC</button>", body)
 
@@ -1594,7 +1594,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(kwargs["scenario"], self.scenario)
         self.assertEqual(
             kwargs["message"],
-            "Dynamic Universe OHLC preparation queued",
+            "Téléchargement des prix des actions en attente",
         )
         self.assertEqual(
             kwargs["task_kwargs"],

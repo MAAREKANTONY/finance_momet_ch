@@ -24,7 +24,9 @@ from core.services.dynamic_universe_readiness import (
     CHECK_ERROR,
     CHECK_OK,
     CHECK_SKIPPED,
+    CHECK_WARNING,
     REPORT_NOT_READY,
+    REPORT_READY_WITH_WARNINGS,
     check_dynamic_universe_readiness,
 )
 
@@ -161,7 +163,10 @@ class DynamicUniverseReadinessTestCase(TestCase):
 
         self.assertEqual(self._check(report, "historical_symbols").status, CHECK_OK)
         dailybars = self._check(report, "member_daily_bars")
-        self.assertEqual(dailybars.status, CHECK_ERROR)
+        self.assertEqual(dailybars.status, CHECK_WARNING)
+        self.assertEqual(report.status, REPORT_READY_WITH_WARNINGS)
+        self.assertTrue(report.ready)
+        self.assertEqual(dailybars.details["ready_symbols"], 1)
         self.assertEqual(dailybars.details["missing_examples"], ["BBB"])
 
     def test_require_gm_market_checks_benchmark_without_provider(self):

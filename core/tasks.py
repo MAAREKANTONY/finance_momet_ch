@@ -827,11 +827,11 @@ def prepare_dynamic_universe_ohlc_job_task(
             f"excluded={excluded_count} "
             f"ready_after={result.ready_after} missing_after={len(result.missing_after)}"
         )
-        if result.missing_after:
+        if result.missing_after and result.checked_symbols and result.ready_after <= 0:
             job.status = ProcessingJob.Status.FAILED
             job.message = summary
             job.error = (
-                "Dynamic Universe OHLC preparation incomplete. "
+                "Dynamic Universe OHLC preparation failed: no usable member prices. "
                 f"Missing symbols: {', '.join(result.missing_after[:20])}"
                 f"{'...' if len(result.missing_after) > 20 else ''}"
             )
@@ -840,8 +840,17 @@ def prepare_dynamic_universe_ohlc_job_task(
             sync_related_state_for_terminal_job(job)
             return job.error
 
+        warning = ""
+        if result.missing_after:
+            warning = (
+                f" WARNING: {result.ready_after} actions sur {result.checked_symbols} ont des prix disponibles. "
+                f"{len(result.missing_after)} actions n'ont pas de prix et seront ignorées si vous lancez le backtest. "
+                f"Missing symbols: {', '.join(result.missing_after[:20])}"
+                f"{'...' if len(result.missing_after) > 20 else ''}"
+            )
+
         job.status = ProcessingJob.Status.DONE
-        job.message = summary
+        job.message = summary + warning
         job.error = ""
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "message", "error", "finished_at"])
