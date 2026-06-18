@@ -117,7 +117,10 @@ def _gm_condition_label(entry) -> str:
     label = GM_CONDITION_MODE_LABELS.get(mode, mode)
     threshold = entry.get("threshold")
     if entry.get("explicit_threshold") and threshold not in (None, ""):
+        buy_max = entry.get("buy_max_threshold") if mode in {"GM_POS", "POS"} else None
         if mode in {"GM_POS", "POS"}:
+            if buy_max not in (None, ""):
+                return f"{label} > {threshold}, achat bloqué > {buy_max}"
             return f"{label} > {threshold}"
         if mode in {"GM_NEG", "NEG"}:
             return f"{label} < {threshold}"
@@ -206,7 +209,11 @@ def _gm_push_conditions_display(config) -> str:
         threshold = entry.get("buy_threshold") if mode == "POS" else entry.get("sell_threshold")
         if threshold not in (None, ""):
             op = ">" if mode == "POS" else "<"
-            mode_label = f"{mode_label} {op} {threshold}"
+            buy_max = entry.get("buy_max_threshold") if mode == "POS" else None
+            if buy_max not in (None, ""):
+                mode_label = f"{mode_label} {op} {threshold}, achat bloqué > {buy_max}"
+            else:
+                mode_label = f"{mode_label} {op} {threshold}"
         parts.append(f"{label}: {mode_label}")
     if not parts:
         return "Aucune"

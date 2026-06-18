@@ -175,23 +175,32 @@ def _normalize_gm_condition_entry(raw=None, *, legacy_code=None):
     if isinstance(raw, dict):
         mode = _normalize_gm_condition_mode(raw.get("mode") or raw.get("direction") or raw.get("code"))
         threshold = raw.get("threshold")
+        buy_max_threshold = raw.get("buy_max_threshold")
         explicit_raw = raw.get("explicit_threshold")
     else:
         mode = _normalize_gm_condition_mode(raw if raw not in (None, "") else legacy_code)
         threshold = None
+        buy_max_threshold = None
         explicit_raw = False
     threshold_str = None
+    buy_max_threshold_str = None
     explicit_threshold = bool(explicit_raw) or threshold not in (None, "")
     if threshold not in (None, ""):
         try:
             threshold_str = str(Decimal(str(threshold)))
         except Exception as exc:
             raise forms.ValidationError("Le seuil GM doit être un nombre.") from exc
+    if buy_max_threshold not in (None, ""):
+        try:
+            buy_max_threshold_str = str(Decimal(str(buy_max_threshold)))
+        except Exception as exc:
+            raise forms.ValidationError("Le seuil haut GM doit être un nombre.") from exc
     if threshold_str is None:
         explicit_threshold = False
     return {
         "mode": mode,
         "threshold": threshold_str,
+        "buy_max_threshold": buy_max_threshold_str if mode == "POS" else None,
         "explicit_threshold": bool(explicit_threshold),
     }
 
@@ -214,6 +223,7 @@ def _normalize_gm_push_condition_entry(raw=None):
     threshold = raw.get("threshold")
     buy_threshold = raw.get("buy_threshold")
     sell_threshold = raw.get("sell_threshold")
+    buy_max_threshold = raw.get("buy_max_threshold")
 
     def _threshold_str(value):
         if value in (None, ""):
@@ -226,6 +236,11 @@ def _normalize_gm_push_condition_entry(raw=None):
     threshold_dec = Decimal(_threshold_str(threshold)) if _threshold_str(threshold) is not None else None
     buy_threshold_dec = Decimal(_threshold_str(buy_threshold)) if _threshold_str(buy_threshold) is not None else None
     sell_threshold_dec = Decimal(_threshold_str(sell_threshold)) if _threshold_str(sell_threshold) is not None else None
+    buy_max_threshold_dec = (
+        Decimal(_threshold_str(buy_max_threshold))
+        if _threshold_str(buy_max_threshold) is not None
+        else None
+    )
     if threshold_dec is not None:
         buy_threshold_dec = threshold_dec
         sell_threshold_dec = threshold_dec
@@ -237,6 +252,7 @@ def _normalize_gm_push_condition_entry(raw=None):
     buy_threshold_str = None if buy_threshold_dec is None else str(buy_threshold_dec)
     sell_threshold_str = None if sell_threshold_dec is None else str(sell_threshold_dec)
     threshold_str = None if threshold_dec is None else str(threshold_dec)
+    buy_max_threshold_str = None if buy_max_threshold_dec is None else str(buy_max_threshold_dec)
     explicit_threshold = bool(raw.get("explicit_threshold")) or any(
         value not in (None, "")
         for value in (raw.get("threshold"), raw.get("buy_threshold"), raw.get("sell_threshold"))
@@ -251,6 +267,7 @@ def _normalize_gm_push_condition_entry(raw=None):
         "threshold": threshold_str,
         "buy_threshold": buy_threshold_str,
         "sell_threshold": sell_threshold_str,
+        "buy_max_threshold": buy_max_threshold_str if normalized_mode == "POS" else None,
         "explicit_threshold": bool(explicit_threshold),
     }
 

@@ -12,9 +12,11 @@ from django.test import TestCase
 from django.test.utils import CaptureQueriesContext
 
 from core.forms import BacktestForm
+from core.forms import _normalize_gm_condition_entry as normalize_form_gm_condition_entry
 from core.forms import _normalize_gm_push_condition_entry as normalize_form_gm_push_condition_entry
 from core.models import Alert, Backtest, DailyBar, DailyMetric, HistoricalMarketCap, Scenario, Symbol
 from core.services.backtesting.engine import (
+    _normalize_gm_condition_entry as normalize_engine_gm_condition_entry,
     _normalize_gm_push_condition_entry as normalize_engine_gm_push_condition_entry,
     run_backtest,
     run_backtest_kpi_only,
@@ -276,6 +278,28 @@ class TrendFilterEngineTests(TestCase):
             self.assertEqual(neg_entry["sell_threshold"], "0")
             self.assertFalse(neg_entry["explicit_threshold"])
 
+    def test_gm_buy_max_threshold_normalization_is_buy_pos_only(self):
+        for normalizer in (normalize_engine_gm_condition_entry, normalize_form_gm_condition_entry):
+            pos_entry = normalizer({"mode": "POS", "threshold": "0.4", "buy_max_threshold": "0.6"})
+            self.assertEqual(pos_entry["threshold"], "0.4")
+            self.assertEqual(pos_entry["buy_max_threshold"], "0.6")
+
+            neg_entry = normalizer({"mode": "NEG", "threshold": "0.4", "buy_max_threshold": "0.6"})
+            self.assertEqual(neg_entry["threshold"], "0.4")
+            self.assertIsNone(neg_entry["buy_max_threshold"])
+
+    def test_gm_push_buy_max_threshold_normalization_is_buy_pos_only(self):
+        for normalizer in (normalize_engine_gm_push_condition_entry, normalize_form_gm_push_condition_entry):
+            pos_entry = normalizer({"mode": "POS", "threshold": "0.4", "buy_max_threshold": "0.6"})
+            self.assertEqual(pos_entry["buy_threshold"], "0.4")
+            self.assertEqual(pos_entry["sell_threshold"], "0.4")
+            self.assertEqual(pos_entry["buy_max_threshold"], "0.6")
+
+            neg_entry = normalizer({"mode": "NEG", "threshold": "0.4", "buy_max_threshold": "0.6"})
+            self.assertEqual(neg_entry["buy_threshold"], "0.4")
+            self.assertEqual(neg_entry["sell_threshold"], "0.4")
+            self.assertIsNone(neg_entry["buy_max_threshold"])
+
     def test_gm_push_normalization_uses_user_threshold_without_sign_inversion(self):
         for normalizer in (normalize_engine_gm_push_condition_entry, normalize_form_gm_push_condition_entry):
             neg_entry = normalizer({"mode": "NEG", "threshold": "0.2"})
@@ -322,7 +346,37 @@ class TrendFilterEngineTests(TestCase):
         ):
             source = Path(relative_path).read_text()
             self.assertIn("threshold: threshold || null", source)
+            self.assertIn("buy_max_threshold", source)
+            self.assertIn("Seuil haut optionnel", source)
             self.assertNotIn("sell_threshold: threshold ? String(-Math.abs(Number(threshold)))", source)
+
+    def test_gm_ui_hides_regime_terms_from_main_choices(self):
+        forbidden_terms = ("Positif", "Négatif", "Neutre", "positif", "négatif", "neutre")
+        for relative_path in (
+            "templates/backtest_create.html",
+            "templates/backtest_edit.html",
+            "templates/game_scenario_form.html",
+        ):
+            source = Path(relative_path).read_text()
+            choices_block = source.split("const MARKET_CONDITION_CHOICES = [", 1)[1].split("];", 1)[0]
+            for term in forbidden_terms:
+                self.assertNotIn(term, choices_block)
+            self.assertIn("Au-dessus du seuil", choices_block)
+            self.assertIn("Sous le seuil", choices_block)
+            self.assertIn("Autour du seuil", choices_block)
+            self.assertNotIn("Option avancée", choices_block)
+
+    def test_gm_buy_max_threshold_ui_is_buy_only(self):
+        for relative_path in (
+            "templates/backtest_create.html",
+            "templates/backtest_edit.html",
+            "templates/game_scenario_form.html",
+        ):
+            source = Path(relative_path).read_text()
+            self.assertIn("buy_market_gm_current_max_threshold", source)
+            self.assertIn("gm_push_buy_current_max_threshold", source)
+            self.assertNotIn("sell_market_gm_current_max_threshold", source)
+            self.assertNotIn("gm_push_sell_current_max_threshold", source)
 
     def test_gm_push_state_crosses_zero_with_default_thresholds(self):
         positive_values = {
@@ -390,6 +444,34 @@ class TrendFilterEngineTests(TestCase):
         self.assertEqual([row.get("action") for row in daily], [None, None, None, "BUY"])
         kpi_final = run_backtest_kpi_only(bt)[symbol.ticker]["lines"][0]["final"]
         self.assertEqual(int(kpi_final["N"]), 0)
+
+    def test_gm_push_buy_max_threshold_blocks_temporarily_without_resetting_push_memory(self):
+        symbol = self._fresh_symbol()
+        bt = self._backtest_for_symbol(
+            symbol=symbol,
+            prices=["10", "10.2", "10.71", "11.03"],
+            alerts_by_offset={1: "Af"},
+            signal_lines=[{
+                "trading_model": "PROGRESSIVE_AUTO_SELL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_push_buy_conditions": {
+                    "operator": "AND",
+                    "current": {
+                        "mode": "POS",
+                        "buy_threshold": "0.03",
+                        "sell_threshold": "-0.03",
+                        "buy_max_threshold": "0.04",
+                        "explicit_threshold": True,
+                    },
+                },
+            }],
+        )
+        line = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]
+        daily = line["daily"]
+        self.assertEqual([row.get("action") for row in daily], [None, None, None, "BUY"])
+        self.assertTrue(daily[2]["buy_blocked_by_gm_buy_max"])
+        self.assertEqual(daily[2]["buy_blocked_message"], "Achat bloqué : GM au-dessus du seuil haut d’achat.")
 
     def test_gm_push_market_buy_without_explicit_threshold_does_not_block_backtest_or_kpi_path(self):
         self._add_benchmark_fixture(
@@ -1044,6 +1126,161 @@ class TrendFilterEngineTests(TestCase):
         daily = self._daily(bt)
         self.assertIsNone(daily[1]["action"])
         self.assertEqual(daily[2]["action"], "BUY")
+
+    def test_gm_current_buy_max_threshold_blocks_then_reauthorizes_without_resetting_buy_memory(self):
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "GM_POS", "threshold": "0.4", "buy_max_threshold": "0.6", "explicit_threshold": True},
+                },
+            }],
+            prices=["10", "20", "40", "80"],
+            alerts_by_offset={1: "Af"},
+        )
+        gm_values = {
+            self.start + timedelta(days=1): Decimal("0.3"),
+            self.start + timedelta(days=2): Decimal("0.65"),
+            self.start + timedelta(days=3): Decimal("0.55"),
+        }
+        with patch("core.services.backtesting.engine._build_global_momentum_values_from_ticker_data", return_value=gm_values):
+            ticker = bt.universe_snapshot[0]
+            line = run_backtest(bt).results["tickers"][ticker]["lines"][0]
+        daily = line["daily"]
+        self.assertIsNone(daily[1]["action"])
+        self.assertIsNone(daily[2]["action"])
+        self.assertTrue(daily[2]["buy_blocked_by_gm_buy_max"])
+        self.assertEqual(daily[2]["buy_blocked_message"], "Achat bloqué : GM au-dessus du seuil haut d’achat.")
+        self.assertEqual(daily[3]["action"], "BUY")
+        self.assertNotIn("SELL", daily[3]["action"])
+
+        kpi_bt = self._create_backtest(
+            signal_lines=copy.deepcopy(bt.signal_lines),
+            prices=["10", "20", "40", "80"],
+            alerts_by_offset={1: "Af"},
+            close_positions_at_end=True,
+        )
+        with patch("core.services.backtesting.engine._build_global_momentum_values_from_ticker_data", return_value=gm_values):
+            self.assertEqual(self._kpi_trade_count(kpi_bt), 1)
+
+    def test_gm_market_buy_max_threshold_blocks_then_allows_again(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "165", "high": "165", "low": "165", "close": "165"},
+                {"date": self.start + timedelta(days=2), "open": "255", "high": "255", "low": "255", "close": "255"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_buy_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_POS", "threshold": "0.4", "buy_max_threshold": "0.6", "explicit_threshold": True},
+                },
+            }],
+            prices=["10", "20", "40"],
+            alerts_by_offset={1: "Af"},
+        )
+        daily = self._daily(bt)
+        self.assertIsNone(daily[1]["action"])
+        self.assertTrue(daily[1]["buy_blocked_by_gm_buy_max"])
+        self.assertEqual(daily[2]["action"], "BUY")
+
+    def test_gm_sector_buy_max_threshold_blocks_then_allows_again(self):
+        self._add_benchmark_fixture(
+            self.xlk,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "165", "high": "165", "low": "165", "close": "165"},
+                {"date": self.start + timedelta(days=2), "open": "255", "high": "255", "low": "255", "close": "255"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_buy_conditions": {
+                    "operator": "AND",
+                    "sector": {"mode": "GM_POS", "threshold": "0.4", "buy_max_threshold": "0.6", "explicit_threshold": True},
+                },
+            }],
+            prices=["10", "20", "40"],
+            alerts_by_offset={1: "Af"},
+        )
+        daily = self._daily(bt)
+        self.assertIsNone(daily[1]["action"])
+        self.assertTrue(daily[1]["buy_blocked_by_gm_buy_max"])
+        self.assertEqual(daily[2]["action"], "BUY")
+
+    def test_gm_buy_max_threshold_respects_or_and_operators(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "150", "high": "150", "low": "150", "close": "150"},
+            ],
+        )
+        base_line = {
+            "trading_model": "LATCH_STATEFUL",
+            "buy": ["Af"],
+            "buy_logic": "AND",
+            "sell": [],
+            "gm_buy_conditions": {
+                "current": {"mode": "GM_POS", "threshold": "0.4", "buy_max_threshold": "0.6", "explicit_threshold": True},
+                "market": {"mode": "GM_POS", "threshold": "0.4", "buy_max_threshold": "0.6", "explicit_threshold": True},
+            },
+        }
+        gm_values = {self.start + timedelta(days=1): Decimal("0.65")}
+        or_line = copy.deepcopy(base_line)
+        or_line["gm_buy_conditions"]["operator"] = "OR"
+        or_bt = self._create_backtest(signal_lines=[or_line], prices=["10", "20"], alerts_by_offset={1: "Af"})
+        with patch("core.services.backtesting.engine._build_global_momentum_values_from_ticker_data", return_value=gm_values):
+            self.assertEqual(self._daily(or_bt)[1]["action"], "BUY")
+
+        and_line = copy.deepcopy(base_line)
+        and_line["gm_buy_conditions"]["operator"] = "AND"
+        and_bt = self._create_backtest(signal_lines=[and_line], prices=["10", "20"], alerts_by_offset={1: "Af"})
+        with patch("core.services.backtesting.engine._build_global_momentum_values_from_ticker_data", return_value=gm_values):
+            daily = self._daily(and_bt)
+        self.assertIsNone(daily[1]["action"])
+        self.assertTrue(daily[1]["buy_blocked_by_gm_buy_max"])
+
+    def test_gm_sell_market_exit_ignores_buy_max_threshold(self):
+        self._add_benchmark_fixture(
+            self.spy,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "110", "high": "110", "low": "110", "close": "110"},
+            ],
+        )
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_POS", "threshold": "0.05", "buy_max_threshold": "0.06", "explicit_threshold": True},
+                },
+            }],
+            prices=["10", "11"],
+            alerts_by_offset={0: "Af"},
+        )
+        daily = self._daily(bt)
+        self.assertEqual(daily[0]["action"], "BUY")
+        self.assertEqual(daily[1]["action"], "SELL")
 
     def test_legacy_line_market_condition_keeps_neutral_band_threshold(self):
         self._add_benchmark_fixture(
