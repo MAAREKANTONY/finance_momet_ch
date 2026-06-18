@@ -486,7 +486,7 @@ class DynamicUniverseOHLCPrepareJobTests(DynamicUniverseOHLCTestCase):
         twelvedata_fetch.assert_not_called()
         run_backtest.assert_not_called()
 
-    def test_job_marks_failed_when_ohlc_remains_missing(self):
+    def test_job_marks_done_with_warning_when_some_prices_remain_missing(self):
         self._bars(self.ready)
         self._bars(self.extra)
         fake_client = FakeEODHDClient({"MISS.US": []})
@@ -505,9 +505,62 @@ class DynamicUniverseOHLCPrepareJobTests(DynamicUniverseOHLCTestCase):
             }).get(propagate=True)
 
         job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.DONE)
+        self.assertIn("WARNING", message)
+        self.assertIn("2 actions sur 3", job.message)
+        self.assertIn("MISS", job.message)
+        self.assertEqual(job.error, "")
+        twelvedata_fetch.assert_not_called()
+
+    def test_job_warning_message_lists_real_missing_symbols(self):
+        self._bars(self.ready)
+        self._bars(self.extra)
+        for ticker in ("AGN", "BF.B", "BRK.B"):
+            self._add_universe_symbol(ticker)
+        fake_client = FakeEODHDClient({"MISS.US": [], "AGN.US": [], "BF.B.US": [], "BRK.B.US": []})
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.PENDING,
+            backtest=self.backtest,
+            scenario=self.scenario,
+        )
+
+        with patch("core.services.dynamic_universe_ohlc_prepare.EODHDClient", return_value=fake_client), \
+                patch("core.tasks._fetch_daily_bars_for_symbols") as twelvedata_fetch:
+            prepare_dynamic_universe_ohlc_job_task.apply(kwargs={
+                "job_id": job.id,
+                "backtest_id": self.backtest.id,
+            }).get(propagate=True)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.DONE)
+        self.assertIn("WARNING", job.message)
+        self.assertIn("actions sur", job.message)
+        self.assertIn("AGN", job.message)
+        self.assertIn("BF.B", job.message)
+        self.assertIn("BRK.B", job.message)
+        twelvedata_fetch.assert_not_called()
+
+    def test_job_marks_failed_when_no_member_prices_are_usable(self):
+        fake_client = FakeEODHDClient({"READY.US": [], "MISS.US": [], "EXTRA.US": []})
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.PENDING,
+            backtest=self.backtest,
+            scenario=self.scenario,
+        )
+
+        with patch("core.services.dynamic_universe_ohlc_prepare.EODHDClient", return_value=fake_client), \
+                patch("core.tasks._fetch_daily_bars_for_symbols") as twelvedata_fetch:
+            message = prepare_dynamic_universe_ohlc_job_task.apply(kwargs={
+                "job_id": job.id,
+                "backtest_id": self.backtest.id,
+            }).get(propagate=True)
+
+        job.refresh_from_db()
         self.assertEqual(job.status, ProcessingJob.Status.FAILED)
-        self.assertIn("incomplete", message)
-        self.assertIn("MISS", job.error)
+        self.assertIn("no usable member prices", message)
+        self.assertIn("READY", job.error)
         twelvedata_fetch.assert_not_called()
 
     def test_job_passes_exclude_tickers_and_does_not_fetch_excluded_symbols(self):
@@ -532,9 +585,10 @@ class DynamicUniverseOHLCPrepareJobTests(DynamicUniverseOHLCTestCase):
 
         job.refresh_from_db()
         self.assertEqual(fake_client.calls, [])
-        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
-        self.assertIn("incomplete", message)
-        self.assertIn("MISS", job.error)
+        self.assertEqual(job.status, ProcessingJob.Status.DONE)
+        self.assertIn("WARNING", message)
+        self.assertIn("MISS", job.message)
+        self.assertEqual(job.error, "")
         self.assertIn("skipped=1", job.message)
         self.assertIn("excluded=1", job.message)
         twelvedata_fetch.assert_not_called()

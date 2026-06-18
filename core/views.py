@@ -104,6 +104,140 @@ TRADING_SIGNAL_CHOICES = [
 DYNAMIC_UNIVERSE_OHLC_DEFAULT_MAX_SYMBOLS = 50
 DYNAMIC_UNIVERSE_OHLC_EXCLUDE_TICKERS = ["DKEEP", "DNEW", "KEEP", "NEW", "OLD", "DOLD"]
 
+DU_STATUS_LABELS = {
+    "READY": "Prêt",
+    "READY_WITH_WARNINGS": "Prêt avec avertissement",
+    "NOT_READY": "Données à compléter",
+    "OK": "OK",
+    "WARNING": "Attention",
+    "ERROR": "À corriger",
+    "SKIPPED": "Non vérifié",
+}
+
+DU_CHECK_LABELS = {
+    "universe_definition": "Référentiel de base",
+    "memberships": "Composition historique",
+    "import_batch": "Import de composition validé",
+    "coverage_snapshots": "Couverture de la période",
+    "historical_symbols": "Actions historiques",
+    "member_daily_bars": "Prix des actions",
+    "gm_market_daily_bars": "Prix du filtre marché",
+    "gm_sector_daily_bars": "Prix du filtre secteur",
+}
+
+DU_ACTION_LABELS = {
+    "init_reference_data": "Initialiser le référentiel",
+    "bootstrap_sp500_symbols_from_eodhd": "Créer les actions manquantes",
+    "sync_sp500_historical_memberships": "Récupérer la composition historique",
+    "import_sp500_memberships": "Importer une composition depuis CSV",
+    "prepare_dynamic_universe_ohlc": "Télécharger les prix des actions",
+    "sync_benchmark_etfs": "Préparer les ETFs de marché et de secteur",
+    "fetch_daily_bars": "Télécharger les prix manquants",
+}
+
+
+def _du_status_label(status: str) -> str:
+    return DU_STATUS_LABELS.get(str(status or "").upper(), status or "")
+
+
+def _du_action_label(action) -> str:
+    return DU_ACTION_LABELS.get(getattr(action, "code", ""), getattr(action, "label", ""))
+
+
+def _du_check_message(check) -> str:
+    code = getattr(check, "code", "")
+    status = getattr(check, "status", "")
+    details = getattr(check, "details", {}) or {}
+    if code == "universe_definition" and status != "OK":
+        return "Le référentiel de base doit être initialisé."
+    if code == "memberships":
+        return "La composition historique est disponible." if status == "OK" else "La composition historique du S&P500 doit être récupérée pour la période demandée."
+    if code == "import_batch":
+        return "L'import de composition couvre la période." if status == "OK" else "L'import de composition doit être validé pour toute la période."
+    if code == "coverage_snapshots":
+        if status == "OK":
+            return "La période demandée est couverte."
+        missing = details.get("missing_examples") or []
+        invalid = details.get("invalid_examples") or []
+        examples = missing or invalid
+        if examples:
+            return "La période demandée n'est pas encore entièrement couverte. Dates manquantes : " + ", ".join(examples[:10]) + "."
+        return "La période demandée n'est pas encore entièrement couverte."
+    if code == "historical_symbols":
+        if status == "OK":
+            return "Les actions historiques sont disponibles."
+        if status == "SKIPPED":
+            return "Les actions historiques seront vérifiées après préparation de la composition."
+        return "Certaines actions historiques doivent être créées dans l'application."
+    if code == "member_daily_bars":
+        if status == "OK":
+            total = details.get("expected_symbols")
+            return f"Les prix sont disponibles pour les {total} actions attendues." if total is not None else "Les prix des actions sont disponibles."
+        if status == "SKIPPED":
+            return "Les prix seront vérifiés après préparation de la composition."
+        expected = int(details.get("expected_symbols") or 0)
+        ready = int(details.get("ready_symbols") or 0)
+        missing = int(details.get("missing_symbols") or 0)
+        examples = details.get("missing_examples") or []
+        parts = [
+            f"{ready} actions sur {expected} ont des prix disponibles." if expected else f"{missing} actions n'ont pas de prix disponibles.",
+            f"{missing} actions n'ont pas de prix et seront ignorées si vous lancez le backtest.",
+        ]
+        if examples:
+            parts.append("Exemples : " + ", ".join(examples[:10]) + ".")
+        if expected and missing / max(expected, 1) > 0.10:
+            parts.append("Attention : beaucoup d'actions n'ont pas de prix. Le résultat du backtest peut être peu fiable.")
+        return " ".join(parts)
+    if code == "gm_market_daily_bars":
+        if status == "SKIPPED":
+            return "Filtre marché non utilisé."
+        return "Les prix du filtre marché sont disponibles." if status == "OK" else "Les prix du filtre marché doivent être préparés."
+    if code == "gm_sector_daily_bars":
+        if status == "SKIPPED":
+            return "Filtre secteur non utilisé."
+        return "Les prix du filtre secteur sont disponibles." if status == "OK" else "Les prix du filtre secteur doivent être préparés."
+    return getattr(check, "message", "")
+
+
+def _dynamic_universe_report_display(report) -> dict:
+    if report is None:
+        return {}
+    display_checks = []
+    for check in report.checks:
+        display_checks.append({
+            "code": check.code,
+            "label": DU_CHECK_LABELS.get(check.code, check.label),
+            "status": _du_status_label(check.status),
+            "raw_status": check.status,
+            "message": _du_check_message(check),
+            "actions": [
+                {"code": action.code, "label": _du_action_label(action)}
+                for action in check.suggested_actions
+            ],
+        })
+    suggested_actions = []
+    seen = set()
+    for action in report.suggested_actions:
+        if action.code in seen:
+            continue
+        seen.add(action.code)
+        suggested_actions.append({"code": action.code, "label": _du_action_label(action)})
+    status = getattr(report, "status", "")
+    if status == "READY":
+        global_message = "Prêt pour le backtest."
+    elif status == "READY_WITH_WARNINGS":
+        global_message = "Prêt avec avertissement : certaines actions n'ont pas de prix disponibles et seront ignorées."
+    else:
+        global_message = "Certaines données doivent être préparées avant de lancer le backtest."
+    return {
+        "status": _du_status_label(status),
+        "raw_status": status,
+        "ready": bool(getattr(report, "ready", False)),
+        "global_message": global_message,
+        "checks": display_checks,
+        "suggested_actions": suggested_actions,
+    }
+
 
 def _refresh_backtest_universe_snapshot(bt: Backtest) -> None:
     """Refresh the backtest universe_snapshot from the current Scenario symbols.
@@ -237,6 +371,7 @@ def _dynamic_universe_readiness_panel(bt: Backtest) -> dict:
             require_gm_sector=require_gm_sector,
             backtest_id=bt.id,
         )
+        panel["display"] = _dynamic_universe_report_display(panel["report"])
     except Exception as exc:
         panel["error"] = str(exc)
     return panel
@@ -2584,10 +2719,10 @@ def backtest_detail(request, pk: int):
 def backtest_prepare_dynamic_universe_ohlc(request, pk: int):
     bt = get_object_or_404(Backtest.objects.select_related("scenario"), pk=pk)
     if bt.scenario.universe_mode != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
-        messages.warning(request, "Ce backtest n'utilise pas l'univers dynamique S&P500.")
+        messages.warning(request, "Ce backtest n'utilise pas la composition historique du S&P500.")
         return redirect("backtest_detail", pk=pk)
     if bt.status == Backtest.Status.RUNNING:
-        messages.warning(request, "Impossible de préparer les OHLC pendant qu'un backtest est en cours.")
+        messages.warning(request, "Impossible de télécharger les prix pendant qu'un backtest est en cours.")
         return redirect("backtest_detail", pk=pk)
 
     from .tasks import prepare_dynamic_universe_ohlc_job_task
@@ -2598,7 +2733,7 @@ def backtest_prepare_dynamic_universe_ohlc(request, pk: int):
         backtest=bt,
         scenario=bt.scenario,
         created_by=request.user if request.user.is_authenticated else None,
-        message="Dynamic Universe OHLC preparation queued",
+        message="Téléchargement des prix des actions en attente",
         task_kwargs={
             "backtest_id": bt.id,
             "provider": "eodhd",
@@ -2609,12 +2744,12 @@ def backtest_prepare_dynamic_universe_ohlc(request, pk: int):
         },
     )
     if launch.dispatch_error:
-        messages.error(request, f"Impossible de lancer la préparation OHLC dynamique: {launch.dispatch_error}")
+        messages.error(request, f"Impossible de lancer le téléchargement des prix: {launch.dispatch_error}")
         return redirect("backtest_detail", pk=pk)
 
     messages.success(
         request,
-        f"Préparation OHLC Dynamic Universe lancée en arrière-plan (job #{launch.job.id}).",
+        f"Téléchargement des prix des actions lancé en arrière-plan (job #{launch.job.id}).",
     )
     return redirect("backtest_detail", pk=pk)
 
@@ -4285,6 +4420,7 @@ def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inpu
         "games": games,
         "alert_defs": alert_defs,
         "dynamic_universe_report": dynamic_universe_report,
+        "dynamic_universe_display": _dynamic_universe_report_display(dynamic_universe_report),
         "dynamic_universe_inputs": dynamic_universe_inputs or {},
     }
 
@@ -4517,7 +4653,7 @@ def trigger_page(request: HttpRequest):
                             backtest_id=_parse_optional_trigger_int(inputs["backtest_id"], field_name="Backtest ID"),
                         )
                     except Exception as exc:
-                        messages.error(request, f"Readiness Dynamic Universe impossible: {exc}")
+                        messages.error(request, f"Vérification du S&P500 historique impossible: {exc}")
                         report = None
                     return render(
                         request,
@@ -4525,20 +4661,20 @@ def trigger_page(request: HttpRequest):
                         _trigger_page_context(dynamic_universe_report=report, dynamic_universe_inputs=inputs),
                     )
 
-                elif action == "du_bootstrap_symbols":
-                    start_arg = _parse_trigger_date(request.POST.get("du_bootstrap_start"), field_name="Coverage start")
-                    end_arg = _parse_trigger_date(request.POST.get("du_bootstrap_end"), field_name="Coverage end")
+                elif action in ("du_bootstrap_symbols", "du_create_historical_symbols"):
+                    start_arg = _parse_trigger_date(request.POST.get("du_bootstrap_start"), field_name="Date de début")
+                    end_arg = _parse_trigger_date(request.POST.get("du_bootstrap_end"), field_name="Date de fin")
                     output = _run_management_command_for_trigger(
                         "bootstrap_sp500_symbols_from_eodhd",
                         "--coverage-start", start_arg.isoformat(),
                         "--coverage-end", end_arg.isoformat(),
                         "--apply",
                     )
-                    _message_command_output(request, "Bootstrap Symbols S&P500 demandé", output)
+                    _message_command_output(request, "Création des actions historiques S&P500 lancée.", output)
 
-                elif action == "du_sync_memberships":
-                    start_arg = _parse_trigger_date(request.POST.get("du_sync_start"), field_name="Coverage start")
-                    end_arg = _parse_trigger_date(request.POST.get("du_sync_end"), field_name="Coverage end")
+                elif action in ("du_sync_memberships", "du_fetch_composition"):
+                    start_arg = _parse_trigger_date(request.POST.get("du_sync_start"), field_name="Date de début")
+                    end_arg = _parse_trigger_date(request.POST.get("du_sync_end"), field_name="Date de fin")
                     expected_count = str(request.POST.get("du_expected_member_count") or "500").strip() or "500"
                     output = _run_management_command_for_trigger(
                         "sync_sp500_historical_memberships",
@@ -4547,15 +4683,15 @@ def trigger_page(request: HttpRequest):
                         "--expected-member-count", expected_count,
                         "--apply",
                     )
-                    _message_command_output(request, "Sync memberships S&P500 demandé", output)
+                    _message_command_output(request, "Récupération de la composition historique S&P500 lancée.", output)
 
                 elif action == "du_import_memberships":
                     csv_path = str(request.POST.get("du_import_file") or "").strip()
                     if not csv_path:
-                        messages.error(request, "Import CSV Dynamic Universe: chemin serveur requis.")
+                        messages.error(request, "Import CSV: renseignez le chemin du fichier serveur.")
                     else:
-                        start_arg = _parse_trigger_date(request.POST.get("du_import_start"), field_name="Coverage start")
-                        end_arg = _parse_trigger_date(request.POST.get("du_import_end"), field_name="Coverage end")
+                        start_arg = _parse_trigger_date(request.POST.get("du_import_start"), field_name="Date de début")
+                        end_arg = _parse_trigger_date(request.POST.get("du_import_end"), field_name="Date de fin")
                         expected_count = str(request.POST.get("du_import_expected_member_count") or "500").strip() or "500"
                         output = _run_management_command_for_trigger(
                             "import_sp500_memberships",
@@ -4565,9 +4701,9 @@ def trigger_page(request: HttpRequest):
                             "--expected-member-count", expected_count,
                             "--apply",
                         )
-                        _message_command_output(request, "Import memberships S&P500 demandé", output)
+                        _message_command_output(request, "Import de la composition historique S&P500 lancé.", output)
 
-                elif action == "du_prepare_ohlc":
+                elif action in ("du_prepare_ohlc", "du_download_prices"):
                     from core.tasks import prepare_dynamic_universe_ohlc_job_task
 
                     bt = Backtest.objects.filter(id=int(backtest_id)).select_related("scenario").first() if backtest_id else None
@@ -4575,7 +4711,7 @@ def trigger_page(request: HttpRequest):
                     start_value = (request.POST.get("du_ohlc_start") or "").strip()
                     end_value = (request.POST.get("du_ohlc_end") or "").strip()
                     if not bt and (not start_value or not end_value):
-                        messages.error(request, "Préparation OHLC: choisissez un backtest ou fournissez start/end.")
+                        messages.error(request, "Choisissez un backtest ou renseignez une date de début et une date de fin pour télécharger les prix.")
                     else:
                         launch = launch_processing_job(
                             task=prepare_dynamic_universe_ohlc_job_task,
@@ -4583,7 +4719,7 @@ def trigger_page(request: HttpRequest):
                             backtest=bt,
                             scenario=sc,
                             created_by=request.user if request.user.is_authenticated else None,
-                            message="Dynamic Universe OHLC preparation queued from Trigger",
+                            message="Téléchargement des prix des actions en attente depuis Trigger",
                             task_kwargs={
                                 "universe_code": "SP500",
                                 "start_date": start_value or None,
@@ -4597,9 +4733,9 @@ def trigger_page(request: HttpRequest):
                         )
                         if launch.dispatch_error:
                             raise launch.dispatch_error
-                        messages.success(request, f"Préparation OHLC Dynamic Universe lancée (job #{launch.job.id}).")
+                        messages.success(request, f"Téléchargement des prix des actions lancé (job #{launch.job.id}).")
 
-                elif action == "du_sync_benchmark_etfs":
+                elif action in ("du_sync_benchmark_etfs", "du_prepare_benchmark_etfs"):
                     symbols = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
                     totals = sync_benchmark_etfs_for_symbols(
                         symbols,
@@ -4607,7 +4743,7 @@ def trigger_page(request: HttpRequest):
                         skip_ohlc=False,
                         skip_enrichment=False,
                     )
-                    summary = format_benchmark_sync_summary(totals, label="Dynamic benchmark ETF sync")
+                    summary = format_benchmark_sync_summary(totals, label="Préparation des ETFs de marché et de secteur")
                     messages.success(request, summary)
 
                 # --- BACKTEST actions ---

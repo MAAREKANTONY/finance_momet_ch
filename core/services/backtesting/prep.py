@@ -60,7 +60,7 @@ def prepare_backtest_data(backtest: Backtest, *, force_full_recompute: bool = Fa
     """
     Ensure data required for the backtest exists.
 
-    - For dynamic S&P 500 universes, block cleanly if OHLC coverage is missing.
+    - For dynamic S&P 500 universes, report missing OHLC coverage without auto-fetching.
     - For static universes, keep the historical behavior and run fetch_daily_bars_task()
       when DailyBar coverage is missing.
     - If DailyMetric/Alert coverage is missing for at least one symbol, run compute_metrics_task(recompute_all=False).
@@ -89,6 +89,7 @@ def prepare_backtest_data(backtest: Backtest, *, force_full_recompute: bool = Fa
             symbols=symbols,
             start_date=backtest.start_date,
             end_date=backtest.end_date,
+            block_on_missing=False,
         )
         did_fetch = ohlc_report.did_fetch
         notes.extend(ohlc_report.notes)

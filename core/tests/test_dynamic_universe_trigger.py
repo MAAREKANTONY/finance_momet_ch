@@ -49,8 +49,13 @@ class DynamicUniverseTriggerPageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Dynamic Universe / S&P500 historique", body)
-        self.assertIn("check_dynamic_universe_readiness", body)
+        self.assertIn("Préparer le S&amp;P500 historique", body)
+        self.assertIn("Vérifier si le S&amp;P500 est prêt", body)
+        self.assertIn("Initialiser le référentiel de base", body)
+        self.assertIn("Créer les actions historiques manquantes", body)
+        self.assertIn("Récupérer la composition historique", body)
+        self.assertIn("Télécharger les prix des actions", body)
+        self.assertIn("Préparer les ETFs de marché et de secteur", body)
         self.assertIn("du_readiness", body)
 
     @patch("core.views.check_dynamic_universe_readiness")
@@ -72,8 +77,9 @@ class DynamicUniverseTriggerPageTests(TestCase):
         readiness_mock.assert_called_once()
         self.assertTrue(readiness_mock.call_args.kwargs["require_gm_market"])
         body = response.content.decode()
-        self.assertIn("Résultat readiness : NOT_READY", body)
-        self.assertIn("missing coverage snapshot for 2022-01-01", body)
+        self.assertIn("Résultat de la vérification : Données à compléter", body)
+        self.assertIn("La période demandée", body)
+        self.assertNotIn("missing coverage snapshot", body)
 
     @patch("core.services.dynamic_universe_ohlc_prepare.prepare_dynamic_universe_ohlc")
     @patch("core.services.universe_eodhd_sync.sync_sp500_historical_memberships_from_eodhd")
@@ -106,14 +112,27 @@ class DynamicUniverseTriggerPageTests(TestCase):
         messages = list(response.context["messages"])
         self.assertTrue(any("Référentiel initialisé" in str(message) for message in messages))
 
-    def test_provider_write_actions_show_visible_warnings(self):
+    def test_main_dynamic_universe_actions_use_business_wording(self):
         response = self.client.get(reverse("trigger_page"))
 
         body = response.content.decode()
-        self.assertIn("Appelle provider", body)
-        self.assertIn("Modifie la base", body)
-        self.assertIn("Potentiellement long", body)
-        self.assertIn("Path serveur requis", body)
+        main_section = body.split("Actions avancées / techniques", 1)[0]
+        self.assertIn("Modifie la base", main_section)
+        self.assertIn("Utilise EODHD", main_section)
+        self.assertIn("Peut prendre du temps", main_section)
+        self.assertIn("Télécharger les prix", main_section)
+        for technical in (
+            "bootstrap_sp500_symbols_from_eodhd",
+            "sync_benchmark_etfs",
+            "DailyBars",
+            "OHLC",
+            "Appelle provider",
+            "Path serveur requis",
+            "python manage.py",
+        ):
+            self.assertNotIn(technical, main_section)
+        self.assertIn("Actions avancées / techniques", body)
+        self.assertIn("Importer une composition depuis CSV", body)
 
     def test_trigger_readiness_missing_params_shows_clean_error(self):
         response = self.client.post(reverse("trigger_page"), {"action": "du_readiness"})
@@ -135,7 +154,7 @@ class DynamicUniverseTriggerPageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         messages = list(response.context["messages"])
-        self.assertTrue(any("chemin serveur requis" in str(message) for message in messages))
+        self.assertTrue(any("renseignez le chemin du fichier serveur" in str(message) for message in messages))
 
     @patch("core.views.launch_processing_job")
     def test_trigger_prepare_ohlc_launches_existing_job(self, launch_mock):
@@ -145,7 +164,7 @@ class DynamicUniverseTriggerPageTests(TestCase):
         response = self.client.post(
             reverse("trigger_page"),
             {
-                "action": "du_prepare_ohlc",
+                "action": "du_download_prices",
                 "du_ohlc_start": "2022-01-01",
                 "du_ohlc_end": "2022-01-03",
             },

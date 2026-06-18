@@ -173,44 +173,33 @@
 
 {% if dynamic_universe_readiness.enabled %}
 <div class="card" style="margin-top:12px;">
-  <strong>Préparation Dynamic Universe S&amp;P500</strong>
-  <div class="muted" style="margin-top:6px;">Vérification read-only avant backtest. Les corrections se lancent explicitement depuis <a href="{{ dynamic_universe_readiness.trigger_url }}">Trigger</a>.</div>
+  <strong>Préparation du S&amp;P500 historique</strong>
+  <div class="muted" style="margin-top:6px;">Cette vérification indique si les données nécessaires au backtest sont disponibles. Si certaines données manquent, vous pouvez les préparer depuis la page <a href="{{ dynamic_universe_readiness.trigger_url }}">Trigger</a>.</div>
 
   {% if dynamic_universe_readiness.needs_dates %}
     <div class="muted" style="margin-top:8px; color:#b45309;">{{ dynamic_universe_readiness.message }}</div>
   {% elif dynamic_universe_readiness.error %}
-    <div class="muted" style="margin-top:8px; color:#b00;">Readiness indisponible : {{ dynamic_universe_readiness.error }}</div>
+    <div class="muted" style="margin-top:8px; color:#b00;">Vérification indisponible : {{ dynamic_universe_readiness.error }}</div>
     <div style="margin-top:10px;"><a class="btn" href="{{ dynamic_universe_readiness.trigger_url }}">Ouvrir Trigger</a></div>
   {% else %}
-    {% with report=dynamic_universe_readiness.report %}
+    {% with display=dynamic_universe_readiness.display %}
       <div style="margin-top:8px;">
-        {% if report.ready %}
-          <span class="pill">READY</span>
-          <strong style="margin-left:8px;">Prêt pour backtest</strong>
-        {% else %}
-          <span class="pill">NOT_READY</span>
-          <strong style="margin-left:8px;">Backtest non prêt : compléter les étapes ci-dessous</strong>
-        {% endif %}
+        <span class="pill">{{ display.status }}</span>
+        <strong style="margin-left:8px;">{{ display.global_message }}</strong>
       </div>
 
       <table style="margin-top:10px;">
-        <thead><tr><th>Étape</th><th>Statut</th><th>Message</th><th>Actions Trigger</th></tr></thead>
+        <thead><tr><th>Étape</th><th>Statut</th><th>Message</th><th>Actions recommandées</th></tr></thead>
         <tbody>
-          {% for check in report.checks %}
+          {% for check in display.checks %}
             <tr>
               <td>{{ check.label }}</td>
               <td><span class="pill">{{ check.status }}</span></td>
+              <td>{{ check.message }}</td>
               <td>
-                {{ check.message }}
-                {% if check.details.missing_count %}<div class="muted">Manquants : {{ check.details.missing_count }}</div>{% endif %}
-                {% if check.details.missing_ohlc_count %}<div class="muted">OHLC manquantes : {{ check.details.missing_ohlc_count }}</div>{% endif %}
-                {% if check.details.missing_examples %}<div class="muted">Exemples : {{ check.details.missing_examples|join:", " }}</div>{% endif %}
-                {% if check.details.missing_tickers %}<div class="muted">Tickers : {{ check.details.missing_tickers|join:", " }}</div>{% endif %}
-              </td>
-              <td>
-                {% if check.suggested_actions %}
-                  {% for action in check.suggested_actions %}
-                    <div><a href="{{ dynamic_universe_readiness.trigger_url }}">{{ action.code }}</a>{% if action.command %}<div class="muted"><code>{{ action.command }}</code></div>{% endif %}</div>
+                {% if check.actions %}
+                  {% for action in check.actions %}
+                    <div><a href="{{ dynamic_universe_readiness.trigger_url }}">{{ action.label }}</a></div>
                   {% endfor %}
                 {% else %}
                   <span class="muted">—</span>
@@ -221,12 +210,12 @@
         </tbody>
       </table>
 
-      {% if report.suggested_actions %}
+      {% if display.suggested_actions %}
         <div style="margin-top:10px;">
           <strong>Actions recommandées</strong>
           <ul style="margin-top:6px;">
-            {% for action in report.suggested_actions %}
-              <li><a href="{{ dynamic_universe_readiness.trigger_url }}">{{ action.label }}</a>{% if action.command %} <span class="muted"><code>{{ action.command }}</code></span>{% endif %}</li>
+            {% for action in display.suggested_actions %}
+              <li><a href="{{ dynamic_universe_readiness.trigger_url }}">{{ action.label }}</a></li>
             {% endfor %}
           </ul>
         </div>

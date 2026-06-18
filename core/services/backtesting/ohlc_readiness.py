@@ -206,6 +206,7 @@ def ensure_ohlc_ready_for_backtest(
     start_date: date,
     end_date: date,
     allow_fetch: bool = False,
+    block_on_missing: bool = True,
 ) -> OHLCReadinessResult:
     """Ensure scoped DailyBar coverage before a dynamic backtest reaches the engine.
 
@@ -269,10 +270,28 @@ def ensure_ohlc_ready_for_backtest(
     ])
     if len(missing_before) > max_symbols or requested_days > max_days:
         notes.append(
-            f"Scoped OHLC readiness blocked: {len(missing_before)} symbols over {requested_days} days exceeds guardrails."
+            f"Attention: beaucoup d'actions n'ont pas de prix disponibles ({len(missing_before)} symbols over {requested_days} days)."
         )
-        _raise_guardrail_blocked(missing=missing_before, start_date=start_date, end_date=end_date)
+
+    if block_on_missing:
+        if len(missing_before) > max_symbols or requested_days > max_days:
+            _raise_guardrail_blocked(missing=missing_before, start_date=start_date, end_date=end_date)
+        _raise_not_ready(missing_before)
 
     if allow_fetch:
-        notes.append("Dynamic OHLC auto-fetch is disabled in Phase 6A; use the dedicated preparation job.")
-    _raise_not_ready(missing_before)
+        notes.append("Dynamic OHLC auto-fetch is disabled; use the dedicated preparation job.")
+    missing_tickers = [symbol.ticker for symbol in missing_before]
+    ready_count = len(scoped_symbols) - len(missing_before)
+    notes.append(
+        f"{ready_count} actions sur {len(scoped_symbols)} ont des prix disponibles. "
+        f"{len(missing_before)} actions n'ont pas de prix et seront ignorées si vous lancez le backtest. "
+        f"Exemples: {', '.join(missing_tickers[:10])}{'...' if len(missing_tickers) > 10 else ''}."
+    )
+    return OHLCReadinessResult(
+        ready=False,
+        checked_symbols=len(scoped_symbols),
+        missing_before=missing_tickers,
+        missing_after=missing_tickers,
+        did_fetch=False,
+        notes=notes,
+    )

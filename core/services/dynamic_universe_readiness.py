@@ -26,6 +26,7 @@ CHECK_WARNING = "WARNING"
 CHECK_ERROR = "ERROR"
 CHECK_SKIPPED = "SKIPPED"
 REPORT_READY = "READY"
+REPORT_READY_WITH_WARNINGS = "READY_WITH_WARNINGS"
 REPORT_NOT_READY = "NOT_READY"
 
 SECTOR_ETF_TICKERS = (
@@ -213,13 +214,16 @@ def check_dynamic_universe_readiness(
         for check in checks
         for action in check.suggested_actions
     )
-    ready = not any(check.status == CHECK_ERROR for check in checks)
+    has_error = any(check.status == CHECK_ERROR for check in checks)
+    has_warning = any(check.status == CHECK_WARNING for check in checks)
+    ready = not has_error
+    status = REPORT_NOT_READY if has_error else (REPORT_READY_WITH_WARNINGS if has_warning else REPORT_READY)
     return ReadinessReport(
         universe=universe_code,
         start=start,
         end=end,
         ready=ready,
-        status=REPORT_READY if ready else REPORT_NOT_READY,
+        status=status,
         checks=checks,
         suggested_actions=suggested_actions,
         metadata=metadata,
@@ -567,8 +571,8 @@ def _check_member_daily_bars(
         return ReadinessCheck(
             code="member_daily_bars",
             label="DailyBars membres",
-            status=CHECK_ERROR,
-            message=f"DailyBars membres manquantes pour {len(missing)} symbols.",
+            status=CHECK_WARNING,
+            message=f"Prix manquants pour {len(missing)} actions historiques.",
             details={
                 "expected_symbols": len(symbols),
                 "ready_symbols": len(symbols) - len(missing),
