@@ -193,6 +193,7 @@ def _resolve_dynamic_universe_for_backtest(backtest: Backtest):
             start_date=backtest.start_date,
             end_date=backtest.end_date,
             warmup_start_date=_dynamic_universe_warmup_start(backtest),
+            allow_provider_sync=False,
         )
     except DynamicUniverseAutoPrepareError as exc:
         if getattr(exc, "technical_detail", ""):

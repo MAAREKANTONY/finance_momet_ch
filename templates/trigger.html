@@ -6,6 +6,146 @@
 
 <div class="grid2">
 
+<div class="card" style="grid-column: 1 / -1;">
+    <h3>Dynamic Universe / S&P500 historique</h3>
+    <p class="muted">Actions explicites pour préparer et diagnostiquer l'univers S&P500 historique. Aucun bouton ne lance toute la chaîne automatiquement.</p>
+
+    <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:12px; margin-top:12px;">
+      <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
+        <h4>1. init_reference_data</h4>
+        <div class="muted">Socle minimal: UniverseDefinition SP500 et ETFs de référence.</div>
+        <div style="margin-top:6px;"><span class="pill">Modifie la base</span> <span class="pill">Pas de provider</span> <span class="pill">Rapide/idempotent</span></div>
+        <form method="post" style="margin-top:10px;">
+          {% csrf_token %}
+          <button class="btn" name="action" value="du_init_reference_data" type="submit">Initialiser le référentiel</button>
+        </form>
+      </div>
+
+      <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
+        <h4>2. check_dynamic_universe_readiness</h4>
+        <div class="muted">Diagnostic read-only. N'appelle aucun provider et ne modifie pas la base.</div>
+        <div style="margin-top:6px;"><span class="pill">Lecture seule</span> <span class="pill">Pas de provider</span></div>
+        <form method="post" style="margin-top:10px; display:grid; gap:8px;">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="du_readiness">
+          <label>Universe <input name="du_universe" value="{{ dynamic_universe_inputs.universe|default:'SP500' }}"></label>
+          <label>Start <input name="du_start" placeholder="YYYY-MM-DD" value="{{ dynamic_universe_inputs.start|default:'' }}"></label>
+          <label>End <input name="du_end" placeholder="YYYY-MM-DD" value="{{ dynamic_universe_inputs.end|default:'' }}"></label>
+          <label>Warmup days <input name="du_warmup_days" type="number" min="0" value="{{ dynamic_universe_inputs.warmup_days|default:'0' }}"></label>
+          <label>Scenario ID optionnel <input name="du_scenario_id" value="{{ dynamic_universe_inputs.scenario_id|default:'' }}"></label>
+          <label>Backtest ID optionnel <input name="du_backtest_id" value="{{ dynamic_universe_inputs.backtest_id|default:'' }}"></label>
+          <label><input type="checkbox" name="du_require_gm_market" {% if dynamic_universe_inputs.require_gm_market %}checked{% endif %}> Vérifier GM_market</label>
+          <label><input type="checkbox" name="du_require_gm_sector" {% if dynamic_universe_inputs.require_gm_sector %}checked{% endif %}> Vérifier GM_sector</label>
+          <button class="btn" type="submit">Vérifier readiness</button>
+        </form>
+      </div>
+
+      <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
+        <h4>3. bootstrap_sp500_symbols_from_eodhd</h4>
+        <div class="muted">Crée les Symbols historiques S&P500 manquants à partir d'EODHD.</div>
+        <div style="margin-top:6px;"><span class="pill">Modifie la base</span> <span class="pill">Appelle provider</span> <span class="pill">Potentiellement long</span></div>
+        <form method="post" style="margin-top:10px; display:grid; gap:8px;">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="du_bootstrap_symbols">
+          <label>Coverage start <input name="du_bootstrap_start" placeholder="YYYY-MM-DD"></label>
+          <label>Coverage end <input name="du_bootstrap_end" placeholder="YYYY-MM-DD"></label>
+          <button class="btn danger" type="submit">Bootstrap Symbols EODHD</button>
+        </form>
+      </div>
+
+      <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
+        <h4>4. sync_sp500_historical_memberships</h4>
+        <div class="muted">Synchronise memberships, batch et coverage depuis EODHD.</div>
+        <div style="margin-top:6px;"><span class="pill">Modifie la base</span> <span class="pill">Appelle provider</span> <span class="pill">Potentiellement long</span></div>
+        <form method="post" style="margin-top:10px; display:grid; gap:8px;">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="du_sync_memberships">
+          <label>Coverage start <input name="du_sync_start" placeholder="YYYY-MM-DD"></label>
+          <label>Coverage end <input name="du_sync_end" placeholder="YYYY-MM-DD"></label>
+          <label>Expected member count <input name="du_expected_member_count" type="number" min="1" value="500"></label>
+          <button class="btn danger" type="submit">Sync memberships EODHD</button>
+        </form>
+      </div>
+
+      <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
+        <h4>5. import_sp500_memberships</h4>
+        <div class="muted">Import CSV depuis un chemin serveur. Aucun upload n'est ajouté dans cette étape.</div>
+        <div style="margin-top:6px;"><span class="pill">Modifie la base</span> <span class="pill">Pas de provider</span> <span class="pill">Path serveur requis</span></div>
+        <form method="post" style="margin-top:10px; display:grid; gap:8px;">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="du_import_memberships">
+          <label>CSV path serveur <input name="du_import_file" placeholder="/data/sp500.csv"></label>
+          <label>Coverage start <input name="du_import_start" placeholder="YYYY-MM-DD"></label>
+          <label>Coverage end <input name="du_import_end" placeholder="YYYY-MM-DD"></label>
+          <label>Expected member count <input name="du_import_expected_member_count" type="number" min="1" value="500"></label>
+          <button class="btn" type="submit">Importer memberships CSV</button>
+        </form>
+      </div>
+
+      <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
+        <h4>6. Préparer OHLC Dynamic Universe</h4>
+        <div class="muted">Lance le job explicite prepare_dynamic_universe_ohlc_job_task.</div>
+        <div style="margin-top:6px;"><span class="pill">Modifie DailyBar</span> <span class="pill">Appelle provider OHLC</span> <span class="pill">Potentiellement long</span></div>
+        <form method="post" style="margin-top:10px; display:grid; gap:8px;">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="du_prepare_ohlc">
+          <label>Backtest optionnel<br/>
+            <select name="backtest_id">
+              <option value="">Aucun</option>
+              {% for bt in backtests %}<option value="{{ bt.id }}">#{{ bt.id }} — {{ bt.name }}</option>{% endfor %}
+            </select>
+          </label>
+          <label>Scenario optionnel<br/>
+            <select name="scenario_id">
+              <option value="">Aucun</option>
+              {% for s in scenarios %}<option value="{{ s.id }}">{{ s.name }} (id={{ s.id }})</option>{% endfor %}
+            </select>
+          </label>
+          <label>Start si pas de backtest <input name="du_ohlc_start" placeholder="YYYY-MM-DD"></label>
+          <label>End si pas de backtest <input name="du_ohlc_end" placeholder="YYYY-MM-DD"></label>
+          <label><input type="checkbox" name="du_ohlc_force_refresh"> Force refresh</label>
+          <button class="btn danger" type="submit">Lancer préparation OHLC</button>
+        </form>
+      </div>
+
+      <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
+        <h4>7. sync_benchmark_etfs</h4>
+        <div class="muted">Synchronise les ETFs nécessaires à GM_market / GM_sector pour les symbols actifs.</div>
+        <div style="margin-top:6px;"><span class="pill">Modifie la base</span> <span class="pill">Appelle provider</span> <span class="pill">DailyBars benchmark</span></div>
+        <form method="post" style="margin-top:10px;">
+          {% csrf_token %}
+          <button class="btn danger" name="action" value="du_sync_benchmark_etfs" type="submit">Sync benchmark ETFs</button>
+        </form>
+      </div>
+    </div>
+
+    {% if dynamic_universe_report %}
+      <div style="margin-top:16px; border-top:1px solid #ddd; padding-top:12px;">
+        <h4>Résultat readiness : {{ dynamic_universe_report.status }}</h4>
+        <div class="muted">{{ dynamic_universe_report.universe }} — {{ dynamic_universe_report.start|date:'Y-m-d' }} → {{ dynamic_universe_report.end|date:'Y-m-d' }}</div>
+        <div style="margin-top:10px; display:grid; gap:8px;">
+          {% for check in dynamic_universe_report.checks %}
+            <div style="border:1px solid #e5e5e5; border-radius:6px; padding:8px;">
+              <strong>[{{ check.status }}] {{ check.label }}</strong>
+              <div>{{ check.message }}</div>
+              {% if check.suggested_commands %}
+                <div class="muted" style="margin-top:4px;">Suggestions: {{ check.suggested_commands|join:' · ' }}</div>
+              {% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        {% if dynamic_universe_report.suggested_actions %}
+          <h4 style="margin-top:12px;">Actions recommandées</h4>
+          <ul>
+            {% for action in dynamic_universe_report.suggested_actions %}
+              <li><code>{{ action.command }}</code></li>
+            {% endfor %}
+          </ul>
+        {% endif %}
+      </div>
+    {% endif %}
+  </div>
+
   <div class="card">
     <h3>Collecte (Fetch Daily Bars)</h3>
     <form method="post">

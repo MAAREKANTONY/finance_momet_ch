@@ -1,10 +1,12 @@
 import csv
 import os
-from io import BytesIO
+from io import BytesIO, StringIO
 from typing import Iterable
 from decimal import Decimal
-from datetime import timedelta
+from datetime import date, timedelta
 from django.conf import settings
+from django.core.management import call_command
+from django.core.management.base import CommandError
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
 from django.http import HttpRequest, JsonResponse, HttpResponse, FileResponse
@@ -67,6 +69,7 @@ from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
 from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
 from .services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
 from .services.universe_resolver import UniverseResolver
+from .services.dynamic_universe_readiness import check_dynamic_universe_readiness
 from .templatetags.backtest_extras import (
     line_gm_push_buy_display,
     line_gm_push_sell_market_exit_display,
@@ -4225,6 +4228,64 @@ def game_scenario_export_xlsx(request: HttpRequest, pk: int):
     return redirect("job_detail", pk=launch.job.id)
 
 
+def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inputs=None):
+    scenarios = Scenario.objects.only("id", "name").order_by("name", "id")
+    backtests = Backtest.objects.only("id", "name").defer(
+        "results", "settings", "universe_snapshot", "signal_lines", "error_message"
+    ).order_by("-id")
+    games = GameScenario.objects.only("id", "name").defer(
+        "today_results", "settings", "signal_lines", "last_run_message", "description"
+    ).order_by("-id")
+    alert_defs = AlertDefinition.objects.only("id", "name").order_by("name", "id")
+    return {
+        "scenarios": scenarios,
+        "backtests": backtests,
+        "games": games,
+        "alert_defs": alert_defs,
+        "dynamic_universe_report": dynamic_universe_report,
+        "dynamic_universe_inputs": dynamic_universe_inputs or {},
+    }
+
+
+def _parse_trigger_date(value: str, *, field_name: str) -> date:
+    value = str(value or "").strip()
+    if not value:
+        raise ValueError(f"{field_name} est requis.")
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} doit être au format YYYY-MM-DD.") from exc
+
+
+def _parse_optional_trigger_int(value: str, *, field_name: str) -> int | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} doit être un entier.") from exc
+
+
+def _run_management_command_for_trigger(command_name: str, *args) -> str:
+    out = StringIO()
+    try:
+        call_command(command_name, *args, stdout=out)
+    except CommandError:
+        raise
+    except Exception as exc:
+        raise CommandError(str(exc)) from exc
+    return out.getvalue().strip()
+
+
+def _message_command_output(request: HttpRequest, title: str, output: str) -> None:
+    if output:
+        messages.success(request, f"{title}: {output[:1800]}")
+    else:
+        messages.success(request, title)
+
+
+
 @login_required
 @require_http_methods(["GET", "POST"])
 def trigger_page(request: HttpRequest):
@@ -4233,14 +4294,11 @@ def trigger_page(request: HttpRequest):
         This page is intentionally operational: it exposes explicit buttons for
         common Celery jobs, with optional scoping to a scenario/backtest/game.
         """
-        scenarios = Scenario.objects.only("id", "name").order_by("name", "id")
-        backtests = Backtest.objects.only("id", "name").defer(
-            "results", "settings", "universe_snapshot", "signal_lines", "error_message"
-        ).order_by("-id")
-        games = GameScenario.objects.only("id", "name").defer(
-            "today_results", "settings", "signal_lines", "last_run_message", "description"
-        ).order_by("-id")
-        alert_defs = AlertDefinition.objects.only("id", "name").order_by("name", "id")
+        context = _trigger_page_context()
+        scenarios = context["scenarios"]
+        backtests = context["backtests"]
+        games = context["games"]
+        alert_defs = context["alert_defs"]
 
         if request.method == "POST":
             action = (request.POST.get("action") or "").strip()
@@ -4385,6 +4443,130 @@ def trigger_page(request: HttpRequest):
                         if launch.dispatch_error:
                             raise launch.dispatch_error
                         messages.success(request, "Envoi demandé pour l'alerte sélectionnée.")
+
+
+                # --- DYNAMIC UNIVERSE / SP500 actions ---
+                elif action == "du_init_reference_data":
+                    output = _run_management_command_for_trigger("init_reference_data")
+                    _message_command_output(request, "Référentiel initialisé", output)
+
+                elif action == "du_readiness":
+                    inputs = {
+                        "universe": (request.POST.get("du_universe") or "SP500").strip().upper(),
+                        "start": (request.POST.get("du_start") or "").strip(),
+                        "end": (request.POST.get("du_end") or "").strip(),
+                        "warmup_days": (request.POST.get("du_warmup_days") or "0").strip(),
+                        "scenario_id": (request.POST.get("du_scenario_id") or "").strip(),
+                        "backtest_id": (request.POST.get("du_backtest_id") or "").strip(),
+                        "require_gm_market": bool(request.POST.get("du_require_gm_market")),
+                        "require_gm_sector": bool(request.POST.get("du_require_gm_sector")),
+                    }
+                    try:
+                        readiness_start = _parse_trigger_date(inputs["start"], field_name="Start")
+                        readiness_end = _parse_trigger_date(inputs["end"], field_name="End")
+                        report = check_dynamic_universe_readiness(
+                            universe=inputs["universe"],
+                            start=readiness_start,
+                            end=readiness_end,
+                            warmup_days=int(inputs["warmup_days"] or 0),
+                            require_gm_market=inputs["require_gm_market"],
+                            require_gm_sector=inputs["require_gm_sector"],
+                            scenario_id=_parse_optional_trigger_int(inputs["scenario_id"], field_name="Scenario ID"),
+                            backtest_id=_parse_optional_trigger_int(inputs["backtest_id"], field_name="Backtest ID"),
+                        )
+                    except Exception as exc:
+                        messages.error(request, f"Readiness Dynamic Universe impossible: {exc}")
+                        report = None
+                    return render(
+                        request,
+                        "trigger.html",
+                        _trigger_page_context(dynamic_universe_report=report, dynamic_universe_inputs=inputs),
+                    )
+
+                elif action == "du_bootstrap_symbols":
+                    start_arg = _parse_trigger_date(request.POST.get("du_bootstrap_start"), field_name="Coverage start")
+                    end_arg = _parse_trigger_date(request.POST.get("du_bootstrap_end"), field_name="Coverage end")
+                    output = _run_management_command_for_trigger(
+                        "bootstrap_sp500_symbols_from_eodhd",
+                        "--coverage-start", start_arg.isoformat(),
+                        "--coverage-end", end_arg.isoformat(),
+                        "--apply",
+                    )
+                    _message_command_output(request, "Bootstrap Symbols S&P500 demandé", output)
+
+                elif action == "du_sync_memberships":
+                    start_arg = _parse_trigger_date(request.POST.get("du_sync_start"), field_name="Coverage start")
+                    end_arg = _parse_trigger_date(request.POST.get("du_sync_end"), field_name="Coverage end")
+                    expected_count = str(request.POST.get("du_expected_member_count") or "500").strip() or "500"
+                    output = _run_management_command_for_trigger(
+                        "sync_sp500_historical_memberships",
+                        "--coverage-start", start_arg.isoformat(),
+                        "--coverage-end", end_arg.isoformat(),
+                        "--expected-member-count", expected_count,
+                        "--apply",
+                    )
+                    _message_command_output(request, "Sync memberships S&P500 demandé", output)
+
+                elif action == "du_import_memberships":
+                    csv_path = str(request.POST.get("du_import_file") or "").strip()
+                    if not csv_path:
+                        messages.error(request, "Import CSV Dynamic Universe: chemin serveur requis.")
+                    else:
+                        start_arg = _parse_trigger_date(request.POST.get("du_import_start"), field_name="Coverage start")
+                        end_arg = _parse_trigger_date(request.POST.get("du_import_end"), field_name="Coverage end")
+                        expected_count = str(request.POST.get("du_import_expected_member_count") or "500").strip() or "500"
+                        output = _run_management_command_for_trigger(
+                            "import_sp500_memberships",
+                            "--file", csv_path,
+                            "--coverage-start", start_arg.isoformat(),
+                            "--coverage-end", end_arg.isoformat(),
+                            "--expected-member-count", expected_count,
+                            "--apply",
+                        )
+                        _message_command_output(request, "Import memberships S&P500 demandé", output)
+
+                elif action == "du_prepare_ohlc":
+                    from core.tasks import prepare_dynamic_universe_ohlc_job_task
+
+                    bt = Backtest.objects.filter(id=int(backtest_id)).select_related("scenario").first() if backtest_id else None
+                    sc = Scenario.objects.filter(id=int(scenario_id)).first() if scenario_id else (bt.scenario if bt else None)
+                    start_value = (request.POST.get("du_ohlc_start") or "").strip()
+                    end_value = (request.POST.get("du_ohlc_end") or "").strip()
+                    if not bt and (not start_value or not end_value):
+                        messages.error(request, "Préparation OHLC: choisissez un backtest ou fournissez start/end.")
+                    else:
+                        launch = launch_processing_job(
+                            task=prepare_dynamic_universe_ohlc_job_task,
+                            job_type=ProcessingJob.JobType.FETCH_BARS,
+                            backtest=bt,
+                            scenario=sc,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message="Dynamic Universe OHLC preparation queued from Trigger",
+                            task_kwargs={
+                                "universe_code": "SP500",
+                                "start_date": start_value or None,
+                                "end_date": end_value or None,
+                                "backtest_id": bt.id if bt else None,
+                                "scenario_id": sc.id if sc and not bt else None,
+                                "provider": "eodhd",
+                                "force_refresh": bool(request.POST.get("du_ohlc_force_refresh")),
+                                "user_id": user_id,
+                            },
+                        )
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
+                        messages.success(request, f"Préparation OHLC Dynamic Universe lancée (job #{launch.job.id}).")
+
+                elif action == "du_sync_benchmark_etfs":
+                    symbols = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
+                    totals = sync_benchmark_etfs_for_symbols(
+                        symbols,
+                        dry_run=False,
+                        skip_ohlc=False,
+                        skip_enrichment=False,
+                    )
+                    summary = format_benchmark_sync_summary(totals, label="Dynamic benchmark ETF sync")
+                    messages.success(request, summary)
 
                 # --- BACKTEST actions ---
                 elif action in ("bt_fetch", "bt_fetch_force_full"):
@@ -4594,16 +4776,7 @@ def trigger_page(request: HttpRequest):
 
             return redirect("trigger_page")
 
-        return render(
-            request,
-            "trigger.html",
-            {
-                "scenarios": scenarios,
-                "backtests": backtests,
-                "games": games,
-                "alert_defs": alert_defs,
-            },
-        )
+        return render(request, "trigger.html", _trigger_page_context())
 
 
 @login_required
