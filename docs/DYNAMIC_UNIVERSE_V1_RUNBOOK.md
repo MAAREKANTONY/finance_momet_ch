@@ -85,6 +85,50 @@ Préparation des données OHLC — Univers dynamique
 8. Relancer le backtest.
 9. Vérifier que le backtest termine en `DONE`.
 
+## Fresh install
+
+Après une fresh install ou un `docker compose down -v`, appliquer d'abord les migrations :
+
+```bash
+python manage.py migrate
+```
+
+Puis initialiser les données de référence minimales :
+
+```bash
+python manage.py init_reference_data
+```
+
+Cette commande est idempotente. Elle crée ou réactive uniquement :
+
+```text
+UniverseDefinition(code="SP500", active=True)
+```
+
+Elle ne fait pas :
+
+- d'appel EODHD ;
+- d'appel TwelveData ;
+- d'import de constituants historiques ;
+- de création de `UniverseMembership` ;
+- de création de `UniverseCoverageSnapshot` validée ;
+- de préparation OHLC ;
+- de lancement de job ou backtest.
+
+Elle évite l'erreur de configuration de base :
+
+```text
+UniverseDefinition SP500 is missing or inactive.
+```
+
+Pour rendre un backtest Dynamic Universe réellement exploitable, il faut ensuite importer ou synchroniser les constituants historiques S&P500 avec la commande dédiée, puis préparer les OHLC via l'UI ou le job explicite.
+
+Dry-run :
+
+```bash
+python manage.py init_reference_data --dry-run
+```
+
 ## UI Phase 6C
 
 La page Backtest dynamique affiche :
