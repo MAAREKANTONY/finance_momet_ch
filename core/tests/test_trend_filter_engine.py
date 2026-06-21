@@ -1129,6 +1129,74 @@ class TrendFilterEngineTests(TestCase):
         )
         self.assertEqual([action for action in self._actions(bt) if action], ["BUY", "SELL"])
 
+    def test_engine_skips_gm_computation_when_no_gm_filter_is_active(self):
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+            }],
+            prices=["10", "20"],
+            alerts_by_offset={0: "Af"},
+        )
+
+        with patch("core.services.backtesting.engine._build_global_momentum_values_from_ticker_data") as gm_mock:
+            with patch("core.services.backtesting.engine._build_gm_push_current_values_from_ticker_data") as gm_push_mock:
+                run_backtest(bt)
+                run_backtest_kpi_only(bt)
+
+        gm_mock.assert_not_called()
+        gm_push_mock.assert_not_called()
+
+    def test_engine_computes_gm_when_gm_filter_is_active(self):
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_buy_conditions": {
+                    "current": {"mode": "GM_POS", "threshold": "0.1", "explicit_threshold": True},
+                },
+            }],
+            prices=["10", "20"],
+            alerts_by_offset={0: "Af"},
+        )
+        gm_values = {self.start: Decimal("0.2"), self.start + timedelta(days=1): Decimal("0.2")}
+
+        with patch("core.services.backtesting.engine._build_global_momentum_values_from_ticker_data", return_value=gm_values) as gm_mock:
+            with patch("core.services.backtesting.engine._build_gm_push_current_values_from_ticker_data") as gm_push_mock:
+                run_backtest(bt)
+                run_backtest_kpi_only(bt)
+
+        self.assertEqual(gm_mock.call_count, 2)
+        gm_push_mock.assert_not_called()
+
+    def test_engine_computes_gm_push_when_gm_push_filter_is_active(self):
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_push_buy_conditions": {
+                    "current": {"mode": "GM_POS", "threshold": "0.1", "explicit_threshold": True},
+                },
+            }],
+            prices=["10", "20"],
+            alerts_by_offset={1: "Af"},
+        )
+        gm_push_values = {self.start: Decimal("0"), self.start + timedelta(days=1): Decimal("0.2")}
+
+        with patch("core.services.backtesting.engine._build_global_momentum_values_from_ticker_data") as gm_mock:
+            with patch("core.services.backtesting.engine._build_gm_push_current_values_from_ticker_data", return_value=gm_push_values) as gm_push_mock:
+                run_backtest(bt)
+                run_backtest_kpi_only(bt)
+
+        gm_mock.assert_not_called()
+        self.assertEqual(gm_push_mock.call_count, 2)
+
     def test_gm_buy_explicit_threshold_uses_configured_value(self):
         self._add_benchmark_fixture(
             self.spy,

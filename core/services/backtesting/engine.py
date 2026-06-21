@@ -407,6 +407,22 @@ def _gm_push_conditions_has_active(config: dict[str, Any] | None) -> bool:
     )
 
 
+def _signal_lines_have_gm_conditions(signal_lines: list[dict[str, Any]] | None) -> bool:
+    return any(
+        _gm_conditions_has_active((line or {}).get("gm_buy_conditions"))
+        or _gm_conditions_has_active((line or {}).get("gm_sell_market_exit_conditions"))
+        for line in (signal_lines or [])
+    )
+
+
+def _signal_lines_have_gm_push_conditions(signal_lines: list[dict[str, Any]] | None) -> bool:
+    return any(
+        _gm_push_conditions_has_active((line or {}).get("gm_push_buy_conditions"))
+        or _gm_push_conditions_has_active((line or {}).get("gm_push_sell_market_exit_conditions"))
+        for line in (signal_lines or [])
+    )
+
+
 def _legacy_filter_to_gm_condition(filter_code: Any) -> dict[str, Any]:
     return _normalize_gm_condition_entry(legacy_code=filter_code)
 
@@ -1777,6 +1793,8 @@ def run_backtest(
     trend_filters_enabled = False
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
+    needs_gm_conditions = _signal_lines_have_gm_conditions(signal_lines)
+    needs_gm_push_conditions = _signal_lines_have_gm_push_conditions(signal_lines)
 
     # Resolve symbols in one query
     symbols = list(Symbol.objects.filter(ticker__in=tickers))
@@ -1809,6 +1827,8 @@ def run_backtest(
     )
     benchmark_tickers = sorted(
         _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
+        if (needs_gm_conditions or needs_gm_push_conditions)
+        else set()
     )
     benchmark_symbols_by_ticker: dict[str, Symbol] = {}
     if benchmark_tickers:
@@ -1832,12 +1852,28 @@ def run_backtest(
         return BacktestEngineResult(results={"error": "No usable tickers with data in range."}, logs=logs)
 
     nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
-    global_momentum_values_by_date = _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
-    global_momentum_regime_by_date = _build_global_momentum_regime_from_values(global_momentum_values_by_date)
-    gm_push_current_values_by_date = _build_gm_push_current_values_from_ticker_data(data_by_ticker, nglobal)
-    gm_push_benchmark_values_by_ticker = _build_gm_push_values_from_benchmark_cache(
-        benchmark_price_cache,
-        nglobal=nglobal,
+    global_momentum_values_by_date = (
+        _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
+        if needs_gm_conditions
+        else {}
+    )
+    global_momentum_regime_by_date = (
+        _build_global_momentum_regime_from_values(global_momentum_values_by_date)
+        if needs_gm_conditions
+        else {}
+    )
+    gm_push_current_values_by_date = (
+        _build_gm_push_current_values_from_ticker_data(data_by_ticker, nglobal)
+        if needs_gm_push_conditions
+        else {}
+    )
+    gm_push_benchmark_values_by_ticker = (
+        _build_gm_push_values_from_benchmark_cache(
+            benchmark_price_cache,
+            nglobal=nglobal,
+        )
+        if needs_gm_push_conditions
+        else {}
     )
     gm_push_state_cache: dict[tuple[Any, ...], dict[date, str]] = {}
 
@@ -3208,6 +3244,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     trend_filters_enabled = False
 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
+    needs_gm_conditions = _signal_lines_have_gm_conditions(signal_lines)
+    needs_gm_push_conditions = _signal_lines_have_gm_push_conditions(signal_lines)
 
     symbols = list(Symbol.objects.filter(ticker__in=tickers))
     sym_by_ticker = {s.ticker: s for s in symbols}
@@ -3231,6 +3269,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     )
     benchmark_tickers = sorted(
         _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
+        if (needs_gm_conditions or needs_gm_push_conditions)
+        else set()
     )
     benchmark_symbols_by_ticker: dict[str, Symbol] = {}
     if benchmark_tickers:
@@ -3251,12 +3291,28 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         return {}
 
     nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
-    global_momentum_values_by_date = _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
-    global_momentum_regime_by_date = _build_global_momentum_regime_from_values(global_momentum_values_by_date)
-    gm_push_current_values_by_date = _build_gm_push_current_values_from_ticker_data(data_by_ticker, nglobal)
-    gm_push_benchmark_values_by_ticker = _build_gm_push_values_from_benchmark_cache(
-        benchmark_price_cache,
-        nglobal=nglobal,
+    global_momentum_values_by_date = (
+        _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
+        if needs_gm_conditions
+        else {}
+    )
+    global_momentum_regime_by_date = (
+        _build_global_momentum_regime_from_values(global_momentum_values_by_date)
+        if needs_gm_conditions
+        else {}
+    )
+    gm_push_current_values_by_date = (
+        _build_gm_push_current_values_from_ticker_data(data_by_ticker, nglobal)
+        if needs_gm_push_conditions
+        else {}
+    )
+    gm_push_benchmark_values_by_ticker = (
+        _build_gm_push_values_from_benchmark_cache(
+            benchmark_price_cache,
+            nglobal=nglobal,
+        )
+        if needs_gm_push_conditions
+        else {}
     )
     gm_push_state_cache: dict[tuple[Any, ...], dict[date, str]] = {}
 

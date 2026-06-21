@@ -24,7 +24,7 @@ from core.models import (
     UniverseMembership,
 )
 from core.services.backtesting.engine import run_backtest, run_backtest_kpi_only
-from core.services.backtesting.prep import prepare_backtest_data
+from core.services.backtesting.prep import _missing_bar_coverage_symbols, prepare_backtest_data
 from core.services.provider_eodhd import EODHDError
 from core.services.universe_resolver import UniverseResolver
 from core.tasks import DYNAMIC_UNIVERSE_USER_ERROR, compute_metrics_job_task, run_backtest_task
@@ -393,8 +393,23 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         self.assertTrue(any("actions n'ont pas de prix" in note for note in report.notes))
         self.assertTrue(any("seront ignorées" in note for note in report.notes))
 
-    def test_prepare_backtest_data_static_mode_keeps_global_fetch_behavior(self):
+    def test_prepare_backtest_data_static_mode_blocks_missing_ohlc_without_global_fetch(self):
         self.scenario = self._scenario(dynamic=False)
+        bt = self._backtest(self.scenario)
+
+        with patch("core.services.backtesting.prep.ensure_ohlc_ready_for_backtest") as readiness_mock:
+            with patch("core.tasks.fetch_daily_bars_task") as fetch_mock:
+                with patch("core.tasks._compute_metrics_for_scenario") as compute_mock:
+                    with self.assertRaisesMessage(ValueError, "Missing DailyBar coverage for 1 symbols"):
+                        prepare_backtest_data(bt)
+
+        readiness_mock.assert_not_called()
+        fetch_mock.assert_not_called()
+        compute_mock.assert_not_called()
+
+    def test_prepare_backtest_data_static_mode_complete_ohlc_does_not_fetch(self):
+        self.scenario = self._scenario(dynamic=False)
+        self._bars_metrics(self.old)
         bt = self._backtest(self.scenario)
 
         with patch("core.services.backtesting.prep.ensure_ohlc_ready_for_backtest") as readiness_mock:
@@ -403,10 +418,21 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
                     report = prepare_backtest_data(bt)
 
         readiness_mock.assert_not_called()
-        fetch_mock.assert_called_once()
-        compute_mock.assert_called_once()
-        self.assertTrue(report.did_fetch_bars)
-        self.assertTrue(report.did_compute_metrics)
+        fetch_mock.assert_not_called()
+        compute_mock.assert_not_called()
+        self.assertFalse(report.did_fetch_bars)
+        self.assertFalse(report.did_compute_metrics)
+
+    def test_static_missing_bar_coverage_uses_grouped_result(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        self._bars_metrics(self.old)
+        missing = _missing_bar_coverage_symbols(
+            self.scenario.symbols.order_by("ticker"),
+            self.start,
+            self.end,
+        )
+        self.assertEqual(missing, ["NEW"])
 
     def test_dynamic_buy_gate_blocks_new_buy_after_exit(self):
         self.scenario = self._scenario(dynamic=True)
