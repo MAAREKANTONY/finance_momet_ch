@@ -300,6 +300,34 @@ def _gm_push_conditions_has_active(config):
     )
 
 
+def _entry_has_gm_threshold(entry):
+    if not isinstance(entry, dict):
+        return False
+    return any(
+        entry.get(key) not in (None, "")
+        for key in ("threshold", "buy_threshold", "sell_threshold")
+    )
+
+
+def _validate_explicit_gm_thresholds(config, *, side):
+    if not isinstance(config, dict):
+        return
+    for family in ("current", "market", "sector"):
+        entry = config.get(family)
+        if not isinstance(entry, dict):
+            continue
+        mode = _normalize_gm_condition_mode(entry.get("mode") or entry.get("direction") or entry.get("code"))
+        if mode == "IGNORE":
+            continue
+        has_threshold = _entry_has_gm_threshold(entry)
+        if side == "buy" and entry.get("buy_max_threshold") not in (None, "") and not has_threshold:
+            raise forms.ValidationError("Le seuil haut nécessite un seuil d’autorisation d’achat.")
+        if not has_threshold:
+            if side == "buy":
+                raise forms.ValidationError("Renseignez un seuil pour activer ce filtre d’achat GM.")
+            raise forms.ValidationError("Renseignez un seuil pour activer ce filtre de vente GM.")
+
+
 def _normalize_line_market_conditions(item):
     legacy_current = _normalize_global_regime_filter(item.get("buy_gm_filter"))
     return {
@@ -326,6 +354,10 @@ def _clean_signal_lines_json(value):
             trading_model, explicit_trading_model = resolve_trading_model(item.get("trading_model"), buy)
         except ValueError as exc:
             raise forms.ValidationError(str(exc)) from exc
+        _validate_explicit_gm_thresholds(item.get("gm_buy_conditions"), side="buy")
+        _validate_explicit_gm_thresholds(item.get("gm_sell_market_exit_conditions"), side="sell")
+        _validate_explicit_gm_thresholds(item.get("gm_push_buy_conditions"), side="buy")
+        _validate_explicit_gm_thresholds(item.get("gm_push_sell_market_exit_conditions"), side="sell")
         payload = {
             "mode": mode,
             "trading_model": trading_model,

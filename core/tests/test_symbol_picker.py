@@ -106,7 +106,7 @@ class SignalLinesCleaningTests(SimpleTestCase):
                 "gm_sell_market_exit_conditions": {
                     "operator": "OR",
                     "market": {"mode": "GM_NEG", "threshold": "-0.03", "explicit_threshold": True},
-                    "sector": {"mode": "GM_NEG"},
+                    "sector": {"mode": "GM_NEG", "threshold": "-0.02", "explicit_threshold": True},
                 },
             }
         ])
@@ -143,6 +143,111 @@ class SignalLinesCleaningTests(SimpleTestCase):
         self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["mode"], "NEG")
         self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["buy_threshold"], "0.04")
         self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["sell_threshold"], "0.04")
+
+    def test_clean_signal_lines_rejects_gm_buy_without_threshold(self):
+        with self.assertRaisesMessage(forms.ValidationError, "Renseignez un seuil pour activer ce filtre d’achat GM."):
+            _clean_signal_lines_json([
+                {
+                    "trading_model": "LATCH_STATEFUL",
+                    "buy": ["Af"],
+                    "sell": [],
+                    "gm_buy_conditions": {
+                        "current": {"mode": "GM_POS"},
+                    },
+                }
+            ])
+
+    def test_clean_signal_lines_rejects_gm_sell_without_threshold(self):
+        with self.assertRaisesMessage(forms.ValidationError, "Renseignez un seuil pour activer ce filtre de vente GM."):
+            _clean_signal_lines_json([
+                {
+                    "trading_model": "PROGRESSIVE_EXPLICIT_SELL",
+                    "buy": ["Af"],
+                    "sell": [],
+                    "gm_sell_market_exit_conditions": {
+                        "market": {"mode": "GM_NEG"},
+                    },
+                }
+            ])
+
+    def test_clean_signal_lines_rejects_gm_push_buy_without_threshold(self):
+        with self.assertRaisesMessage(forms.ValidationError, "Renseignez un seuil pour activer ce filtre d’achat GM."):
+            _clean_signal_lines_json([
+                {
+                    "trading_model": "LATCH_STATEFUL",
+                    "buy": ["Af"],
+                    "sell": [],
+                    "gm_push_buy_conditions": {
+                        "current": {"mode": "GM_POS"},
+                    },
+                }
+            ])
+
+    def test_clean_signal_lines_rejects_gm_push_sell_without_threshold(self):
+        with self.assertRaisesMessage(forms.ValidationError, "Renseignez un seuil pour activer ce filtre de vente GM."):
+            _clean_signal_lines_json([
+                {
+                    "trading_model": "PROGRESSIVE_EXPLICIT_SELL",
+                    "buy": ["Af"],
+                    "sell": [],
+                    "gm_push_sell_market_exit_conditions": {
+                        "market": {"mode": "GM_NEG"},
+                    },
+                }
+            ])
+
+    def test_clean_signal_lines_rejects_buy_max_without_buy_threshold(self):
+        with self.assertRaisesMessage(forms.ValidationError, "Le seuil haut nécessite un seuil d’autorisation d’achat."):
+            _clean_signal_lines_json([
+                {
+                    "trading_model": "LATCH_STATEFUL",
+                    "buy": ["Af"],
+                    "sell": [],
+                    "gm_buy_conditions": {
+                        "current": {"mode": "GM_POS", "buy_max_threshold": "0.6"},
+                    },
+                }
+            ])
+
+    def test_clean_signal_lines_allows_disabled_gm_without_threshold(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_buy_conditions": {
+                    "current": {"mode": "IGNORE"},
+                },
+            }
+        ])
+        self.assertEqual(cleaned[0]["gm_buy_conditions"]["current"]["mode"], "IGNORE")
+
+    def test_clean_signal_lines_allows_gm_buy_with_threshold_and_buy_max(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_buy_conditions": {
+                    "current": {"mode": "GM_POS", "threshold": "0.4", "buy_max_threshold": "0.6", "explicit_threshold": True},
+                },
+            }
+        ])
+        current = cleaned[0]["gm_buy_conditions"]["current"]
+        self.assertEqual(current["threshold"], "0.4")
+        self.assertEqual(current["buy_max_threshold"], "0.6")
+
+    def test_clean_signal_lines_keeps_legacy_line_market_condition_without_structured_threshold(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_market_gm_current": "GM_POS",
+            }
+        ])
+        self.assertEqual(cleaned[0]["buy_market_gm_current"], "GM_POS")
+        self.assertFalse(cleaned[0]["gm_buy_conditions"]["current"]["explicit_threshold"])
 
     def test_clean_signal_lines_rejects_market_conditions_without_buy_signal(self):
         with self.assertRaises(forms.ValidationError):
