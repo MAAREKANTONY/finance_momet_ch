@@ -50,6 +50,27 @@ def _bars_cover_range(symbol_id: int, start: date, end: date) -> bool:
     return bool(agg["mn"] and agg["mx"] and agg["mn"] <= start and agg["mx"] >= end)
 
 
+def _missing_bar_coverage_symbols(symbols, start: date, end: date) -> list[str]:
+    symbols_list = list(symbols)
+    if not symbols_list:
+        return []
+    symbol_ids = [symbol.id for symbol in symbols_list]
+    coverage = {
+        row["symbol_id"]: row
+        for row in DailyBar.objects.filter(
+            symbol_id__in=symbol_ids,
+            date__gte=start,
+            date__lte=end,
+        ).values("symbol_id").annotate(mn=Min("date"), mx=Max("date"))
+    }
+    missing = []
+    for symbol in symbols_list:
+        row = coverage.get(symbol.id)
+        if not row or not row["mn"] or not row["mx"] or row["mn"] > start or row["mx"] < end:
+            missing.append(symbol.ticker)
+    return missing
+
+
 def _metrics_cover_range(symbol_id: int, scenario_id: int, start: date, end: date) -> bool:
     qs = DailyMetric.objects.filter(symbol_id=symbol_id, scenario_id=scenario_id, date__gte=start, date__lte=end)
     agg = qs.aggregate(mn=Min("date"), mx=Max("date"))
@@ -61,8 +82,8 @@ def prepare_backtest_data(backtest: Backtest, *, force_full_recompute: bool = Fa
     Ensure data required for the backtest exists.
 
     - For dynamic S&P 500 universes, report missing OHLC coverage without auto-fetching.
-    - For static universes, keep the historical behavior and run fetch_daily_bars_task()
-      when DailyBar coverage is missing.
+    - For static universes, fail fast with a clear message when DailyBar coverage
+      is missing. Backtests must not launch a global provider fetch implicitly.
     - If DailyMetric/Alert coverage is missing for at least one symbol, run compute_metrics_task(recompute_all=False).
 
     Returns a report explaining what was executed.
@@ -72,7 +93,6 @@ def prepare_backtest_data(backtest: Backtest, *, force_full_recompute: bool = Fa
     did_compute = False
 
     # Lazy import to avoid circular imports (tasks -> prep -> tasks)
-    from core.tasks import fetch_daily_bars_task
     from core.tasks import _compute_metrics_for_scenario
 
     # Determine universe (snapshot if present, else scenario symbols)
@@ -95,20 +115,16 @@ def prepare_backtest_data(backtest: Backtest, *, force_full_recompute: bool = Fa
         notes.extend(ohlc_report.notes)
         missing_bars = ohlc_report.missing_after
     else:
-        # Check bars coverage
-        missing_bars = []
-        for s in symbols:
-            if not _bars_cover_range(s.id, backtest.start_date, backtest.end_date):
-                missing_bars.append(s.ticker)
-
+        missing_bars = _missing_bar_coverage_symbols(symbols, backtest.start_date, backtest.end_date)
         if missing_bars:
-            notes.append(
-                f"Missing DailyBar coverage for {len(missing_bars)} symbols (sample: {', '.join(missing_bars[:10])}{'...' if len(missing_bars) > 10 else ''})."
+            sample = ", ".join(missing_bars[:10])
+            suffix = "..." if len(missing_bars) > 10 else ""
+            raise ValueError(
+                f"Missing DailyBar coverage for {len(missing_bars)} symbols "
+                f"between {backtest.start_date} and {backtest.end_date} "
+                f"(sample: {sample}{suffix}). "
+                "Prepare OHLC prices explicitly from Trigger or a dedicated command before launching the backtest."
             )
-            # Run synchronously (we are already in a background task when called from run_backtest_task)
-            fetch_daily_bars_task()
-            did_fetch = True
-            notes.append("Ran fetch_daily_bars_task().")
 
     # Check metrics depth (single grouped query) and decide whether we must full recompute.
     symbol_ids = list(symbols.values_list("id", flat=True))
