@@ -1869,6 +1869,66 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("max_drawdown_amount", body)
         self.assertIn("Conditions de marché de la ligne : <b>GM actuel: GM positif</b>", body)
 
+    def test_backtest_results_renders_sticky_quick_nav_with_section_anchors(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-02", "action": "BUY"}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                }
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Accès rapide", body)
+        for anchor in [
+            "backtest-overview",
+            "backtest-transactions",
+            "backtest-selection",
+            "backtest-charts",
+            "backtest-details",
+        ]:
+            self.assertIn(f'href="#{anchor}"', body)
+            self.assertIn(f'id="{anchor}"', body)
+        self.assertIn('class="card backtest-quick-nav"', body)
+        self.assertIn('position: sticky;', body)
+        self.assertIn('overflow-x: auto;', body)
+        self.assertIn('data-acc-key="selection"', body)
+        self.assertIn('data-acc-key="daily"', body)
+        self.assertIn('id="tickerLineSearch"', body)
+        self.assertIn('id="tickerLineSelect"', body)
+
+    def test_backtest_results_quick_nav_links_warnings_when_warning_section_exists(self):
+        results = self._minimal_results()
+        results["meta"]["warning_count"] = 1
+        results["meta"]["warnings"] = [{
+            "ticker": "AAA",
+            "line_index": 1,
+            "sell_date": "2024-01-03",
+            "buy_date": "2024-01-04",
+        }]
+        results["tickers"]["AAA"]["lines"][0]["daily"] = [
+            {"date": "2024-01-02", "action": "BUY"}
+        ]
+        bt = self._create_done_backtest(results=results)
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn('href="#backtest-warnings"', body)
+        self.assertIn('id="backtest-warnings"', body)
+        self.assertIn("Avertissements", body)
+
     def test_backtest_results_selection_lists_only_played_tickers(self):
         bbb = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
         ccc = Symbol.objects.create(ticker="CCC", exchange="NYSE", active=True)

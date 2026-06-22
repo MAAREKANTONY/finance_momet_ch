@@ -1,7 +1,7 @@
 {% extends "base.html" %}
 {% load backtest_extras %}
 {% block content %}
-<div class="card">
+<div class="card" id="backtest-overview">
   <h2>Résultats Backtest #{{ bt.id }} — {{ bt.name }}</h2>
   <div class="muted">
     Scénario: <b>{{ bt.scenario.name }}</b> • Période: <b>{{ results.meta.start_date }}</b> → <b>{{ results.meta.end_date }}</b>
@@ -24,7 +24,7 @@
 </div>
 
 {% if large_result_warning %}
-<div class="card" style="border-left:4px solid #92400e;">
+<div class="card" id="backtest-warnings" style="border-left:4px solid #92400e;">
   <div style="font-weight:600; color:#92400e; margin-bottom:6px;">Large backtest mode</div>
   <div class="muted">
     Large mode: detailed diagnostics are loaded on demand.
@@ -65,7 +65,7 @@
 {% endwith %}
 
 {% if results.meta.warning_count %}
-<div class="card" style="border-left:4px solid #b45309;">
+<div class="card" {% if not large_result_warning %}id="backtest-warnings"{% endif %} style="border-left:4px solid #b45309;">
   <div style="font-weight:600; color:#92400e; margin-bottom:6px;">Réentrées immédiates détectées</div>
   <div class="muted">
     Certaines conditions BUY restent actives après déclenchement des conditions SELL.
@@ -83,6 +83,40 @@
 {% endif %}
 
 <style>
+  html { scroll-behavior: smooth; }
+  #backtest-overview,
+  #backtest-warnings,
+  #backtest-charts,
+  #backtest-selection,
+  #backtest-transactions,
+  #backtest-details,
+  #backtest-debug { scroll-margin-top: 96px; }
+  .backtest-quick-nav {
+    position: sticky;
+    top: 8px;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    overflow-x: auto;
+    white-space: nowrap;
+    border: 1px solid var(--border-color, #ddd);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+  }
+  .backtest-quick-nav-title { font-weight: 700; flex: 0 0 auto; }
+  .backtest-quick-nav-links { display: flex; gap: 8px; align-items: center; }
+  .backtest-quick-nav a {
+    display: inline-flex;
+    align-items: center;
+    min-height: 30px;
+    padding: 4px 9px;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 6px;
+    text-decoration: none;
+    color: inherit;
+    background: var(--card-bg, #fff);
+    font-size: 14px;
+  }
   details.acc { padding: 0; }
   details.acc > summary.acc-summary {
     cursor: pointer;
@@ -97,6 +131,20 @@
   details.acc[open] > summary.acc-summary { margin-bottom: 12px; }
   .acc-body { }
 </style>
+
+
+<div class="card backtest-quick-nav" id="backtest-quick-nav" aria-label="Accès rapide aux résultats du backtest">
+  <span class="backtest-quick-nav-title">Accès rapide</span>
+  <nav class="backtest-quick-nav-links">
+    <a href="#backtest-overview">Vue d’ensemble</a>
+    {% if large_result_warning or results.meta.warning_count %}<a href="#backtest-warnings">Avertissements</a>{% endif %}
+    <a href="#backtest-transactions">Transactions</a>
+    <a href="#backtest-selection">Sélection</a>
+    <a href="#backtest-charts">Graphiques</a>
+    <a href="#backtest-details">Détails</a>
+    {% if diagnostic_chart_payload %}<a href="#backtest-debug">Debug / logs</a>{% endif %}
+  </nav>
+</div>
 
 {% if portfolio_kpi %}
 <details class="card acc" open data-acc-key="portfolio">
@@ -171,7 +219,7 @@
 </details>
 {% endif %}
 
-<details class="card acc" open data-acc-key="global-played-tickers">
+<details class="card acc" id="backtest-transactions" open data-acc-key="global-played-tickers">
 <summary class="acc-summary"><span class="acc-title">Actions jouées — synthèse globale</span></summary>
 <div class="acc-body">
   <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center; margin-bottom:12px;">
@@ -268,7 +316,7 @@
 </div>
 </details>
 
-<details class="card acc" open data-acc-key="selection">
+<details class="card acc" id="backtest-selection" open data-acc-key="selection">
 <summary class="acc-summary"><span class="acc-title">Sélection</span></summary>
 <div class="acc-body">
 <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
@@ -373,7 +421,7 @@
 </div>
 </details>
 
-<details class="card acc" open data-acc-key="summary">
+<details class="card acc" id="backtest-details" open data-acc-key="summary">
 <summary class="acc-summary"><span class="acc-title">Synthèse — {{ ticker }} / L{{ line_index }}</span></summary>
 <div class="acc-body">
 <table>
@@ -424,7 +472,7 @@
 </div>
 </details>
 
-<details class="card acc" open data-acc-key="chart">
+<details class="card acc" id="backtest-charts" open data-acc-key="chart">
 <summary class="acc-summary"><span class="acc-title">Courbe</span></summary>
 <div class="acc-body">
 <canvas id="chart" height="120"></canvas>
@@ -435,7 +483,7 @@
 </details>
 
 {% if diagnostic_chart_payload %}
-<details class="card acc" open data-acc-key="diagnostic-chart">
+<details class="card acc" id="backtest-debug" open data-acc-key="diagnostic-chart">
 <summary class="acc-summary"><span class="acc-title">Diagnostic visuel de la stratégie</span></summary>
 <div class="acc-body">
   <div class="muted" style="margin-bottom:12px;">
