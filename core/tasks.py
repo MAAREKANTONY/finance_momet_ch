@@ -1728,13 +1728,27 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
         logger.warning("[run_backtest] %s backtest_id=%s", preflight_msg, bt.id)
         job = ProcessingJob.objects.filter(id=job_id).first() if job_id else None
         _append_job_message(job, preflight_msg)
+
+        prep_started = time.monotonic()
+        prep_report = prepare_backtest_data(bt)
+        prep_duration = time.monotonic() - prep_started
+        prep_msg = (
+            f"[backtest timing] step=prepare_backtest_data duration={prep_duration:.3f}s "
+            f"did_fetch={prep_report.did_fetch_bars} did_compute={prep_report.did_compute_metrics} "
+            f"notes={len(prep_report.notes)}"
+        )
+        logger.warning("%s backtest_id=%s", prep_msg, bt.id)
+        _append_job_message(job, prep_msg)
+        for note in prep_report.notes[:8]:
+            _append_job_message(job, f"prep: {note}")
+
         engine_mode_msg = (
             "run_backtest:engine start "
             f"large_result_mode={'on' if preflight['large_result_mode'] else 'off'}"
         )
         logger.warning("[run_backtest] %s backtest_id=%s", engine_mode_msg, bt.id)
         _append_job_message(job, engine_mode_msg)
-        prep_report = prepare_backtest_data(bt)
+        engine_started = time.monotonic()
         engine_result = engine_run_backtest(
             bt,
             checkpoint=(lambda: job_checkpoint(job, checkpoint="run_backtest:engine", task_request=task_request)) if job_id else None,
@@ -1742,17 +1756,22 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
             estimated_daily_rows=int(preflight["estimated_daily_rows"]),
             resolved_universe=resolved_universe,
         )
+        engine_duration = time.monotonic() - engine_started
         results = engine_result.results
         logger.warning(
-            "[run_backtest] engine complete backtest_id=%s large_result_mode=%s",
+            "[backtest timing] step=engine_run_backtest backtest_id=%s duration=%.3fs large_result_mode=%s",
             bt.id,
+            engine_duration,
             "on" if preflight["large_result_mode"] else "off",
         )
         _append_job_message(
             job,
             "run_backtest:engine complete "
+            f"duration={engine_duration:.3f}s "
             f"large_result_mode={'on' if preflight['large_result_mode'] else 'off'}",
         )
+
+        result_save_started = time.monotonic()
 
         # --- Optional (NO-REGRESSION) Parquet storage ---
         # Writes daily series to Parquet *in addition* to existing JSON results.
@@ -1830,6 +1849,10 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
                     "max_drawdown": port_kpi.get("max_drawdown") or 0,
                 },
             )
+        save_duration = time.monotonic() - result_save_started
+        save_msg = f"[backtest timing] step=result_save duration={save_duration:.3f}s"
+        logger.warning("%s backtest_id=%s", save_msg, bt.id)
+        _append_job_message(job, save_msg)
         return "ok"
     except Exception as e:
         Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.FAILED, error_message=str(e))
@@ -1856,7 +1879,9 @@ def run_backtest_job_task(self, backtest_id: int, user_id=None, job_id=None):
         job_checkpoint(job, task_request=self.request)
         msg = run_backtest_task(backtest_id, job_id=job.id if job else None, task_request=self.request)
         job.status = ProcessingJob.Status.DONE
-        job.message = str(msg)
+        _job_refresh(job, fields=["message"])
+        existing_message = (job.message or "").rstrip()
+        job.message = (existing_message + ("\n" if existing_message else "") + str(msg)).strip()
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "message", "finished_at"])
         return msg

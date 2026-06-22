@@ -23,6 +23,8 @@ from __future__ import annotations
 from bisect import bisect_right
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
+import logging
+import time
 from decimal import Decimal
 from typing import Any
 
@@ -42,6 +44,8 @@ from core.services.gm_push import (
     compute_push_values_for_series,
 )
 from core.services.market_cap import preload_market_cap_series
+logger = logging.getLogger(__name__)
+
 from core.services.trend_filters import (
     collect_distinct_benchmark_tickers,
     evaluate_trend_filters_for_symbol,
@@ -1813,12 +1817,22 @@ def run_backtest(
     for ticker in missing_tickers:
         logs.append(f"Ticker {ticker} not found/active; skipped.")
 
+    preload_started = time.monotonic()
     data_by_ticker, all_dates = _preload_backtest_ticker_data(
         symbols=list(sym_by_ticker.values()),
         scenario_id=backtest.scenario_id,
         fetch_start_d=fetch_start_d,
         end_d=end_d,
         include_compact_extras=True,
+    )
+    logger.warning(
+        "[backtest timing] step=engine_preload backtest_id=%s duration=%.3fs requested_tickers=%s loaded_tickers=%s dates=%s large_result_mode=%s",
+        getattr(backtest, "id", None),
+        time.monotonic() - preload_started,
+        len(tickers),
+        len(data_by_ticker),
+        len(all_dates),
+        "on" if large_result_mode else "off",
     )
     market_cap_cache = (
         _preload_market_cap_cache(list(sym_by_ticker.values()), end_d)
@@ -1852,6 +1866,7 @@ def run_backtest(
         return BacktestEngineResult(results={"error": "No usable tickers with data in range."}, logs=logs)
 
     nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
+    gm_started = time.monotonic()
     global_momentum_values_by_date = (
         _build_global_momentum_values_from_ticker_data(data_by_ticker, nglobal)
         if needs_gm_conditions
@@ -1874,6 +1889,13 @@ def run_backtest(
         )
         if needs_gm_push_conditions
         else {}
+    )
+    logger.warning(
+        "[backtest timing] step=engine_gm_compute backtest_id=%s duration=%.3fs gm=%s gm_push=%s",
+        getattr(backtest, "id", None),
+        time.monotonic() - gm_started,
+        needs_gm_conditions,
+        needs_gm_push_conditions,
     )
     gm_push_state_cache: dict[tuple[Any, ...], dict[date, str]] = {}
 
@@ -2190,6 +2212,7 @@ def run_backtest(
         )
 
     # Daily loop
+    engine_loop_started = time.monotonic()
     for d in real_dates_sorted:
         _checkpoint()
 
@@ -2652,6 +2675,16 @@ def run_backtest(
 
         # 4) Portfolio daily snapshot (end-of-day)
         _snapshot_portfolio(d)
+
+    logger.warning(
+        "[backtest timing] step=engine_loop backtest_id=%s duration=%.3fs dates=%s states=%s loaded_tickers=%s large_result_mode=%s",
+        getattr(backtest, "id", None),
+        time.monotonic() - engine_loop_started,
+        len(real_dates_sorted),
+        len(state),
+        len(data_by_ticker),
+        "on" if large_result_mode else "off",
+    )
 
     def _recompute_tradable_counters_from_rows(st: dict[str, Any]) -> None:
         """Recompute cumulative tradable day counters from existing daily rows.

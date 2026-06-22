@@ -808,6 +808,38 @@ class SymbolMetadataViewTests(TestCase):
         self.assertNotIn("GM_market", body)
         self.assertNotIn("GM_sector", body)
 
+    def test_backtest_detail_displays_prep_warnings_even_when_failed(self):
+        scenario = Scenario.objects.create(
+            name="Scenario Prep Warning",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        bt = Backtest.objects.create(
+            name="BT Prep Warning",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            status=Backtest.Status.FAILED,
+            error_message="Erreur technique après préparation",
+            results={
+                "prep": {
+                    "did_fetch_bars": False,
+                    "did_compute_metrics": False,
+                    "notes": ["Attention : couverture prix partielle."],
+                }
+            },
+        )
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Avertissements de préparation", body)
+        self.assertIn("Attention : couverture prix partielle.", body)
+        self.assertIn("Erreur technique après préparation", body)
+
     def test_backtest_detail_hides_legacy_buy_gm_filter_after_normalized_save(self):
         signal_lines = [
             {
