@@ -24,7 +24,8 @@ from core.models import (
     UniverseMembership,
 )
 from core.services.backtesting.engine import run_backtest, run_backtest_kpi_only
-from core.services.backtesting.prep import _missing_bar_coverage_symbols, prepare_backtest_data
+from core.services.backtesting.prep import _missing_bar_coverage_symbols, _static_ohlc_coverage_diagnostic, prepare_backtest_data
+from core.services.metrics_depth import check_metrics_depth
 from core.services.provider_eodhd import EODHDError
 from core.services.universe_resolver import UniverseResolver
 from core.tasks import DYNAMIC_UNIVERSE_USER_ERROR, compute_metrics_job_task, run_backtest_task
@@ -393,14 +394,14 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         self.assertTrue(any("actions n'ont pas de prix" in note for note in report.notes))
         self.assertTrue(any("seront ignorées" in note for note in report.notes))
 
-    def test_prepare_backtest_data_static_mode_blocks_missing_ohlc_without_global_fetch(self):
+    def test_prepare_backtest_data_static_mode_blocks_only_when_no_exploitable_ohlc(self):
         self.scenario = self._scenario(dynamic=False)
         bt = self._backtest(self.scenario)
 
         with patch("core.services.backtesting.prep.ensure_ohlc_ready_for_backtest") as readiness_mock:
             with patch("core.tasks.fetch_daily_bars_task") as fetch_mock:
                 with patch("core.tasks._compute_metrics_for_scenario") as compute_mock:
-                    with self.assertRaisesMessage(ValueError, "Missing DailyBar coverage for 1 symbols"):
+                    with self.assertRaisesMessage(ValueError, "aucun prix exploitable"):
                         prepare_backtest_data(bt)
 
         readiness_mock.assert_not_called()
@@ -433,6 +434,271 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
             self.end,
         )
         self.assertEqual(missing, ["NEW"])
+
+    def test_metrics_depth_uses_effective_bounds_for_non_trading_dates(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        requested_start = self.start - timedelta(days=1)
+        requested_end = self.end + timedelta(days=1)
+        for symbol in (self.old, self.new):
+            for offset in range((self.end - self.start).days + 1):
+                DailyMetric.objects.create(
+                    symbol=symbol,
+                    scenario=self.scenario,
+                    date=self.start + timedelta(days=offset),
+                    P=Decimal("10"),
+                    ratio_P=Decimal("1"),
+                )
+
+        report = check_metrics_depth(
+            scenario_id=self.scenario.id,
+            symbol_ids=list(self.scenario.symbols.values_list("id", flat=True)),
+            required_start=requested_start,
+            required_end=requested_end,
+        )
+
+        self.assertEqual(report.covered_symbols, 2)
+        self.assertEqual(report.missing_symbol_ids, [])
+        self.assertEqual(report.effective_start, self.start)
+        self.assertEqual(report.effective_end, self.end)
+        self.assertFalse(report.needs_full_recompute())
+
+    def test_metrics_depth_detects_true_missing_metrics(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        for offset in range((self.end - self.start).days + 1):
+            DailyMetric.objects.create(
+                symbol=self.old,
+                scenario=self.scenario,
+                date=self.start + timedelta(days=offset),
+                P=Decimal("10"),
+                ratio_P=Decimal("1"),
+            )
+
+        report = check_metrics_depth(
+            scenario_id=self.scenario.id,
+            symbol_ids=list(self.scenario.symbols.values_list("id", flat=True)),
+            required_start=self.start,
+            required_end=self.end,
+        )
+
+        self.assertIn(self.new.id, report.no_metrics_at_all_symbol_ids)
+        self.assertIn(self.new.id, report.missing_symbol_ids)
+        self.assertTrue(report.needs_full_recompute())
+
+    def test_static_ohlc_diagnostic_uses_effective_bounds_for_non_trading_dates(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        for symbol in (self.old, self.new):
+            self._bars_metrics(symbol, closes=["10", "11", "12", "13"])
+        requested_start = self.start - timedelta(days=1)
+        requested_end = self.end + timedelta(days=1)
+
+        report = _static_ohlc_coverage_diagnostic(
+            self.scenario.symbols.order_by("ticker"),
+            requested_start,
+            requested_end,
+        )
+
+        self.assertFalse(report.has_issues)
+        self.assertEqual(report.effective_start, self.start)
+        self.assertEqual(report.effective_end, self.end)
+        self.assertEqual(set(report.ok), {"NEW", "OLD"})
+
+    def test_static_ohlc_diagnostic_classifies_missing_ranges(self):
+        self.scenario = self._scenario(dynamic=False)
+        missing_end = Symbol.objects.create(ticker="END", exchange="NYSE", active=True)
+        no_range = Symbol.objects.create(ticker="RANGE", exchange="NYSE", active=True)
+        no_bars = Symbol.objects.create(ticker="EMPTY", exchange="NYSE", active=True)
+        self.scenario.symbols.add(self.new, missing_end, no_range, no_bars)
+        self._bars_metrics(self.old, closes=["10", "11", "12", "13"])
+        self._bars_metrics(self.new, closes=["11", "12", "13", "14"])
+        DailyBar.objects.filter(symbol=self.new, date__in=[self.start, self.start + timedelta(days=1)]).delete()
+        self._bars_metrics(missing_end, closes=["12", "13", "14", "15"])
+        DailyBar.objects.filter(symbol=missing_end, date__gte=self.end).delete()
+        DailyBar.objects.create(
+            symbol=no_range,
+            date=self.end + timedelta(days=10),
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=1000,
+        )
+
+        report = _static_ohlc_coverage_diagnostic(
+            self.scenario.symbols.order_by("ticker"),
+            self.start,
+            self.end,
+        )
+
+        self.assertIn("OLD", report.ok)
+        self.assertIn("NEW", report.missing_start)
+        self.assertIn("END", report.missing_end)
+        self.assertIn("RANGE", report.no_bars_in_range)
+        self.assertIn("EMPTY", report.no_bars_at_all)
+        ranges = {(item.ticker, item.reason, item.start, item.end) for item in report.missing_ranges}
+        self.assertIn(("NEW", "MISSING_START", self.start, self.start + timedelta(days=1)), ranges)
+        self.assertIn(("END", "MISSING_END", self.end, self.end), ranges)
+        self.assertIn(("RANGE", "NO_BARS_IN_RANGE", self.start, self.end), ranges)
+        self.assertIn(("EMPTY", "NO_BARS_AT_ALL", self.start, self.end), ranges)
+
+    def test_prepare_backtest_data_static_partial_metrics_warns_without_mass_recompute(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        for symbol in (self.old, self.new):
+            self._bars_metrics(symbol)
+        DailyMetric.objects.filter(symbol=self.new, scenario=self.scenario, date__in=[self.start, self.start + timedelta(days=1)]).delete()
+        bt = self._backtest(self.scenario)
+        bt.universe_snapshot = [self.old.ticker, self.new.ticker]
+        bt.save(update_fields=["universe_snapshot"])
+
+        with patch("core.tasks._compute_metrics_for_scenario") as compute_mock:
+            report = prepare_backtest_data(bt)
+
+        compute_mock.assert_not_called()
+        self.assertFalse(report.did_compute_metrics)
+        self.assertTrue(any("couverture indicateurs partielle" in note for note in report.notes))
+        self.assertTrue(any("Aucun recalcul massif" in note for note in report.notes))
+
+    def test_prepare_backtest_data_static_partial_ohlc_warns_without_global_fetch(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        self._bars_metrics(self.old)
+        for offset in range((self.end - self.start).days + 1):
+            DailyMetric.objects.create(
+                symbol=self.new,
+                scenario=self.scenario,
+                date=self.start + timedelta(days=offset),
+                P=Decimal("10"),
+                ratio_P=Decimal("1"),
+            )
+        bt = self._backtest(self.scenario)
+        bt.universe_snapshot = [self.old.ticker, self.new.ticker]
+        bt.save(update_fields=["universe_snapshot"])
+
+        with patch("core.tasks.fetch_daily_bars_task") as fetch_mock:
+            with patch("core.tasks._compute_metrics_for_scenario") as compute_mock:
+                report = prepare_backtest_data(bt)
+
+        fetch_mock.assert_not_called()
+        compute_mock.assert_not_called()
+        self.assertFalse(report.did_fetch_bars)
+        self.assertTrue(any("Attention : couverture prix partielle" in note for note in report.notes))
+        message = "\\n".join(report.notes)
+        self.assertIn("Le backtest est lancé sur les données disponibles", message)
+        self.assertIn("n’ont aucun prix dans la période", message)
+        self.assertIn("Trigger > Télécharger les prix des actions", message)
+
+    def test_prepare_backtest_data_skips_metrics_recompute_when_ohlc_missing_in_range(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        self._bars_metrics(self.old)
+        DailyBar.objects.create(
+            symbol=self.new,
+            date=self.end + timedelta(days=10),
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=1000,
+        )
+        bt = self._backtest(self.scenario)
+        bt.universe_snapshot = [self.old.ticker, self.new.ticker]
+        bt.save(update_fields=["universe_snapshot"])
+
+        with patch("core.tasks._compute_metrics_for_scenario") as compute_mock:
+            report = prepare_backtest_data(bt)
+
+        compute_mock.assert_not_called()
+        self.assertFalse(report.did_compute_metrics)
+        message = "\n".join(report.notes)
+        self.assertIn("Certaines métriques ne sont pas recalculées", message)
+        self.assertIn("Récupérez d’abord les prix manquants", message)
+        self.assertIn("NEW", message)
+
+    def test_prepare_backtest_data_skips_metrics_recompute_when_ohlc_missing_entirely(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        self._bars_metrics(self.old)
+        bt = self._backtest(self.scenario)
+        bt.universe_snapshot = [self.old.ticker, self.new.ticker]
+        bt.save(update_fields=["universe_snapshot"])
+
+        with patch("core.tasks._compute_metrics_for_scenario") as compute_mock:
+            report = prepare_backtest_data(bt)
+
+        compute_mock.assert_not_called()
+        self.assertFalse(report.did_compute_metrics)
+        message = "\n".join(report.notes)
+        self.assertIn("Certaines métriques ne sont pas recalculées", message)
+        self.assertIn("Récupérez d’abord les prix manquants", message)
+        self.assertIn("NEW", message)
+
+    def test_prepare_backtest_data_recomputes_missing_metrics_when_ohlc_present(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        self._bars_metrics(self.old)
+        for offset in range((self.end - self.start).days + 1):
+            close = Decimal("10")
+            DailyBar.objects.create(
+                symbol=self.new,
+                date=self.start + timedelta(days=offset),
+                open=close,
+                high=close,
+                low=close,
+                close=close,
+                volume=1000 + offset,
+            )
+        bt = self._backtest(self.scenario)
+        bt.universe_snapshot = [self.old.ticker, self.new.ticker]
+        bt.save(update_fields=["universe_snapshot"])
+
+        with patch("core.tasks._compute_metrics_for_scenario") as compute_mock:
+            report = prepare_backtest_data(bt)
+
+        compute_mock.assert_called_once()
+        kwargs = compute_mock.call_args.kwargs
+        self.assertEqual(list(kwargs["symbols_qs"].values_list("ticker", flat=True)), ["NEW"])
+        self.assertFalse(kwargs["recompute_all"])
+        self.assertTrue(report.did_compute_metrics)
+
+    def test_run_backtest_task_static_partial_ohlc_finishes_with_prep_warning(self):
+        self.scenario = self._scenario(dynamic=False)
+        self.scenario.symbols.add(self.new)
+        self._bars_metrics(self.old)
+        for offset in range((self.end - self.start).days + 1):
+            DailyMetric.objects.create(
+                symbol=self.new,
+                scenario=self.scenario,
+                date=self.start + timedelta(days=offset),
+                P=Decimal("10"),
+                ratio_P=Decimal("1"),
+            )
+        bt = self._backtest(self.scenario)
+        bt.universe_snapshot = [self.old.ticker, self.new.ticker]
+        bt.save(update_fields=["universe_snapshot"])
+
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_BACKTEST,
+            status=ProcessingJob.Status.RUNNING,
+            backtest=bt,
+            scenario=self.scenario,
+            message="started",
+        )
+
+        with patch("core.tasks.fetch_daily_bars_task") as fetch_mock:
+            msg = run_backtest_task(bt.id, job_id=job.id)
+
+        fetch_mock.assert_not_called()
+        self.assertEqual(msg, "ok")
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.DONE)
+        prep_notes = ((bt.results or {}).get("prep") or {}).get("notes") or []
+        self.assertTrue(any("Attention : couverture prix partielle" in note for note in prep_notes))
+        job.refresh_from_db()
+        self.assertIn("[backtest timing] step=prepare_backtest_data", job.message)
+        self.assertIn("[backtest timing] step=result_save", job.message)
 
     def test_dynamic_buy_gate_blocks_new_buy_after_exit(self):
         self.scenario = self._scenario(dynamic=True)

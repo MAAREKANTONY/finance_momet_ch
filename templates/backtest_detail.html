@@ -129,6 +129,17 @@
         <tr><th>Statut</th><td>{{ bt.status }}</td></tr>
       </tbody>
     </table>
+    {% if bt.results.prep.notes %}
+      <div class="card" style="border-color:#f0c36a; background:#fff8e6; margin-top:12px;">
+        <strong>Avertissements de préparation</strong>
+        <div class="muted" style="margin-top:6px;">Le backtest a été préparé avec les limites ci-dessous.</div>
+        <ul style="margin:8px 0 0 18px;">
+          {% for n in bt.results.prep.notes %}
+            <li>{{ n }}</li>
+          {% endfor %}
+        </ul>
+      </div>
+    {% endif %}
     <div class="card" style="margin-top:12px;">
   <strong>Suivi des traitements</strong>
   <div class="muted" style="margin-top:6px;">Chaque bouton lance un job en arrière-plan. Suis l’état ici ou sur la page <a href="{% url 'jobs_page' %}">Traitements</a>.</div>
@@ -378,13 +389,6 @@
       <li>compute metrics: {{ bt.results.prep.did_compute_metrics }}</li>
       <li>notes: {{ bt.results.prep.notes|length }}</li>
     </ul>
-    {% if bt.results.prep.notes %}
-      <ul>
-        {% for n in bt.results.prep.notes %}
-          <li>{{ n }}</li>
-        {% endfor %}
-      </ul>
-    {% endif %}
   {% endif %}
 
   {% if bt.results.logs %}
