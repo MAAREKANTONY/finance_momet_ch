@@ -1869,6 +1869,147 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("max_drawdown_amount", body)
         self.assertIn("Conditions de marché de la ligne : <b>GM actuel: GM positif</b>", body)
 
+    def test_backtest_results_selection_lists_only_played_tickers(self):
+        bbb = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        ccc = Symbol.objects.create(ticker="CCC", exchange="NYSE", active=True)
+        ddd = Symbol.objects.create(ticker="DDD", exchange="NYSE", active=True)
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            extra_symbols=[bbb, ccc, ddd],
+            ticker_lines={
+                "CCC": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-03", "action": "SELL+BUY"}],
+                        "final": {"N": 1, "BT": "0.1"},
+                    }]
+                },
+                "BBB": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-03", "action": None}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                },
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-02", "action": "BUY"}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                },
+                "DDD": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-04", "action": "FORCED_SELL"}],
+                        "final": {"N": 1, "BT": "0.1"},
+                    }]
+                },
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        options = response.context["ticker_options"]
+        self.assertEqual([opt["ticker"] for opt in options], ["AAA", "CCC", "DDD"])
+        body = response.content.decode()
+        self.assertIn('id="tickerLineSearch"', body)
+        self.assertIn("Rechercher un ticker", body)
+        self.assertIn("Tickers joués uniquement", body)
+        self.assertIn('value="AAA|1"', body)
+        self.assertIn('value="CCC|1"', body)
+        self.assertIn('value="DDD|1"', body)
+        self.assertNotIn('value="BBB|1"', body)
+
+    def test_backtest_results_selection_deduplicates_played_tickers(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            ticker_lines={
+                "AAA": {
+                    "lines": [
+                        {
+                            "line_index": 1,
+                            "buy": ["A1"],
+                            "sell": ["B1"],
+                            "daily": [{"date": "2024-01-02", "action": "BUY"}],
+                            "final": {"N": 0, "BT": "0"},
+                        },
+                        {
+                            "line_index": 2,
+                            "buy": ["A2"],
+                            "sell": ["B2"],
+                            "daily": [{"date": "2024-01-03", "action": "SELL"}],
+                            "final": {"N": 1, "BT": "0.1"},
+                        },
+                    ]
+                }
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        options = response.context["ticker_options"]
+        self.assertEqual([opt["ticker"] for opt in options], ["AAA"])
+        body = response.content.decode()
+        self.assertEqual(body.count('data-ticker="AAA"'), 1)
+
+    def test_backtest_results_selection_uses_final_trade_count_when_daily_rows_are_omitted(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [],
+                        "daily_rows_omitted": True,
+                        "final": {"N": 2, "BT": "0.1"},
+                    }]
+                }
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([opt["ticker"] for opt in response.context["ticker_options"]], ["AAA"])
+        self.assertContains(response, 'value="AAA|1"')
+
+    def test_backtest_results_selection_shows_empty_state_without_played_tickers(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                }
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["ticker_options"], [])
+        body = response.content.decode()
+        self.assertIn("Aucun ticker joué sur ce backtest", body)
+        self.assertNotIn('id="tickerLineSelect"', body)
+
     def test_backtest_results_renders_large_result_mode_warning_without_daily_rows(self):
         bt = Backtest.objects.create(
             name="BT Large Mode",

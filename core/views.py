@@ -2865,6 +2865,31 @@ def _build_realized_gains_cumulative_series(results: dict, *, initial_date=None)
     return series
 
 
+def _is_executed_trade_action(action) -> bool:
+    action_text = str(action or "").upper().strip()
+    if not action_text:
+        return False
+    markers = {part.strip() for part in action_text.split("+") if part.strip()}
+    return bool(markers.intersection({"BUY", "SELL", "FORCED_SELL"}))
+
+
+def _line_has_executed_trade(line: dict, daily_rows=None) -> bool:
+    line = line or {}
+    for event in line.get("events") or []:
+        if _is_executed_trade_action((event or {}).get("action")):
+            return True
+
+    if daily_rows is not None:
+        for row in daily_rows or []:
+            if _is_executed_trade_action((row or {}).get("action")):
+                return True
+
+    try:
+        return int((line.get("final") or {}).get("N") or 0) > 0
+    except Exception:
+        return False
+
+
 @login_required
 def backtest_results(request, pk: int):
     """Readable results view for a computed backtest.
@@ -3009,6 +3034,7 @@ def backtest_results(request, pk: int):
 
     # For dropdowns in UI
     ticker_options = []
+    ticker_options_seen = set()
     global_line_options = {}
     global_line_rows = []
     try:
@@ -3021,12 +3047,6 @@ def backtest_results(request, pk: int):
             li = int(l.get("line_index") or 0)
             buy_label = _codes_to_label(l.get("buy"))
             sell_label = _codes_to_label(l.get("sell"))
-            ticker_options.append({
-                "ticker": tk,
-                "line_index": li,
-                "buy": buy_label,
-                "sell": sell_label,
-            })
             if li not in global_line_options:
                 global_line_options[li] = {
                     "line_index": li,
@@ -3034,30 +3054,31 @@ def backtest_results(request, pk: int):
                     "sell": sell_label,
                 }
 
-            if li != global_line_index:
-                continue
-
             raw_final = l.get("final") or {}
-            final_row = _augment_row(dict(raw_final))
-            try:
-                from .services.backtesting.results_offload import load_daily_from_line
-                raw_daily = load_daily_from_line(l or {})
-            except Exception:
-                raw_daily = (l or {}).get("daily") or []
-
-            played = any(
-                str((r or {}).get("action") or "").upper() in {"BUY", "SELL", "FORCED_SELL"}
-                for r in raw_daily
-            )
+            played = _line_has_executed_trade(l)
             if not played:
                 try:
-                    n_trades = int((raw_final or {}).get("N") or 0)
+                    from .services.backtesting.results_offload import load_daily_from_line
+                    raw_daily = load_daily_from_line(l or {})
                 except Exception:
-                    n_trades = 0
-                played = n_trades > 0
+                    raw_daily = (l or {}).get("daily") or []
+                played = _line_has_executed_trade(l, raw_daily)
+
+            if played and tk not in ticker_options_seen:
+                ticker_options.append({
+                    "ticker": tk,
+                    "line_index": li,
+                    "buy": buy_label,
+                    "sell": sell_label,
+                })
+                ticker_options_seen.add(tk)
+
+            if li != global_line_index:
+                continue
             if not played:
                 continue
 
+            final_row = _augment_row(dict(raw_final))
             global_line_rows.append({
                 "ticker": tk,
                 "buy": buy_label,
@@ -3076,6 +3097,7 @@ def backtest_results(request, pk: int):
             })
 
     global_line_options = [global_line_options[k] for k in sorted(global_line_options.keys())]
+    ticker_options.sort(key=lambda r: (str(r.get("ticker") or ""), int(r.get("line_index") or 0)))
     global_line_rows.sort(key=lambda r: (str(r.get("ticker") or "")))
 
     return render(

@@ -272,16 +272,22 @@
 <summary class="acc-summary"><span class="acc-title">Sélection</span></summary>
 <div class="acc-body">
 <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
-    <label>Ticker / Ligne</label>
-    <select id="tickerLineSelect">
-      {% for opt in ticker_options %}
-        {% with val=opt.ticker|add:"|"|add:opt.line_index|stringformat:"s" %}
-        <option value="{{ opt.ticker }}|{{ opt.line_index }}" {% if opt.ticker == ticker and opt.line_index|add:0 == line_index %}selected{% endif %}>
-          {{ opt.ticker }} — L{{ opt.line_index }} (BUY {{ opt.buy }} / SELL {{ opt.sell }})
-        </option>
-        {% endwith %}
-      {% endfor %}
-    </select>
+    {% if ticker_options %}
+      <label for="tickerLineSearch">Rechercher un ticker</label>
+      <input id="tickerLineSearch" type="search" placeholder="Ticker" autocomplete="off" style="min-width:180px;">
+
+      <label for="tickerLineSelect">Ticker / Ligne</label>
+      <select id="tickerLineSelect">
+        {% for opt in ticker_options %}
+          <option value="{{ opt.ticker }}|{{ opt.line_index }}" data-ticker="{{ opt.ticker }}" {% if opt.ticker == ticker and opt.line_index|add:0 == line_index %}selected{% endif %}>
+            {{ opt.ticker }} — L{{ opt.line_index }} (BUY {{ opt.buy }} / SELL {{ opt.sell }})
+          </option>
+        {% endfor %}
+      </select>
+      <span class="muted">Tickers joués uniquement.</span>
+    {% else %}
+      <span class="muted">Aucun ticker joué sur ce backtest.</span>
+    {% endif %}
 
     <label>Courbe</label>
     <select id="metricSelect">
@@ -701,14 +707,29 @@
 
   document.getElementById("metricSelect").addEventListener("change", (e) => updateChart(e.target.value));
 
-  document.getElementById("tickerLineSelect").addEventListener("change", (e) => {
-    const [tk, line] = e.target.value.split("|");
-    const url = new URL(window.location.href);
-    url.searchParams.set("ticker", tk);
-    url.searchParams.set("line", line);
-    url.searchParams.delete("all");
-    window.location.href = url.toString();
-  });
+  const tickerLineSelect = document.getElementById("tickerLineSelect");
+  if (tickerLineSelect) {
+    tickerLineSelect.addEventListener("change", (e) => {
+      const [tk, line] = e.target.value.split("|");
+      const url = new URL(window.location.href);
+      url.searchParams.set("ticker", tk);
+      url.searchParams.set("line", line);
+      url.searchParams.delete("all");
+      window.location.href = url.toString();
+    });
+  }
+
+  const tickerLineSearch = document.getElementById("tickerLineSearch");
+  if (tickerLineSearch && tickerLineSelect) {
+    const filterTickerOptions = () => {
+      const query = tickerLineSearch.value.trim().toUpperCase();
+      Array.from(tickerLineSelect.options).forEach((option) => {
+        const ticker = (option.dataset.ticker || option.textContent || "").toUpperCase();
+        option.hidden = Boolean(query) && !ticker.includes(query);
+      });
+    };
+    tickerLineSearch.addEventListener("input", filterTickerOptions);
+  }
 
   const globalLineSelect = document.getElementById("globalLineSelect");
   if (globalLineSelect) {
