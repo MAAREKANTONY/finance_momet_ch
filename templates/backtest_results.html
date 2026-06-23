@@ -17,9 +17,6 @@
     <a class="btn" href="{% url 'backtest_export_debug_csv' bt.id %}?ticker={{ ticker }}&line={{ line_index }}">Exporter CSV debug</a>
     <a class="btn" href="{% url 'backtest_export_excel' bt.id %}">Exporter Excel</a>
     <a class="btn" href="{% url 'backtest_export_excel_compact' bt.id %}">Exporter Excel (compact Sheets)</a>
-    {% if is_truncated %}
-      <a class="btn" href="{% url 'backtest_results' bt.id %}?ticker={{ ticker }}&line={{ line_index }}&all=1">Afficher toutes les lignes</a>
-    {% endif %}
   </div>
 </div>
 
@@ -321,18 +318,14 @@
 <div class="acc-body">
 <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
     {% if ticker_options %}
-      <label for="tickerLineSearch">Rechercher un ticker</label>
-      <input id="tickerLineSearch" type="search" placeholder="Ticker" autocomplete="off" style="min-width:180px;">
-
-      <label for="tickerLineSelect">Ticker / Ligne</label>
-      <select id="tickerLineSelect">
+      <label for="tickerLineCombobox">Rechercher ou sélectionner un ticker</label>
+      <input id="tickerLineCombobox" list="tickerLineOptions" autocomplete="off" style="min-width:300px;" aria-describedby="tickerLineHelp">
+      <datalist id="tickerLineOptions">
         {% for opt in ticker_options %}
-          <option value="{{ opt.ticker }}|{{ opt.line_index }}" data-ticker="{{ opt.ticker }}" {% if opt.ticker == ticker and opt.line_index|add:0 == line_index %}selected{% endif %}>
-            {{ opt.ticker }} — L{{ opt.line_index }} (BUY {{ opt.buy }} / SELL {{ opt.sell }})
-          </option>
+          <option value="{{ opt.ticker }} — L{{ opt.line_index }}" data-value="{{ opt.ticker }}|{{ opt.line_index }}" data-ticker="{{ opt.ticker }}" data-line="{{ opt.line_index }}">BUY {{ opt.buy }} / SELL {{ opt.sell }}</option>
         {% endfor %}
-      </select>
-      <span class="muted">Tickers joués uniquement.</span>
+      </datalist>
+      <span id="tickerLineHelp" class="muted">Tickers joués uniquement.</span>
     {% else %}
       <span class="muted">Aucun ticker joué sur ce backtest.</span>
     {% endif %}
@@ -343,7 +336,7 @@
       <option value="BT">BT (bénéfice total cumulé)</option>
       <option value="BMJ">BMJ (bénéfice moyen / jour ouvré)</option>
       <option value="BMD">BMD (bénéfice moyen / jour en position clôturée)</option>
-      <option value="PRICE_POS">Prix + position (aire verte/rouge)</option>
+      <option value="PRICE_POS" selected>Prix + position (aire verte/rouge)</option>
     </select>
   </div>
   {% if line %}
@@ -753,30 +746,55 @@
     chart.update();
   }
 
-  document.getElementById("metricSelect").addEventListener("change", (e) => updateChart(e.target.value));
-
-  const tickerLineSelect = document.getElementById("tickerLineSelect");
-  if (tickerLineSelect) {
-    tickerLineSelect.addEventListener("change", (e) => {
-      const [tk, line] = e.target.value.split("|");
-      const url = new URL(window.location.href);
-      url.searchParams.set("ticker", tk);
-      url.searchParams.set("line", line);
-      url.searchParams.delete("all");
-      window.location.href = url.toString();
-    });
+  const metricSelect = document.getElementById("metricSelect");
+  if (metricSelect) {
+    metricSelect.value = "PRICE_POS";
+    updateChart(metricSelect.value);
+    metricSelect.addEventListener("change", (e) => updateChart(e.target.value));
   }
 
-  const tickerLineSearch = document.getElementById("tickerLineSearch");
-  if (tickerLineSearch && tickerLineSelect) {
-    const filterTickerOptions = () => {
-      const query = tickerLineSearch.value.trim().toUpperCase();
-      Array.from(tickerLineSelect.options).forEach((option) => {
-        const ticker = (option.dataset.ticker || option.textContent || "").toUpperCase();
-        option.hidden = Boolean(query) && !ticker.includes(query);
-      });
-    };
-    tickerLineSearch.addEventListener("input", filterTickerOptions);
+  const tickerLineCombobox = document.getElementById("tickerLineCombobox");
+  const tickerLineOptions = document.getElementById("tickerLineOptions");
+  const currentTickerLineValue = "{{ ticker|escapejs }}|{{ line_index }}";
+
+  function findTickerLineOptionByDataValue(value) {
+    if (!tickerLineOptions) return null;
+    return Array.from(tickerLineOptions.options).find((option) => option.dataset.value === value) || null;
+  }
+
+  function findTickerLineOptionByInputValue(value) {
+    if (!tickerLineOptions) return null;
+    return Array.from(tickerLineOptions.options).find((option) => option.value === value) || null;
+  }
+
+  function initializeTickerLineCombobox() {
+    if (!tickerLineCombobox) return;
+    const selectedOption = findTickerLineOptionByDataValue(currentTickerLineValue);
+    if (selectedOption) tickerLineCombobox.value = selectedOption.value;
+  }
+
+  function navigateToTickerLineComboboxValue() {
+    if (!tickerLineCombobox) return;
+    const selectedOption = findTickerLineOptionByInputValue(tickerLineCombobox.value);
+    if (!selectedOption || !selectedOption.dataset.value) return;
+    if (selectedOption.dataset.value === currentTickerLineValue) return;
+    const [tk, line] = selectedOption.dataset.value.split("|");
+    const url = new URL(window.location.href);
+    url.searchParams.set("ticker", tk);
+    url.searchParams.set("line", line);
+    url.searchParams.delete("all");
+    window.location.href = url.toString();
+  }
+
+  initializeTickerLineCombobox();
+  if (tickerLineCombobox) {
+    tickerLineCombobox.addEventListener("change", navigateToTickerLineComboboxValue);
+    tickerLineCombobox.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        navigateToTickerLineComboboxValue();
+      }
+    });
   }
 
   const globalLineSelect = document.getElementById("globalLineSelect");
