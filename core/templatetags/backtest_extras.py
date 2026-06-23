@@ -120,12 +120,22 @@ def _gm_condition_label(entry) -> str:
         buy_max = entry.get("buy_max_threshold") if mode in {"GM_POS", "POS"} else None
         if mode in {"GM_POS", "POS"}:
             if buy_max not in (None, ""):
-                return f"{label} > {threshold}, achat bloqué > {buy_max}"
+                return f"{label}, achat autorisé si {threshold} < GM ≤ {buy_max}"
             return f"{label} > {threshold}"
         if mode in {"GM_NEG", "NEG"}:
             return f"{label} < {threshold}"
         return f"{label} seuil {threshold}"
     return label
+
+
+def _gm_conditions_has_active(config) -> bool:
+    if not isinstance(config, dict):
+        return False
+    for key in ("current", "market", "sector"):
+        entry = config.get(key)
+        if isinstance(entry, dict) and str(entry.get("mode") or "IGNORE").upper() != "IGNORE":
+            return True
+    return False
 
 
 def _gm_conditions_display(config) -> str:
@@ -167,6 +177,10 @@ def line_gm_filter_display(line, side: str = "buy") -> str:
 
 @register.simple_tag
 def line_market_conditions_display(line) -> str:
+    structured_config = line.get("gm_buy_conditions") if isinstance(line, dict) else getattr(line, "gm_buy_conditions", None)
+    if _gm_conditions_has_active(structured_config):
+        return _gm_conditions_display(structured_config)
+
     if isinstance(line, dict):
         current = line.get("buy_market_gm_current", line.get("buy_gm_filter")) or "IGNORE"
         market = line.get("buy_market_gm_market") or "IGNORE"

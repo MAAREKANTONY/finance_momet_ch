@@ -2932,6 +2932,88 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(payload["trend_filters"]["current"]["thresholds"][0]["threshold"], "0.03")
         self.assertIn("diagnosticTrendCurrentChart", response.content.decode())
 
+    def test_backtest_results_line_market_summary_uses_structured_tunnel_over_legacy(self):
+        gm_buy_conditions = {
+            "operator": "AND",
+            "market": {
+                "mode": "GM_POS",
+                "threshold": "0.2",
+                "buy_max_threshold": "0.4",
+                "explicit_threshold": True,
+            },
+        }
+        line = {
+            "line_index": 1,
+            "buy": ["Af"],
+            "sell": ["Bf"],
+            "buy_market_gm_market": "GM_POS",
+            "gm_buy_conditions": gm_buy_conditions,
+            "daily": [{"date": "2024-01-03", "price_close": "11", "action": "BUY"}],
+            "final": {},
+        }
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "buy_market_gm_market": "GM_POS", "gm_buy_conditions": gm_buy_conditions}],
+            ticker_lines={"AAA": {"lines": [line]}},
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        body = response.content.decode()
+        self.assertIn("Conditions de marché de la ligne", body)
+        self.assertIn("GM marché: GM positif, achat autorisé si 0.2 &lt; GM ≤ 0.4", body)
+        self.assertNotIn("Conditions de marché de la ligne : <b>GM marché: GM positif</b>", body)
+
+    def test_backtest_results_line_market_summary_displays_structured_buy_threshold(self):
+        gm_buy_conditions = {
+            "operator": "AND",
+            "market": {"mode": "GM_POS", "threshold": "0.4", "explicit_threshold": True},
+        }
+        line = {
+            "line_index": 1,
+            "buy": ["Af"],
+            "sell": ["Bf"],
+            "gm_buy_conditions": gm_buy_conditions,
+            "daily": [{"date": "2024-01-03", "price_close": "11", "action": "BUY"}],
+            "final": {},
+        }
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "gm_buy_conditions": gm_buy_conditions}],
+            ticker_lines={"AAA": {"lines": [line]}},
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertIn("GM marché: GM positif &gt; 0.4", response.content.decode())
+
+    def test_backtest_results_gm_push_buy_summary_keeps_thresholds(self):
+        gm_push_buy_conditions = {
+            "operator": "AND",
+            "market": {
+                "mode": "POS",
+                "threshold": "0.2",
+                "buy_threshold": "0.2",
+                "sell_threshold": "0.2",
+                "buy_max_threshold": "0.4",
+                "explicit_threshold": True,
+            },
+        }
+        line = {
+            "line_index": 1,
+            "buy": ["Af"],
+            "sell": ["Bf"],
+            "gm_push_buy_conditions": gm_push_buy_conditions,
+            "daily": [{"date": "2024-01-03", "price_close": "11", "action": "BUY"}],
+            "final": {},
+        }
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["Af"], "sell": ["Bf"], "gm_push_buy_conditions": gm_push_buy_conditions}],
+            ticker_lines={"AAA": {"lines": [line]}},
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertIn("GM_push marché: impulsion positive &gt; 0.2, achat bloqué &gt; 0.4", response.content.decode())
+
     def test_backtest_results_diagnostic_payload_includes_gm_sell_market_exit_sector_curve(self):
         self.scenario.nglobal = 1
         self.scenario.save(update_fields=["nglobal"])

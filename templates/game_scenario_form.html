@@ -328,11 +328,24 @@
   function composeConditionSummary(codes, logic) {
     return joinCodes(codes, logic);
   }
+  function gmBuyConditionSummary(entry) {
+    const mode = entry?.mode || 'IGNORE';
+    const label = marketConditionLabel(mode);
+    const threshold = entry?.threshold || '';
+    const maxThreshold = mode === 'GM_POS' ? (entry?.buyMaxThreshold || entry?.buy_max_threshold || '') : '';
+    if (mode === 'GM_POS' && threshold && maxThreshold) {
+      return `${label}, achat autorisé si ${threshold} < GM ≤ ${maxThreshold}`;
+    }
+    if (mode === 'GM_POS' && threshold) return `${label} > ${threshold}`;
+    if (mode === 'GM_NEG' && threshold) return `${label} < ${threshold}`;
+    if (threshold) return `${label} seuil ${threshold}`;
+    return label;
+  }
   function composeMarketSummary(values, operator) {
     const parts = [];
-    if (values.current !== 'IGNORE') parts.push(`GM actuel=${marketConditionLabel(values.current)}`);
-    if (values.market !== 'IGNORE') parts.push(`GM marché=${marketConditionLabel(values.market)}`);
-    if (values.sector !== 'IGNORE') parts.push(`GM secteur=${marketConditionLabel(values.sector)}`);
+    if (values.current?.mode !== 'IGNORE') parts.push(`GM actuel=${gmBuyConditionSummary(values.current)}`);
+    if (values.market?.mode !== 'IGNORE') parts.push(`GM marché=${gmBuyConditionSummary(values.market)}`);
+    if (values.sector?.mode !== 'IGNORE') parts.push(`GM secteur=${gmBuyConditionSummary(values.sector)}`);
     if (!parts.length) return 'Aucune';
     return parts.join(normalizeLogic(operator, 'AND') === 'OR' ? ' OU ' : ' ET ');
   }
@@ -506,7 +519,7 @@
     const help = document.createElement("div");
     help.className = "muted";
     help.textContent = isBuyMarketConditionRole(role)
-      ? "L'achat est autorisé quand la courbe passe au-dessus du seuil. Le seuil haut bloque seulement les nouveaux achats."
+      ? "BUY autorisé uniquement si GM passe au-dessus du seuil d'activation. Exemple : seuil d'activation 0.2 + seuil haut 0.4 ⇒ achat autorisé seulement lorsque 0.2 < GM ≤ 0.4."
       : "La vente est déclenchée quand la courbe repasse sous le seuil.";
 
     let advancedSelect = null;
@@ -544,13 +557,16 @@
     return wrap;
   }
   function marketThresholdPlaceholder(role) {
-    return isBuyMarketConditionRole(role) ? "Seuil d'autorisation d'achat" : "Seuil de vente";
+    return isBuyMarketConditionRole(role) ? "Seuil d'activation achat" : "Seuil de vente";
   }
   function makeThresholdInput(value, role) {
     const input = document.createElement("input");
     input.type = "number";
     input.step = "0.0001";
     input.placeholder = marketThresholdPlaceholder(role);
+    input.title = isBuyMarketConditionRole(role)
+      ? "BUY autorisé uniquement si GM passe au-dessus de ce seuil."
+      : "La vente est déclenchée lorsque la courbe repasse sous ce seuil.";
     input.value = value || "";
     input.setAttribute("data-role", role);
     input.style.maxWidth = "140px";
@@ -558,7 +574,8 @@
   }
   function makeBuyMaxThresholdInput(value, role) {
     const input = makeThresholdInput(value, role);
-    input.placeholder = "Seuil haut optionnel";
+    input.placeholder = "Seuil haut de blocage achat";
+    input.title = "Optionnel. Si renseigné, les nouveaux BUY sont bloqués quand GM dépasse ce seuil haut.";
     return input;
   }
   function tradingModelLabel(value) {
@@ -585,9 +602,21 @@
       const sell = isAutoSellModel(tradingModel) ? [] : (mode === 'special_k1f' ? [SPECIAL_SELL] : selectedValues(tr.querySelector('[data-role="sell"]')));
       const sellLogic = selectedLogic(tr.querySelector('[data-role="sell_logic"]'), 'OR');
       const marketValues = {
-        current: tr.querySelector('[data-role="buy_market_gm_current"]')?.value || 'IGNORE',
-        market: tr.querySelector('[data-role="buy_market_gm_market"]')?.value || 'IGNORE',
-        sector: tr.querySelector('[data-role="buy_market_gm_sector"]')?.value || 'IGNORE',
+        current: gmEntry(
+          tr.querySelector('[data-role="buy_market_gm_current"]')?.value || 'IGNORE',
+          tr.querySelector('[data-role="buy_market_gm_current_threshold"]')?.value || '',
+          tr.querySelector('[data-role="buy_market_gm_current_max_threshold"]')?.value || ''
+        ),
+        market: gmEntry(
+          tr.querySelector('[data-role="buy_market_gm_market"]')?.value || 'IGNORE',
+          tr.querySelector('[data-role="buy_market_gm_market_threshold"]')?.value || '',
+          tr.querySelector('[data-role="buy_market_gm_market_max_threshold"]')?.value || ''
+        ),
+        sector: gmEntry(
+          tr.querySelector('[data-role="buy_market_gm_sector"]')?.value || 'IGNORE',
+          tr.querySelector('[data-role="buy_market_gm_sector_threshold"]')?.value || '',
+          tr.querySelector('[data-role="buy_market_gm_sector_max_threshold"]')?.value || ''
+        ),
       };
       const marketExitValues = {
         current: {mode: tr.querySelector('[data-role="sell_market_gm_current"]')?.value || 'IGNORE', threshold: tr.querySelector('[data-role="sell_market_gm_current_threshold"]')?.value || ''},
