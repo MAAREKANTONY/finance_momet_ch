@@ -114,6 +114,36 @@
     background: var(--card-bg, #fff);
     font-size: 14px;
   }
+  .ticker-line-results {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    max-height: 220px;
+    overflow-y: auto;
+    border: 1px solid var(--border-color, #ddd);
+    border-radius: 6px;
+    padding: 6px;
+    background: var(--card-bg, #fff);
+  }
+  .ticker-line-results[hidden] { display: none !important; }
+  .ticker-line-option {
+    display: flex;
+    justify-content: space-between;
+    gap: 10px;
+    width: 100%;
+    text-align: left;
+    border: 1px solid transparent;
+    border-radius: 5px;
+    padding: 6px 8px;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+  }
+  .ticker-line-option:hover,
+  .ticker-line-option:focus {
+    border-color: var(--border-color, #ddd);
+    background: rgba(0,0,0,0.04);
+  }
   details.acc { padding: 0; }
   details.acc > summary.acc-summary {
     cursor: pointer;
@@ -318,14 +348,20 @@
 <div class="acc-body">
 <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
     {% if ticker_options %}
-      <label for="tickerLineCombobox">Rechercher ou sélectionner un ticker</label>
-      <input id="tickerLineCombobox" list="tickerLineOptions" autocomplete="off" style="min-width:300px;" aria-describedby="tickerLineHelp">
-      <datalist id="tickerLineOptions">
-        {% for opt in ticker_options %}
-          <option value="{{ opt.ticker }} — L{{ opt.line_index }}" data-value="{{ opt.ticker }}|{{ opt.line_index }}" data-ticker="{{ opt.ticker }}" data-line="{{ opt.line_index }}">BUY {{ opt.buy }} / SELL {{ opt.sell }}</option>
-        {% endfor %}
-      </datalist>
-      <span id="tickerLineHelp" class="muted">Tickers joués uniquement.</span>
+      <div style="display:flex; flex-direction:column; gap:6px; min-width:300px; max-width:520px;">
+        <div id="selectedTickerLineLabel" style="font-weight:600;">Ticker sélectionné : {{ ticker }} — L{{ line_index }}</div>
+        <label for="tickerLineSearch">Rechercher un ticker</label>
+        <input id="tickerLineSearch" type="search" placeholder="Rechercher un ticker…" autocomplete="off" aria-describedby="tickerLineHelp" aria-controls="tickerLineResults" style="min-width:300px;">
+        <div id="tickerLineResults" class="ticker-line-results" hidden>
+          {% for opt in ticker_options %}
+            <button type="button" class="ticker-line-option" data-value="{{ opt.ticker }}|{{ opt.line_index }}" data-ticker="{{ opt.ticker }}" data-line="{{ opt.line_index }}" data-label="{{ opt.ticker }} — L{{ opt.line_index }}">
+              {{ opt.ticker }} — L{{ opt.line_index }} <span class="muted">BUY {{ opt.buy }} / SELL {{ opt.sell }}</span>
+            </button>
+          {% endfor %}
+          <div id="tickerLineNoResults" class="muted" hidden>Aucun ticker trouvé.</div>
+        </div>
+        <span id="tickerLineHelp" class="muted">Tickers joués uniquement.</span>
+      </div>
     {% else %}
       <span class="muted">Aucun ticker joué sur ce backtest.</span>
     {% endif %}
@@ -753,32 +789,22 @@
     metricSelect.addEventListener("change", (e) => updateChart(e.target.value));
   }
 
-  const tickerLineCombobox = document.getElementById("tickerLineCombobox");
-  const tickerLineOptions = document.getElementById("tickerLineOptions");
+  const tickerLineSearch = document.getElementById("tickerLineSearch");
+  const tickerLineResults = document.getElementById("tickerLineResults");
+  const tickerLineNoResults = document.getElementById("tickerLineNoResults");
+  const selectedTickerLineLabel = document.getElementById("selectedTickerLineLabel");
+  const tickerLineOptions = tickerLineResults ? Array.from(tickerLineResults.querySelectorAll(".ticker-line-option")) : [];
   const currentTickerLineValue = "{{ ticker|escapejs }}|{{ line_index }}";
 
-  function findTickerLineOptionByDataValue(value) {
-    if (!tickerLineOptions) return null;
-    return Array.from(tickerLineOptions.options).find((option) => option.dataset.value === value) || null;
-  }
-
-  function findTickerLineOptionByInputValue(value) {
-    if (!tickerLineOptions) return null;
-    return Array.from(tickerLineOptions.options).find((option) => option.value === value) || null;
-  }
-
-  function initializeTickerLineCombobox() {
-    if (!tickerLineCombobox) return;
-    const selectedOption = findTickerLineOptionByDataValue(currentTickerLineValue);
-    if (selectedOption) tickerLineCombobox.value = selectedOption.value;
-  }
-
-  function navigateToTickerLineComboboxValue() {
-    if (!tickerLineCombobox) return;
-    const selectedOption = findTickerLineOptionByInputValue(tickerLineCombobox.value);
-    if (!selectedOption || !selectedOption.dataset.value) return;
-    if (selectedOption.dataset.value === currentTickerLineValue) return;
-    const [tk, line] = selectedOption.dataset.value.split("|");
+  function navigateToTickerLineValue(option) {
+    if (!option || !option.dataset.value) return;
+    if (selectedTickerLineLabel && option.dataset.label) {
+      selectedTickerLineLabel.textContent = `Ticker sélectionné : ${option.dataset.label}`;
+    }
+    if (tickerLineSearch) tickerLineSearch.value = "";
+    if (tickerLineResults) tickerLineResults.hidden = true;
+    if (option.dataset.value === currentTickerLineValue) return;
+    const [tk, line] = option.dataset.value.split("|");
     const url = new URL(window.location.href);
     url.searchParams.set("ticker", tk);
     url.searchParams.set("line", line);
@@ -786,13 +812,39 @@
     window.location.href = url.toString();
   }
 
-  initializeTickerLineCombobox();
-  if (tickerLineCombobox) {
-    tickerLineCombobox.addEventListener("change", navigateToTickerLineComboboxValue);
-    tickerLineCombobox.addEventListener("keydown", (e) => {
+  function filterTickerLineOptions() {
+    if (!tickerLineResults) return;
+    const query = (tickerLineSearch ? tickerLineSearch.value : "").trim().toUpperCase();
+    let visibleCount = 0;
+    tickerLineOptions.forEach((option) => {
+      const ticker = (option.dataset.ticker || "").toUpperCase();
+      const label = (option.dataset.label || "").toUpperCase();
+      const matches = !query || ticker.startsWith(query) || label.startsWith(query);
+      option.hidden = !matches;
+      option.style.display = matches ? "" : "none";
+      option.setAttribute("aria-hidden", matches ? "false" : "true");
+      if (matches) visibleCount += 1;
+    });
+    if (tickerLineNoResults) tickerLineNoResults.hidden = visibleCount > 0;
+    tickerLineResults.hidden = false;
+  }
+
+  tickerLineOptions.forEach((option) => {
+    option.addEventListener("click", () => navigateToTickerLineValue(option));
+  });
+  if (tickerLineSearch) {
+    tickerLineSearch.addEventListener("focus", filterTickerLineOptions);
+    tickerLineSearch.addEventListener("input", filterTickerLineOptions);
+    tickerLineSearch.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        tickerLineSearch.value = "";
+        if (tickerLineResults) tickerLineResults.hidden = true;
+        return;
+      }
       if (e.key === "Enter") {
         e.preventDefault();
-        navigateToTickerLineComboboxValue();
+        const firstVisibleOption = tickerLineOptions.find((option) => !option.hidden);
+        if (firstVisibleOption) navigateToTickerLineValue(firstVisibleOption);
       }
     });
   }

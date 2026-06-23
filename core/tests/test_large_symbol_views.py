@@ -1904,8 +1904,10 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn('overflow-x: auto;', body)
         self.assertIn('data-acc-key="selection"', body)
         self.assertIn('data-acc-key="daily"', body)
-        self.assertIn('id="tickerLineCombobox"', body)
-        self.assertIn('id="tickerLineOptions"', body)
+        self.assertIn('id="selectedTickerLineLabel"', body)
+        self.assertIn('id="tickerLineSearch"', body)
+        self.assertIn('id="tickerLineResults"', body)
+        self.assertNotIn('<datalist', body)
 
     def test_backtest_results_quick_nav_links_warnings_when_warning_section_exists(self):
         results = self._minimal_results()
@@ -1963,7 +1965,8 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.context["line_index"], 2)
         body = response.content.decode()
         self.assertIn('const currentTickerLineValue = "AAA|2";', body)
-        self.assertIn("initializeTickerLineCombobox();", body)
+        self.assertIn("Ticker sélectionné : AAA — L2", body)
+        self.assertIn("navigateToTickerLineValue", body)
 
     def test_backtest_results_defaults_to_price_position_chart(self):
         bt = self._build_diagnostic_backtest(
@@ -2069,11 +2072,21 @@ class BacktestResultsRenderTests(TestCase):
         options = response.context["ticker_options"]
         self.assertEqual([opt["ticker"] for opt in options], ["AAA", "CCC", "DDD"])
         body = response.content.decode()
-        self.assertIn('id="tickerLineCombobox"', body)
-        self.assertIn("Rechercher ou sélectionner un ticker", body)
-        self.assertNotIn('id="tickerLineSearch"', body)
+        self.assertIn('id="selectedTickerLineLabel"', body)
+        self.assertIn("Ticker sélectionné", body)
+        self.assertIn('id="tickerLineSearch"', body)
+        self.assertIn('placeholder="Rechercher un ticker…"', body)
+        self.assertIn('class="ticker-line-option"', body)
+        self.assertNotIn('id="tickerLineCombobox"', body)
         self.assertNotIn('id="tickerLineSelect"', body)
+        self.assertNotIn('<datalist', body)
         self.assertIn("Tickers joués uniquement", body)
+        self.assertIn("Aucun ticker trouvé", body)
+        self.assertIn("filterTickerLineOptions", body)
+        self.assertIn('tickerLineSearch.addEventListener("input", filterTickerLineOptions);', body)
+        self.assertIn("ticker.startsWith(query)", body)
+        self.assertIn('option.style.display = matches ? "" : "none";', body)
+        self.assertIn('option.setAttribute("aria-hidden", matches ? "false" : "true");', body)
         self.assertIn('data-value="AAA|1"', body)
         self.assertIn('data-value="CCC|1"', body)
         self.assertIn('data-value="DDD|1"', body)
@@ -2157,7 +2170,8 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.context["ticker_options"], [])
         body = response.content.decode()
         self.assertIn("Aucun ticker joué sur ce backtest", body)
-        self.assertNotIn('id="tickerLineCombobox"', body)
+        self.assertNotIn('id="tickerLineSearch"', body)
+        self.assertNotIn('id="tickerLineResults"', body)
 
     def test_backtest_results_renders_large_result_mode_warning_without_daily_rows(self):
         bt = Backtest.objects.create(
