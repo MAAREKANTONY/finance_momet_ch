@@ -2905,15 +2905,57 @@ def backtest_results(request, pk: int):
         messages.warning(request, "Aucun résultat disponible pour ce backtest (lance-le d'abord).")
         return redirect("backtest_detail", pk=pk)
 
+    def _codes_to_label(v):
+        if isinstance(v, (list, tuple)):
+            return " + ".join(str(x) for x in v if str(x).strip())
+        if v is None:
+            return ""
+        return str(v)
+
+    ticker_options = []
+    ticker_options_seen = set()
+    for tk, te in tickers_map.items():
+        for l in (te.get("lines") or []):
+            li = int(l.get("line_index") or 0)
+            played = _line_has_executed_trade(l)
+            if not played:
+                try:
+                    from .services.backtesting.results_offload import load_daily_from_line
+                    raw_daily = load_daily_from_line(l or {})
+                except Exception:
+                    raw_daily = (l or {}).get("daily") or []
+                played = _line_has_executed_trade(l, raw_daily)
+            if played and tk not in ticker_options_seen:
+                ticker_options.append({
+                    "ticker": tk,
+                    "line_index": li,
+                    "buy": _codes_to_label(l.get("buy")),
+                    "sell": _codes_to_label(l.get("sell")),
+                })
+                ticker_options_seen.add(tk)
+    ticker_options.sort(key=lambda r: (str(r.get("ticker") or ""), int(r.get("line_index") or 0)))
+
     # Selected ticker / line
-    ticker = request.GET.get("ticker") or next(iter(tickers_map.keys()))
+    requested_ticker = request.GET.get("ticker")
+    default_option = ticker_options[0] if ticker_options else None
+    requested_option = next((o for o in ticker_options if o["ticker"] == requested_ticker), None)
+    if requested_ticker in tickers_map:
+        ticker = requested_ticker
+    elif default_option:
+        ticker = default_option["ticker"]
+    else:
+        ticker = next(iter(tickers_map.keys()))
     tentry = tickers_map.get(ticker) or next(iter(tickers_map.values()))
-    ticker = ticker if ticker in tickers_map else next(iter(tickers_map.keys()))
 
     try:
-        line_index = int(request.GET.get("line", "1"))
+        default_line_index = (
+            requested_option["line_index"]
+            if requested_option else
+            (default_option["line_index"] if default_option and ticker == default_option["ticker"] else 1)
+        )
+        line_index = int(request.GET.get("line") or default_line_index)
     except ValueError:
-        line_index = 1
+        line_index = int((requested_option or default_option or {}).get("line_index") or 1)
 
     lines = tentry.get("lines") or []
     line = next((l for l in lines if int(l.get("line_index", 0)) == line_index), None)
@@ -3016,8 +3058,8 @@ def backtest_results(request, pk: int):
         portfolio_daily=port_daily,
     )
 
-    # Truncate very large series for UI rendering (default: last 200 days)
-    show_all = request.GET.get("all") == "1"
+    # Show the full selected line by default. `all=0` keeps a manual compact escape hatch.
+    show_all = request.GET.get("all") != "0"
     limit = 200
     total_daily_count = len(daily)
     is_truncated = (total_daily_count > limit) and (not show_all)
@@ -3025,16 +3067,6 @@ def backtest_results(request, pk: int):
         daily = daily[-limit:]
 
 
-    def _codes_to_label(v):
-        if isinstance(v, (list, tuple)):
-            return " + ".join(str(x) for x in v if str(x).strip())
-        if v is None:
-            return ""
-        return str(v)
-
-    # For dropdowns in UI
-    ticker_options = []
-    ticker_options_seen = set()
     global_line_options = {}
     global_line_rows = []
     try:
@@ -3064,15 +3096,6 @@ def backtest_results(request, pk: int):
                     raw_daily = (l or {}).get("daily") or []
                 played = _line_has_executed_trade(l, raw_daily)
 
-            if played and tk not in ticker_options_seen:
-                ticker_options.append({
-                    "ticker": tk,
-                    "line_index": li,
-                    "buy": buy_label,
-                    "sell": sell_label,
-                })
-                ticker_options_seen.add(tk)
-
             if li != global_line_index:
                 continue
             if not played:
@@ -3097,7 +3120,6 @@ def backtest_results(request, pk: int):
             })
 
     global_line_options = [global_line_options[k] for k in sorted(global_line_options.keys())]
-    ticker_options.sort(key=lambda r: (str(r.get("ticker") or ""), int(r.get("line_index") or 0)))
     global_line_rows.sort(key=lambda r: (str(r.get("ticker") or "")))
 
     return render(

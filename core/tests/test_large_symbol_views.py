@@ -1904,8 +1904,8 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn('overflow-x: auto;', body)
         self.assertIn('data-acc-key="selection"', body)
         self.assertIn('data-acc-key="daily"', body)
-        self.assertIn('id="tickerLineSearch"', body)
-        self.assertIn('id="tickerLineSelect"', body)
+        self.assertIn('id="tickerLineCombobox"', body)
+        self.assertIn('id="tickerLineOptions"', body)
 
     def test_backtest_results_quick_nav_links_warnings_when_warning_section_exists(self):
         results = self._minimal_results()
@@ -1928,6 +1928,93 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn('href="#backtest-warnings"', body)
         self.assertIn('id="backtest-warnings"', body)
         self.assertIn("Avertissements", body)
+
+    def test_backtest_results_defaults_to_first_played_ticker(self):
+        bbb = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            extra_symbols=[bbb],
+            ticker_lines={
+                "BBB": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-02", "action": None}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                },
+                "AAA": {
+                    "lines": [{
+                        "line_index": 2,
+                        "buy": ["A2"],
+                        "sell": ["B2"],
+                        "daily": [{"date": "2024-01-03", "action": "BUY", "price_close": "10"}],
+                        "final": {"N": 1, "BT": "0.1"},
+                    }]
+                },
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["ticker"], "AAA")
+        self.assertEqual(response.context["line_index"], 2)
+        body = response.content.decode()
+        self.assertIn('const currentTickerLineValue = "AAA|2";', body)
+        self.assertIn("initializeTickerLineCombobox();", body)
+
+    def test_backtest_results_defaults_to_price_position_chart(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-02", "action": "BUY", "price_close": "10", "shares": 1}],
+                        "final": {"N": 1, "BT": "0.1"},
+                    }]
+                }
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn('<option value="PRICE_POS" selected>Prix + position (aire verte/rouge)</option>', body)
+        self.assertIn('metricSelect.value = "PRICE_POS";', body)
+        self.assertIn("updateChart(metricSelect.value);", body)
+
+    def test_backtest_results_shows_all_daily_rows_by_default(self):
+        daily = [
+            {"date": f"2024-01-{((idx % 28) + 1):02d}", "action": "BUY" if idx == 0 else None, "price_close": str(idx + 1)}
+            for idx in range(250)
+        ]
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": daily,
+                        "final": {"N": 1, "BT": "0.1"},
+                    }]
+                }
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["is_truncated"])
+        self.assertEqual(len(response.context["daily"]), 250)
+        self.assertNotContains(response, "Afficher toutes les lignes")
 
     def test_backtest_results_selection_lists_only_played_tickers(self):
         bbb = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
@@ -1982,13 +2069,15 @@ class BacktestResultsRenderTests(TestCase):
         options = response.context["ticker_options"]
         self.assertEqual([opt["ticker"] for opt in options], ["AAA", "CCC", "DDD"])
         body = response.content.decode()
-        self.assertIn('id="tickerLineSearch"', body)
-        self.assertIn("Rechercher un ticker", body)
+        self.assertIn('id="tickerLineCombobox"', body)
+        self.assertIn("Rechercher ou sélectionner un ticker", body)
+        self.assertNotIn('id="tickerLineSearch"', body)
+        self.assertNotIn('id="tickerLineSelect"', body)
         self.assertIn("Tickers joués uniquement", body)
-        self.assertIn('value="AAA|1"', body)
-        self.assertIn('value="CCC|1"', body)
-        self.assertIn('value="DDD|1"', body)
-        self.assertNotIn('value="BBB|1"', body)
+        self.assertIn('data-value="AAA|1"', body)
+        self.assertIn('data-value="CCC|1"', body)
+        self.assertIn('data-value="DDD|1"', body)
+        self.assertNotIn('data-value="BBB|1"', body)
 
     def test_backtest_results_selection_deduplicates_played_tickers(self):
         bt = self._build_diagnostic_backtest(
@@ -2044,7 +2133,7 @@ class BacktestResultsRenderTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual([opt["ticker"] for opt in response.context["ticker_options"]], ["AAA"])
-        self.assertContains(response, 'value="AAA|1"')
+        self.assertContains(response, 'data-value="AAA|1"')
 
     def test_backtest_results_selection_shows_empty_state_without_played_tickers(self):
         bt = self._build_diagnostic_backtest(
@@ -2068,7 +2157,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.context["ticker_options"], [])
         body = response.content.decode()
         self.assertIn("Aucun ticker joué sur ce backtest", body)
-        self.assertNotIn('id="tickerLineSelect"', body)
+        self.assertNotIn('id="tickerLineCombobox"', body)
 
     def test_backtest_results_renders_large_result_mode_warning_without_daily_rows(self):
         bt = Backtest.objects.create(
