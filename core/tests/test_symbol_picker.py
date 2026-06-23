@@ -222,6 +222,22 @@ class SignalLinesCleaningTests(SimpleTestCase):
         ])
         self.assertEqual(cleaned[0]["gm_buy_conditions"]["current"]["mode"], "IGNORE")
 
+    def test_clean_signal_lines_allows_gm_buy_with_threshold_without_buy_max(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_buy_conditions": {
+                    "current": {"mode": "GM_POS", "threshold": "0.4", "explicit_threshold": True},
+                },
+            }
+        ])
+        current = cleaned[0]["gm_buy_conditions"]["current"]
+        self.assertEqual(current["threshold"], "0.4")
+        self.assertTrue(current["explicit_threshold"])
+        self.assertIsNone(current["buy_max_threshold"])
+
     def test_clean_signal_lines_allows_gm_buy_with_threshold_and_buy_max(self):
         cleaned = _clean_signal_lines_json([
             {
@@ -334,7 +350,7 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
             self.assertIn("GM Push — impulsion marché BUY", content)
             self.assertIn("GM Push — protection impulsion marché", content)
             self.assertIn("GM Push mémorise les impulsions de marché.", content)
-            self.assertIn("Seuil d'autorisation d'achat", content)
+            self.assertIn("Seuil d'activation achat", content)
             self.assertIn("Seuil de vente", content)
             self.assertNotIn('data-role="sell_gm_filter"', content)
 
@@ -364,7 +380,7 @@ class SignalLineTemplateDefaultsTests(SimpleTestCase):
         self.assertIn("GM Push — impulsion marché BUY", content)
         self.assertIn("GM Push — protection impulsion marché", content)
         self.assertIn("GM Push mémorise les impulsions de marché.", content)
-        self.assertIn("Seuil d'autorisation d'achat", content)
+        self.assertIn("Seuil d'activation achat", content)
         self.assertIn("Seuil de vente", content)
         self.assertNotIn('data-role="sell_gm_filter"', content)
 
