@@ -287,12 +287,15 @@
       threshold: entry.threshold || ''
     };
   }
+  function normalizeThresholdText(value) {
+    return value === null || value === undefined ? '' : String(value).trim();
+  }
   function normalizeGmPushCondition(item, key, family) {
     const config = item[key] || {};
     const entry = config[family] || {};
     return {
       mode: normalizeLegacyGmFilter(entry.mode || 'IGNORE'),
-      threshold: entry.threshold || entry.buy_threshold || (entry.sell_threshold ? String(Math.abs(Number(entry.sell_threshold))) : '') || '',
+      threshold: entry.threshold || entry.buy_threshold || normalizeThresholdText(entry.sell_threshold).replace(/^-/, '') || '',
       buyMaxThreshold: entry.buy_max_threshold || ''
     };
   }
@@ -470,8 +473,8 @@
   }
   function makeThresholdInput(value, role) {
     const input = document.createElement("input");
-    input.type = "number";
-    input.step = "0.0001";
+    input.type = "text";
+    input.inputMode = "decimal";
     input.placeholder = marketThresholdPlaceholder(role);
     input.title = isBuyMarketConditionRole(role)
       ? "BUY autorisé uniquement si GM passe au-dessus de ce seuil."

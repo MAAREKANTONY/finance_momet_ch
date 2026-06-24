@@ -59,6 +59,7 @@ from core.services.trend_filters import (
     TREND_FILTER_OPERATOR_KEY,
     trend_return_from_cache,
 )
+from core.utils.numbers import format_decimal_plain
 from core.trading_model_config import (
     SIGNAL_LATCH_OPPOSITES,
     TRADING_MODEL_AUTO_SELL_VALUES,
@@ -324,8 +325,8 @@ def _normalize_gm_condition_entry(raw: Any = None, *, legacy_code: Any = None) -
         explicit_threshold = False
     return {
         "mode": mode,
-        "threshold": None if threshold_dec is None else str(threshold_dec),
-        "buy_max_threshold": None if mode != "POS" or buy_max_threshold_dec is None else str(buy_max_threshold_dec),
+        "threshold": None if threshold_dec is None else format_decimal_plain(threshold_dec),
+        "buy_max_threshold": None if mode != "POS" or buy_max_threshold_dec is None else format_decimal_plain(buy_max_threshold_dec),
         "explicit_threshold": bool(explicit_threshold),
     }
 
@@ -375,10 +376,10 @@ def _normalize_gm_push_condition_entry(raw: Any = None) -> dict[str, Any]:
         sell_threshold = Decimal("0")
     return {
         "mode": normalized_mode,
-        "threshold": None if threshold is None else str(threshold),
-        "buy_threshold": None if buy_threshold is None else str(buy_threshold),
-        "sell_threshold": None if sell_threshold is None else str(sell_threshold),
-        "buy_max_threshold": None if normalized_mode != "POS" or buy_max_threshold is None else str(buy_max_threshold),
+        "threshold": None if threshold is None else format_decimal_plain(threshold),
+        "buy_threshold": None if buy_threshold is None else format_decimal_plain(buy_threshold),
+        "sell_threshold": None if sell_threshold is None else format_decimal_plain(sell_threshold),
+        "buy_max_threshold": None if normalized_mode != "POS" or buy_max_threshold is None else format_decimal_plain(buy_max_threshold),
         "explicit_threshold": bool(explicit_threshold and buy_threshold is not None and sell_threshold is not None),
     }
 
