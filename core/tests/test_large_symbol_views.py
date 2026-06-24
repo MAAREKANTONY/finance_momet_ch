@@ -2092,6 +2092,130 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn('data-value="DDD|1"', body)
         self.assertNotIn('data-value="BBB|1"', body)
 
+    def test_backtest_results_debug_all_tickers_lists_unplayed_tickers(self):
+        bbb = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        ccc = Symbol.objects.create(ticker="CCC", exchange="NYSE", active=True)
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            extra_symbols=[bbb, ccc],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-02", "action": "BUY"}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                },
+                "BBB": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-03", "action": None}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                },
+                "CCC": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-04", "action": "SELL"}],
+                        "final": {"N": 1, "BT": "0.1"},
+                    }]
+                },
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]), {"debug_all_tickers": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["debug_all_tickers"])
+        options = response.context["ticker_options"]
+        self.assertEqual([opt["ticker"] for opt in options], ["AAA", "BBB", "CCC"])
+        self.assertEqual({opt["ticker"]: opt["played"] for opt in options}, {"AAA": True, "BBB": False, "CCC": True})
+        body = response.content.decode()
+        self.assertIn('id="debugAllTickersToggle" type="checkbox" checked', body)
+        self.assertIn("Afficher tous les tickers du scénario", body)
+        self.assertIn("Mode debug : inclut aussi les tickers sans trade.", body)
+        self.assertIn('data-value="BBB|1"', body)
+        self.assertIn("BBB — L1 — sans trade", body)
+        self.assertIn("Tous les tickers du scénario, y compris sans trade.", body)
+        self.assertIn('tickerLineSearch.addEventListener("input", filterTickerLineOptions);', body)
+        self.assertIn('metricSelect.value = "PRICE_POS";', body)
+
+    def test_backtest_results_debug_all_tickers_can_select_unplayed_ticker(self):
+        bbb = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            extra_symbols=[bbb],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-02", "action": "BUY", "price_close": "10"}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                },
+                "BBB": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-03", "action": None, "price_close": "11"}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                },
+            },
+        )
+
+        response = self.client.get(
+            reverse("backtest_results", args=[bt.pk]),
+            {"debug_all_tickers": "1", "ticker": "BBB", "line": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["ticker"], "BBB")
+        self.assertEqual(response.context["line_index"], 1)
+        self.assertEqual(len(response.context["daily"]), 1)
+        body = response.content.decode()
+        self.assertIn("Ticker sélectionné : BBB — L1 — sans trade", body)
+        self.assertIn("Aucun trade pour ce ticker.", body)
+        self.assertIn('const currentTickerLineValue = "BBB|1";', body)
+
+    def test_backtest_results_debug_all_tickers_prefers_universe_snapshot(self):
+        zzz = Symbol.objects.create(ticker="ZZZ", exchange="NYSE", active=True)
+        self.scenario.symbols.add(zzz)
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-02", "action": "BUY"}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                },
+            },
+        )
+        bt.universe_snapshot = [{"ticker": "AAA"}, {"ticker": "MSFT"}]
+        bt.save(update_fields=["universe_snapshot"])
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]), {"debug_all_tickers": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual([opt["ticker"] for opt in response.context["ticker_options"]], ["AAA", "MSFT"])
+        body = response.content.decode()
+        self.assertIn('data-value="MSFT|1"', body)
+        self.assertIn("MSFT — L1 — sans trade", body)
+        self.assertNotIn('data-value="ZZZ|1"', body)
+
     def test_backtest_results_selection_deduplicates_played_tickers(self):
         bt = self._build_diagnostic_backtest(
             signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
