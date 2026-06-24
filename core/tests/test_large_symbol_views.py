@@ -741,6 +741,59 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn('"trading_model": "LATCH_STATEFUL"', body)
         self.assertIn('"buy": ["Af", "SPVa_basse"]', body)
 
+    def test_backtest_edit_view_renders_plain_threshold_values_in_signal_lines_json(self):
+        signal_lines = [
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "gm_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "GM_POS", "threshold": "0.2000000000", "buy_max_threshold": "0.4000000000", "explicit_threshold": True},
+                    "market": {"mode": "GM_POS", "threshold": "1E-6", "explicit_threshold": True},
+                },
+                "gm_push_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "GM_POS", "threshold": "10.0000", "buy_max_threshold": "20.0000", "explicit_threshold": True},
+                },
+            }
+        ]
+        scenario = Scenario.objects.create(
+            name="Scenario Threshold Edit",
+            active=True,
+            a=1, b=1, c=1, d=1, e=1,
+            n1=5, n2=3, npente=100, slope_threshold=0.1,
+            npente_basse=20, slope_threshold_basse=0.02, nglobal=20, history_years=2,
+        )
+        bt = Backtest.objects.create(
+            name="BT Threshold Edit",
+            scenario=scenario,
+            start_date="2024-01-01",
+            end_date="2024-01-31",
+            capital_total="1000",
+            capital_per_ticker="100",
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=signal_lines,
+            universe_snapshot=[],
+        )
+
+        response = self.client.get(reverse("backtest_update", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        rendered = json.loads(response.context["signal_lines_json"])
+        gm_buy = rendered[0]["gm_buy_conditions"]
+        gm_push = rendered[0]["gm_push_buy_conditions"]
+        self.assertEqual(gm_buy["current"]["threshold"], "0.2")
+        self.assertEqual(gm_buy["current"]["buy_max_threshold"], "0.4")
+        self.assertEqual(gm_buy["market"]["threshold"], "0.000001")
+        self.assertEqual(gm_push["current"]["threshold"], "10")
+        self.assertEqual(gm_push["current"]["buy_max_threshold"], "20")
+        body = response.content.decode()
+        self.assertNotIn("0.2000000000", body)
+        self.assertNotIn("1E-6", body)
+
     def test_backtest_edit_view_shows_persisted_market_cap_filter_values(self):
         scenario = Scenario.objects.create(
             name="Scenario Market Cap Edit",

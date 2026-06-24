@@ -288,6 +288,28 @@ class TrendFilterEngineTests(TestCase):
             self.assertEqual(neg_entry["threshold"], "0.4")
             self.assertIsNone(neg_entry["buy_max_threshold"])
 
+    def test_gm_threshold_normalization_formats_plain_decimal_strings(self):
+        for normalizer in (normalize_engine_gm_condition_entry, normalize_form_gm_condition_entry):
+            entry = normalizer({"mode": "POS", "threshold": "1E-6", "buy_max_threshold": "0.4000000000"})
+            self.assertEqual(entry["threshold"], "0.000001")
+            self.assertEqual(entry["buy_max_threshold"], "0.4")
+
+            exact_entry = normalizer({"mode": "POS", "threshold": "0.40000000000000002"})
+            self.assertEqual(exact_entry["threshold"], "0.40000000000000002")
+
+    def test_gm_push_threshold_normalization_formats_plain_decimal_strings(self):
+        for normalizer in (normalize_engine_gm_push_condition_entry, normalize_form_gm_push_condition_entry):
+            entry = normalizer({"mode": "POS", "threshold": "1E-6", "buy_max_threshold": "0.4000000000"})
+            self.assertEqual(entry["threshold"], "0.000001")
+            self.assertEqual(entry["buy_threshold"], "0.000001")
+            self.assertEqual(entry["sell_threshold"], "0.000001")
+            self.assertEqual(entry["buy_max_threshold"], "0.4")
+
+            legacy_entry = normalizer({"mode": "NEG", "sell_threshold": "0.2000000000", "explicit_threshold": True})
+            self.assertIsNone(legacy_entry["threshold"])
+            self.assertEqual(legacy_entry["buy_threshold"], "0.2")
+            self.assertEqual(legacy_entry["sell_threshold"], "0.2")
+
     def test_gm_push_buy_max_threshold_normalization_is_buy_pos_only(self):
         for normalizer in (normalize_engine_gm_push_condition_entry, normalize_form_gm_push_condition_entry):
             pos_entry = normalizer({"mode": "POS", "threshold": "0.4", "buy_max_threshold": "0.6"})
@@ -388,7 +410,12 @@ class TrendFilterEngineTests(TestCase):
             self.assertIn("Activer le filtre d'achat", source)
             self.assertIn("Activer le filtre de vente", source)
             self.assertIn("Seuil d'activation achat", source)
+            self.assertIn("Seuil haut de blocage achat", source)
             self.assertIn("Seuil de vente", source)
+            self.assertIn('input.type = "text";', source)
+            self.assertIn('input.inputMode = "decimal";', source)
+            self.assertIn("normalizeThresholdText(entry.sell_threshold).replace(/^-/, '')", source)
+            self.assertNotIn("Math.abs(Number(entry.sell_threshold))", source)
             self.assertIn("return isBuyMarketConditionRole(role) ? 'GM_POS' : 'GM_NEG';", source)
             self.assertIn('hidden.setAttribute("data-role", role)', source)
             self.assertNotIn('sel.setAttribute("data-role", role)', source)
@@ -1542,8 +1569,8 @@ class TrendFilterEngineTests(TestCase):
                 "operator": "AND",
                 "market": {
                     "mode": "GM_POS",
-                    "threshold": "0.2",
-                    "buy_max_threshold": "0.4",
+                    "threshold": "0.2000000000",
+                    "buy_max_threshold": "0.4000000000",
                     "explicit_threshold": True,
                 },
             },

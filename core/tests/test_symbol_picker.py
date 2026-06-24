@@ -1,9 +1,12 @@
+from decimal import Decimal
+
 from django import forms
 from django.test import SimpleTestCase
 from pathlib import Path
 
 from core.widgets import SymbolPickerWidget
 from core.forms import _clean_signal_lines_json
+from core.utils.numbers import format_decimal_plain
 
 
 class SymbolPickerWidgetTests(SimpleTestCase):
@@ -16,6 +19,25 @@ class SymbolPickerWidgetTests(SimpleTestCase):
         widget = SymbolPickerWidget()
         self.assertEqual(widget.value_from_datadict({"symbols": ""}, {}, "symbols"), [])
         self.assertEqual(widget.value_from_datadict({}, {}, "symbols"), [])
+
+
+class DecimalFormattingTests(SimpleTestCase):
+    def test_format_decimal_plain_removes_noise_without_rounding(self):
+        cases = {
+            "0.2000000000": "0.2",
+            "1E-6": "0.000001",
+            Decimal("1E-6"): "0.000001",
+            "10.0000": "10",
+            "-0": "0",
+            "0.40000000000000002": "0.40000000000000002",
+            "0.000001": "0.000001",
+        }
+        for raw, expected in cases.items():
+            with self.subTest(raw=raw):
+                self.assertEqual(format_decimal_plain(raw), expected)
+
+        self.assertIsNone(format_decimal_plain(None))
+        self.assertIsNone(format_decimal_plain(""))
 
 
 class SignalLinesCleaningTests(SimpleTestCase):
@@ -143,6 +165,55 @@ class SignalLinesCleaningTests(SimpleTestCase):
         self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["mode"], "NEG")
         self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["buy_threshold"], "0.04")
         self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["sell_threshold"], "0.04")
+
+    def test_clean_signal_lines_formats_gm_thresholds_plainly(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_buy_conditions": {
+                    "current": {"mode": "GM_POS", "threshold": "0.2000000000", "buy_max_threshold": "0.4000000000", "explicit_threshold": True},
+                    "market": {"mode": "GM_POS", "threshold": "1E-6", "explicit_threshold": True},
+                    "sector": {"mode": "GM_NEG", "threshold": "10.0000", "buy_max_threshold": "99.0000", "explicit_threshold": True},
+                },
+            }
+        ])
+
+        conditions = cleaned[0]["gm_buy_conditions"]
+        self.assertEqual(conditions["current"]["threshold"], "0.2")
+        self.assertEqual(conditions["current"]["buy_max_threshold"], "0.4")
+        self.assertEqual(conditions["market"]["threshold"], "0.000001")
+        self.assertEqual(conditions["sector"]["threshold"], "10")
+        self.assertIsNone(conditions["sector"]["buy_max_threshold"])
+
+    def test_clean_signal_lines_formats_gm_push_thresholds_plainly(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_push_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "GM_POS", "threshold": "0.2000000000", "buy_max_threshold": "0.4000000000", "explicit_threshold": True},
+                    "market": {"mode": "GM_NEG", "threshold": "1E-6", "explicit_threshold": True},
+                    "sector": {"mode": "GM_POS", "buy_threshold": "10.0000", "sell_threshold": "10.0000", "explicit_threshold": True},
+                },
+            }
+        ])
+
+        conditions = cleaned[0]["gm_push_buy_conditions"]
+        self.assertEqual(conditions["current"]["threshold"], "0.2")
+        self.assertEqual(conditions["current"]["buy_threshold"], "0.2")
+        self.assertEqual(conditions["current"]["sell_threshold"], "0.2")
+        self.assertEqual(conditions["current"]["buy_max_threshold"], "0.4")
+        self.assertEqual(conditions["market"]["threshold"], "0.000001")
+        self.assertEqual(conditions["market"]["buy_threshold"], "0.000001")
+        self.assertEqual(conditions["market"]["sell_threshold"], "0.000001")
+        self.assertIsNone(conditions["market"]["buy_max_threshold"])
+        self.assertIsNone(conditions["sector"]["threshold"])
+        self.assertEqual(conditions["sector"]["buy_threshold"], "10")
+        self.assertEqual(conditions["sector"]["sell_threshold"], "10")
 
     def test_clean_signal_lines_rejects_gm_buy_without_threshold(self):
         with self.assertRaisesMessage(forms.ValidationError, "Renseignez un seuil pour activer ce filtre d’achat GM."):
