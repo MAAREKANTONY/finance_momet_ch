@@ -529,6 +529,126 @@ class TrendFilterEngineTests(TestCase):
         self.assertTrue(daily[2]["buy_blocked_by_gm_buy_max"])
         self.assertEqual(daily[2]["buy_blocked_message"], "Achat bloqué : GM au-dessus du seuil haut d’achat.")
 
+    def test_explain_summary_tracks_executed_buy(self):
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "PROGRESSIVE_AUTO_SELL",
+                "buy": ["Af"],
+                "sell": [],
+            }],
+            prices=["10", "11"],
+            alerts_by_offset={0: "Af"},
+        )
+
+        line = run_backtest(bt).results["tickers"][bt.universe_snapshot[0]]["lines"][0]
+        explain = line["explain"]
+
+        self.assertTrue(explain["played"])
+        self.assertEqual(explain["buy_candidates"], 1)
+        self.assertEqual(explain["buy_executed"], 1)
+        self.assertEqual(explain["sell_executed"], 0)
+
+    def test_explain_summary_records_gm_buy_threshold_blocker(self):
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "GM_POS", "threshold": "0.4", "explicit_threshold": True},
+                },
+            }],
+            prices=["10", "11", "12"],
+            alerts_by_offset={0: "Af"},
+        )
+        gm_values = {self.start + timedelta(days=i): Decimal("0.1") for i in range(3)}
+
+        with patch("core.services.backtesting.engine._build_global_momentum_values_from_ticker_data", return_value=gm_values):
+            line = run_backtest(bt).results["tickers"][bt.universe_snapshot[0]]["lines"][0]
+
+        explain = line["explain"]
+        self.assertFalse(explain["played"])
+        self.assertEqual(explain["buy_executed"], 0)
+        self.assertIn("GM_XXXX_THRESHOLD_CURRENT", explain["blocked_counts"])
+        blocker = explain["last_blockers"][-1]
+        self.assertEqual(blocker["type"], "GM_XXXX")
+        self.assertEqual(blocker["scope"], "current")
+        self.assertEqual(blocker["value"], "0.1")
+        self.assertEqual(blocker["threshold"], "0.4")
+        self.assertEqual(blocker["decision"], "blocked")
+        self.assertIn("seuil", blocker["reason"])
+
+    def test_explain_summary_records_gm_push_blocker(self):
+        symbol = self._fresh_symbol()
+        bt = self._backtest_for_symbol(
+            symbol=symbol,
+            prices=["10", "10.1", "10.2", "10.6"],
+            alerts_by_offset={1: "Af"},
+            signal_lines=[{
+                "trading_model": "PROGRESSIVE_AUTO_SELL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_push_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "POS", "buy_threshold": "0.03", "sell_threshold": "-0.03", "explicit_threshold": True},
+                },
+            }],
+        )
+
+        line = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]
+        explain = line["explain"]
+
+        self.assertTrue(explain["played"])
+        self.assertIn("GM_PUSH_NOT_TRIGGERED_CURRENT", explain["blocked_counts"])
+        blocker = next(item for item in explain["last_blockers"] if item["code"] == "GM_PUSH_NOT_TRIGGERED_CURRENT")
+        self.assertEqual(blocker["type"], "GM_PUSH")
+        self.assertEqual(blocker["scope"], "current")
+        self.assertEqual(blocker["buy_threshold"], "0.03")
+        self.assertIn("state", blocker)
+
+    def test_explain_summary_limits_last_blockers_to_ten(self):
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "GM_POS", "threshold": "0.4", "explicit_threshold": True},
+                },
+            }],
+            prices=[str(10 + i) for i in range(15)],
+            alerts_by_offset={0: "Af"},
+        )
+        gm_values = {self.start + timedelta(days=i): Decimal("0.1") for i in range(15)}
+
+        with patch("core.services.backtesting.engine._build_global_momentum_values_from_ticker_data", return_value=gm_values):
+            line = run_backtest(bt).results["tickers"][bt.universe_snapshot[0]]["lines"][0]
+
+        explain = line["explain"]
+        self.assertGreater(explain["blocked_counts"]["GM_XXXX_THRESHOLD_CURRENT"], 10)
+        self.assertEqual(len(explain["last_blockers"]), 10)
+        self.assertEqual(explain["last_blockers"][-1]["date"], str(self.start + timedelta(days=14)))
+
+    def test_explain_summary_survives_large_result_mode_without_daily_rows(self):
+        bt = self._create_backtest(
+            signal_lines=[{
+                "trading_model": "PROGRESSIVE_AUTO_SELL",
+                "buy": ["Af"],
+                "sell": [],
+            }],
+            prices=["10", "11"],
+            alerts_by_offset={0: "Af"},
+        )
+
+        line = run_backtest(bt, large_result_mode=True).results["tickers"][bt.universe_snapshot[0]]["lines"][0]
+
+        self.assertEqual(line["daily"], [])
+        self.assertTrue(line["daily_rows_omitted"])
+        self.assertTrue(line["explain"]["played"])
+        self.assertEqual(line["explain"]["buy_executed"], 1)
+
     def test_gm_push_market_buy_without_explicit_threshold_does_not_block_backtest_or_kpi_path(self):
         self._add_benchmark_fixture(
             self.spy,
