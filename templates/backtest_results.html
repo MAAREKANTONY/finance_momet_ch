@@ -347,20 +347,31 @@
 <summary class="acc-summary"><span class="acc-title">Sélection</span></summary>
 <div class="acc-body">
 <div style="display:flex; gap:12px; flex-wrap:wrap; align-items:center;">
+    <div style="display:flex; flex-direction:column; gap:4px; min-width:260px;">
+      <label style="display:flex; gap:8px; align-items:center;">
+        <input id="debugAllTickersToggle" type="checkbox" {% if debug_all_tickers %}checked{% endif %}>
+        Afficher tous les tickers du scénario
+      </label>
+      <span class="muted">Mode debug : inclut aussi les tickers sans trade.</span>
+    </div>
+
     {% if ticker_options %}
       <div style="display:flex; flex-direction:column; gap:6px; min-width:300px; max-width:520px;">
-        <div id="selectedTickerLineLabel" style="font-weight:600;">Ticker sélectionné : {{ ticker }} — L{{ line_index }}</div>
+        <div id="selectedTickerLineLabel" style="font-weight:600;">Ticker sélectionné : {{ ticker }} — L{{ line_index }}{% if selected_ticker_option and not selected_ticker_option.played %} — sans trade{% endif %}</div>
         <label for="tickerLineSearch">Rechercher un ticker</label>
         <input id="tickerLineSearch" type="search" placeholder="Rechercher un ticker…" autocomplete="off" aria-describedby="tickerLineHelp" aria-controls="tickerLineResults" style="min-width:300px;">
         <div id="tickerLineResults" class="ticker-line-results" hidden>
           {% for opt in ticker_options %}
-            <button type="button" class="ticker-line-option" data-value="{{ opt.ticker }}|{{ opt.line_index }}" data-ticker="{{ opt.ticker }}" data-line="{{ opt.line_index }}" data-label="{{ opt.ticker }} — L{{ opt.line_index }}">
-              {{ opt.ticker }} — L{{ opt.line_index }} <span class="muted">BUY {{ opt.buy }} / SELL {{ opt.sell }}</span>
+            <button type="button" class="ticker-line-option" data-value="{{ opt.ticker }}|{{ opt.line_index }}" data-ticker="{{ opt.ticker }}" data-line="{{ opt.line_index }}" data-label="{{ opt.ticker }} — L{{ opt.line_index }}{% if not opt.played %} — sans trade{% endif %}">
+              {{ opt.ticker }} — L{{ opt.line_index }}{% if not opt.played %} — sans trade{% endif %} <span class="muted">BUY {{ opt.buy }} / SELL {{ opt.sell }}</span>
             </button>
           {% endfor %}
           <div id="tickerLineNoResults" class="muted" hidden>Aucun ticker trouvé.</div>
         </div>
-        <span id="tickerLineHelp" class="muted">Tickers joués uniquement.</span>
+        <span id="tickerLineHelp" class="muted">{% if debug_all_tickers %}Tous les tickers du scénario, y compris sans trade.{% else %}Tickers joués uniquement.{% endif %}</span>
+        {% if selected_ticker_option and not selected_ticker_option.played %}
+          <span class="muted">Aucun trade pour ce ticker.</span>
+        {% endif %}
       </div>
     {% else %}
       <span class="muted">Aucun ticker joué sur ce backtest.</span>
@@ -787,6 +798,19 @@
     metricSelect.value = "PRICE_POS";
     updateChart(metricSelect.value);
     metricSelect.addEventListener("change", (e) => updateChart(e.target.value));
+  }
+
+  const debugAllTickersToggle = document.getElementById("debugAllTickersToggle");
+  if (debugAllTickersToggle) {
+    debugAllTickersToggle.addEventListener("change", (e) => {
+      const url = new URL(window.location.href);
+      if (e.target.checked) {
+        url.searchParams.set("debug_all_tickers", "1");
+      } else {
+        url.searchParams.delete("debug_all_tickers");
+      }
+      window.location.href = url.toString();
+    });
   }
 
   const tickerLineSearch = document.getElementById("tickerLineSearch");
