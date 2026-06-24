@@ -78,6 +78,7 @@ GLOBAL_REGIME_FILTER_CODES = {"IGNORE", "GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR
 GM_CONDITION_FAMILIES = ("current", "market", "sector")
 MARKET_CAP_MISSING_POLICY_ALLOW = "ALLOW"
 MARKET_CAP_MISSING_POLICY_BLOCK = "BLOCK"
+MAX_EXPLAIN_BLOCKERS = 10
 REENTRY_WARNING_WINDOW_DAYS = 1
 REENTRY_WARNING_CODE = "IMMEDIATE_REENTRY"
 
@@ -1242,6 +1243,7 @@ def _compact_gm_buy_debug(evaluation: dict[str, Any], state_row: dict[str, Any] 
             "threshold": payload.get("threshold"),
             "buy_max_threshold": payload.get("buy_max_threshold"),
             "explicit_threshold": bool(payload.get("explicit_threshold")),
+            "blocked_by_buy_max_threshold": bool(payload.get("blocked_by_buy_max_threshold")),
             "decision": "passed" if payload.get("passed") else "blocked",
             "reason": _gm_buy_decision_reason(payload),
         }
@@ -1266,6 +1268,50 @@ def _compact_gm_buy_debug(evaluation: dict[str, Any], state_row: dict[str, Any] 
         debug["legacy_compatibility_warning"] = "Champ GM legacy présent mais ignoré au profit de gm_buy_conditions structuré."
         debug["legacy_fields"] = legacy_fields
     return debug
+
+
+def _gm_push_decision_reason(family_payload: dict[str, Any]) -> str:
+    if family_payload.get("blocked_by_buy_max_threshold"):
+        return "GM_push au-dessus du seuil haut"
+    if family_payload.get("passed") is True:
+        return "GM_push actif"
+    if family_payload.get("value") in (None, ""):
+        return "GM_push indisponible"
+    mode = _normalize_gm_condition_mode(family_payload.get("mode"))
+    if mode == "POS":
+        return "GM_push positif non déclenché"
+    if mode == "NEG":
+        return "GM_push négatif non déclenché"
+    return "GM_push ne correspond pas au régime attendu"
+
+
+def _compact_gm_push_buy_debug(evaluation: dict[str, Any]) -> dict[str, Any] | None:
+    families = {}
+    for family, payload in (evaluation.get("families") or {}).items():
+        if not isinstance(payload, dict) or not payload.get("active"):
+            continue
+        families[family] = {
+            "type": "GM_PUSH",
+            "scope": family,
+            "mode": payload.get("mode"),
+            "value": payload.get("value"),
+            "state": payload.get("state"),
+            "buy_threshold": payload.get("buy_threshold"),
+            "sell_threshold": payload.get("sell_threshold"),
+            "buy_max_threshold": payload.get("buy_max_threshold"),
+            "benchmark_ticker": payload.get("benchmark_ticker"),
+            "blocked_by_buy_max_threshold": bool(payload.get("blocked_by_buy_max_threshold")),
+            "decision": "passed" if payload.get("passed") else "blocked",
+            "reason": _gm_push_decision_reason(payload),
+        }
+    if not families:
+        return None
+    return {
+        "type": "GM_PUSH",
+        "operator": evaluation.get("operator"),
+        "passed": bool(evaluation.get("passed")),
+        "families": families,
+    }
 
 
 def _evaluate_gm_push_conditions(
@@ -1684,6 +1730,131 @@ def run_backtest(
             event["gm_buy_debug"] = gm_buy_debug
         st.setdefault("events", []).append(event)
 
+    def _new_explain_summary() -> dict[str, Any]:
+        return {
+            "played": False,
+            "buy_candidates": 0,
+            "buy_executed": 0,
+            "sell_executed": 0,
+            "blocked_counts": {},
+            "last_blockers": [],
+        }
+
+    def _explain_for_state(st: dict[str, Any]) -> dict[str, Any]:
+        explain = st.setdefault("explain", _new_explain_summary())
+        explain.setdefault("blocked_counts", {})
+        explain.setdefault("last_blockers", [])
+        return explain
+
+    def _record_explain_buy_candidate(st: dict[str, Any], as_of: date) -> None:
+        key = str(as_of)
+        seen = st.setdefault("_explain_buy_candidate_dates", set())
+        if key in seen:
+            return
+        seen.add(key)
+        explain = _explain_for_state(st)
+        explain["buy_candidates"] = int(explain.get("buy_candidates") or 0) + 1
+
+    def _record_explain_trade(st: dict[str, Any], action: str) -> None:
+        explain = _explain_for_state(st)
+        action_key = str(action or "").upper()
+        if action_key == "BUY":
+            explain["buy_executed"] = int(explain.get("buy_executed") or 0) + 1
+        elif action_key in {"SELL", "FORCED_SELL"}:
+            explain["sell_executed"] = int(explain.get("sell_executed") or 0) + 1
+        explain["played"] = True
+
+    def _record_explain_blocker(
+        st: dict[str, Any],
+        as_of: date,
+        reason_code: str,
+        reason_label: str,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            code = str(reason_code or "UNKNOWN").strip() or "UNKNOWN"
+            payload = payload if isinstance(payload, dict) else {}
+            scope = str(payload.get("scope") or "").strip()
+            dedupe_key = (str(as_of), code, scope)
+            seen = st.setdefault("_explain_blocker_keys", set())
+            if dedupe_key in seen:
+                return
+            seen.add(dedupe_key)
+            explain = _explain_for_state(st)
+            counts = explain.setdefault("blocked_counts", {})
+            counts[code] = int(counts.get(code) or 0) + 1
+            blocker = {
+                "date": str(as_of),
+                "code": code,
+                "decision": "blocked",
+                "reason": str(reason_label or code),
+            }
+            for key, value in payload.items():
+                if value in (None, "") or key in blocker:
+                    continue
+                if isinstance(value, (str, int, float, bool)):
+                    blocker[key] = value
+                else:
+                    blocker[key] = str(value)
+            blockers = list(explain.setdefault("last_blockers", []))
+            blockers.append(blocker)
+            explain["last_blockers"] = blockers[-MAX_EXPLAIN_BLOCKERS:]
+        except Exception:
+            return
+
+    def _record_gm_buy_blockers(st: dict[str, Any], as_of: date) -> None:
+        gm_debug = st.get("_last_gm_buy_debug") or {}
+        for scope, payload in (gm_debug.get("families") or {}).items():
+            if not isinstance(payload, dict) or payload.get("decision") != "blocked":
+                continue
+            code = "GM_XXXX_BUY_MAX" if payload.get("blocked_by_buy_max_threshold") else "GM_XXXX_THRESHOLD"
+            _record_explain_blocker(
+                st,
+                as_of,
+                f"{code}_{str(scope).upper()}",
+                payload.get("reason") or "GM_XXXX bloque l'achat",
+                {**payload, "scope": scope},
+            )
+
+    def _record_gm_push_buy_blockers(st: dict[str, Any], as_of: date) -> None:
+        gm_push_debug = st.get("_last_gm_push_buy_debug") or {}
+        for scope, payload in (gm_push_debug.get("families") or {}).items():
+            if not isinstance(payload, dict) or payload.get("decision") != "blocked":
+                continue
+            code = "GM_PUSH_BUY_MAX" if payload.get("blocked_by_buy_max_threshold") else "GM_PUSH_NOT_TRIGGERED"
+            _record_explain_blocker(
+                st,
+                as_of,
+                f"{code}_{str(scope).upper()}",
+                payload.get("reason") or "GM_push bloque l'achat",
+                {**payload, "scope": scope},
+            )
+
+    def _record_rhd_signal_blocker_if_relevant(st: dict[str, Any], as_of: date, buy_codes: list[str], alerts: set[str]) -> None:
+        normalized_buy = {str(code).upper() for code in buy_codes or []}
+        normalized_alerts = {str(code).upper() for code in alerts or set()}
+        if "RHD_OK" in normalized_buy and "RHD_FAIL" in normalized_alerts and "RHD_OK" not in normalized_alerts:
+            _record_explain_blocker(
+                st,
+                as_of,
+                "RHD_FAIL_SIGNAL",
+                "RHD_FAIL présent, RHD_OK absent",
+                {"type": "RHD", "decision": "blocked"},
+            )
+
+    def _serialized_explain(st: dict[str, Any]) -> dict[str, Any]:
+        explain = _explain_for_state(st)
+        buy_executed = int(explain.get("buy_executed") or 0)
+        sell_executed = int(explain.get("sell_executed") or 0)
+        return {
+            "played": bool(explain.get("played") or buy_executed or sell_executed),
+            "buy_candidates": int(explain.get("buy_candidates") or 0),
+            "buy_executed": buy_executed,
+            "sell_executed": sell_executed,
+            "blocked_counts": dict(explain.get("blocked_counts") or {}),
+            "last_blockers": list(explain.get("last_blockers") or [])[-MAX_EXPLAIN_BLOCKERS:],
+        }
+
     def _universe_allows_new_buy(ticker: str, as_of: date) -> bool:
         if resolved_universe is None:
             return True
@@ -2078,6 +2249,7 @@ def run_backtest(
 
     def _line_gm_push_conditions_allow_buy(st: dict[str, Any], ticker: str, d) -> bool:
         st["_last_gm_push_buy_max_blocked"] = False
+        st["_last_gm_push_buy_debug"] = None
         gm_push_buy_conditions = st.get("gm_push_buy_conditions") or _normalize_gm_push_conditions_config()
         if not _gm_push_conditions_has_active(gm_push_buy_conditions):
             return True
@@ -2091,6 +2263,7 @@ def run_backtest(
             apply_buy_max_threshold=True,
         )
         st["_last_gm_push_buy_max_blocked"] = _evaluation_blocked_by_buy_max_threshold(evaluation)
+        st["_last_gm_push_buy_debug"] = _compact_gm_push_buy_debug(evaluation)
         return bool(evaluation["passed"])
 
     def _gm_push_market_exit_sell_evaluation(st: dict[str, Any], ticker: str, d) -> dict[str, Any]:
@@ -2184,6 +2357,9 @@ def run_backtest(
                 "_sold_today": False,
                 "daily_rows": [],
                 "events": [],
+                "explain": _new_explain_summary(),
+                "_explain_buy_candidate_dates": set(),
+                "_explain_blocker_keys": set(),
             }
 
     # Warmup phase: reconstruct persistent states before the real backtest period.
@@ -2463,6 +2639,7 @@ def run_backtest(
                         _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
             if G_today is not None:
                 st["_sold_today"] = True
+                _record_explain_trade(st, "SELL")
                 _record_line_event(
                     st,
                     as_of=d,
@@ -2571,21 +2748,28 @@ def run_backtest(
             if st["use_signal_latch_model"]:
                 _get_signal_latch_day_state(st, local_event_alerts, d)
                 if not _signal_latch_buy_ready(st, gm_code):
+                    _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
                     continue
             elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
+                _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
                 continue
 
+            _record_explain_buy_candidate(st, d)
             tradable, ratio_pct, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
+                _record_explain_blocker(st, d, "NOT_TRADABLE", "Ticker non tradable ce jour", {"type": "TRADABILITY"})
                 continue
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
+                _record_explain_blocker(st, d, "TREND_FILTER_BLOCKED", "Filtre de tendance bloquant", {"type": "TREND_FILTER"})
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
                 _mark_gm_buy_blocked(st, d)
+                _record_gm_buy_blockers(st, d)
                 continue
             if not _line_gm_push_conditions_allow_buy(st, ticker, d):
                 if st.get("_last_gm_push_buy_max_blocked"):
                     _mark_gm_buy_max_blocked(st, d)
+                _record_gm_push_buy_blockers(st, d)
                 continue
 
             if not st["allocated"]:
@@ -2654,21 +2838,28 @@ def run_backtest(
             if st["use_signal_latch_model"]:
                 _get_signal_latch_day_state(st, local_event_alerts, d)
                 if not _signal_latch_buy_ready(st, gm_code):
+                    _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
                     continue
             elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
+                _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
                 continue
 
+            _record_explain_buy_candidate(st, d)
             tradable, _, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
+                _record_explain_blocker(st, d, "NOT_TRADABLE", "Ticker non tradable ce jour", {"type": "TRADABILITY"})
                 continue
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
+                _record_explain_blocker(st, d, "TREND_FILTER_BLOCKED", "Filtre de tendance bloquant", {"type": "TREND_FILTER"})
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
                 _mark_gm_buy_blocked(st, d)
+                _record_gm_buy_blockers(st, d)
                 continue
             if not _line_gm_push_conditions_allow_buy(st, ticker, d):
                 if st.get("_last_gm_push_buy_max_blocked"):
                     _mark_gm_buy_max_blocked(st, d)
+                _record_gm_push_buy_blockers(st, d)
                 continue
 
             if not st["allocated"]:
@@ -2698,6 +2889,7 @@ def run_backtest(
             _record_reentry_warning_if_needed(st, buy_date=d, ticker=ticker, line_index=li + 1)
 
             logs.append(f"{ticker}[L{li+1}] BUY signal {_compose_condition_label(buy_codes, st['buy_logic'], st['buy_gm_filter'], st['buy_gm_operator'])} on {d} close={close_d} shares={shares} cash_left={st['cash_ticker']}")
+            _record_explain_trade(st, "BUY")
             _record_line_event(st, as_of=d, action="BUY", price_close=close_d, gm_buy_debug=st.get("_last_gm_buy_debug"))
 
             # mutate last daily row to add action
@@ -2842,6 +3034,7 @@ def run_backtest(
                 continue
             G_today, pnl_amount_today = closed
             logs.append(f"{ticker}[L{li+1}] FORCED SELL on {last_date} close={close_d} G={G_today}")
+            _record_explain_trade(st, "FORCED_SELL")
             _record_line_event(
                 st,
                 as_of=last_date,
@@ -3026,6 +3219,7 @@ def run_backtest(
                 "events": list(st.get("events") or []),
                 "warning_count": len(st.get("warnings") or []),
                 "warnings": _serialize_warnings(st.get("warnings") or []),
+                "explain": _serialized_explain(st),
                 "final": {
                     "N": N,
                     "S_G_N": None if S_G_N is None else str(S_G_N),

@@ -2240,6 +2240,168 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("Aucun trade pour ce ticker.", body)
         self.assertIn('const currentTickerLineValue = "BBB|1";', body)
 
+    def test_backtest_results_shows_compact_explain_for_unplayed_debug_ticker(self):
+        bbb = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            extra_symbols=[bbb],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-02", "action": "BUY", "price_close": "10"}],
+                        "final": {"N": 0, "BT": "0"},
+                        "explain": {
+                            "played": True,
+                            "buy_candidates": 1,
+                            "buy_executed": 1,
+                            "sell_executed": 0,
+                            "blocked_counts": {},
+                            "last_blockers": [],
+                        },
+                    }]
+                },
+                "BBB": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [],
+                        "final": {"N": 0, "BT": "0"},
+                        "explain": {
+                            "played": False,
+                            "buy_candidates": 0,
+                            "buy_executed": 0,
+                            "sell_executed": 0,
+                            "blocked_counts": {"GM_XXXX_THRESHOLD_CURRENT": 2},
+                            "last_blockers": [{
+                                "date": "2024-01-03",
+                                "code": "GM_XXXX_THRESHOLD_CURRENT",
+                                "type": "GM_XXXX",
+                                "scope": "current",
+                                "value": "0.1",
+                                "threshold": "0.2",
+                                "decision": "blocked",
+                                "reason": "GM sous le seuil d'activation",
+                            }],
+                        },
+                    }]
+                },
+            },
+        )
+
+        response = self.client.get(
+            reverse("backtest_results", args=[bt.pk]),
+            {"debug_all_tickers": "1", "ticker": "BBB", "line": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.context["explain"]["played"], False)
+        self.assertEqual(response.context["explain_blocked_counts"], [("GM_XXXX_THRESHOLD_CURRENT", 2)])
+        body = response.content.decode()
+        self.assertIn("Explication du ticker sélectionné", body)
+        self.assertIn("Ticker non joué", body)
+        self.assertIn("BUY candidats", body)
+        self.assertIn("Principales raisons de blocage", body)
+        self.assertIn("GM_XXXX_THRESHOLD_CURRENT", body)
+        self.assertIn("Aucun signal BUY candidat détecté pour ce ticker.", body)
+
+    def test_backtest_results_handles_partial_explain_blockers(self):
+        bbb = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        blockers = [
+            {
+                "code": "GM_XXXX_THRESHOLD_SECTOR",
+                "date": "2024-05-31",
+                "mode": "POS",
+                "type": "GM_XXXX",
+                "scope": "sector",
+                "reason": "GM indisponible",
+                "decision": "blocked",
+                "threshold": "0.5",
+                "buy_max_threshold": "0.9",
+                "explicit_threshold": True,
+                "blocked_by_buy_max_threshold": False,
+            },
+            {
+                "code": "GM_PUSH_NOT_TRIGGERED_CURRENT",
+                "date": "2024-06-03",
+                "type": "GM_PUSH",
+                "scope": "current",
+                "state": "PRE_CROSS",
+                "decision": "blocked",
+                "reason": "GM_push non déclenché",
+            },
+            {
+                "code": "GM_PUSH_BUY_THRESHOLD_MARKET",
+                "date": "2024-06-04",
+                "type": "GM_PUSH",
+                "scope": "market",
+                "buy_threshold": "0.2",
+                "decision": "blocked",
+                "reason": "Seuil GM_push non franchi",
+            },
+            {
+                "code": "PARTIAL_ONLY",
+                "date": "2024-06-05",
+                "reason": "Blocage minimal",
+            },
+        ]
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            extra_symbols=[bbb],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [{"date": "2024-01-02", "action": "BUY", "price_close": "10"}],
+                        "final": {"N": 0, "BT": "0"},
+                    }]
+                },
+                "BBB": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [],
+                        "final": {"N": 0, "BT": "0"},
+                        "explain": {
+                            "played": False,
+                            "buy_candidates": 1,
+                            "buy_executed": 0,
+                            "sell_executed": 0,
+                            "blocked_counts": {"GM_XXXX_THRESHOLD_SECTOR": 1},
+                            "last_blockers": blockers,
+                        },
+                    }]
+                },
+            },
+        )
+
+        response = self.client.get(
+            reverse("backtest_results", args=[bt.pk]),
+            {"debug_all_tickers": "1", "ticker": "BBB", "line": "1"},
+        )
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Explication du ticker sélectionné", body)
+        self.assertIn("GM indisponible", body)
+        self.assertIn("PRE_CROSS", body)
+        self.assertIn("0.2", body)
+        self.assertIn("Blocage minimal", body)
+        self.assertIn("—", body)
+        display_blockers = response.context["explain_last_blockers"]
+        self.assertEqual(display_blockers[0]["display_value"], "")
+        self.assertEqual(display_blockers[0]["display_threshold"], "0.5")
+        self.assertEqual(display_blockers[1]["display_value"], "PRE_CROSS")
+        self.assertEqual(display_blockers[2]["display_threshold"], "0.2")
+        self.assertEqual(display_blockers[3]["display_type"], "PARTIAL_ONLY")
+        self.assertEqual(display_blockers[3]["display_threshold"], "")
+
     def test_backtest_results_debug_all_tickers_prefers_universe_snapshot(self):
         zzz = Symbol.objects.create(ticker="ZZZ", exchange="NYSE", active=True)
         self.scenario.symbols.add(zzz)

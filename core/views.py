@@ -60,6 +60,7 @@ from .forms import (
     BACKTEST_SIGNAL_CHOICES,
     AlertDefinitionForm,
     GameScenarioForm,
+    _clean_signal_lines_json,
 )
 from .backtest_row_projection import augment_tradable_projection_row
 from .services.provider_twelvedata import TwelveDataClient
@@ -103,6 +104,22 @@ TRADING_SIGNAL_CHOICES = [
 
 DYNAMIC_UNIVERSE_OHLC_DEFAULT_MAX_SYMBOLS = 50
 DYNAMIC_UNIVERSE_OHLC_EXCLUDE_TICKERS = ["DKEEP", "DNEW", "KEEP", "NEW", "OLD", "DOLD"]
+
+
+def _signal_lines_json_for_form(form) -> str:
+    raw_value = form["signal_lines"].value()
+    if isinstance(raw_value, str):
+        try:
+            parsed_value = json.loads(raw_value)
+        except (TypeError, ValueError):
+            return raw_value
+    else:
+        parsed_value = raw_value or []
+    try:
+        return json.dumps(_clean_signal_lines_json(parsed_value))
+    except Exception:
+        return raw_value if isinstance(raw_value, str) else json.dumps(parsed_value or [])
+
 
 DU_STATUS_LABELS = {
     "READY": "Prêt",
@@ -2632,8 +2649,7 @@ def backtest_create(request):
             return redirect("backtest_detail", pk=bt.pk)
     else:
         form = BacktestForm(initial={"include_all_tickers": True})
-    raw_signal_lines_value = form["signal_lines"].value()
-    signal_lines_json = raw_signal_lines_value if isinstance(raw_signal_lines_value, str) else json.dumps(raw_signal_lines_value or [])
+    signal_lines_json = _signal_lines_json_for_form(form)
     return render(request, "backtest_create.html", {"form": form, "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES), "signal_lines_json": signal_lines_json})
 
 
@@ -2673,8 +2689,7 @@ def backtest_update(request, pk: int):
     else:
         form = BacktestForm(instance=bt)
 
-    raw_signal_lines_value = form["signal_lines"].value()
-    signal_lines_json = raw_signal_lines_value if isinstance(raw_signal_lines_value, str) else json.dumps(raw_signal_lines_value or [])
+    signal_lines_json = _signal_lines_json_for_form(form)
 
     return render(
         request,
@@ -3039,6 +3054,38 @@ def backtest_results(request, pk: int):
             line=line,
         )
     final = (line or {}).get("final") or {}
+    explain = (line or {}).get("explain") if isinstance(line, dict) else None
+    if not isinstance(explain, dict):
+        explain = None
+    explain_blocked_counts = []
+    explain_last_blockers = []
+    if explain:
+        blocked_counts = explain.get("blocked_counts") or {}
+        if isinstance(blocked_counts, dict):
+            explain_blocked_counts = sorted(
+                blocked_counts.items(),
+                key=lambda item: (-int(item[1] or 0), str(item[0])),
+            )
+        for blocker in explain.get("last_blockers") or []:
+            if not isinstance(blocker, dict):
+                continue
+            display_type = blocker.get("type") or blocker.get("code") or ""
+            display_value = blocker.get("value") or blocker.get("state") or ""
+            display_threshold = (
+                blocker.get("threshold")
+                or blocker.get("buy_threshold")
+                or blocker.get("sell_threshold")
+                or blocker.get("buy_max_threshold")
+                or ""
+            )
+            explain_last_blockers.append({
+                **blocker,
+                "display_type": display_type,
+                "display_value": display_value,
+                "display_threshold": display_threshold,
+                "display_decision": blocker.get("decision") or "",
+                "display_reason": blocker.get("reason") or "",
+            })
 
     # --- UI-only metrics mapping (NO engine changes, additive only) ---
     # Legacy engine counters:
@@ -3195,6 +3242,9 @@ def backtest_results(request, pk: int):
             "daily": daily,
             "daily_json": json.dumps(daily),
             "final": final,
+            "explain": explain,
+            "explain_blocked_counts": explain_blocked_counts,
+            "explain_last_blockers": explain_last_blockers,
             "portfolio_kpi": port_kpi,
             "portfolio_daily": port_daily_for_ui,
             "portfolio_daily_json": json.dumps(port_daily_for_ui),
@@ -4373,8 +4423,7 @@ def game_scenario_create(request: HttpRequest):
             return redirect("game_scenario_detail", pk=obj.pk)
     else:
         form = GameScenarioForm()
-    raw_signal_lines_value = form["signal_lines"].value()
-    signal_lines_json = raw_signal_lines_value if isinstance(raw_signal_lines_value, str) else json.dumps(raw_signal_lines_value or [])
+    signal_lines_json = _signal_lines_json_for_form(form)
     return render(
         request,
         "game_scenario_form.html",
@@ -4403,8 +4452,7 @@ def game_scenario_edit(request: HttpRequest, pk: int):
             return redirect("game_scenario_detail", pk=obj.pk)
     else:
         form = GameScenarioForm(instance=obj)
-    raw_signal_lines_value = form["signal_lines"].value()
-    signal_lines_json = raw_signal_lines_value if isinstance(raw_signal_lines_value, str) else json.dumps(raw_signal_lines_value or [])
+    signal_lines_json = _signal_lines_json_for_form(form)
     return render(
         request,
         "game_scenario_form.html",

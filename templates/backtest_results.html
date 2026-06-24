@@ -644,6 +644,68 @@
 {{ diagnostic_chart_payload|json_script:"diagnostic-chart-payload" }}
 {% endif %}
 
+<details class="card acc" open data-acc-key="ticker-explain">
+<summary class="acc-summary"><span class="acc-title">Explication du ticker sélectionné</span></summary>
+<div class="acc-body">
+  {% if explain %}
+    <div class="row" style="gap:16px; align-items:flex-start; margin-bottom:12px;">
+      <div><b>Statut</b><br/>{% if explain.played %}Ticker joué{% else %}Ticker non joué{% endif %}</div>
+      <div><b>BUY candidats</b><br/>{{ explain.buy_candidates|default:0 }}</div>
+      <div><b>BUY exécutés</b><br/>{{ explain.buy_executed|default:0 }}</div>
+      <div><b>SELL exécutés</b><br/>{{ explain.sell_executed|default:0 }}</div>
+    </div>
+
+    {% if not explain.buy_candidates %}
+      <div class="muted" style="margin-bottom:10px; color:#92400e;">Aucun signal BUY candidat détecté pour ce ticker.</div>
+    {% endif %}
+
+    <h4 style="margin:0 0 8px 0;">Principales raisons de blocage</h4>
+    {% if explain_blocked_counts %}
+      <div style="overflow:auto; margin-bottom:12px;">
+        <table>
+          <thead><tr><th>Raison</th><th>Nombre</th></tr></thead>
+          <tbody>
+            {% for code, count in explain_blocked_counts %}
+            <tr><td><code>{{ code }}</code></td><td>{{ count }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="muted" style="margin-bottom:12px;">Aucun blocage compact enregistré.</div>
+    {% endif %}
+
+    <h4 style="margin:0 0 8px 0;">Derniers blocages</h4>
+    {% if explain_last_blockers %}
+      <div style="overflow:auto;">
+        <table>
+          <thead>
+            <tr><th>Date</th><th>Type</th><th>Scope</th><th>Valeur</th><th>Seuil</th><th>Décision</th><th>Raison</th></tr>
+          </thead>
+          <tbody>
+            {% for blocker in explain_last_blockers %}
+            <tr>
+              <td>{{ blocker.date|default:"—" }}</td>
+              <td>{{ blocker.display_type|default:"—" }}</td>
+              <td>{{ blocker.scope|default:"—" }}</td>
+              <td>{{ blocker.display_value|default:"—" }}</td>
+              <td>{{ blocker.display_threshold|default:"—" }}</td>
+              <td>{{ blocker.display_decision|default:"—" }}</td>
+              <td>{{ blocker.display_reason|default:"—" }}</td>
+            </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="muted">Aucun blocage récent enregistré.</div>
+    {% endif %}
+  {% else %}
+    <div class="muted">Aucune explication compacte disponible pour ce résultat.</div>
+  {% endif %}
+</div>
+</details>
+
 <details class="card acc" open data-acc-key="daily">
 <summary class="acc-summary"><span class="acc-title">Données journalières {% if is_truncated %}(dernières 200 lignes){% endif %}</span></summary>
 <div class="acc-body">
