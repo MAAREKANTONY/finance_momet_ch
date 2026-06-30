@@ -26,6 +26,7 @@ SCENARIO_IMPACT_FIELDS = (
     "n5f3", "crf3", "nampL3", "baseL3", "periodeL3",
     "npente", "slope_threshold", "slope_sell_threshold", "npente_basse", "slope_threshold_basse", "slope_sell_threshold_basse",
     "recent_high_drawdown_lookback_days", "recent_high_drawdown_max_drop_pct",
+    "rhd_ok_reactivation_mode", "rhd_ok_rebound_threshold", "rhd_ok_confirmation_days", "rhd_ok_reentry_max_drawdown",
     "nglobal", "m_v", "history_years", "active",
 )
 
@@ -41,6 +42,7 @@ GAME_IMPACT_FIELDS = (
     "study_days", "active",
     "tradability_threshold", "npente", "slope_threshold", "slope_sell_threshold", "npente_basse", "slope_threshold_basse", "slope_sell_threshold_basse",
     "recent_high_drawdown_lookback_days", "recent_high_drawdown_max_drop_pct",
+    "rhd_ok_reactivation_mode", "rhd_ok_rebound_threshold", "rhd_ok_confirmation_days", "rhd_ok_reentry_max_drawdown",
     "nglobal", "presence_threshold_pct",
     "a", "b", "c", "d", "e", "vc", "fl",
     "n1", "n2", "n3", "n4",

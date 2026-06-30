@@ -532,6 +532,8 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
             f"| SUM_SLOPE/SLOPE_VRAI: Npente={getattr(scenario,'npente',None)} seuil_achat={getattr(scenario,'slope_threshold',None)} seuil_vente={getattr(scenario,'slope_sell_threshold',None)} "
             f"| SUM_SLOPE_BASSE/SLOPE_VRAI_BASSE: Npente_basse={getattr(scenario,'npente_basse',None)} seuil_basse_achat={getattr(scenario,'slope_threshold_basse',None)} seuil_basse_vente={getattr(scenario,'slope_sell_threshold_basse',None)} "
             f"| Signal anti-chute RHD: fenêtre={getattr(scenario,'recent_high_drawdown_lookback_days',None)} repli_max={getattr(scenario,'recent_high_drawdown_max_drop_pct',None)} "
+            f"mode_RHD_OK={getattr(scenario,'rhd_ok_reactivation_mode',None)} rebond_min={getattr(scenario,'rhd_ok_rebound_threshold',None)} "
+            f"confirmation_jours={getattr(scenario,'rhd_ok_confirmation_days',None)} drawdown_max_reentree={getattr(scenario,'rhd_ok_reentry_max_drawdown',None)} "
             f"| history_years={scenario.history_years}"
         ])
         append_excel_row(ws, [f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
@@ -1356,6 +1358,10 @@ def _clone_scenario_for_study(*, study_name: str, created_by, source: Scenario |
             slope_sell_threshold_basse=getattr(source, "slope_sell_threshold_basse", None),
             recent_high_drawdown_lookback_days=getattr(source, "recent_high_drawdown_lookback_days", None),
             recent_high_drawdown_max_drop_pct=getattr(source, "recent_high_drawdown_max_drop_pct", None),
+            rhd_ok_reactivation_mode=getattr(source, "rhd_ok_reactivation_mode", Scenario.RhdOkReactivationMode.CLASSIC),
+            rhd_ok_rebound_threshold=getattr(source, "rhd_ok_rebound_threshold", Decimal("0.08")),
+            rhd_ok_confirmation_days=getattr(source, "rhd_ok_confirmation_days", 2),
+            rhd_ok_reentry_max_drawdown=getattr(source, "rhd_ok_reentry_max_drawdown", Decimal("0.40")),
             nglobal=getattr(source, "nglobal", 20),
             history_years=source.history_years,
             active=True,
@@ -1795,6 +1801,10 @@ def scenario_duplicate(request, pk: int):
             "slope_sell_threshold_basse": getattr(source, "slope_sell_threshold_basse", None),
             "recent_high_drawdown_lookback_days": getattr(source, "recent_high_drawdown_lookback_days", None),
             "recent_high_drawdown_max_drop_pct": getattr(source, "recent_high_drawdown_max_drop_pct", None),
+            "rhd_ok_reactivation_mode": getattr(source, "rhd_ok_reactivation_mode", Scenario.RhdOkReactivationMode.CLASSIC),
+            "rhd_ok_rebound_threshold": getattr(source, "rhd_ok_rebound_threshold", Decimal("0.08")),
+            "rhd_ok_confirmation_days": getattr(source, "rhd_ok_confirmation_days", 2),
+            "rhd_ok_reentry_max_drawdown": getattr(source, "rhd_ok_reentry_max_drawdown", Decimal("0.40")),
             "nglobal": getattr(source, "nglobal", 20),
             "history_years": source.history_years,
             "active": source.active,
@@ -3410,6 +3420,10 @@ def _build_backtest_workbook_full(bt):
         ("SUM_SLOPE_BASSE seuil vente", getattr(bt.scenario, "slope_sell_threshold_basse", None) if bt.scenario_id else None),
         ("Signal anti-chute RHD fenêtre", getattr(bt.scenario, "recent_high_drawdown_lookback_days", None) if bt.scenario_id else None),
         ("Signal anti-chute RHD repli max", getattr(bt.scenario, "recent_high_drawdown_max_drop_pct", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD mode RHD_OK", getattr(bt.scenario, "rhd_ok_reactivation_mode", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD rebond minimum", getattr(bt.scenario, "rhd_ok_rebound_threshold", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD confirmation jours", getattr(bt.scenario, "rhd_ok_confirmation_days", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD drawdown max réentrée", getattr(bt.scenario, "rhd_ok_reentry_max_drawdown", None) if bt.scenario_id else None),
         ("Nombre d'avertissements", meta.get("warning_count", 0)),
         ("Avertissements", json.dumps(meta.get("warnings") or [], ensure_ascii=False)),
     ]
@@ -3789,6 +3803,10 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ("SUM_SLOPE_BASSE seuil vente", getattr(bt.scenario, "slope_sell_threshold_basse", None) if bt.scenario_id else None),
         ("Signal anti-chute RHD fenêtre", getattr(bt.scenario, "recent_high_drawdown_lookback_days", None) if bt.scenario_id else None),
         ("Signal anti-chute RHD repli max", getattr(bt.scenario, "recent_high_drawdown_max_drop_pct", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD mode RHD_OK", getattr(bt.scenario, "rhd_ok_reactivation_mode", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD rebond minimum", getattr(bt.scenario, "rhd_ok_rebound_threshold", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD confirmation jours", getattr(bt.scenario, "rhd_ok_confirmation_days", None) if bt.scenario_id else None),
+        ("Signal anti-chute RHD drawdown max réentrée", getattr(bt.scenario, "rhd_ok_reentry_max_drawdown", None) if bt.scenario_id else None),
         ("Nombre d'avertissements", meta.get("warning_count", 0)),
         ("Avertissements", json.dumps(meta.get("warnings") or [], ensure_ascii=False)),
     ]

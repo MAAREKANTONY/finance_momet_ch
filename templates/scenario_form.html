@@ -132,7 +132,9 @@
 
     <div class="card" style="margin-bottom:16px;">
       <h3 style="margin-top:0;">4. Signal anti-chute RHD — Repli depuis haut récent</h3>
-      <p class="muted">RHD est un signal ticker calculé à partir du repli depuis le plus haut récent. RHD_OK indique que le repli reste dans la limite définie ; RHD_FAIL indique que cette limite est dépassée. Le plus haut récent est calculé sur les jours de cotation précédents, hors jour courant.</p>
+      <p class="muted">RHD est un signal ticker calculé. RHD_FAIL détecte une chute depuis le plus haut récent. RHD_OK peut revenir en mode classique ou plus tôt en mode rebond confirmé après un vrai RHD_FAIL.</p>
+      <p class="muted">En mode classique, RHD_OK revient quand le titre repasse au-dessus du seuil anti-chute. En mode rebond confirmé, RHD_OK revient après un vrai RHD_FAIL si le titre rebondit suffisamment depuis le point bas atteint pendant la chute. Une confirmation de plusieurs jours réduit le risque de faux rebond.</p>
+      <p class="muted">Exemple : si le plus haut récent est 100 € et que le seuil anti-chute est 20 %, RHD_FAIL se déclenche sous 80 €. Si le titre tombe à 60 €, le mode classique peut attendre un retour vers 80 € pour redevenir OK, soit environ +33 % depuis le point bas. En mode rebond confirmé, avec un rebond minimum de 8 % et une confirmation de 2 jours, RHD_OK peut revenir vers 65 € si le rebond tient. Un seuil trop faible peut faire racheter pendant une baisse qui continue.</p>
 
       <div style="display:flex; gap:12px; flex-wrap:wrap;">
         <p>
@@ -146,6 +148,32 @@
           {{ form.recent_high_drawdown_max_drop_pct }}
           {% if form.recent_high_drawdown_max_drop_pct.help_text %}<br/><span class="muted">{{ form.recent_high_drawdown_max_drop_pct.help_text }}</span>{% endif %}
           {% for error in form.recent_high_drawdown_max_drop_pct.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.rhd_ok_reactivation_mode.label_tag }}<br/>
+          {{ form.rhd_ok_reactivation_mode }}
+          {% if form.rhd_ok_reactivation_mode.help_text %}<br/><span class="muted">{{ form.rhd_ok_reactivation_mode.help_text }}</span>{% endif %}
+          {% for error in form.rhd_ok_reactivation_mode.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+      </div>
+      <div data-rhd-rebound-fields style="display:flex; gap:12px; flex-wrap:wrap;">
+        <p>
+          {{ form.rhd_ok_rebound_threshold.label_tag }}<br/>
+          {{ form.rhd_ok_rebound_threshold }}
+          {% if form.rhd_ok_rebound_threshold.help_text %}<br/><span class="muted">{{ form.rhd_ok_rebound_threshold.help_text }}</span>{% endif %}
+          {% for error in form.rhd_ok_rebound_threshold.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.rhd_ok_confirmation_days.label_tag }}<br/>
+          {{ form.rhd_ok_confirmation_days }}
+          {% if form.rhd_ok_confirmation_days.help_text %}<br/><span class="muted">{{ form.rhd_ok_confirmation_days.help_text }}</span>{% endif %}
+          {% for error in form.rhd_ok_confirmation_days.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
+        </p>
+        <p>
+          {{ form.rhd_ok_reentry_max_drawdown.label_tag }}<br/>
+          {{ form.rhd_ok_reentry_max_drawdown }}
+          {% if form.rhd_ok_reentry_max_drawdown.help_text %}<br/><span class="muted">{{ form.rhd_ok_reentry_max_drawdown.help_text }}</span>{% endif %}
+          {% for error in form.rhd_ok_reentry_max_drawdown.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
         </p>
       </div>
     </div>
@@ -597,4 +625,15 @@
   renderSelected();
 })();
 </script>
+<script>
+(function(){
+  const mode = document.getElementById('id_rhd_ok_reactivation_mode');
+  const fields = document.querySelector('[data-rhd-rebound-fields]');
+  if (!mode || !fields) return;
+  function syncRhdMode(){ fields.style.display = mode.value === 'rebound_confirmed' ? 'flex' : 'none'; }
+  mode.addEventListener('change', syncRhdMode);
+  syncRhdMode();
+})();
+</script>
+
 {% endblock %}

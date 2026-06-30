@@ -35,7 +35,7 @@
   <p>
     <b>Signal anti-chute RHD — Repli depuis haut récent:</b>
     {% if obj.recent_high_drawdown_lookback_days and obj.recent_high_drawdown_max_drop_pct != None %}
-      fenêtre {{ obj.recent_high_drawdown_lookback_days }} j précédents hors jour courant, repli max {{ obj.recent_high_drawdown_max_drop_pct|pct:2 }}
+      fenêtre {{ obj.recent_high_drawdown_lookback_days }} j précédents hors jour courant, repli max {{ obj.recent_high_drawdown_max_drop_pct|pct:2 }}, mode RHD_OK {{ obj.get_rhd_ok_reactivation_mode_display }}{% if obj.rhd_ok_reactivation_mode == "rebound_confirmed" %}, rebond minimum {{ obj.rhd_ok_rebound_threshold|pct:2 }}, confirmation {{ obj.rhd_ok_confirmation_days }} j, drawdown max réentrée {{ obj.rhd_ok_reentry_max_drawdown|pct:2 }}{% endif %}
     {% else %}
       désactivée
     {% endif %}
@@ -127,7 +127,7 @@
 
 <h3>Résultats du jour</h3>
 {% if snapshot.date %}
-  <p class="muted">Date: {{ snapshot.date }} | BMD threshold: {{ snapshot.threshold_pct }}% | Npente: {{ snapshot.npente|default:obj.npente }} | Slope threshold: {{ snapshot.slope_threshold|default:obj.slope_threshold }} | Presence threshold: {{ snapshot.presence_threshold_pct|default:obj.presence_threshold_pct }}%{% if obj.recent_high_drawdown_lookback_days and obj.recent_high_drawdown_max_drop_pct != None %} | Signal RHD: {{ obj.recent_high_drawdown_lookback_days }} j précédents / {{ obj.recent_high_drawdown_max_drop_pct|pct:2 }}{% endif %}</p>
+  <p class="muted">Date: {{ snapshot.date }} | BMD threshold: {{ snapshot.threshold_pct }}% | Npente: {{ snapshot.npente|default:obj.npente }} | Slope threshold: {{ snapshot.slope_threshold|default:obj.slope_threshold }} | Presence threshold: {{ snapshot.presence_threshold_pct|default:obj.presence_threshold_pct }}%{% if obj.recent_high_drawdown_lookback_days and obj.recent_high_drawdown_max_drop_pct != None %} | Signal RHD: {{ obj.recent_high_drawdown_lookback_days }} j précédents / {{ obj.recent_high_drawdown_max_drop_pct|pct:2 }} / mode RHD_OK {{ obj.get_rhd_ok_reactivation_mode_display }}{% endif %}</p>
 {% endif %}
 
 <table>

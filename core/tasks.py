@@ -558,6 +558,7 @@ def _indicator_params_from_scenario_like(obj) -> dict:
         # SUM_SLOPE / SPa-SPv
         "npente", "slope_threshold", "slope_sell_threshold", "npente_basse", "slope_threshold_basse", "slope_sell_threshold_basse",
         "recent_high_drawdown_lookback_days", "recent_high_drawdown_max_drop_pct",
+        "rhd_ok_reactivation_mode", "rhd_ok_rebound_threshold", "rhd_ok_confirmation_days", "rhd_ok_reentry_max_drawdown",
         # V line
         "m_v",
     ]

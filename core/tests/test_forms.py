@@ -37,6 +37,10 @@ class SymbolPickerFormTests(TestCase):
             "slope_threshold": "0.1",
             "npente_basse": "20",
             "slope_threshold_basse": "0.02",
+            "rhd_ok_reactivation_mode": "classic",
+            "rhd_ok_rebound_threshold": "0.08",
+            "rhd_ok_confirmation_days": "2",
+            "rhd_ok_reentry_max_drawdown": "0.40",
             "nglobal": "20",
             "history_years": "2",
             "active": "on",
@@ -65,6 +69,8 @@ class SymbolPickerFormTests(TestCase):
         self.assertIn("slope_sell_threshold_basse", form.fields)
         self.assertIn("recent_high_drawdown_lookback_days", form.fields)
         self.assertIn("recent_high_drawdown_max_drop_pct", form.fields)
+        self.assertIn("rhd_ok_reactivation_mode", form.fields)
+        self.assertIn("rhd_ok_rebound_threshold", form.fields)
         self.assertEqual(form.fields["universe_mode"].initial, Scenario.UniverseMode.STATIC_TICKERS)
         self.assertEqual(form.fields["slope_sell_threshold"].label, "Seuil de déclenchement vente")
         self.assertIn("Si vide, le seuil d'achat est réutilisé.", form.fields["slope_sell_threshold"].help_text)
@@ -91,6 +97,10 @@ class SymbolPickerFormTests(TestCase):
             "slope_threshold": "0.1",
             "npente_basse": "20",
             "slope_threshold_basse": "0.02",
+            "rhd_ok_reactivation_mode": "classic",
+            "rhd_ok_rebound_threshold": "0.08",
+            "rhd_ok_confirmation_days": "2",
+            "rhd_ok_reentry_max_drawdown": "0.40",
             "nglobal": "20",
             "history_years": "2",
             "active": "on",
@@ -119,6 +129,10 @@ class SymbolPickerFormTests(TestCase):
             "slope_threshold": "0.1",
             "npente_basse": "20",
             "slope_threshold_basse": "0.02",
+            "rhd_ok_reactivation_mode": "classic",
+            "rhd_ok_rebound_threshold": "0.08",
+            "rhd_ok_confirmation_days": "2",
+            "rhd_ok_reentry_max_drawdown": "0.40",
             "nglobal": "20",
             "history_years": "2",
             "active": "on",
@@ -148,6 +162,10 @@ class SymbolPickerFormTests(TestCase):
             "slope_sell_threshold_basse": "0.01",
             "recent_high_drawdown_lookback_days": "10",
             "recent_high_drawdown_max_drop_pct": "-0.10",
+            "rhd_ok_reactivation_mode": "classic",
+            "rhd_ok_rebound_threshold": "0.08",
+            "rhd_ok_confirmation_days": "2",
+            "rhd_ok_reentry_max_drawdown": "0.40",
             "nglobal": "20",
             "history_years": "2",
             "active": "on",
@@ -159,6 +177,7 @@ class SymbolPickerFormTests(TestCase):
         self.assertEqual(str(scenario.slope_sell_threshold_basse), "0.01")
         self.assertEqual(scenario.recent_high_drawdown_lookback_days, 10)
         self.assertEqual(str(scenario.recent_high_drawdown_max_drop_pct), "-0.10")
+        self.assertEqual(scenario.rhd_ok_reactivation_mode, "classic")
 
     def test_game_scenario_form_cleans_signal_lines(self):
         form = GameScenarioForm(
@@ -172,6 +191,10 @@ class SymbolPickerFormTests(TestCase):
                 "slope_threshold": "0.1",
                 "npente_basse": "20",
                 "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",
@@ -205,6 +228,8 @@ class SymbolPickerFormTests(TestCase):
         self.assertIn("slope_sell_threshold_basse", form.fields)
         self.assertIn("recent_high_drawdown_lookback_days", form.fields)
         self.assertIn("recent_high_drawdown_max_drop_pct", form.fields)
+        self.assertIn("rhd_ok_reactivation_mode", form.fields)
+        self.assertIn("rhd_ok_rebound_threshold", form.fields)
         self.assertEqual(form.fields["slope_sell_threshold_basse"].label, "Seuil de déclenchement vente — pente basse")
         self.assertEqual(form.fields["recent_high_drawdown_max_drop_pct"].label, "Repli maximal RHD")
 
@@ -224,6 +249,10 @@ class SymbolPickerFormTests(TestCase):
                 "slope_sell_threshold_basse": "0.01",
                 "recent_high_drawdown_lookback_days": "10",
                 "recent_high_drawdown_max_drop_pct": "-0.10",
+                "rhd_ok_reactivation_mode": "rebound_confirmed",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",
@@ -250,6 +279,9 @@ class SymbolPickerFormTests(TestCase):
         self.assertEqual(str(game.slope_sell_threshold_basse), "0.01")
         self.assertEqual(game.recent_high_drawdown_lookback_days, 10)
         self.assertEqual(str(game.recent_high_drawdown_max_drop_pct), "-0.10")
+        self.assertEqual(game.rhd_ok_reactivation_mode, "rebound_confirmed")
+        self.assertEqual(str(game.rhd_ok_rebound_threshold), "0.08")
+        self.assertEqual(str(game.rhd_ok_reentry_max_drawdown), "0.40")
 
     def test_backtest_form_rejects_invalid_price_range(self):
         scenario = Scenario.objects.create(name="Price Range", active=True)
@@ -715,6 +747,10 @@ class SymbolPickerFormTests(TestCase):
                 "slope_threshold": "0.1",
                 "npente_basse": "20",
                 "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",
@@ -755,6 +791,10 @@ class SymbolPickerFormTests(TestCase):
                 "slope_threshold": "0.1",
                 "npente_basse": "20",
                 "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",
@@ -849,6 +889,10 @@ class SymbolPickerFormTests(TestCase):
                 "slope_threshold": "0.1",
                 "npente_basse": "20",
                 "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",
@@ -888,6 +932,10 @@ class SymbolPickerFormTests(TestCase):
                 "slope_threshold": "0.1",
                 "npente_basse": "20",
                 "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",
@@ -942,6 +990,10 @@ class SymbolPickerFormTests(TestCase):
                 "slope_threshold": "0.1",
                 "npente_basse": "20",
                 "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",
@@ -995,6 +1047,10 @@ class SymbolPickerFormTests(TestCase):
                 "slope_threshold": "0.1",
                 "npente_basse": "20",
                 "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",
@@ -1053,6 +1109,10 @@ class SymbolPickerFormTests(TestCase):
                 "slope_threshold": "0.1",
                 "npente_basse": "20",
                 "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
                 "nglobal": "20",
                 "presence_threshold_pct": "30",
                 "email_recipients": "",

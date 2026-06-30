@@ -26,6 +26,10 @@ class Symbol(models.Model):
 
 
 class Scenario(models.Model):
+    class RhdOkReactivationMode(models.TextChoices):
+        CLASSIC = "classic", "Classique"
+        REBOUND_CONFIRMED = "rebound_confirmed", "Rebond confirmé"
+
     class UniverseMode(models.TextChoices):
         STATIC_TICKERS = "STATIC_TICKERS", "Sélection statique de tickers"
         SP500_HISTORICAL_DYNAMIC = "SP500_HISTORICAL_DYNAMIC", "S&P500 historique dynamique"
@@ -173,6 +177,31 @@ class Scenario(models.Model):
         null=True,
         blank=True,
         help_text="Protection anti-chute : pourcentage maximal de baisse autorisé par rapport au plus haut récent (ratio brut, ex: -0.10 = -10%).",
+    )
+    rhd_ok_reactivation_mode = models.CharField(
+        max_length=32,
+        choices=RhdOkReactivationMode.choices,
+        default=RhdOkReactivationMode.CLASSIC,
+        help_text="Mode de réactivation de RHD_OK après RHD_FAIL.",
+    )
+    rhd_ok_rebound_threshold = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        default=Decimal("0.08"),
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="Rebond minimum depuis le point bas après RHD_FAIL (ratio brut, ex: 0.08 = 8%).",
+    )
+    rhd_ok_confirmation_days = models.PositiveSmallIntegerField(
+        default=2,
+        validators=[MinValueValidator(1)],
+        help_text="Nombre de jours de cotation consécutifs requis pour confirmer le rebond RHD_OK.",
+    )
+    rhd_ok_reentry_max_drawdown = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        default=Decimal("0.40"),
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="Drawdown maximum autorisé à la réentrée RHD_OK en mode rebond confirmé.",
     )
     nglobal = models.PositiveIntegerField(
         default=20,
@@ -559,6 +588,31 @@ class GameScenario(models.Model):
         null=True,
         blank=True,
         help_text="Protection anti-chute : pourcentage maximal de baisse autorisé par rapport au plus haut récent (ratio brut, ex: -0.10 = -10%). N'affecte la tradabilité du Game que via les alertes si utilisé dans les signaux.",
+    )
+    rhd_ok_reactivation_mode = models.CharField(
+        max_length=32,
+        choices=Scenario.RhdOkReactivationMode.choices,
+        default=Scenario.RhdOkReactivationMode.CLASSIC,
+        help_text="Mode de réactivation de RHD_OK après RHD_FAIL.",
+    )
+    rhd_ok_rebound_threshold = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        default=Decimal("0.08"),
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="Rebond minimum depuis le point bas après RHD_FAIL (ratio brut, ex: 0.08 = 8%).",
+    )
+    rhd_ok_confirmation_days = models.PositiveSmallIntegerField(
+        default=2,
+        validators=[MinValueValidator(1)],
+        help_text="Nombre de jours de cotation consécutifs requis pour confirmer le rebond RHD_OK.",
+    )
+    rhd_ok_reentry_max_drawdown = models.DecimalField(
+        max_digits=18,
+        decimal_places=8,
+        default=Decimal("0.40"),
+        validators=[MinValueValidator(Decimal("0"))],
+        help_text="Drawdown maximum autorisé à la réentrée RHD_OK en mode rebond confirmé.",
     )
     nglobal = models.PositiveIntegerField(
         default=20,

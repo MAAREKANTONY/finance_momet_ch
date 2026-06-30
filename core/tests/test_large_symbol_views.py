@@ -49,6 +49,10 @@ class LargeSymbolFormViewTests(TestCase):
             "slope_threshold": "0.1",
             "npente_basse": "20",
             "slope_threshold_basse": "0.02",
+            "rhd_ok_reactivation_mode": "classic",
+            "rhd_ok_rebound_threshold": "0.08",
+            "rhd_ok_confirmation_days": "2",
+            "rhd_ok_reentry_max_drawdown": "0.40",
             "nglobal": "20",
             "history_years": "2",
             "active": "on",
@@ -132,6 +136,10 @@ class LargeSymbolFormViewTests(TestCase):
             "sc-slope_threshold": "0.1",
             "sc-npente_basse": "20",
             "sc-slope_threshold_basse": "0.02",
+            "sc-rhd_ok_reactivation_mode": "classic",
+            "sc-rhd_ok_rebound_threshold": "0.08",
+            "sc-rhd_ok_confirmation_days": "2",
+            "sc-rhd_ok_reentry_max_drawdown": "0.40",
             "sc-nglobal": "20",
             "sc-history_years": "2",
             "sc-symbols": self.symbol_ids_csv,
@@ -190,6 +198,13 @@ class LargeSymbolFormViewTests(TestCase):
         self.assertIn("Seuil de déclenchement vente — pente basse", body)
         self.assertIn("Fenêtre du plus haut récent", body)
         self.assertIn("Repli maximal RHD", body)
+        self.assertIn("Mode de réactivation RHD_OK", body)
+        self.assertIn("Rebond minimum depuis le point bas", body)
+        self.assertIn("Drawdown maximum de réentrée", body)
+        self.assertIn("RHD_OK peut revenir en mode classique", body)
+        self.assertIn("100 €", body)
+        self.assertIn("65 €", body)
+        self.assertNotIn("RHD_OK_RECOVERY", body)
         self.assertIn("RHD est un signal ticker calculé", body)
         self.assertIn("Ajouter tous les résultats", body)
         self.assertIn("Appliquer un univers existant", body)
@@ -1075,6 +1090,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("Signal anti-chute RHD — Repli depuis haut récent", body)
         self.assertIn("fenêtre 10 j précédents", body)
         self.assertIn("-10.00%", body)
+        self.assertIn("mode RHD_OK Classique", body)
 
     def test_game_scenario_form_shows_only_line_market_conditions_for_gm(self):
         response = self.client.get(reverse("game_scenario_create"))
@@ -1095,6 +1111,11 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("Seuil de déclenchement vente — pente basse", body)
         self.assertIn("Fenêtre du plus haut récent", body)
         self.assertIn("Repli maximal RHD", body)
+        self.assertIn("Mode de réactivation RHD_OK", body)
+        self.assertIn("Rebond minimum depuis le point bas", body)
+        self.assertIn("RHD_OK peut revenir en mode classique", body)
+        self.assertIn("65 €", body)
+        self.assertNotIn("RHD_OK_RECOVERY", body)
         self.assertNotIn('data-role="buy_gm_filter"', body)
         self.assertNotIn('data-role="sell_gm_filter"', body)
         self.assertNotIn('data-role="buy_gm_operator"', body)
@@ -1303,6 +1324,7 @@ class SymbolMetadataViewTests(TestCase):
         self.assertIn("Signal anti-chute RHD — Repli depuis haut récent", body)
         self.assertIn("fenêtre 10 j précédents", body)
         self.assertIn("-10.00%", body)
+        self.assertIn("mode RHD_OK Classique", body)
 
 
 class SymbolCsvSubmissionRegressionTests(TestCase):
