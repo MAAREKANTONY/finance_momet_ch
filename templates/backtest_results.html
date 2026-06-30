@@ -8,7 +8,7 @@
     <br/>
     Éligibilité: <b>{% if bt.include_all_tickers %}tous les tickers du scénario (ignore ratio_p ≥ X){% else %}ratio_p ≥ X{% endif %}</b>
     {% if bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
-      <br/>Signal anti-chute RHD — Repli depuis haut récent: <b>{{ bt.scenario.recent_high_drawdown_lookback_days }} jours précédents hors jour courant</b> • <b>{{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}</b>
+      <br/>Signal anti-chute RHD — Repli depuis haut récent: <b>{{ bt.scenario.recent_high_drawdown_lookback_days }} jours précédents hors jour courant</b> • <b>{{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}</b> • mode RHD_OK <b>{{ bt.scenario.get_rhd_ok_reactivation_mode_display }}</b>{% if bt.scenario.rhd_ok_reactivation_mode == "rebound_confirmed" %} • rebond minimum <b>{{ bt.scenario.rhd_ok_rebound_threshold|pct:2 }}</b> • confirmation <b>{{ bt.scenario.rhd_ok_confirmation_days }} j</b> • drawdown max réentrée <b>{{ bt.scenario.rhd_ok_reentry_max_drawdown|pct:2 }}</b>{% endif %}
     {% endif %}
   </div>
   <div style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">

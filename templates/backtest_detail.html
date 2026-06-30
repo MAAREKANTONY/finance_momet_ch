@@ -38,7 +38,7 @@
           <th>Signal anti-chute RHD — Repli depuis haut récent</th>
           <td>
             {% if bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
-              fenêtre {{ bt.scenario.recent_high_drawdown_lookback_days }} j précédents hors jour courant, repli max {{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}
+              fenêtre {{ bt.scenario.recent_high_drawdown_lookback_days }} j précédents hors jour courant, repli max {{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}, mode RHD_OK {{ bt.scenario.get_rhd_ok_reactivation_mode_display }}{% if bt.scenario.rhd_ok_reactivation_mode == "rebound_confirmed" %}, rebond minimum {{ bt.scenario.rhd_ok_rebound_threshold|pct:2 }}, confirmation {{ bt.scenario.rhd_ok_confirmation_days }} j, drawdown max réentrée {{ bt.scenario.rhd_ok_reentry_max_drawdown|pct:2 }}{% endif %}
             {% else %}
               désactivée
             {% endif %}

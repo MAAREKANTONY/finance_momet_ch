@@ -27,7 +27,10 @@ from core.services.global_momentum import (
     build_global_momentum_regime_by_date,
     compute_global_momentum_values_by_date,
 )
-from core.services.recent_high_drawdown import compute_recent_high_drawdown_condition
+from core.services.recent_high_drawdown import (
+    compute_recent_high_drawdown_alerts_for_series,
+    compute_recent_high_drawdown_condition,
+)
 from core.tasks import (
     _enrich_alerts_with_global_momentum,
     _ensure_game_engine_scenario,
@@ -1080,6 +1083,107 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertIsNone(state["recent_high"])
         self.assertIsNone(state["threshold_price"])
 
+    def test_recent_high_drawdown_classic_threshold_boundaries_are_unchanged(self):
+        alerts = compute_recent_high_drawdown_alerts_for_series(
+            ["100", "100", "100", "80", "79.99", "80"],
+            lookback_days=3,
+            max_drop_pct=Decimal("-0.20"),
+        )
+        self.assertEqual(alerts[3], ["RHD_OK"])
+        self.assertEqual(alerts[4], ["RHD_FAIL"])
+        self.assertEqual(alerts[5], ["RHD_OK"])
+
+    def test_recent_high_drawdown_rebound_mode_requires_prior_fail(self):
+        alerts = compute_recent_high_drawdown_alerts_for_series(
+            ["100", "100", "100", "100", "108", "108"],
+            lookback_days=3,
+            max_drop_pct=Decimal("-0.20"),
+            mode="rebound_confirmed",
+            rebound_threshold=Decimal("0.08"),
+            confirmation_days=2,
+            reentry_max_drawdown=Decimal("0.40"),
+        )
+        self.assertEqual(sum(1 for day_alerts in alerts if "RHD_OK" in day_alerts), 1)
+        self.assertFalse(any("RHD_FAIL" in day_alerts for day_alerts in alerts))
+
+    def test_recent_high_drawdown_rebound_mode_waits_for_sufficient_rebound(self):
+        alerts = compute_recent_high_drawdown_alerts_for_series(
+            ["100", "100", "100", "100", "79", "60", "63", "63"],
+            lookback_days=3,
+            max_drop_pct=Decimal("-0.20"),
+            mode="rebound_confirmed",
+            rebound_threshold=Decimal("0.08"),
+            confirmation_days=2,
+            reentry_max_drawdown=Decimal("0.40"),
+        )
+        self.assertIn("RHD_FAIL", alerts[4])
+        self.assertFalse(any("RHD_OK" in day_alerts for day_alerts in alerts[5:]))
+
+    def test_recent_high_drawdown_rebound_mode_confirms_rebound(self):
+        alerts = compute_recent_high_drawdown_alerts_for_series(
+            ["100", "100", "100", "100", "79", "60", "65", "65"],
+            lookback_days=3,
+            max_drop_pct=Decimal("-0.20"),
+            mode="rebound_confirmed",
+            rebound_threshold=Decimal("0.08"),
+            confirmation_days=2,
+            reentry_max_drawdown=Decimal("0.40"),
+        )
+        self.assertEqual(alerts[4], ["RHD_FAIL"])
+        self.assertEqual(alerts[6], [])
+        self.assertEqual(alerts[7], ["RHD_OK"])
+
+    def test_recent_high_drawdown_rebound_mode_resets_confirmation_when_lost(self):
+        alerts = compute_recent_high_drawdown_alerts_for_series(
+            ["100", "100", "100", "100", "79", "60", "65", "63"],
+            lookback_days=3,
+            max_drop_pct=Decimal("-0.20"),
+            mode="rebound_confirmed",
+            rebound_threshold=Decimal("0.08"),
+            confirmation_days=2,
+            reentry_max_drawdown=Decimal("0.40"),
+        )
+        self.assertEqual(alerts[6], [])
+        self.assertEqual(alerts[7], [])
+
+    def test_recent_high_drawdown_rebound_mode_respects_reentry_drawdown(self):
+        alerts = compute_recent_high_drawdown_alerts_for_series(
+            ["100", "100", "100", "100", "79", "60", "65", "65"],
+            lookback_days=3,
+            max_drop_pct=Decimal("-0.20"),
+            mode="rebound_confirmed",
+            rebound_threshold=Decimal("0.08"),
+            confirmation_days=2,
+            reentry_max_drawdown=Decimal("0.30"),
+        )
+        self.assertEqual(alerts[4], ["RHD_FAIL"])
+        self.assertFalse(any("RHD_OK" in day_alerts for day_alerts in alerts[5:]))
+
+    def test_recent_high_drawdown_rebound_rearms_reference_after_ok(self):
+        alerts = compute_recent_high_drawdown_alerts_for_series(
+            ["100", "100", "100", "100", "79", "60", "65", "65", "64"],
+            lookback_days=3,
+            max_drop_pct=Decimal("-0.20"),
+            mode="rebound_confirmed",
+            rebound_threshold=Decimal("0.08"),
+            confirmation_days=2,
+            reentry_max_drawdown=Decimal("0.40"),
+        )
+        self.assertEqual(alerts[7], ["RHD_OK"])
+        self.assertNotIn("RHD_FAIL", alerts[8])
+
+    def test_recent_high_drawdown_rebound_handles_missing_prices(self):
+        alerts = compute_recent_high_drawdown_alerts_for_series(
+            [None, "100", None, "99"],
+            lookback_days=3,
+            max_drop_pct=Decimal("-0.20"),
+            mode="rebound_confirmed",
+            rebound_threshold=Decimal("0.08"),
+            confirmation_days=2,
+            reentry_max_drawdown=Decimal("0.40"),
+        )
+        self.assertEqual(len(alerts), 4)
+
     def test_recent_high_drawdown_disabled_by_default_produces_no_alerts(self):
         scenario = Scenario.objects.create(
             name="RHD Disabled",
@@ -1134,16 +1238,55 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertIn("RHD_OK", slow_map[date(2024, 1, 6)])
         self.assertEqual(slow_map, fast_map)
 
+    def test_recent_high_drawdown_rebound_alerts_match_slow_and_fast_paths(self):
+        scenario = Scenario.objects.create(
+            name="RHD Rebound Alerts",
+            active=True,
+            a=1,
+            b=0,
+            c=0,
+            d=0,
+            e=1,
+            n1=2,
+            n2=2,
+            npente=1,
+            slope_threshold=Decimal("0.10"),
+            npente_basse=1,
+            slope_threshold_basse=Decimal("0.10"),
+            recent_high_drawdown_lookback_days=3,
+            recent_high_drawdown_max_drop_pct=Decimal("-0.20"),
+            rhd_ok_reactivation_mode="rebound_confirmed",
+            rhd_ok_rebound_threshold=Decimal("0.08"),
+            rhd_ok_confirmation_days=2,
+            rhd_ok_reentry_max_drawdown=Decimal("0.40"),
+            nglobal=2,
+            history_years=2,
+        )
+        closes = ["100", "100", "100", "100", "79", "60", "65", "65", "64"]
+        slow_map = self._compute_alert_map_with_slow_path(scenario, closes)
+        fast_map = self._compute_alert_map_with_fast_path(scenario, closes)
+
+        self.assertIn("RHD_OK", slow_map[date(2024, 1, 4)])
+        self.assertIn("RHD_FAIL", slow_map[date(2024, 1, 5)])
+        self.assertNotIn("RHD_OK", slow_map.get(date(2024, 1, 7), ""))
+        self.assertIn("RHD_OK", slow_map[date(2024, 1, 8)])
+        self.assertNotIn("RHD_FAIL", slow_map.get(date(2024, 1, 9), ""))
+        self.assertEqual(slow_map, fast_map)
+
     def test_scenario_impactful_changes_detect_recent_high_drawdown_updates(self):
         diff = scenario_impactful_changes(
             instance=self.scenario,
             cleaned_data={
                 "recent_high_drawdown_lookback_days": 10,
                 "recent_high_drawdown_max_drop_pct": Decimal("-0.10"),
+                "rhd_ok_reactivation_mode": "rebound_confirmed",
+                "rhd_ok_rebound_threshold": Decimal("0.12"),
             },
         )
         self.assertIn("recent_high_drawdown_lookback_days", diff)
         self.assertIn("recent_high_drawdown_max_drop_pct", diff)
+        self.assertIn("rhd_ok_reactivation_mode", diff)
+        self.assertIn("rhd_ok_rebound_threshold", diff)
 
     def test_game_impactful_changes_detect_recent_high_drawdown_updates(self):
         game = GameScenario.objects.create(
@@ -1174,10 +1317,14 @@ class EngineAndMetricsRegressionTests(TestCase):
             cleaned_data={
                 "recent_high_drawdown_lookback_days": 10,
                 "recent_high_drawdown_max_drop_pct": Decimal("-0.10"),
+                "rhd_ok_reactivation_mode": "rebound_confirmed",
+                "rhd_ok_rebound_threshold": Decimal("0.12"),
             },
         )
         self.assertIn("recent_high_drawdown_lookback_days", diff)
         self.assertIn("recent_high_drawdown_max_drop_pct", diff)
+        self.assertIn("rhd_ok_reactivation_mode", diff)
+        self.assertIn("rhd_ok_rebound_threshold", diff)
 
     def test_indicator_signature_changes_when_recent_high_drawdown_changes(self):
         base = indicator_signature(self.scenario)
@@ -1185,9 +1332,15 @@ class EngineAndMetricsRegressionTests(TestCase):
         lookback_signature = indicator_signature(self.scenario)
         self.scenario.recent_high_drawdown_max_drop_pct = Decimal("-0.10")
         threshold_signature = indicator_signature(self.scenario)
+        self.scenario.rhd_ok_reactivation_mode = "rebound_confirmed"
+        mode_signature = indicator_signature(self.scenario)
+        self.scenario.rhd_ok_rebound_threshold = Decimal("0.12")
+        rebound_signature = indicator_signature(self.scenario)
 
         self.assertNotEqual(base, lookback_signature)
         self.assertNotEqual(lookback_signature, threshold_signature)
+        self.assertNotEqual(threshold_signature, mode_signature)
+        self.assertNotEqual(mode_signature, rebound_signature)
 
     def test_explicit_sell_threshold_full_cycle_buy_then_sell(self):
         scenario = Scenario.objects.create(
@@ -2954,6 +3107,12 @@ class EngineAndMetricsRegressionTests(TestCase):
             npente_basse=20,
             slope_threshold_basse=Decimal("0.02"),
             slope_sell_threshold_basse=Decimal("0.01"),
+            recent_high_drawdown_lookback_days=10,
+            recent_high_drawdown_max_drop_pct=Decimal("-0.20"),
+            rhd_ok_reactivation_mode="rebound_confirmed",
+            rhd_ok_rebound_threshold=Decimal("0.08"),
+            rhd_ok_confirmation_days=2,
+            rhd_ok_reentry_max_drawdown=Decimal("0.40"),
             nglobal=20,
             a=1,
             b=1,

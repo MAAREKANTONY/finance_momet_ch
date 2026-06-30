@@ -105,6 +105,14 @@ def _configure_slope_threshold_fields(form):
             form.fields[field_name].help_text = help_text
 
 
+RHD_OK_DEFAULTS = {
+    "rhd_ok_reactivation_mode": "classic",
+    "rhd_ok_rebound_threshold": Decimal("0.08"),
+    "rhd_ok_confirmation_days": 2,
+    "rhd_ok_reentry_max_drawdown": Decimal("0.40"),
+}
+
+
 def _configure_recent_high_drawdown_fields(form):
     field_config = {
         "recent_high_drawdown_lookback_days": (
@@ -115,13 +123,39 @@ def _configure_recent_high_drawdown_fields(form):
             "Repli maximal RHD",
             "Repli maximal toléré par rapport au plus haut récent. Exemple : -10 % signifie que RHD_OK est actif tant que le prix du jour reste au-dessus de 90 % du plus haut récent.",
         ),
+        "rhd_ok_reactivation_mode": (
+            "Mode de réactivation RHD_OK",
+            "Classique: RHD_OK revient au seuil anti-chute. Rebond confirmé: RHD_OK revient après un vrai RHD_FAIL si le rebond depuis le point bas est confirmé.",
+        ),
+        "rhd_ok_rebound_threshold": (
+            "Rebond minimum depuis le point bas",
+            "Utilisé en mode rebond confirmé. Exemple: 0.08 = 8 % depuis le point bas atteint après RHD_FAIL.",
+        ),
+        "rhd_ok_confirmation_days": (
+            "Jours de confirmation",
+            "Nombre de jours de cotation consécutifs où le rebond doit rester validé.",
+        ),
+        "rhd_ok_reentry_max_drawdown": (
+            "Drawdown maximum de réentrée",
+            "Utilisé en mode rebond confirmé. Exemple: 0.40 = réentrée refusée si le prix reste à plus de 40 % sous le plus haut de référence du RHD_FAIL.",
+        ),
     }
     for field_name, (label, help_text) in field_config.items():
         if field_name in form.fields:
             form.fields[field_name].label = label
             form.fields[field_name].help_text = help_text
+            if field_name in RHD_OK_DEFAULTS:
+                form.fields[field_name].required = False
+                form.fields[field_name].initial = RHD_OK_DEFAULTS[field_name]
 
 
+def _apply_rhd_ok_defaults(cleaned):
+    if cleaned.get("rhd_ok_reactivation_mode") not in {"classic", "rebound_confirmed"}:
+        cleaned["rhd_ok_reactivation_mode"] = RHD_OK_DEFAULTS["rhd_ok_reactivation_mode"]
+    for key in ("rhd_ok_rebound_threshold", "rhd_ok_confirmation_days", "rhd_ok_reentry_max_drawdown"):
+        if cleaned.get(key) in (None, ""):
+            cleaned[key] = RHD_OK_DEFAULTS[key]
+    return cleaned
 
 
 def _normalize_signal_code_list(value):
@@ -605,6 +639,10 @@ class ScenarioForm(forms.ModelForm):
             "slope_sell_threshold_basse",
             "recent_high_drawdown_lookback_days",
             "recent_high_drawdown_max_drop_pct",
+            "rhd_ok_reactivation_mode",
+            "rhd_ok_rebound_threshold",
+            "rhd_ok_confirmation_days",
+            "rhd_ok_reentry_max_drawdown",
             "nglobal",
             "history_years",
             "active",
@@ -613,6 +651,8 @@ class ScenarioForm(forms.ModelForm):
         widgets = {
             "description": forms.Textarea(attrs={"rows": 3}),
             "e": forms.NumberInput(attrs={"min": 0.0001, "step": 0.0001}),
+            "rhd_ok_rebound_threshold": forms.TextInput(attrs={"inputmode": "decimal"}),
+            "rhd_ok_reentry_max_drawdown": forms.TextInput(attrs={"inputmode": "decimal"}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -652,6 +692,9 @@ class ScenarioForm(forms.ModelForm):
 
     def clean_universe_mode(self):
         return self.cleaned_data.get("universe_mode") or Scenario.UniverseMode.STATIC_TICKERS
+
+    def clean(self):
+        return _apply_rhd_ok_defaults(super().clean())
 
 
 class UniverseForm(forms.ModelForm):
@@ -840,12 +883,18 @@ class StudyScenarioForm(forms.ModelForm):
             "slope_sell_threshold_basse",
             "recent_high_drawdown_lookback_days",
             "recent_high_drawdown_max_drop_pct",
+            "rhd_ok_reactivation_mode",
+            "rhd_ok_rebound_threshold",
+            "rhd_ok_confirmation_days",
+            "rhd_ok_reentry_max_drawdown",
             "nglobal",
             "history_years",
             "symbols",
         ]
         widgets = {
             "e": forms.NumberInput(attrs={"min": 0.0001, "step": 0.0001}),
+            "rhd_ok_rebound_threshold": forms.TextInput(attrs={"inputmode": "decimal"}),
+            "rhd_ok_reentry_max_drawdown": forms.TextInput(attrs={"inputmode": "decimal"}),
         }
 
     def __init__(self, *args, **kwargs):
@@ -868,6 +917,9 @@ class StudyScenarioForm(forms.ModelForm):
         _configure_symbol_picker(self.fields["symbols"], selected_symbols)
         _configure_slope_threshold_fields(self)
         _configure_recent_high_drawdown_fields(self)
+
+    def clean(self):
+        return _apply_rhd_ok_defaults(super().clean())
 
 
 class EmailRecipientForm(forms.ModelForm):
@@ -1025,7 +1077,7 @@ class BacktestForm(forms.ModelForm):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
 
     def clean(self):
-        cleaned = super().clean()
+        cleaned = _apply_rhd_ok_defaults(super().clean())
         min_price = cleaned.get("min_price")
         max_price = cleaned.get("max_price")
         if min_price is not None and max_price is not None and min_price > max_price:
@@ -1165,6 +1217,10 @@ class GameScenarioForm(forms.ModelForm):
             "slope_sell_threshold_basse",
             "recent_high_drawdown_lookback_days",
             "recent_high_drawdown_max_drop_pct",
+            "rhd_ok_reactivation_mode",
+            "rhd_ok_rebound_threshold",
+            "rhd_ok_confirmation_days",
+            "rhd_ok_reentry_max_drawdown",
             "nglobal",
             "presence_threshold_pct",
             "email_recipients",
@@ -1193,6 +1249,8 @@ class GameScenarioForm(forms.ModelForm):
         ]
         widgets = {
             "description": forms.Textarea(attrs={"rows": 3}),
+            "rhd_ok_rebound_threshold": forms.TextInput(attrs={"inputmode": "decimal"}),
+            "rhd_ok_reentry_max_drawdown": forms.TextInput(attrs={"inputmode": "decimal"}),
             "email_recipients": forms.Textarea(
                 attrs={
                     "rows": 3,
@@ -1238,7 +1296,7 @@ class GameScenarioForm(forms.ModelForm):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
 
     def clean(self):
-        cleaned = super().clean()
+        cleaned = _apply_rhd_ok_defaults(super().clean())
         min_price = cleaned.get("min_price")
         max_price = cleaned.get("max_price")
         if min_price is not None and max_price is not None and min_price > max_price:

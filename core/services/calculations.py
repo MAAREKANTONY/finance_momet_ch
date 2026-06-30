@@ -1,8 +1,9 @@
 from decimal import Decimal, InvalidOperation
 from core.models import DailyBar, DailyMetric, Alert
 from core.services.recent_high_drawdown import (
-    compute_recent_high_drawdown_condition,
+    compute_recent_high_drawdown_alerts_for_series,
     normalize_recent_high_drawdown_params,
+    normalize_rhd_ok_reactivation_params,
 )
 from core.services.slope_thresholds import cross_down, cross_up, effective_sell_threshold
 
@@ -206,23 +207,19 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     try:
         rhd_lookback_days, rhd_max_drop_pct = normalize_recent_high_drawdown_params(scenario)
         if rhd_lookback_days is not None and rhd_max_drop_pct is not None:
-            prior_p_desc = list(prior_metrics.values_list("P", flat=True)[: (rhd_lookback_days + 1)])
-            current_rhd = compute_recent_high_drawdown_condition(
-                previous_prices=list(reversed(prior_p_desc[:rhd_lookback_days])),
-                current_price=getattr(metric, "P", None),
+            rhd_params = normalize_rhd_ok_reactivation_params(scenario)
+            prior_p_desc = list(prior_metrics.values_list("P", flat=True))
+            prices = list(reversed(prior_p_desc)) + [getattr(metric, "P", None)]
+            rhd_alerts = compute_recent_high_drawdown_alerts_for_series(
+                prices,
                 lookback_days=rhd_lookback_days,
                 max_drop_pct=rhd_max_drop_pct,
+                mode=rhd_params["mode"],
+                rebound_threshold=rhd_params["rebound_threshold"],
+                confirmation_days=rhd_params["confirmation_days"],
+                reentry_max_drawdown=rhd_params["reentry_max_drawdown"],
             )
-            prev_rhd = compute_recent_high_drawdown_condition(
-                previous_prices=list(reversed(prior_p_desc[1 : rhd_lookback_days + 1])),
-                current_price=getattr(prev_metric, "P", None),
-                lookback_days=rhd_lookback_days,
-                max_drop_pct=rhd_max_drop_pct,
-            )
-            if (not prev_rhd["passed"]) and current_rhd["passed"]:
-                alerts.append("RHD_OK")
-            elif prev_rhd["passed"] and (not current_rhd["passed"]):
-                alerts.append("RHD_FAIL")
+            alerts.extend(rhd_alerts[-1] if rhd_alerts else [])
     except Exception:
         pass
 

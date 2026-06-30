@@ -13,8 +13,9 @@ from typing import Iterable, List, Tuple
 
 from core.models import Alert, DailyMetric
 from core.services.recent_high_drawdown import (
-    compute_recent_high_drawdown_condition,
+    RecentHighDrawdownAlertState,
     normalize_recent_high_drawdown_params,
+    normalize_rhd_ok_reactivation_params,
 )
 from core.services.slope_thresholds import cross_down, cross_up, effective_sell_threshold
 
@@ -55,6 +56,15 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
         D(getattr(scenario, "slope_sell_threshold_basse", None)),
     )
     rhd_lookback_days, rhd_max_drop_pct = normalize_recent_high_drawdown_params(scenario)
+    rhd_params = normalize_rhd_ok_reactivation_params(scenario)
+    rhd_alert_state = RecentHighDrawdownAlertState(
+        lookback_days=rhd_lookback_days,
+        max_drop_pct=rhd_max_drop_pct,
+        mode=rhd_params["mode"],
+        rebound_threshold=rhd_params["rebound_threshold"],
+        confirmation_days=rhd_params["confirmation_days"],
+        reentry_max_drawdown=rhd_params["reentry_max_drawdown"],
+    )
 
     prior_P = deque(maxlen=max(1, n1))
     prior_M = deque(maxlen=max(1, n2))
@@ -66,8 +76,6 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
     prev_slope_vrai = None
     prev_sum_slope_basse = None
     prev_slope_vrai_basse = None
-    prev_rhd_passed = False
-
     metrics: List[DailyMetric] = []
     alerts: List[Alert] = []
 
@@ -215,17 +223,7 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
                 elif prev_p > prev_kf and cur_p < cur_kf:
                     day_alerts.append("Bf")
 
-        current_rhd = compute_recent_high_drawdown_condition(
-            previous_prices=list(reversed(p_window))[0:-1],
-            current_price=P,
-            lookback_days=rhd_lookback_days,
-            max_drop_pct=rhd_max_drop_pct,
-        )
-        if current_rhd["enabled"]:
-            if (not prev_rhd_passed) and current_rhd["passed"]:
-                day_alerts.append("RHD_OK")
-            elif prev_rhd_passed and (not current_rhd["passed"]):
-                day_alerts.append("RHD_FAIL")
+        day_alerts.extend(rhd_alert_state.process(P))
 
         if cross_up(prev_sum_slope, sum_slope, slope_threshold):
             day_alerts.append("SPa")
@@ -256,7 +254,6 @@ def compute_full_for_symbol_scenario(*, symbol, scenario, bars: Iterable, batch_
         prev_slope_vrai = slope_vrai
         prev_sum_slope_basse = sum_slope_basse
         prev_slope_vrai_basse = slope_vrai_basse
-        prev_rhd_passed = bool(current_rhd["passed"]) if current_rhd["enabled"] else False
         if n1 > 0:
             prior_P.appendleft(P)
 
