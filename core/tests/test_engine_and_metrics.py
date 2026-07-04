@@ -3325,11 +3325,25 @@ class CouloirStatefulSignalTests(TestCase):
     def test_couloir_gm_exit_resets_low_since_real_sell(self):
         line = self._couloir_line(gm_sell_market_exit_conditions={
             "operator": "AND",
-            "current": {"mode": "GM_NEG", "threshold": "0", "explicit_threshold": True},
-            "market": {"mode": "IGNORE"},
+            "current": {"mode": "IGNORE"},
+            "market": {"mode": "GM_NEG"},
             "sector": {"mode": "IGNORE"},
         })
-        bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "50", "55"], line=line)
+        bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "95", "50", "55"], line=line)
+        spy = Symbol.objects.create(ticker="SPY", exchange="NYSE", active=True)
+        start = date(2024, 1, 1)
+        DailyBar.objects.bulk_create([
+            DailyBar(
+                symbol=spy,
+                date=start + timedelta(days=idx),
+                open=Decimal(close),
+                high=Decimal(close),
+                low=Decimal(close),
+                close=Decimal(close),
+                volume=1000 + idx,
+            )
+            for idx, close in enumerate(["100", "100", "100", "100", "100", "90", "90", "90"])
+        ])
         actions = self._actions(bt, symbol)
         self.assertEqual(actions[0][1:3], ("BUY", "55.000000"))
         self.assertEqual(actions[1][1], "SELL")

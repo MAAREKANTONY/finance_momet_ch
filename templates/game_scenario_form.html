@@ -825,10 +825,14 @@
     couloirBox.style.background = '#fff';
     couloirBox.style.display = 'none';
     const couloirTitle = document.createElement('div');
-    couloirTitle.innerHTML = '<strong>Paramètres Couloir</strong>';
+    couloirTitle.innerHTML = '<strong>Configuration Couloir</strong>';
     const couloirHelp = document.createElement('div');
     couloirHelp.className = 'muted';
-    couloirHelp.textContent = 'Stratégie autonome achat/vente. Premier achat sur rebond depuis le plus bas initial, ventes sur repli depuis le plus haut depuis achat. Compatible avec GM/GM_push, non recommandé avec d’autres BUY concurrents en V1.';
+    couloirHelp.textContent = 'Couloir achète après un rebond depuis un plus bas suivi, puis vend après un repli depuis le plus haut atteint depuis l’achat.';
+    const couloirWarning = document.createElement('div');
+    couloirWarning.className = 'muted';
+    couloirWarning.style.marginTop = '6px';
+    couloirWarning.textContent = 'Couloir est une stratégie autonome achat/vente. Elle est conçue pour être utilisée comme couple principal BUY/SELL. Elle peut être combinée avec les filtres et protections GM/GM_push, mais il n’est pas recommandé de la mélanger avec d’autres signaux BUY concurrents dans cette V1.';
     const couloirFields = document.createElement('div');
     couloirFields.style.display = 'grid';
     couloirFields.style.gridTemplateColumns = 'repeat(auto-fit, minmax(160px, 1fr))';
@@ -840,11 +844,11 @@
     const couloirBuyConfirm = makeCouloirParamInput(item.couloir_buy_confirmation_days, 'couloir_buy_confirmation_days', '2');
     const couloirSellConfirm = makeCouloirParamInput(item.couloir_sell_confirmation_days, 'couloir_sell_confirmation_days', '1');
     [
-      ['Lookback plus bas initial', couloirLookback],
-      ['Seuil rebond achat', couloirBuyThreshold],
-      ['Seuil repli vente', couloirSellThreshold],
-      ['Confirmation achat (jours)', couloirBuyConfirm],
-      ['Confirmation vente (jours)', couloirSellConfirm],
+      ['Fenêtre du plus bas initial', couloirLookback],
+      ['Seuil de rebond achat', couloirBuyThreshold],
+      ['Seuil de repli vente', couloirSellThreshold],
+      ['Jours de confirmation achat', couloirBuyConfirm],
+      ['Jours de confirmation vente', couloirSellConfirm],
     ].forEach(([label, input]) => {
       const block = document.createElement('label');
       block.style.display = 'flex';
@@ -855,7 +859,7 @@
       block.append(text, input);
       couloirFields.appendChild(block);
     });
-    couloirBox.append(couloirTitle, couloirHelp, couloirFields);
+    couloirBox.append(couloirTitle, couloirHelp, couloirWarning, couloirFields);
     buyWrap.appendChild(buySignalsLabel);
     buyWrap.appendChild(buyLogicSel);
     buyWrap.appendChild(buySel);
