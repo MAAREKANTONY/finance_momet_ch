@@ -23,6 +23,7 @@ BACKTEST_SIGNAL_CHOICES = [
     ("SPVv_basse", "SPVv_basse (SLOPE_VRAI_BASSE croise le seuil de pente basse vers le bas)"),
     ("RHD_OK", "Signal anti-chute RHD — Repli depuis haut récent OK"),
     ("RHD_FAIL", "Signal anti-chute RHD — Repli depuis haut récent excessif"),
+    ("COULOIR", "Stratégie Couloir — achat sur rebond, vente sur repli"),
     ("GM_POS", "GM_POS (momentum global positif)"),
     ("GM_NEG", "GM_NEG (momentum global négatif)"),
     ("GM_NEU", "GM_NEU (momentum global neutre)"),
@@ -77,6 +78,7 @@ from .trading_model_config import (
     validate_progressive_explicit_sell_config,
 )
 from .utils.numbers import format_decimal_plain
+from .services.couloir import COULOIR_SIGNAL_CODE, normalize_couloir_line_config
 from .widgets import SymbolPickerWidget
 
 
@@ -386,8 +388,12 @@ def _clean_signal_lines_json(value):
         mode = str(item.get("mode") or "standard").strip() or "standard"
         buy = _normalize_signal_code_list(item.get("buy") or item.get("buy_conditions"))
         sell = _normalize_signal_code_list(item.get("sell") or item.get("sell_conditions"))
+        is_couloir = COULOIR_SIGNAL_CODE in {str(code).strip().upper() for code in buy}
+        if is_couloir:
+            buy = [COULOIR_SIGNAL_CODE]
+            sell = []
         try:
-            trading_model, explicit_trading_model = resolve_trading_model(item.get("trading_model"), buy)
+            trading_model, explicit_trading_model = resolve_trading_model("LEGACY_DAILY" if is_couloir else item.get("trading_model"), buy)
         except ValueError as exc:
             raise forms.ValidationError(str(exc)) from exc
         _validate_explicit_gm_thresholds(item.get("gm_buy_conditions"), side="buy")
@@ -423,6 +429,9 @@ def _clean_signal_lines_json(value):
             item.get("gm_push_sell_market_exit_conditions"),
             operator=item.get("gm_push_sell_market_exit_operator"),
         )
+        if is_couloir:
+            payload["mode"] = "couloir"
+            payload.update(normalize_couloir_line_config(item))
         has_line_market_conditions = any(
             payload[key] != "IGNORE"
             for key in ("buy_market_gm_current", "buy_market_gm_market", "buy_market_gm_sector")

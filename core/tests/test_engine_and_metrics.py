@@ -3207,6 +3207,159 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(sc_from_task_wrapper.description, f"Auto-generated scenario for GameScenario #{game_task.id}")
 
 
+class CouloirStatefulSignalTests(TestCase):
+    def _make_scenario(self, name="Couloir Scenario"):
+        return Scenario.objects.create(
+            name=name,
+            active=True,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=2,
+            n2=2,
+            nglobal=2,
+        )
+
+    def _make_symbol_with_bars(self, closes, *, ticker="COUL"):
+        symbol = Symbol.objects.create(ticker=f"{ticker}{Symbol.objects.count()}", exchange="NYSE", active=True)
+        start = date(2024, 1, 1)
+        bars = []
+        for idx, close in enumerate(closes):
+            close_dec = Decimal(str(close))
+            bars.append(DailyBar(
+                symbol=symbol,
+                date=start + timedelta(days=idx),
+                open=close_dec,
+                high=close_dec,
+                low=close_dec,
+                close=close_dec,
+                volume=1000 + idx,
+            ))
+        DailyBar.objects.bulk_create(bars)
+        return symbol, [bar.date for bar in bars]
+
+    def _couloir_line(self, **overrides):
+        line = {
+            "buy": ["COULOIR"],
+            "sell": [],
+            "couloir_initial_low_lookback_days": 3,
+            "couloir_buy_rebound_threshold": "0.10",
+            "couloir_sell_drawdown_threshold": "0.10",
+            "couloir_buy_confirmation_days": 1,
+            "couloir_sell_confirmation_days": 1,
+        }
+        line.update(overrides)
+        return line
+
+    def _make_backtest(self, closes, *, line=None, start_index=0, close_positions_at_end=False):
+        scenario = self._make_scenario()
+        symbol, dates = self._make_symbol_with_bars(closes)
+        start_date = dates[start_index]
+        warmup_days = (start_date - dates[0]).days
+        bt = Backtest(
+            name="Couloir BT",
+            scenario=scenario,
+            start_date=start_date,
+            end_date=dates[-1],
+            capital_total=0,
+            capital_per_ticker=Decimal("10000"),
+            include_all_tickers=True,
+            signal_lines=[line or self._couloir_line()],
+            warmup_days=warmup_days,
+            close_positions_at_end=close_positions_at_end,
+            universe_snapshot=[symbol.ticker],
+        )
+        return bt, symbol
+
+    def _actions(self, bt, symbol):
+        result = run_backtest(bt).results
+        daily = result["tickers"][symbol.ticker]["lines"][0]["daily"]
+        return [(row["date"], row.get("action"), row.get("price_close"), row.get("action_reason")) for row in daily if row.get("action")]
+
+    def test_couloir_first_buy_requires_rebound_and_confirmation(self):
+        bt, symbol = self._make_backtest(
+            ["50", "52", "54", "54", "55", "55"],
+            line=self._couloir_line(couloir_buy_confirmation_days=2),
+        )
+        actions = self._actions(bt, symbol)
+        self.assertEqual(actions[0][1], "BUY")
+        self.assertEqual(actions[0][2], "55.000000")
+
+    def test_couloir_does_not_buy_when_rebound_is_insufficient(self):
+        bt, symbol = self._make_backtest(["50", "52", "54", "54", "54"])
+        self.assertEqual(self._actions(bt, symbol), [])
+
+    def test_couloir_buy_confirmation_resets_when_price_falls_back(self):
+        bt, symbol = self._make_backtest(
+            ["50", "52", "54", "55", "54", "55"],
+            line=self._couloir_line(couloir_buy_confirmation_days=2),
+        )
+        self.assertEqual(self._actions(bt, symbol), [])
+
+    def test_couloir_sell_after_high_and_sell_without_higher_high(self):
+        bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "120", "108"])
+        actions = self._actions(bt, symbol)
+        self.assertEqual([(a[1], a[2]) for a in actions], [("BUY", "55.000000"), ("SELL", "108.000000")])
+
+        bt2, symbol2 = self._make_backtest(["50", "52", "54", "55", "100", "90"])
+        actions2 = self._actions(bt2, symbol2)
+        self.assertEqual([(a[1], a[2]) for a in actions2], [("BUY", "55.000000"), ("SELL", "90.000000")])
+
+    def test_couloir_rebuys_after_real_sell_from_new_low(self):
+        bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "120", "108", "50", "55"])
+        actions = self._actions(bt, symbol)
+        self.assertEqual([(a[1], a[2]) for a in actions], [("BUY", "55.000000"), ("SELL", "108.000000"), ("BUY", "55.000000")])
+
+    def test_couloir_gm_blocked_buy_keeps_state_out(self):
+        line = self._couloir_line(gm_buy_conditions={
+            "operator": "AND",
+            "current": {"mode": "GM_POS", "threshold": "0.50", "explicit_threshold": True},
+            "market": {"mode": "IGNORE"},
+            "sector": {"mode": "IGNORE"},
+        })
+        bt, symbol = self._make_backtest(["50", "52", "54", "55", "55", "54", "55"], line=line)
+        self.assertEqual(self._actions(bt, symbol), [])
+
+    def test_couloir_gm_exit_resets_low_since_real_sell(self):
+        line = self._couloir_line(gm_sell_market_exit_conditions={
+            "operator": "AND",
+            "current": {"mode": "GM_NEG", "threshold": "0", "explicit_threshold": True},
+            "market": {"mode": "IGNORE"},
+            "sector": {"mode": "IGNORE"},
+        })
+        bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "50", "55"], line=line)
+        actions = self._actions(bt, symbol)
+        self.assertEqual(actions[0][1:3], ("BUY", "55.000000"))
+        self.assertEqual(actions[1][1], "SELL")
+        self.assertIn("Protection marché GM", actions[1][3])
+        self.assertEqual(actions[2][1:3], ("BUY", "55.000000"))
+
+    def test_couloir_detailed_and_kpi_only_are_consistent(self):
+        bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "120", "108", "50", "55"])
+        detailed_final = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]["final"]
+        kpi_final = run_backtest_kpi_only(bt)[symbol.ticker]["lines"][0]["final"]
+        self.assertEqual(kpi_final["N"], detailed_final["N"])
+        self.assertEqual(kpi_final["BT"], detailed_final["BT"])
+
+    def test_couloir_ignores_missing_or_invalid_prices(self):
+        bt, symbol = self._make_backtest(["50", "52", "54", "55"])
+        DailyBar.objects.filter(symbol=symbol, date=bt.end_date).update(close=Decimal("0"))
+        self.assertEqual(self._actions(bt, symbol), [])
+
+    def test_couloir_warmup_does_not_buy_artificially_on_first_real_day(self):
+        bt, symbol = self._make_backtest(
+            ["50", "50", "50", "56", "54", "55", "55"],
+            line=self._couloir_line(couloir_buy_confirmation_days=2),
+            start_index=3,
+        )
+        actions = self._actions(bt, symbol)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0][2], "55.000000")
+        self.assertNotEqual(actions[0][0], str(bt.start_date))
+
+
 class BacktestLargeResultModeTests(TestCase):
     def setUp(self):
         self.symbol = Symbol.objects.create(ticker="AAA", exchange="NYSE", active=True)

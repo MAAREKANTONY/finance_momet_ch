@@ -44,6 +44,13 @@ from core.services.gm_push import (
     compute_push_values_for_series,
 )
 from core.services.market_cap import preload_market_cap_series
+from core.services.couloir import (
+    COULOIR_SIGNAL_CODE,
+    CouloirConfig,
+    CouloirState,
+    is_couloir_line,
+    normalize_couloir_line_config,
+)
 logger = logging.getLogger(__name__)
 
 from core.services.trend_filters import (
@@ -444,6 +451,11 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
         mode = str(raw.get("mode") or "standard").strip() or "standard"
         buy_codes = _normalize_codes(raw.get("buy") or raw.get("buy_conditions"))
         sell_codes = _normalize_codes(raw.get("sell") or raw.get("sell_conditions"))
+        raw_is_couloir = is_couloir_line(raw)
+        if raw_is_couloir:
+            mode = "couloir"
+            buy_codes = [COULOIR_SIGNAL_CODE]
+            sell_codes = []
         gm_buy_conditions = _normalize_gm_conditions_config(
             raw.get("gm_buy_conditions"),
             operator=raw.get("buy_market_operator"),
@@ -468,7 +480,7 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
             or _gm_push_conditions_has_active(gm_push_buy_conditions)
             or _gm_push_conditions_has_active(gm_push_sell_market_exit_conditions)
         ):
-            trading_model, explicit_trading_model = resolve_trading_model(raw.get("trading_model"), buy_codes)
+            trading_model, explicit_trading_model = resolve_trading_model("LEGACY_DAILY" if raw_is_couloir else raw.get("trading_model"), buy_codes)
             buy_logic = _normalize_logic(raw.get("buy_logic"), "AND")
             sell_logic = _normalize_logic(raw.get("sell_logic"), "OR")
             sell_gm_filter = _normalize_global_regime_filter(raw.get("sell_gm_filter"))
@@ -490,7 +502,7 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
                         or _gm_push_conditions_has_active(gm_push_sell_market_exit_conditions)
                     ),
                 )
-            out.append({
+            payload = {
                 "mode": mode,
                 "trading_model": trading_model,
                 "buy": buy_codes,
@@ -509,7 +521,10 @@ def _normalize_signal_lines_config(signal_lines: Any) -> list[dict[str, Any]]:
                 "gm_push_sell_market_exit_conditions": gm_push_sell_market_exit_conditions,
                 "sell_gm_filter": sell_gm_filter,
                 "sell_gm_operator": _normalize_logic(raw.get("sell_gm_operator"), "AND"),
-            })
+            }
+            if raw_is_couloir:
+                payload.update(normalize_couloir_line_config(raw))
+            out.append(payload)
     return out or [{"mode": "standard", "trading_model": TRADING_MODEL_PROGRESSIVE_AUTO_SELL, "buy": ["AF"], "sell": ["BF"], "buy_logic": "AND", "sell_logic": "OR", "buy_gm_filter": "IGNORE", "buy_gm_operator": "AND", "buy_market_gm_current": "IGNORE", "buy_market_gm_market": "IGNORE", "buy_market_gm_sector": "IGNORE", "buy_market_operator": "AND", "gm_buy_conditions": _normalize_gm_conditions_config(), "gm_sell_market_exit_conditions": _normalize_gm_conditions_config(), "gm_push_buy_conditions": _normalize_gm_push_conditions_config(), "gm_push_sell_market_exit_conditions": _normalize_gm_push_conditions_config(), "sell_gm_filter": "IGNORE", "sell_gm_operator": "AND"}]
 
 
@@ -876,6 +891,9 @@ def _close_open_position(
     state_row["position_open"] = False
     state_row["entry_price"] = None
     state_row["shares"] = 0
+    couloir_state = state_row.get("couloir_state")
+    if couloir_state is not None:
+        couloir_state.on_sell_executed(close_price)
     return G_today, pnl_amount_today
 
 
@@ -2355,6 +2373,7 @@ def run_backtest(
                 "warnings": [],
                 "_reentry_warning_candidate": None,
                 "_sold_today": False,
+                "couloir_state": CouloirState(CouloirConfig.from_line(line)) if is_couloir_line(line) else None,
                 "daily_rows": [],
                 "events": [],
                 "explain": _new_explain_summary(),
@@ -2381,6 +2400,9 @@ def run_backtest(
                 _get_signal_latch_day_state(st, local_event_alerts, d)
             if _line_uses_progressive_explicit_sell_model(st):
                 _get_sell_signal_latch_day_state(st, local_event_alerts, d)
+            couloir_state = st.get("couloir_state")
+            if couloir_state is not None:
+                couloir_state.observe_warmup_price(tdata["price_by_date"].get(d))
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
                 st["prev_k"] = tdata["metrics"].get(d)
 
@@ -2575,7 +2597,11 @@ def run_backtest(
 
             # Special sell mode: K1f crosses down either (1) 0 (B1f) or (2) the closest
             # "line above" among K1/K2/K3/K4 as of t-1.
-            if st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
+            couloir_state = st.get("couloir_state")
+            if st["position_open"] and couloir_state is not None:
+                if couloir_state.evaluate_sell_candidate(d, close_d):
+                    _do_sell("Couloir : seuil de repli vente atteint")
+            elif st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
                 k_today = (tdata["metrics"].get(d) or None)
                 k_prev = st.get("prev_k") or None
                 k1f_prev = _to_dec(_metric_val(k_prev, _M_K1F))
@@ -2743,16 +2769,21 @@ def run_backtest(
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
-            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
-            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
-            if st["use_signal_latch_model"]:
-                _get_signal_latch_day_state(st, local_event_alerts, d)
-                if not _signal_latch_buy_ready(st, gm_code):
+            couloir_state = st.get("couloir_state")
+            if couloir_state is not None:
+                if not couloir_state.evaluate_buy_candidate(d, price_by_date.get(d)):
+                    continue
+            else:
+                day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+                latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
+                if st["use_signal_latch_model"]:
+                    _get_signal_latch_day_state(st, local_event_alerts, d)
+                    if not _signal_latch_buy_ready(st, gm_code):
+                        _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
+                        continue
+                elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                     _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
                     continue
-            elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
-                _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
-                continue
 
             _record_explain_buy_candidate(st, d)
             tradable, ratio_pct, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
@@ -2833,16 +2864,21 @@ def run_backtest(
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
-            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
-            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
-            if st["use_signal_latch_model"]:
-                _get_signal_latch_day_state(st, local_event_alerts, d)
-                if not _signal_latch_buy_ready(st, gm_code):
+            couloir_state = st.get("couloir_state")
+            if couloir_state is not None:
+                if not couloir_state.evaluate_buy_candidate(d, price_by_date.get(d)):
+                    continue
+            else:
+                day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+                latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
+                if st["use_signal_latch_model"]:
+                    _get_signal_latch_day_state(st, local_event_alerts, d)
+                    if not _signal_latch_buy_ready(st, gm_code):
+                        _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
+                        continue
+                elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
                     _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
                     continue
-            elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
-                _record_rhd_signal_blocker_if_relevant(st, d, buy_codes, local_event_alerts)
-                continue
 
             _record_explain_buy_candidate(st, d)
             tradable, _, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
@@ -2884,6 +2920,9 @@ def run_backtest(
             st["position_open"] = True
             st["entry_price"] = str(close_d)
             st["entry_date"] = d
+            couloir_state = st.get("couloir_state")
+            if couloir_state is not None:
+                couloir_state.on_buy_executed(close_d)
             if not st["use_signal_latch_model"]:
                 _reset_trade_signal_memory(st)
             _record_reentry_warning_if_needed(st, buy_date=d, ticker=ticker, line_index=li + 1)
@@ -3701,6 +3740,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 "warnings": [],
                 "_reentry_warning_candidate": None,
                 "_sold_today": False,
+                "couloir_state": CouloirState(CouloirConfig.from_line(line)) if is_couloir_line(line) else None,
             }
 
     def _market_cap_for_day(ticker: str, d) -> Decimal | None:
@@ -3831,6 +3871,9 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 _get_signal_latch_day_state(st, local_event_alerts, d)
             if _line_uses_progressive_explicit_sell_model(st):
                 _get_sell_signal_latch_day_state(st, local_event_alerts, d)
+            couloir_state = st.get("couloir_state")
+            if couloir_state is not None:
+                couloir_state.observe_warmup_price(tdata["price_by_date"].get(d))
             if tdata.get("metrics") and (tdata["metrics"].get(d) is not None):
                 st["prev_k"] = tdata["metrics"].get(d)
 
@@ -3881,7 +3924,11 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
 
             sell_codes = st["sell_codes"]
             sell_code = sell_codes[0] if sell_codes else ""
-            if st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
+            couloir_state = st.get("couloir_state")
+            if st["position_open"] and couloir_state is not None:
+                if couloir_state.evaluate_sell_candidate(d, close_d):
+                    _do_sell("Couloir : seuil de repli vente atteint")
+            elif st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
                 k_today = (tdata["metrics"].get(d) or None)
                 k_prev = st.get("prev_k") or None
                 k1f_prev = _to_dec(_metric_val(k_prev, _M_K1F))
@@ -3962,14 +4009,19 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
-            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
-            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
-            if st["use_signal_latch_model"]:
-                _get_signal_latch_day_state(st, local_event_alerts, d)
-                if not _signal_latch_buy_ready(st, gm_code):
+            couloir_state = st.get("couloir_state")
+            if couloir_state is not None:
+                if not couloir_state.evaluate_buy_candidate(d, tdata["price_by_date"].get(d)):
                     continue
-            elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
-                continue
+            else:
+                day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+                latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
+                if st["use_signal_latch_model"]:
+                    _get_signal_latch_day_state(st, local_event_alerts, d)
+                    if not _signal_latch_buy_ready(st, gm_code):
+                        continue
+                elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
+                    continue
             tradable, ratio_pct, _ = _ratio_tradable(ticker, d, tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
@@ -4016,14 +4068,19 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             gm_code = global_momentum_regime_by_date.get(d)
             if gm_code:
                 event_alerts.add(gm_code)
-            day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
-            latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
-            if st["use_signal_latch_model"]:
-                _get_signal_latch_day_state(st, local_event_alerts, d)
-                if not _signal_latch_buy_ready(st, gm_code):
+            couloir_state = st.get("couloir_state")
+            if couloir_state is not None:
+                if not couloir_state.evaluate_buy_candidate(d, tdata["price_by_date"].get(d)):
                     continue
-            elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
-                continue
+            else:
+                day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
+                latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
+                if st["use_signal_latch_model"]:
+                    _get_signal_latch_day_state(st, local_event_alerts, d)
+                    if not _signal_latch_buy_ready(st, gm_code):
+                        continue
+                elif not _match_line_with_global_filter(day_alerts, latched_alerts, buy_codes, st["buy_logic"], gm_code, st["buy_gm_filter"], st["buy_gm_operator"]):
+                    continue
             tradable, _, _ = _ratio_tradable(ticker, d, tdata["price_by_date"].get(d), tdata["metrics"].get(d))
             if not tradable:
                 continue
@@ -4050,6 +4107,9 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             st["position_open"] = True
             st["entry_price"] = str(close_d)
             st["entry_date"] = d
+            couloir_state = st.get("couloir_state")
+            if couloir_state is not None:
+                couloir_state.on_buy_executed(close_d)
             if not st["use_signal_latch_model"]:
                 _reset_trade_signal_memory(st)
             _record_reentry_warning_if_needed(st, buy_date=d, ticker=ticker, line_index=li + 1)
