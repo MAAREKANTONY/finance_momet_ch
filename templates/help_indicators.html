@@ -43,10 +43,12 @@ condition vraie si P(t) >= seuil(t)</pre>
 
   <h3>Couloir — stratégie autonome achat/vente</h3>
   <p class="muted"><strong>Tooltip :</strong> Couloir : achète après un rebond depuis un plus bas suivi, vend après un repli depuis le plus haut atteint depuis l’achat.</p>
-  <p class="muted">Pour utiliser Couloir, ajoutez une ligne de signal et choisissez COULOIR. Les paramètres apparaissent dans le bloc Configuration Couloir.</p>
+  <p class="muted">Pour utiliser Couloir, sélectionnez le mode Stratégie Couloir. La configuration apparaît dans le bloc Configuration Couloir.</p>
+  <p class="muted">En V1, Couloir est exclusif des autres signaux BUY/SELL classiques : ceux-ci sont ignorés lorsque Couloir est actif. Les filtres et protections GM/GM_push restent compatibles.
+  </p>
   <p class="muted">Stratégie autonome achat/vente. Le premier achat utilise le plus bas des X derniers jours. Après une vente, le plus bas est suivi depuis cette vente. Après un achat, le plus haut est suivi depuis cet achat. Les filtres GM peuvent bloquer l’achat ou forcer la vente.</p>
   <p class="muted">Exemple premier achat : plus bas 240 jours = 50 €, seuil achat 10 %, signal achat à 55 € si la confirmation est respectée. Exemple vente : achat 100 €, plus haut 120 €, seuil vente 10 %, signal vente à 108 €. Si le prix baisse tout de suite après achat à 100 €, le plus haut reste 100 €, vente à 90 €. Après vente à 108 €, si le prix baisse à 50 €, un seuil achat 10 % donne un réachat à 55 €. Pour obtenir 50 € -&gt; 60 €, il faut un seuil de 20 %, pas 10 %.</p>
-  <p class="muted">Couloir est recommandé comme stratégie autonome. Il peut être combiné avec GM/GM_push comme filtres/protections, mais il n’est pas recommandé de le mélanger avec d’autres signaux BUY concurrents dans cette V1.</p>
+  <p class="muted">Couloir est recommandé comme stratégie autonome. En V1, il est conçu pour être utilisé seul comme logique principale BUY/SELL ; une future version pourra assouplir cette règle.</p>
   <p class="muted">Ce n’est pas un stop-loss basé sur le prix d’achat, et ce n’est pas un filtre GM de marché.</p>
   <p class="muted">Supprimé de l'interface et du moteur actif : K1f, K2f, Kf3, ligne V, signaux A1f/B1f, A2f/B2f, AF3/BF3, I1/J1, ainsi que les variables N3, N4, N5, VC, FL, cr, N5f3, crf3, NampL3, baseL3, periodeL3 et m_v.</p>
 </div>

@@ -75,6 +75,30 @@
 
         <input type="hidden" name="signal_lines" id="id_signal_lines" value='{{ signal_lines_json|escapejs }}' />
 
+
+        <div class="card" id="strategy-mode-panel" style="margin-top:10px; padding:10px;">
+          <strong>Mode de stratégie</strong>
+          <div style="display:flex; gap:16px; flex-wrap:wrap; margin-top:8px;">
+            <label style="display:inline-flex; gap:6px; align-items:center;"><input type="radio" name="strategy_mode_ui" value="classic" checked> Signaux classiques</label>
+            <label style="display:inline-flex; gap:6px; align-items:center;"><input type="radio" name="strategy_mode_ui" value="couloir"> Stratégie Couloir</label>
+          </div>
+          <div class="muted" style="margin-top:6px;">Choisis Signaux classiques pour utiliser les lignes BUY/SELL habituelles, ou Stratégie Couloir pour utiliser le système autonome achat/vente.</div>
+        </div>
+
+        <div class="card" id="couloir-strategy-panel" style="margin-top:10px; padding:10px; display:none;">
+          <strong>Configuration Couloir</strong>
+          <div class="muted" style="margin-top:6px;">Couloir achète après un rebond depuis un plus bas suivi, puis vend après un repli depuis le plus haut atteint depuis l’achat.</div>
+          <div class="muted" style="margin-top:6px;">En V1, Couloir est une stratégie autonome achat/vente. Elle est conçue pour être utilisée seule comme logique principale BUY/SELL. Les filtres et protections GM/GM_push restent compatibles, mais les autres signaux BUY/SELL classiques sont ignorés lorsque Couloir est actif.</div>
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(160px, 1fr)); gap:8px; margin-top:10px;">
+            <label>Fenêtre du plus bas initial<br><input type="text" inputmode="numeric" id="id_couloir_initial_low_lookback_days" data-role="couloir_initial_low_lookback_days" value="240" style="max-width:140px;"></label>
+            <label>Seuil de rebond achat<br><input type="text" inputmode="decimal" id="id_couloir_buy_rebound_threshold" data-role="couloir_buy_rebound_threshold" value="0.10" style="max-width:140px;"></label>
+            <label>Seuil de repli vente<br><input type="text" inputmode="decimal" id="id_couloir_sell_drawdown_threshold" data-role="couloir_sell_drawdown_threshold" value="0.10" style="max-width:140px;"></label>
+            <label>Jours de confirmation achat<br><input type="text" inputmode="numeric" id="id_couloir_buy_confirmation_days" data-role="couloir_buy_confirmation_days" value="2" style="max-width:140px;"></label>
+            <label>Jours de confirmation vente<br><input type="text" inputmode="numeric" id="id_couloir_sell_confirmation_days" data-role="couloir_sell_confirmation_days" value="1" style="max-width:140px;"></label>
+          </div>
+        </div>
+
+        <div id="classic-signal-lines-panel">
         <table style="margin-top:8px;">
           <thead>
             <tr>
@@ -90,6 +114,8 @@
         </table>
 
         <button type="button" class="btn" id="add-line" style="margin-top:8px;">+ Ajouter une ligne</button>
+
+        </div>
 
         {% if form.signal_lines.errors %}<div class="error" style="margin-top:8px;">{{ form.signal_lines.errors }}</div>{% endif %}
       </div>
@@ -196,12 +222,68 @@
   const addBtn = document.getElementById("add-line");
   const form = document.getElementById("backtest-form") || document.getElementById("game-scenario-form");
   const summary = document.getElementById("strategy-summary");
+  const strategyModeInputs = document.querySelectorAll('input[name="strategy_mode_ui"]');
+  const couloirStrategyPanel = document.getElementById("couloir-strategy-panel");
+  const classicSignalLinesPanel = document.getElementById("classic-signal-lines-panel");
+  let couloirBaseLine = null;
   const LEGACY_GM_FILTER_CODES = new Set(["IGNORE", "GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR_NEU", "GM_NEG_OR_NEU"]);
 
   function normalizeCodes(value) {
     if (!value) return [];
     if (Array.isArray(value)) return value.filter(Boolean);
     return [value];
+  }
+  function isCouloirLine(item) {
+    if (!item || typeof item !== 'object') return false;
+    const mode = String(item.mode || '').trim().toLowerCase();
+    const buyCodes = normalizeCodes(item.buy || item.buy_conditions).map((code) => String(code || '').trim().toUpperCase());
+    return mode === 'couloir' || buyCodes.includes('COULOIR');
+  }
+  function currentStrategyMode() {
+    return document.querySelector('input[name="strategy_mode_ui"]:checked')?.value || 'classic';
+  }
+  function setStrategyMode(mode) {
+    strategyModeInputs.forEach((input) => { input.checked = input.value === mode; });
+  }
+  function couloirParam(role, fallback) {
+    const value = couloirStrategyPanel?.querySelector(`[data-role="${role}"]`)?.value;
+    return value === null || value === undefined || value === '' ? fallback : String(value);
+  }
+  function loadCouloirConfig(line) {
+    const source = line && typeof line === 'object' ? line : {};
+    [
+      ['couloir_initial_low_lookback_days', '240'],
+      ['couloir_buy_rebound_threshold', '0.10'],
+      ['couloir_sell_drawdown_threshold', '0.10'],
+      ['couloir_buy_confirmation_days', '2'],
+      ['couloir_sell_confirmation_days', '1'],
+    ].forEach(([role, fallback]) => {
+      const input = couloirStrategyPanel?.querySelector(`[data-role="${role}"]`);
+      if (input) input.value = source[role] === null || source[role] === undefined || source[role] === '' ? fallback : String(source[role]);
+    });
+  }
+  function buildCouloirLine() {
+    const base = couloirBaseLine && typeof couloirBaseLine === 'object' ? {...couloirBaseLine} : {};
+    return {
+      ...base,
+      mode: 'couloir',
+      trading_model: 'LEGACY_DAILY',
+      buy: ['COULOIR'],
+      sell: [],
+      buy_logic: 'AND',
+      sell_logic: 'OR',
+      couloir_initial_low_lookback_days: couloirParam('couloir_initial_low_lookback_days', '240'),
+      couloir_buy_rebound_threshold: couloirParam('couloir_buy_rebound_threshold', '0.10'),
+      couloir_sell_drawdown_threshold: couloirParam('couloir_sell_drawdown_threshold', '0.10'),
+      couloir_buy_confirmation_days: couloirParam('couloir_buy_confirmation_days', '2'),
+      couloir_sell_confirmation_days: couloirParam('couloir_sell_confirmation_days', '1'),
+    };
+  }
+  function updateStrategyModeUi() {
+    const couloirActive = currentStrategyMode() === 'couloir';
+    if (couloirStrategyPanel) couloirStrategyPanel.style.display = couloirActive ? 'block' : 'none';
+    if (classicSignalLinesPanel) classicSignalLinesPanel.style.display = couloirActive ? 'none' : 'block';
+    if (addBtn) addBtn.disabled = couloirActive;
   }
   function normalizeLogic(value, fallback) {
     const logic = String(value || fallback || "AND").toUpperCase();
@@ -304,7 +386,7 @@
     wrap.style.border = '1px solid #d0d7de';
     wrap.style.borderRadius = '8px';
     wrap.style.background = '#fff';
-    SIGNAL_CHOICES.forEach(([code, label]) => {
+    SIGNAL_CHOICES.filter(([code]) => !(role === 'buy' && code === 'COULOIR')).forEach(([code, label]) => {
       const line = document.createElement('label');
       line.style.display = 'flex';
       line.style.alignItems = 'center';
@@ -501,8 +583,20 @@
   function isProgressiveExplicitSellModel(value) {
     return value === 'PROGRESSIVE_EXPLICIT_SELL';
   }
+  function gmEntry(mode, threshold, buyMaxThreshold = '') {
+    return {
+      mode,
+      threshold: threshold || null,
+      buy_max_threshold: mode === 'GM_POS' ? (buyMaxThreshold || null) : null,
+      explicit_threshold: !!threshold,
+    };
+  }
   function updateSummary() {
     if (!summary) return;
+    if (currentStrategyMode() === 'couloir') {
+      summary.textContent = 'Mode=Stratégie Couloir | Achat=rebond depuis plus bas suivi | Vente=repli depuis plus haut suivi | Signaux BUY/SELL classiques ignorés en V1';
+      return;
+    }
     const rows = body.querySelectorAll("tr");
     if (!rows.length) { summary.textContent = "—"; return; }
     const parts = [];
@@ -829,6 +923,7 @@
     }
     modeSel.addEventListener('change', () => { applyMode(); serialize(); });
     tradingModelSel.addEventListener('change', () => { applyMode(); serialize(); });
+    buySel.addEventListener('change', () => { applyMode(); serialize(); });
     [buySel, sellSel, buyLogicSel, sellLogicSel, couloirLookback, couloirBuyThreshold, couloirSellThreshold, couloirBuyConfirm, couloirSellConfirm, gmCurrent, gmMarket, gmSector, gmOperator, gmCurrentThreshold, gmMarketThreshold, gmSectorThreshold, gmCurrentBuyMaxThreshold, gmMarketBuyMaxThreshold, gmSectorBuyMaxThreshold, ...gmPushBuyInputs, sellGmCurrent, sellGmMarket, sellGmSector, sellGmOperator, sellGmCurrentThreshold, sellGmMarketThreshold, sellGmSectorThreshold, ...gmPushSellInputs].forEach((container) => container.addEventListener('change', serialize));
     body.appendChild(tr);
     applyMode();
@@ -838,12 +933,18 @@
     updateSummary();
   }
   function serialize() {
+    if (currentStrategyMode() === 'couloir') {
+      hidden.value = JSON.stringify([buildCouloirLine()]);
+      updateSummary();
+      return;
+    }
     const out = [];
     body.querySelectorAll('tr').forEach((tr) => {
       const mode = tr.querySelector('[data-role="mode"]')?.value || 'standard';
       const tradingModel = tr.querySelector('[data-role="trading_model"]')?.value || '';
       const buy = selectedValues(tr.querySelector('[data-role="buy"]'));
       const isCouloir = buy.includes('COULOIR');
+      if (isCouloir) return;
       const buyLogic = isCouloir || isAutoSellModel(tradingModel) || isProgressiveExplicitSellModel(tradingModel) ? 'AND' : selectedLogic(tr.querySelector('[data-role="buy_logic"]'), 'AND');
       const buyMarketGmCurrent = tr.querySelector('[data-role="buy_market_gm_current"]')?.value || 'IGNORE';
       const buyMarketGmMarket = tr.querySelector('[data-role="buy_market_gm_market"]')?.value || 'IGNORE';
@@ -907,10 +1008,22 @@
   if (!initial.length) {
     try { initial = JSON.parse(hidden.value || '[]'); } catch(e) { initial = []; }
   }
-  if (!Array.isArray(initial) || !initial.length) initial = [{mode:'standard', trading_model:'PROGRESSIVE_AUTO_SELL', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND', buy_market_gm_current:'IGNORE', buy_market_gm_market:'IGNORE', buy_market_gm_sector:'IGNORE', buy_market_operator:'AND', gm_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_buy_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}}];
+  couloirBaseLine = Array.isArray(initial) ? initial.find(isCouloirLine) || null : null;
+  if (couloirBaseLine) {
+    setStrategyMode('couloir');
+    loadCouloirConfig(couloirBaseLine);
+  } else {
+    setStrategyMode('classic');
+    loadCouloirConfig(null);
+  }
+  initial = Array.isArray(initial) ? initial.filter((item) => !isCouloirLine(item)) : [];
+  if (!initial.length) initial = [{mode:'standard', trading_model:'PROGRESSIVE_AUTO_SELL', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND', buy_market_gm_current:'IGNORE', buy_market_gm_market:'IGNORE', buy_market_gm_sector:'IGNORE', buy_market_operator:'AND', gm_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_buy_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}}];
   initial.forEach((it, idx) => addRow(idx, it));
   renumber();
   addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', trading_model:'PROGRESSIVE_AUTO_SELL', buy:[], sell:[], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND', buy_market_gm_current:'IGNORE', buy_market_gm_market:'IGNORE', buy_market_gm_sector:'IGNORE', buy_market_operator:'AND', gm_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_buy_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}}); renumber(); serialize(); });
+  strategyModeInputs.forEach((input) => input.addEventListener('change', () => { updateStrategyModeUi(); serialize(); }));
+  couloirStrategyPanel?.querySelectorAll('input').forEach((input) => input.addEventListener('change', serialize));
+  updateStrategyModeUi();
   form?.addEventListener('submit', serialize);
 })();
 </script>

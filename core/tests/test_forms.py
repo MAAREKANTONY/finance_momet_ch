@@ -2,7 +2,7 @@ import json
 
 from django.test import TestCase
 
-from core.forms import BacktestForm, ScenarioForm, StudyScenarioForm, UniverseForm, GameScenarioForm
+from core.forms import BacktestForm, ScenarioForm, StudyScenarioForm, UniverseForm, GameScenarioForm, _clean_signal_lines_json
 from core.models import Backtest, GameScenario, Scenario, Study, Symbol, Universe
 
 
@@ -219,6 +219,32 @@ class SymbolPickerFormTests(TestCase):
         cleaned = form.cleaned_data["signal_lines"]
         self.assertEqual(cleaned[0]["buy_gm_filter"], "GM_POS")
         self.assertEqual(cleaned[0]["buy_gm_operator"], "OR")
+
+    def test_couloir_signal_lines_are_exclusive_v1(self):
+        cleaned = _clean_signal_lines_json([
+            {"buy": ["Af"], "sell": ["Bf"]},
+            {
+                "buy": ["COULOIR"],
+                "sell": ["Bf"],
+                "couloir_initial_low_lookback_days": 120,
+                "couloir_buy_rebound_threshold": "0.12",
+                "couloir_sell_drawdown_threshold": "0.08",
+                "couloir_buy_confirmation_days": 3,
+                "couloir_sell_confirmation_days": 2,
+                "gm_sell_market_exit_conditions": {"operator": "AND", "market": {"mode": "GM_NEG", "threshold": "0.2"}},
+            },
+            {"buy": ["A1"], "sell": ["B1"]},
+        ])
+        self.assertEqual(len(cleaned), 1)
+        self.assertEqual(cleaned[0]["mode"], "couloir")
+        self.assertEqual(cleaned[0]["buy"], ["COULOIR"])
+        self.assertEqual(cleaned[0]["sell"], [])
+        self.assertEqual(cleaned[0]["couloir_initial_low_lookback_days"], 120)
+        self.assertEqual(cleaned[0]["couloir_buy_rebound_threshold"], "0.12")
+        self.assertEqual(cleaned[0]["couloir_sell_drawdown_threshold"], "0.08")
+        self.assertEqual(cleaned[0]["couloir_buy_confirmation_days"], 3)
+        self.assertEqual(cleaned[0]["couloir_sell_confirmation_days"], 2)
+        self.assertEqual(cleaned[0]["gm_sell_market_exit_conditions"]["market"]["mode"], "NEG")
 
     def test_game_scenario_form_renders_sell_threshold_fields(self):
         form = GameScenarioForm()

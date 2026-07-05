@@ -376,15 +376,30 @@ def _normalize_line_market_conditions(item):
     }
 
 
+def _line_has_couloir_signal(item):
+    if not isinstance(item, dict):
+        return False
+    mode = str(item.get("mode") or "").strip().lower()
+    buy = _normalize_signal_code_list(item.get("buy") or item.get("buy_conditions"))
+    return mode == "couloir" or COULOIR_SIGNAL_CODE in {str(code).strip().upper() for code in buy}
+
+
 def _clean_signal_lines_json(value):
     if value in (None, ""):
         return []
     if not isinstance(value, list):
         raise forms.ValidationError("signal_lines must be a JSON list")
-    cleaned = []
+    items = []
     for item in value:
         if not isinstance(item, dict):
             raise forms.ValidationError("Each signal line must be an object")
+        items.append(item)
+    # V1 Couloir exclusivity: keep this isolated so a future non-exclusive Couloir mode can relax it.
+    couloir_items = [item for item in items if _line_has_couloir_signal(item)]
+    if couloir_items:
+        items = [couloir_items[0]]
+    cleaned = []
+    for item in items:
         mode = str(item.get("mode") or "standard").strip() or "standard"
         buy = _normalize_signal_code_list(item.get("buy") or item.get("buy_conditions"))
         sell = _normalize_signal_code_list(item.get("sell") or item.get("sell_conditions"))
