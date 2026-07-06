@@ -532,6 +532,9 @@
     {% if diagnostic_chart_payload.recent_high_drawdown %}
     <div>Le signal anti-chute RHD affiche le seuil calculé à partir du plus haut récent sur {{ diagnostic_chart_payload.recent_high_drawdown.lookback_days }} jours précédents, hors jour courant.</div>
     {% endif %}
+    {% if diagnostic_chart_payload.couloir and diagnostic_chart_payload.couloir.active and not diagnostic_chart_payload.couloir.has_trace %}
+    <div>Trace Couloir indisponible en mode résultats larges ou pour un ancien résultat sans données détaillées.</div>
+    {% endif %}
   </div>
 
   <div style="margin-bottom:18px;">
@@ -1071,6 +1074,18 @@
       SELL: "#dc2626",
       FORCED_SELL: "#ea580c",
       GM_PUSH_MARKET_EXIT: "#0e7490",
+      COULOIR_LOW: "#15803d",
+      COULOIR_HIGH: "#b45309",
+      COULOIR_BUY_THRESHOLD: "#22c55e",
+      COULOIR_SELL_THRESHOLD: "#f97316",
+      COULOIR_BUY_CANDIDATE: "#84cc16",
+      COULOIR_BUY_BLOCKED: "#a855f7",
+      COULOIR_BUY_EXECUTED: "#16a34a",
+      COULOIR_SELL: "#dc2626",
+      COULOIR_SELL_GM: "#ea580c",
+      COULOIR_SELL_GM_PUSH: "#0e7490",
+      COULOIR_SELL_FORCED: "#7c2d12",
+      COULOIR_RESET: "#64748b",
       ZERO: "#9ca3af",
     };
     const pointStyles = {
@@ -1078,12 +1093,28 @@
       SELL: "triangle",
       FORCED_SELL: "rectRot",
       GM_PUSH_MARKET_EXIT: "crossRot",
+      COULOIR_BUY_CANDIDATE: "circle",
+      COULOIR_BUY_BLOCKED: "crossRot",
+      COULOIR_BUY_EXECUTED: "triangle",
+      COULOIR_SELL: "triangle",
+      COULOIR_SELL_GM: "rectRot",
+      COULOIR_SELL_GM_PUSH: "crossRot",
+      COULOIR_SELL_FORCED: "rectRot",
+      COULOIR_RESET: "rect",
     };
     const pointRotations = {
       BUY: 0,
       SELL: 180,
       FORCED_SELL: 0,
       GM_PUSH_MARKET_EXIT: 0,
+      COULOIR_BUY_CANDIDATE: 0,
+      COULOIR_BUY_BLOCKED: 0,
+      COULOIR_BUY_EXECUTED: 0,
+      COULOIR_SELL: 180,
+      COULOIR_SELL_GM: 180,
+      COULOIR_SELL_GM_PUSH: 180,
+      COULOIR_SELL_FORCED: 180,
+      COULOIR_RESET: 0,
     };
 
     function formatMarketCapValue(value) {
@@ -1118,6 +1149,19 @@
         const idx = labels.indexOf(marker.date);
         if (idx < 0) return;
         const numeric = toNumber((values || [])[idx]);
+        if (numeric !== null) points[idx] = numeric;
+      });
+      return points;
+    }
+
+    function buildCouloirMarkerSeries(markerType) {
+      const points = new Array(labels.length).fill(null);
+      const source = payload.close_price || payload.reference_price || [];
+      (((payload.couloir || {}).markers) || []).forEach((marker) => {
+        if (marker.type !== markerType) return;
+        const idx = labels.indexOf(marker.date);
+        if (idx < 0) return;
+        const numeric = toNumber((source || [])[idx]);
         if (numeric !== null) points[idx] = numeric;
       });
       return points;
@@ -1176,6 +1220,51 @@
         spanGaps: true,
         tension: 0.2,
         pointRadius: 0,
+      });
+    }
+
+    if (payload.couloir && payload.couloir.has_trace) {
+      [
+        ["low_ref", "Couloir low_ref", colors.COULOIR_LOW, []],
+        ["buy_threshold_price", "Couloir seuil achat", colors.COULOIR_BUY_THRESHOLD, [6, 4]],
+        ["high_ref", "Couloir high_ref", colors.COULOIR_HIGH, []],
+        ["sell_threshold_price", "Couloir seuil vente", colors.COULOIR_SELL_THRESHOLD, [6, 4]],
+      ].forEach(([key, label, color, borderDash]) => {
+        priceDatasets.push({
+          type: "line",
+          label,
+          data: ((payload.couloir || {})[key] || []).map(toNumber),
+          borderColor: color,
+          backgroundColor: color,
+          borderDash,
+          spanGaps: true,
+          tension: 0.15,
+          pointRadius: 0,
+        });
+      });
+
+      [
+        "COULOIR_BUY_CANDIDATE",
+        "COULOIR_BUY_BLOCKED",
+        "COULOIR_BUY_EXECUTED",
+        "COULOIR_SELL",
+        "COULOIR_SELL_GM",
+        "COULOIR_SELL_GM_PUSH",
+        "COULOIR_SELL_FORCED",
+        "COULOIR_RESET",
+      ].forEach((markerType) => {
+        priceDatasets.push({
+          type: "scatter",
+          label: markerType,
+          data: buildCouloirMarkerSeries(markerType),
+          borderColor: colors[markerType],
+          backgroundColor: colors[markerType],
+          showLine: false,
+          pointRadius: 5,
+          pointHoverRadius: 7,
+          pointStyle: pointStyles[markerType],
+          rotation: pointRotations[markerType],
+        });
       });
     }
 

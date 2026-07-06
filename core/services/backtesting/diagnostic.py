@@ -6,6 +6,7 @@ from decimal import Decimal
 from typing import Any
 
 from core.models import Alert, DailyBar, DailyMetric, HistoricalMarketCap, Symbol
+from core.services.couloir import is_couloir_line
 from core.services.market_cap import preload_market_cap_series
 from core.services.recent_high_drawdown import (
     compute_recent_high_drawdown_condition,
@@ -390,6 +391,63 @@ def _build_markers(daily: list[dict[str, Any]]) -> list[dict[str, str]]:
         if "GM_PUSH_MARKET_EXIT" in action_reason:
             markers.append({"date": date, "type": "GM_PUSH_MARKET_EXIT"})
     return markers
+
+
+def _daily_series(daily: list[dict[str, Any]], key: str) -> list[str | None]:
+    return [None if (row or {}).get(key) in (None, "") else str((row or {}).get(key)) for row in daily]
+
+
+def _build_couloir_payload(line: dict[str, Any] | None, daily: list[dict[str, Any]], dates: list[str]) -> dict[str, Any] | None:
+    active = is_couloir_line(line)
+    has_trace = any((row or {}).get("couloir_state") for row in daily)
+    if not active and not has_trace:
+        return None
+
+    markers: list[dict[str, str]] = []
+    if has_trace:
+        for row in daily:
+            row = row or {}
+            row_date = str(row.get("date") or "")
+            if not row_date:
+                continue
+            if row.get("couloir_buy_candidate"):
+                markers.append({"date": row_date, "type": "COULOIR_BUY_CANDIDATE"})
+            if row.get("couloir_blocked_reason"):
+                markers.append({
+                    "date": row_date,
+                    "type": "COULOIR_BUY_BLOCKED",
+                    "reason": str(row.get("couloir_blocked_reason") or ""),
+                })
+            if row.get("couloir_buy_executed"):
+                markers.append({"date": row_date, "type": "COULOIR_BUY_EXECUTED"})
+            if row.get("couloir_sell_executed"):
+                source = str(row.get("couloir_sell_source") or "COULOIR").strip().upper() or "COULOIR"
+                marker_type = {
+                    "GM": "COULOIR_SELL_GM",
+                    "GM_PUSH": "COULOIR_SELL_GM_PUSH",
+                    "FORCED": "COULOIR_SELL_FORCED",
+                }.get(source, "COULOIR_SELL")
+                markers.append({"date": row_date, "type": marker_type, "source": source})
+            if row.get("couloir_reset_after_sell"):
+                markers.append({"date": row_date, "type": "COULOIR_RESET"})
+
+    return {
+        "active": bool(active),
+        "has_trace": bool(has_trace),
+        "state": _daily_series(daily, "couloir_state"),
+        "low_ref": _daily_series(daily, "couloir_low_ref"),
+        "high_ref": _daily_series(daily, "couloir_high_ref"),
+        "buy_threshold_price": _daily_series(daily, "couloir_buy_threshold_price"),
+        "sell_threshold_price": _daily_series(daily, "couloir_sell_threshold_price"),
+        "buy_candidate": [bool((row or {}).get("couloir_buy_candidate")) for row in daily],
+        "sell_candidate": [bool((row or {}).get("couloir_sell_candidate")) for row in daily],
+        "buy_executed": [bool((row or {}).get("couloir_buy_executed")) for row in daily],
+        "sell_executed": [bool((row or {}).get("couloir_sell_executed")) for row in daily],
+        "sell_source": _daily_series(daily, "couloir_sell_source"),
+        "blocked_reason": _daily_series(daily, "couloir_blocked_reason"),
+        "reset_after_sell": [bool((row or {}).get("couloir_reset_after_sell")) for row in daily],
+        "markers": markers,
+    }
 
 
 def _signal_series_keys(buy_codes: list[str]) -> list[str]:
@@ -813,6 +871,7 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
 
     reference_price = [_metric_series_value(metrics_by_date.get(date), "P") for date in dates]
     close_price = [None if (row or {}).get("price_close") in (None, "") else str((row or {}).get("price_close")) for row in daily]
+    couloir = _build_couloir_payload(line, daily, dates)
 
     buy_gm_filter = str((line or {}).get("buy_gm_filter") or "IGNORE").strip() or "IGNORE"
     gm = None
@@ -889,6 +948,7 @@ def build_diagnostic_chart_payload(*, backtest, ticker: str, line_index: int, li
         "gm": gm,
         "trend_filters": trend_filters,
         "gm_push": gm_push,
+        "couloir": couloir,
         "market_cap": market_cap,
         "recent_high_drawdown": recent_high_drawdown,
         "thresholds": thresholds,

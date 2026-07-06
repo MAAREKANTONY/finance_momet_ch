@@ -1748,6 +1748,80 @@ def run_backtest(
             event["gm_buy_debug"] = gm_buy_debug
         st.setdefault("events", []).append(event)
 
+    def _couloir_threshold_value(couloir_state: CouloirState | None, ref_name: str) -> Decimal | None:
+        if couloir_state is None:
+            return None
+        if ref_name == "low_ref":
+            low_ref = couloir_state.low_ref
+            if low_ref is None or low_ref <= 0:
+                return None
+            return low_ref * (Decimal("1") + couloir_state.config.buy_rebound_threshold)
+        if ref_name == "high_ref":
+            high_ref = couloir_state.high_ref
+            if high_ref is None or high_ref <= 0:
+                return None
+            return high_ref * (Decimal("1") - couloir_state.config.sell_drawdown_threshold)
+        return None
+
+    def _couloir_debug_snapshot(st: dict[str, Any]) -> dict[str, Any]:
+        couloir_state = st.get("couloir_state")
+        if large_result_mode or couloir_state is None:
+            return {}
+        buy_threshold = _couloir_threshold_value(couloir_state, "low_ref")
+        sell_threshold = _couloir_threshold_value(couloir_state, "high_ref")
+        return {
+            "couloir_state": couloir_state.position_state,
+            "couloir_low_ref": None if couloir_state.low_ref is None else str(couloir_state.low_ref),
+            "couloir_high_ref": None if couloir_state.high_ref is None else str(couloir_state.high_ref),
+            "couloir_buy_threshold_price": None if buy_threshold is None else str(buy_threshold),
+            "couloir_sell_threshold_price": None if sell_threshold is None else str(sell_threshold),
+        }
+
+    def _start_couloir_day_debug(st: dict[str, Any]) -> None:
+        if large_result_mode or st.get("couloir_state") is None:
+            return
+        st["_couloir_day_debug"] = {
+            **_couloir_debug_snapshot(st),
+            "couloir_buy_candidate": False,
+            "couloir_sell_candidate": False,
+            "couloir_buy_executed": False,
+            "couloir_sell_executed": False,
+            "couloir_sell_source": None,
+            "couloir_blocked_reason": None,
+            "couloir_reset_after_sell": False,
+        }
+
+    def _merge_couloir_day_debug(st: dict[str, Any], **updates: Any) -> None:
+        if large_result_mode or st.get("couloir_state") is None:
+            return
+        debug = st.setdefault("_couloir_day_debug", {})
+        snapshot = _couloir_debug_snapshot(st)
+        preserve_when_missing = {
+            "couloir_low_ref",
+            "couloir_high_ref",
+            "couloir_buy_threshold_price",
+            "couloir_sell_threshold_price",
+        }
+        for key, value in snapshot.items():
+            if key in preserve_when_missing and value is None and debug.get(key) is not None:
+                continue
+            debug[key] = value
+        for key, value in updates.items():
+            if key == "couloir_blocked_reason" and debug.get(key):
+                continue
+            debug[key] = value
+
+    def _apply_couloir_day_debug_to_last_row(st: dict[str, Any], as_of: date) -> None:
+        if large_result_mode:
+            return
+        debug = st.get("_couloir_day_debug")
+        rows = st.get("daily_rows") or []
+        if not debug or not rows:
+            return
+        if rows[-1].get("date") != str(as_of):
+            return
+        rows[-1].update(debug)
+
     def _new_explain_summary() -> dict[str, Any]:
         return {
             "played": False,
@@ -2556,6 +2630,7 @@ def run_backtest(
             close_d = _to_dec(price_by_date[d])
             if close_d is None:
                 continue
+            _start_couloir_day_debug(st)
             day_alerts_raw = tdata["alerts"].get(d, set())
             local_event_alerts = {a.upper() for a in day_alerts_raw}
             event_alerts = set(local_event_alerts)
@@ -2599,8 +2674,17 @@ def run_backtest(
             # "line above" among K1/K2/K3/K4 as of t-1.
             couloir_state = st.get("couloir_state")
             if st["position_open"] and couloir_state is not None:
-                if couloir_state.evaluate_sell_candidate(d, close_d):
+                couloir_sell_candidate = couloir_state.evaluate_sell_candidate(d, close_d)
+                _merge_couloir_day_debug(st, couloir_sell_candidate=bool(couloir_sell_candidate))
+                if couloir_sell_candidate:
                     _do_sell("Couloir : seuil de repli vente atteint")
+                    if G_today is not None:
+                        _merge_couloir_day_debug(
+                            st,
+                            couloir_sell_executed=True,
+                            couloir_sell_source="COULOIR",
+                            couloir_reset_after_sell=True,
+                        )
             elif st["position_open"] and sell_code == SPECIAL_SELL_K1F_UPPER_DOWN_B1F:
                 k_today = (tdata["metrics"].get(d) or None)
                 k_prev = st.get("prev_k") or None
@@ -2652,6 +2736,13 @@ def run_backtest(
                         f"Protection marché GM ({gm_sell_evaluation.get('label') or 'active'})",
                         reset_signal_memory=not bool(st.get("use_signal_latch_model")),
                     )
+                    if G_today is not None:
+                        _merge_couloir_day_debug(
+                            st,
+                            couloir_sell_executed=True,
+                            couloir_sell_source="GM",
+                            couloir_reset_after_sell=True,
+                        )
                     if _line_uses_progressive_explicit_sell_model(st):
                         _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
             if st["position_open"] and G_today is None:
@@ -2661,6 +2752,13 @@ def run_backtest(
                         f"GM_PUSH_MARKET_EXIT ({gm_push_sell_evaluation.get('label') or 'active'})",
                         reset_signal_memory=not bool(st.get("use_signal_latch_model")),
                     )
+                    if G_today is not None:
+                        _merge_couloir_day_debug(
+                            st,
+                            couloir_sell_executed=True,
+                            couloir_sell_source="GM_PUSH",
+                            couloir_reset_after_sell=True,
+                        )
                     if _line_uses_progressive_explicit_sell_model(st):
                         _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
             if G_today is not None:
@@ -2695,7 +2793,7 @@ def run_backtest(
             BMJ = None if nb == 0 else (BT / Decimal(nb))
             BMD = None if bmd_days == 0 else (BT / Decimal(bmd_days))
 
-            _append_daily_row(st, {
+            daily_row = _append_daily_row(st, {
                 "date": str(d),
                 "price_close": str(close_d),
                 "ratio_P": None if ratio_raw is None else str(ratio_raw),
@@ -2741,6 +2839,8 @@ def run_backtest(
                 "BMD": None if BMD is None else str(BMD),
                 "BUY_DAYS_CLOSED": bmd_days,
             })
+            if daily_row is not None:
+                _apply_couloir_day_debug_to_last_row(st, d)
 
             # Keep previous day's indicator values (used by special sell modes).
             # We update it only when metrics exist for this day.
@@ -2771,8 +2871,11 @@ def run_backtest(
                 event_alerts.add(gm_code)
             couloir_state = st.get("couloir_state")
             if couloir_state is not None:
-                if not couloir_state.evaluate_buy_candidate(d, price_by_date.get(d)):
+                couloir_buy_candidate = couloir_state.evaluate_buy_candidate(d, price_by_date.get(d))
+                if not couloir_buy_candidate:
                     continue
+                _merge_couloir_day_debug(st, couloir_buy_candidate=True)
+                _apply_couloir_day_debug_to_last_row(st, d)
             else:
                 day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
                 latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
@@ -2788,16 +2891,24 @@ def run_backtest(
             _record_explain_buy_candidate(st, d)
             tradable, ratio_pct, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
+                _merge_couloir_day_debug(st, couloir_blocked_reason="TRADABILITY")
+                _apply_couloir_day_debug_to_last_row(st, d)
                 _record_explain_blocker(st, d, "NOT_TRADABLE", "Ticker non tradable ce jour", {"type": "TRADABILITY"})
                 continue
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
+                _merge_couloir_day_debug(st, couloir_blocked_reason="TREND_FILTER")
+                _apply_couloir_day_debug_to_last_row(st, d)
                 _record_explain_blocker(st, d, "TREND_FILTER_BLOCKED", "Filtre de tendance bloquant", {"type": "TREND_FILTER"})
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                _merge_couloir_day_debug(st, couloir_blocked_reason="GM")
+                _apply_couloir_day_debug_to_last_row(st, d)
                 _mark_gm_buy_blocked(st, d)
                 _record_gm_buy_blockers(st, d)
                 continue
             if not _line_gm_push_conditions_allow_buy(st, ticker, d):
+                _merge_couloir_day_debug(st, couloir_blocked_reason="GM_PUSH")
+                _apply_couloir_day_debug_to_last_row(st, d)
                 if st.get("_last_gm_push_buy_max_blocked"):
                     _mark_gm_buy_max_blocked(st, d)
                 _record_gm_push_buy_blockers(st, d)
@@ -2866,8 +2977,11 @@ def run_backtest(
                 event_alerts.add(gm_code)
             couloir_state = st.get("couloir_state")
             if couloir_state is not None:
-                if not couloir_state.evaluate_buy_candidate(d, price_by_date.get(d)):
+                couloir_buy_candidate = couloir_state.evaluate_buy_candidate(d, price_by_date.get(d))
+                if not couloir_buy_candidate:
                     continue
+                _merge_couloir_day_debug(st, couloir_buy_candidate=True)
+                _apply_couloir_day_debug_to_last_row(st, d)
             else:
                 day_alerts = _apply_signal_state_transitions(st["active_signal_states"], event_alerts)
                 latched_alerts = _update_and_latched_states(st["and_latched_states"], event_alerts)
@@ -2883,16 +2997,24 @@ def run_backtest(
             _record_explain_buy_candidate(st, d)
             tradable, _, _ = _ratio_tradable(ticker, d, price_by_date.get(d), tdata["metrics"].get(d))
             if not tradable:
+                _merge_couloir_day_debug(st, couloir_blocked_reason="TRADABILITY")
+                _apply_couloir_day_debug_to_last_row(st, d)
                 _record_explain_blocker(st, d, "NOT_TRADABLE", "Ticker non tradable ce jour", {"type": "TRADABILITY"})
                 continue
             if not _trend_filter_allows_buy(ticker, d, gm_code, st["buy_gm_filter"]):
+                _merge_couloir_day_debug(st, couloir_blocked_reason="TREND_FILTER")
+                _apply_couloir_day_debug_to_last_row(st, d)
                 _record_explain_blocker(st, d, "TREND_FILTER_BLOCKED", "Filtre de tendance bloquant", {"type": "TREND_FILTER"})
                 continue
             if not _line_market_conditions_allow_buy(st, ticker, d, gm_code):
+                _merge_couloir_day_debug(st, couloir_blocked_reason="GM")
+                _apply_couloir_day_debug_to_last_row(st, d)
                 _mark_gm_buy_blocked(st, d)
                 _record_gm_buy_blockers(st, d)
                 continue
             if not _line_gm_push_conditions_allow_buy(st, ticker, d):
+                _merge_couloir_day_debug(st, couloir_blocked_reason="GM_PUSH")
+                _apply_couloir_day_debug_to_last_row(st, d)
                 if st.get("_last_gm_push_buy_max_blocked"):
                     _mark_gm_buy_max_blocked(st, d)
                 _record_gm_push_buy_blockers(st, d)
@@ -2900,6 +3022,8 @@ def run_backtest(
 
             if not st["allocated"]:
                 # no allocation available (limited CP)
+                _merge_couloir_day_debug(st, couloir_blocked_reason="ALLOCATION")
+                _apply_couloir_day_debug_to_last_row(st, d)
                 continue
 
             close_d = _to_dec(price_by_date[d])
@@ -2923,6 +3047,8 @@ def run_backtest(
             couloir_state = st.get("couloir_state")
             if couloir_state is not None:
                 couloir_state.on_buy_executed(close_d)
+                _merge_couloir_day_debug(st, couloir_buy_executed=True)
+                _apply_couloir_day_debug_to_last_row(st, d)
             if not st["use_signal_latch_model"]:
                 _reset_trade_signal_memory(st)
             _record_reentry_warning_if_needed(st, buy_date=d, ticker=ticker, line_index=li + 1)
@@ -2987,6 +3113,9 @@ def run_backtest(
                 BT = _to_dec(last.get("BT")) or Decimal("0")
                 last["BMJ"] = None if not_in_pos_days == 0 else str(BT / Decimal(not_in_pos_days))
                 last["BMD"] = None if in_pos_days == 0 else str(BT / Decimal(in_pos_days))
+
+                _merge_couloir_day_debug(st)
+                _apply_couloir_day_debug_to_last_row(st, d)
 
         # 4) Portfolio daily snapshot (end-of-day)
         _snapshot_portfolio(d)
@@ -3072,6 +3201,12 @@ def run_backtest(
             if closed is None:
                 continue
             G_today, pnl_amount_today = closed
+            _merge_couloir_day_debug(
+                st,
+                couloir_sell_executed=True,
+                couloir_sell_source="FORCED",
+                couloir_reset_after_sell=True,
+            )
             logs.append(f"{ticker}[L{li+1}] FORCED SELL on {last_date} close={close_d} G={G_today}")
             _record_explain_trade(st, "FORCED_SELL")
             _record_line_event(
@@ -3109,6 +3244,7 @@ def run_backtest(
                 rows[-1]["BMJ"] = None if BMJ is None else str(BMJ)
                 rows[-1]["BMD"] = None if BMD is None else str(BMD)
                 rows[-1]["BUY_DAYS_CLOSED"] = bmd_days
+                _apply_couloir_day_debug_to_last_row(st, last_date)
                 # Ensure tradable day counters remain consistent after mutating EOD shares.
                 _recompute_tradable_counters_from_rows(st)
             elif rows:
@@ -3164,6 +3300,7 @@ def run_backtest(
                     "BMD": None if BMD is None else str(BMD),
                     "BUY_DAYS_CLOSED": bmd_days,
                 })
+                _apply_couloir_day_debug_to_last_row(st, last_date)
                 _recompute_tradable_counters_from_rows(st)
 
     all_warnings = _serialize_warnings(_collect_backtest_warnings(state))

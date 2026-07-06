@@ -3350,6 +3350,89 @@ class CouloirStatefulSignalTests(TestCase):
         self.assertIn("Protection marché GM", actions[1][3])
         self.assertEqual(actions[2][1:3], ("BUY", "55.000000"))
 
+    def _daily_rows(self, bt, symbol, *, large_result_mode=False):
+        result = run_backtest(bt, large_result_mode=large_result_mode).results
+        return result["tickers"][symbol.ticker]["lines"][0]["daily"]
+
+    def test_couloir_debug_trace_records_refs_thresholds_and_executions(self):
+        bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "120", "108"])
+        daily = self._daily_rows(bt, symbol)
+
+        first = daily[0]
+        self.assertEqual(first["couloir_state"], "OUT")
+        self.assertEqual(Decimal(first["couloir_low_ref"]), Decimal("50"))
+        self.assertEqual(Decimal(first["couloir_buy_threshold_price"]), Decimal("55"))
+
+        buy_row = next(row for row in daily if row.get("action") == "BUY")
+        self.assertTrue(buy_row["couloir_buy_candidate"])
+        self.assertTrue(buy_row["couloir_buy_executed"])
+        self.assertEqual(buy_row["couloir_state"], "IN")
+        self.assertEqual(Decimal(buy_row["couloir_high_ref"]), Decimal("55"))
+
+        sell_row = next(row for row in daily if row.get("action") == "SELL")
+        self.assertTrue(sell_row["couloir_sell_candidate"])
+        self.assertTrue(sell_row["couloir_sell_executed"])
+        self.assertEqual(sell_row["couloir_sell_source"], "COULOIR")
+        self.assertTrue(sell_row["couloir_reset_after_sell"])
+        self.assertEqual(sell_row["couloir_state"], "OUT")
+        self.assertEqual(Decimal(sell_row["couloir_sell_threshold_price"]), Decimal("108"))
+
+    def test_couloir_debug_trace_marks_gm_blocked_buy(self):
+        line = self._couloir_line(gm_buy_conditions={
+            "operator": "AND",
+            "current": {"mode": "GM_POS", "threshold": "0.50", "explicit_threshold": True},
+            "market": {"mode": "IGNORE"},
+            "sector": {"mode": "IGNORE"},
+        })
+        bt, symbol = self._make_backtest(["50", "52", "54", "55", "55", "54", "55"], line=line)
+        daily = self._daily_rows(bt, symbol)
+
+        blocked = [row for row in daily if row.get("couloir_blocked_reason") == "GM"]
+        self.assertTrue(blocked)
+        self.assertTrue(blocked[0]["couloir_buy_candidate"])
+        self.assertFalse(blocked[0]["couloir_buy_executed"])
+        self.assertEqual(blocked[0]["couloir_state"], "OUT")
+
+    def test_couloir_debug_trace_is_absent_for_classic_and_large_results(self):
+        bt, symbol = self._make_backtest(["50", "52", "54", "55"], line={"buy": ["A1"], "sell": ["B1"]})
+        classic_daily = self._daily_rows(bt, symbol)
+        self.assertTrue(classic_daily)
+        self.assertNotIn("couloir_state", classic_daily[0])
+
+        couloir_bt, couloir_symbol = self._make_backtest(["50", "52", "54", "55"])
+        large_daily = self._daily_rows(couloir_bt, couloir_symbol, large_result_mode=True)
+        self.assertEqual(large_daily, [])
+
+    def test_couloir_debug_trace_marks_gm_exit_reset(self):
+        line = self._couloir_line(gm_sell_market_exit_conditions={
+            "operator": "AND",
+            "current": {"mode": "IGNORE"},
+            "market": {"mode": "GM_NEG"},
+            "sector": {"mode": "IGNORE"},
+        })
+        bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "95", "50", "55"], line=line)
+        spy = Symbol.objects.create(ticker="SPY", exchange="NYSE", active=True)
+        start = date(2024, 1, 1)
+        DailyBar.objects.bulk_create([
+            DailyBar(
+                symbol=spy,
+                date=start + timedelta(days=idx),
+                open=Decimal(close),
+                high=Decimal(close),
+                low=Decimal(close),
+                close=Decimal(close),
+                volume=1000 + idx,
+            )
+            for idx, close in enumerate(["100", "100", "100", "100", "100", "90", "90", "90"])
+        ])
+
+        daily = self._daily_rows(bt, symbol)
+        sell_row = next(row for row in daily if "Protection marché GM" in str(row.get("action_reason") or ""))
+        self.assertEqual(sell_row["couloir_sell_source"], "GM")
+        self.assertTrue(sell_row["couloir_sell_executed"])
+        self.assertTrue(sell_row["couloir_reset_after_sell"])
+        self.assertEqual(sell_row["couloir_state"], "OUT")
+
     def test_couloir_detailed_and_kpi_only_are_consistent(self):
         bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "120", "108", "50", "55"])
         detailed_final = run_backtest(bt).results["tickers"][symbol.ticker]["lines"][0]["final"]

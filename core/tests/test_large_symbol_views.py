@@ -2908,6 +2908,76 @@ class BacktestResultsRenderTests(TestCase):
                 self.assertIn('data: buildMarkerSeriesFromValues(markerType, gmValues)', body)
                 self.assertNotIn("signal GM", body)
 
+    def test_backtest_results_diagnostic_payload_includes_couloir_trace(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["COULOIR"], "sell": [], "trading_model": "COULOIR_STATEFUL"}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["COULOIR"], "sell": [], "trading_model": "COULOIR_STATEFUL", "daily": [
+                    {
+                        "date": "2024-01-02",
+                        "price_close": "50",
+                        "couloir_state": "OUT",
+                        "couloir_low_ref": "50",
+                        "couloir_buy_threshold_price": "55",
+                        "couloir_buy_candidate": False,
+                    },
+                    {
+                        "date": "2024-01-03",
+                        "price_close": "55",
+                        "action": "BUY",
+                        "couloir_state": "IN",
+                        "couloir_low_ref": "50",
+                        "couloir_high_ref": "55",
+                        "couloir_buy_threshold_price": "55",
+                        "couloir_buy_candidate": True,
+                        "couloir_buy_executed": True,
+                    },
+                    {
+                        "date": "2024-01-04",
+                        "price_close": "108",
+                        "action": "SELL",
+                        "couloir_state": "OUT",
+                        "couloir_high_ref": "120",
+                        "couloir_sell_threshold_price": "108",
+                        "couloir_sell_candidate": True,
+                        "couloir_sell_executed": True,
+                        "couloir_sell_source": "COULOIR",
+                        "couloir_reset_after_sell": True,
+                    },
+                ], "final": {}}]}
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+
+        self.assertTrue(payload["couloir"]["active"])
+        self.assertTrue(payload["couloir"]["has_trace"])
+        self.assertEqual(payload["couloir"]["low_ref"], ["50", "50", None])
+        self.assertEqual(payload["couloir"]["buy_threshold_price"], ["55", "55", None])
+        self.assertEqual(payload["couloir"]["sell_threshold_price"], [None, None, "108"])
+        self.assertIn({"date": "2024-01-03", "type": "COULOIR_BUY_EXECUTED"}, payload["couloir"]["markers"])
+        self.assertIn({"date": "2024-01-04", "type": "COULOIR_SELL", "source": "COULOIR"}, payload["couloir"]["markers"])
+        body = response.content.decode()
+        self.assertIn("Couloir seuil achat", body)
+        self.assertIn("COULOIR_BUY_EXECUTED", body)
+
+    def test_backtest_results_diagnostic_payload_warns_when_couloir_trace_is_missing(self):
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["COULOIR"], "sell": [], "trading_model": "COULOIR_STATEFUL"}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["COULOIR"], "sell": [], "trading_model": "COULOIR_STATEFUL", "daily": [
+                    {"date": "2024-01-02", "price_close": "50"},
+                    {"date": "2024-01-03", "price_close": "55", "action": "BUY"},
+                ], "final": {}}]}
+            },
+        )
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+        payload = response.context["diagnostic_chart_payload"]
+
+        self.assertTrue(payload["couloir"]["active"])
+        self.assertFalse(payload["couloir"]["has_trace"])
+        self.assertIn("Trace Couloir indisponible", response.content.decode())
+
     def test_backtest_results_diagnostic_payload_parses_buy_sell_and_forced_sell_markers(self):
         bt = self._build_diagnostic_backtest(
             signal_lines=[{"buy": ["Af"], "sell": ["Bf"]}],
