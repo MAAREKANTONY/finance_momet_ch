@@ -108,6 +108,7 @@
             <label>Jours de confirmation achat<br><input type="text" inputmode="numeric" id="id_couloir_buy_confirmation_days" data-role="couloir_buy_confirmation_days" value="2" style="max-width:140px;"></label>
             <label>Jours de confirmation vente<br><input type="text" inputmode="numeric" id="id_couloir_sell_confirmation_days" data-role="couloir_sell_confirmation_days" value="1" style="max-width:140px;"></label>
           </div>
+          <div id="couloir-global-filters-panel" data-couloir-global-filters style="margin-top:12px;"></div>
         </div>
 
         <div id="classic-signal-lines-panel">
@@ -355,6 +356,7 @@
   const summary = document.getElementById("strategy-summary");
   const strategyModeInputs = document.querySelectorAll('input[name="strategy_mode_ui"]');
   const couloirStrategyPanel = document.getElementById("couloir-strategy-panel");
+  const couloirGlobalFiltersPanel = document.getElementById("couloir-global-filters-panel");
   const classicSignalLinesPanel = document.getElementById("classic-signal-lines-panel");
   let couloirBaseLine = null;
   const LEGACY_GM_FILTER_CODES = new Set(["IGNORE", "GM_POS", "GM_NEG", "GM_NEU", "GM_POS_OR_NEU", "GM_NEG_OR_NEU"]);
@@ -408,6 +410,7 @@
       couloir_sell_drawdown_threshold: couloirParam('couloir_sell_drawdown_threshold', '0.10'),
       couloir_buy_confirmation_days: couloirParam('couloir_buy_confirmation_days', '2'),
       couloir_sell_confirmation_days: couloirParam('couloir_sell_confirmation_days', '1'),
+      ...readCouloirGlobalFilters(),
     };
   }
   function updateStrategyModeUi() {
@@ -592,7 +595,8 @@
     return sel;
   }
   function isBuyMarketConditionRole(role) {
-    return String(role || '').startsWith('buy_market_') || String(role || '').startsWith('gm_push_buy_');
+    const value = String(role || '');
+    return value.startsWith('buy_market_') || value.startsWith('gm_push_buy_') || value.startsWith('couloir_buy_market_') || value.startsWith('couloir_gm_push_buy_');
   }
   function standardMarketConditionForRole(role) {
     return isBuyMarketConditionRole(role) ? 'GM_POS' : 'GM_NEG';
@@ -722,10 +726,238 @@
       explicit_threshold: !!threshold,
     };
   }
+  function gmPushEntry(mode, threshold, buyMaxThreshold = '') {
+    return {
+      mode,
+      threshold: threshold || null,
+      buy_max_threshold: mode === 'GM_POS' ? (buyMaxThreshold || null) : null,
+      explicit_threshold: !!threshold,
+    };
+  }
+  function makeCouloirThresholdInput(value, role, placeholder) {
+    const input = makeThresholdInput(value, role);
+    input.placeholder = placeholder;
+    return input;
+  }
+  function appendCouloirFilterField(parent, label, select, thresholdInput, buyMaxInput) {
+    const block = document.createElement('label');
+    block.style.display = 'flex';
+    block.style.flexDirection = 'column';
+    block.style.gap = '4px';
+    const text = document.createElement('span');
+    text.textContent = label;
+    block.append(text, select);
+    if (thresholdInput) block.appendChild(thresholdInput);
+    if (buyMaxInput) block.appendChild(buyMaxInput);
+    parent.appendChild(block);
+  }
+  function appendCouloirFilterGroup(parent, title, helpText, rows) {
+    const box = document.createElement('div');
+    box.style.border = '1px dashed #d0d7de';
+    box.style.borderRadius = '8px';
+    box.style.padding = '8px';
+    box.style.background = '#fafafa';
+    const heading = document.createElement('div');
+    heading.innerHTML = `<strong>${title}</strong>`;
+    const help = document.createElement('div');
+    help.className = 'muted';
+    help.style.marginTop = '4px';
+    help.textContent = helpText;
+    const fields = document.createElement('div');
+    fields.style.display = 'grid';
+    fields.style.gridTemplateColumns = 'repeat(auto-fit, minmax(160px, 1fr))';
+    fields.style.gap = '8px';
+    fields.style.marginTop = '8px';
+    rows.forEach((row) => appendCouloirFilterField(fields, ...row));
+    box.append(heading, help, fields);
+    parent.appendChild(box);
+  }
+  function makeCouloirGlobalFiltersPanel(source = {}) {
+    if (!couloirGlobalFiltersPanel) return;
+    couloirGlobalFiltersPanel.innerHTML = '';
+    const title = document.createElement('div');
+    title.innerHTML = '<strong>Filtres GM / GM Push compatibles Couloir</strong>';
+    const help = document.createElement('div');
+    help.className = 'muted';
+    help.style.marginTop = '4px';
+    help.textContent = 'Ces filtres ne sont pas des signaux BUY/SELL classiques : à l’achat, ils peuvent bloquer un BUY Couloir ; à la vente, ils peuvent forcer une sortie et remettre Couloir OUT.';
+    const grid = document.createElement('div');
+    grid.style.display = 'grid';
+    grid.style.gridTemplateColumns = 'repeat(auto-fit, minmax(260px, 1fr))';
+    grid.style.gap = '10px';
+    grid.style.marginTop = '10px';
+
+    const gmBuyCurrent = normalizeGmCondition(source, 'current', normalizeLineMarketValue(source, 'buy_market_gm_current'));
+    const gmBuyMarket = normalizeGmCondition(source, 'market', normalizeLineMarketValue(source, 'buy_market_gm_market'));
+    const gmBuySector = normalizeGmCondition(source, 'sector', normalizeLineMarketValue(source, 'buy_market_gm_sector'));
+    const gmSellCurrent = normalizeSellMarketExitCondition(source, 'current');
+    const gmSellMarket = normalizeSellMarketExitCondition(source, 'market');
+    const gmSellSector = normalizeSellMarketExitCondition(source, 'sector');
+    const gmPushBuyCurrent = normalizeGmPushCondition(source, 'gm_push_buy_conditions', 'current');
+    const gmPushBuyMarket = normalizeGmPushCondition(source, 'gm_push_buy_conditions', 'market');
+    const gmPushBuySector = normalizeGmPushCondition(source, 'gm_push_buy_conditions', 'sector');
+    const gmPushSellCurrent = normalizeGmPushCondition(source, 'gm_push_sell_market_exit_conditions', 'current');
+    const gmPushSellMarket = normalizeGmPushCondition(source, 'gm_push_sell_market_exit_conditions', 'market');
+    const gmPushSellSector = normalizeGmPushCondition(source, 'gm_push_sell_market_exit_conditions', 'sector');
+
+    const gmBuyOperator = document.createElement('select');
+    gmBuyOperator.setAttribute('data-role', 'couloir_buy_market_operator');
+    gmBuyOperator.innerHTML = '<option value="AND">ET</option><option value="OR">OU</option>';
+    gmBuyOperator.value = normalizeLogic(source.gm_buy_conditions?.operator || source.buy_market_operator, 'AND');
+    const gmSellOperator = document.createElement('select');
+    gmSellOperator.setAttribute('data-role', 'couloir_sell_market_operator');
+    gmSellOperator.innerHTML = '<option value="AND">ET</option><option value="OR">OU</option>';
+    gmSellOperator.value = normalizeLogic(source.gm_sell_market_exit_conditions?.operator, 'AND');
+    const gmPushBuyOperator = document.createElement('select');
+    gmPushBuyOperator.setAttribute('data-role', 'couloir_gm_push_buy_operator');
+    gmPushBuyOperator.innerHTML = '<option value="AND">ET</option><option value="OR">OU</option>';
+    gmPushBuyOperator.value = normalizeLogic(source.gm_push_buy_conditions?.operator, 'AND');
+    const gmPushSellOperator = document.createElement('select');
+    gmPushSellOperator.setAttribute('data-role', 'couloir_gm_push_sell_operator');
+    gmPushSellOperator.innerHTML = '<option value="AND">ET</option><option value="OR">OU</option>';
+    gmPushSellOperator.value = normalizeLogic(source.gm_push_sell_market_exit_conditions?.operator, 'AND');
+
+    appendCouloirFilterGroup(grid, 'GM_XXXX — filtre achat', 'Peut bloquer un BUY Couloir sans déclencher un achat seul.', [
+      ['GM actuel', makeMarketConditionSelect(gmBuyCurrent.mode, 'couloir_buy_market_gm_current'), makeCouloirThresholdInput(gmBuyCurrent.threshold, 'couloir_buy_market_gm_current_threshold', "Seuil d'activation achat"), makeBuyMaxThresholdInput(gmBuyCurrent.buyMaxThreshold, 'couloir_buy_market_gm_current_max_threshold')],
+      ['GM marché', makeMarketConditionSelect(gmBuyMarket.mode, 'couloir_buy_market_gm_market'), makeCouloirThresholdInput(gmBuyMarket.threshold, 'couloir_buy_market_gm_market_threshold', "Seuil d'activation achat"), makeBuyMaxThresholdInput(gmBuyMarket.buyMaxThreshold, 'couloir_buy_market_gm_market_max_threshold')],
+      ['GM secteur', makeMarketConditionSelect(gmBuySector.mode, 'couloir_buy_market_gm_sector'), makeCouloirThresholdInput(gmBuySector.threshold, 'couloir_buy_market_gm_sector_threshold', "Seuil d'activation achat"), makeBuyMaxThresholdInput(gmBuySector.buyMaxThreshold, 'couloir_buy_market_gm_sector_max_threshold')],
+      ['Opérateur', gmBuyOperator, null, null],
+    ]);
+    appendCouloirFilterGroup(grid, 'GM_XXXX — protection vente', 'Peut forcer une sortie Couloir lorsqu’une position est ouverte.', [
+      ['GM actuel', makeMarketConditionSelect(gmSellCurrent.mode, 'couloir_sell_market_gm_current'), makeCouloirThresholdInput(gmSellCurrent.threshold, 'couloir_sell_market_gm_current_threshold', 'Seuil de vente'), null],
+      ['GM marché', makeMarketConditionSelect(gmSellMarket.mode, 'couloir_sell_market_gm_market'), makeCouloirThresholdInput(gmSellMarket.threshold, 'couloir_sell_market_gm_market_threshold', 'Seuil de vente'), null],
+      ['GM secteur', makeMarketConditionSelect(gmSellSector.mode, 'couloir_sell_market_gm_sector'), makeCouloirThresholdInput(gmSellSector.threshold, 'couloir_sell_market_gm_sector_threshold', 'Seuil de vente'), null],
+      ['Opérateur', gmSellOperator, null, null],
+    ]);
+    appendCouloirFilterGroup(grid, 'GM Push — filtre achat', 'Peut bloquer un BUY Couloir tant que l’impulsion attendue n’est pas active.', [
+      ['GM_push actuel', makeMarketConditionSelect(gmPushBuyCurrent.mode, 'couloir_gm_push_buy_current'), makeCouloirThresholdInput(gmPushBuyCurrent.threshold, 'couloir_gm_push_buy_current_threshold', "Seuil d'activation achat"), makeBuyMaxThresholdInput(gmPushBuyCurrent.buyMaxThreshold, 'couloir_gm_push_buy_current_max_threshold')],
+      ['GM_push marché', makeMarketConditionSelect(gmPushBuyMarket.mode, 'couloir_gm_push_buy_market'), makeCouloirThresholdInput(gmPushBuyMarket.threshold, 'couloir_gm_push_buy_market_threshold', "Seuil d'activation achat"), makeBuyMaxThresholdInput(gmPushBuyMarket.buyMaxThreshold, 'couloir_gm_push_buy_market_max_threshold')],
+      ['GM_push secteur', makeMarketConditionSelect(gmPushBuySector.mode, 'couloir_gm_push_buy_sector'), makeCouloirThresholdInput(gmPushBuySector.threshold, 'couloir_gm_push_buy_sector_threshold', "Seuil d'activation achat"), makeBuyMaxThresholdInput(gmPushBuySector.buyMaxThreshold, 'couloir_gm_push_buy_sector_max_threshold')],
+      ['Opérateur', gmPushBuyOperator, null, null],
+    ]);
+    appendCouloirFilterGroup(grid, 'GM Push — protection vente', 'Peut forcer une sortie Couloir lorsqu’une position est ouverte.', [
+      ['GM_push actuel', makeMarketConditionSelect(gmPushSellCurrent.mode, 'couloir_gm_push_sell_current'), makeCouloirThresholdInput(gmPushSellCurrent.threshold, 'couloir_gm_push_sell_current_threshold', 'Seuil de vente'), null],
+      ['GM_push marché', makeMarketConditionSelect(gmPushSellMarket.mode, 'couloir_gm_push_sell_market'), makeCouloirThresholdInput(gmPushSellMarket.threshold, 'couloir_gm_push_sell_market_threshold', 'Seuil de vente'), null],
+      ['GM_push secteur', makeMarketConditionSelect(gmPushSellSector.mode, 'couloir_gm_push_sell_sector'), makeCouloirThresholdInput(gmPushSellSector.threshold, 'couloir_gm_push_sell_sector_threshold', 'Seuil de vente'), null],
+      ['Opérateur', gmPushSellOperator, null, null],
+    ]);
+    couloirGlobalFiltersPanel.append(title, help, grid);
+    couloirGlobalFiltersPanel.querySelectorAll('input, select').forEach((input) => input.addEventListener('change', serialize));
+  }
+  function couloirRoleValue(role, fallback = '') {
+    return couloirGlobalFiltersPanel?.querySelector(`[data-role="${role}"]`)?.value || fallback;
+  }
+  function readCouloirGlobalFilters() {
+    const buyCurrent = couloirRoleValue('couloir_buy_market_gm_current', 'IGNORE');
+    const buyMarket = couloirRoleValue('couloir_buy_market_gm_market', 'IGNORE');
+    const buySector = couloirRoleValue('couloir_buy_market_gm_sector', 'IGNORE');
+    const sellCurrent = couloirRoleValue('couloir_sell_market_gm_current', 'IGNORE');
+    const sellMarket = couloirRoleValue('couloir_sell_market_gm_market', 'IGNORE');
+    const sellSector = couloirRoleValue('couloir_sell_market_gm_sector', 'IGNORE');
+    const pushBuyCurrent = couloirRoleValue('couloir_gm_push_buy_current', 'IGNORE');
+    const pushBuyMarket = couloirRoleValue('couloir_gm_push_buy_market', 'IGNORE');
+    const pushBuySector = couloirRoleValue('couloir_gm_push_buy_sector', 'IGNORE');
+    const pushSellCurrent = couloirRoleValue('couloir_gm_push_sell_current', 'IGNORE');
+    const pushSellMarket = couloirRoleValue('couloir_gm_push_sell_market', 'IGNORE');
+    const pushSellSector = couloirRoleValue('couloir_gm_push_sell_sector', 'IGNORE');
+    return {
+      buy_market_gm_current: buyCurrent,
+      buy_market_gm_market: buyMarket,
+      buy_market_gm_sector: buySector,
+      buy_market_operator: couloirRoleValue('couloir_buy_market_operator', 'AND'),
+      gm_buy_conditions: {
+        operator: couloirRoleValue('couloir_buy_market_operator', 'AND'),
+        current: gmEntry(buyCurrent, couloirRoleValue('couloir_buy_market_gm_current_threshold'), couloirRoleValue('couloir_buy_market_gm_current_max_threshold')),
+        market: gmEntry(buyMarket, couloirRoleValue('couloir_buy_market_gm_market_threshold'), couloirRoleValue('couloir_buy_market_gm_market_max_threshold')),
+        sector: gmEntry(buySector, couloirRoleValue('couloir_buy_market_gm_sector_threshold'), couloirRoleValue('couloir_buy_market_gm_sector_max_threshold')),
+      },
+      gm_sell_market_exit_conditions: {
+        operator: couloirRoleValue('couloir_sell_market_operator', 'AND'),
+        current: gmEntry(sellCurrent, couloirRoleValue('couloir_sell_market_gm_current_threshold')),
+        market: gmEntry(sellMarket, couloirRoleValue('couloir_sell_market_gm_market_threshold')),
+        sector: gmEntry(sellSector, couloirRoleValue('couloir_sell_market_gm_sector_threshold')),
+      },
+      gm_push_buy_conditions: {
+        operator: couloirRoleValue('couloir_gm_push_buy_operator', 'AND'),
+        current: gmPushEntry(pushBuyCurrent, couloirRoleValue('couloir_gm_push_buy_current_threshold'), couloirRoleValue('couloir_gm_push_buy_current_max_threshold')),
+        market: gmPushEntry(pushBuyMarket, couloirRoleValue('couloir_gm_push_buy_market_threshold'), couloirRoleValue('couloir_gm_push_buy_market_max_threshold')),
+        sector: gmPushEntry(pushBuySector, couloirRoleValue('couloir_gm_push_buy_sector_threshold'), couloirRoleValue('couloir_gm_push_buy_sector_max_threshold')),
+      },
+      gm_push_sell_market_exit_conditions: {
+        operator: couloirRoleValue('couloir_gm_push_sell_operator', 'AND'),
+        current: gmPushEntry(pushSellCurrent, couloirRoleValue('couloir_gm_push_sell_current_threshold')),
+        market: gmPushEntry(pushSellMarket, couloirRoleValue('couloir_gm_push_sell_market_threshold')),
+        sector: gmPushEntry(pushSellSector, couloirRoleValue('couloir_gm_push_sell_sector_threshold')),
+      },
+    };
+  }
+  function activeCondition(config, key) {
+    return ['current', 'market', 'sector'].some((family) => normalizeLegacyGmFilter(config?.[key]?.[family]?.mode) !== 'IGNORE');
+  }
+  function hasActiveGlobalFilters(payload) {
+    return ['buy_market_gm_current', 'buy_market_gm_market', 'buy_market_gm_sector'].some((key) => normalizeLegacyGmFilter(payload?.[key]) !== 'IGNORE')
+      || activeCondition(payload, 'gm_buy_conditions')
+      || activeCondition(payload, 'gm_sell_market_exit_conditions')
+      || activeCondition(payload, 'gm_push_buy_conditions')
+      || activeCondition(payload, 'gm_push_sell_market_exit_conditions');
+  }
+  function readClassicGlobalFiltersFallback() {
+    const tr = body?.querySelector('tr');
+    if (!tr) return {};
+    const value = (role, fallback = '') => tr.querySelector(`[data-role="${role}"]`)?.value || fallback;
+    const buyCurrent = value('buy_market_gm_current', 'IGNORE');
+    const buyMarket = value('buy_market_gm_market', 'IGNORE');
+    const buySector = value('buy_market_gm_sector', 'IGNORE');
+    const sellCurrent = value('sell_market_gm_current', 'IGNORE');
+    const sellMarket = value('sell_market_gm_market', 'IGNORE');
+    const sellSector = value('sell_market_gm_sector', 'IGNORE');
+    const pushBuyCurrent = value('gm_push_buy_current', 'IGNORE');
+    const pushBuyMarket = value('gm_push_buy_market', 'IGNORE');
+    const pushBuySector = value('gm_push_buy_sector', 'IGNORE');
+    const pushSellCurrent = value('gm_push_sell_current', 'IGNORE');
+    const pushSellMarket = value('gm_push_sell_market', 'IGNORE');
+    const pushSellSector = value('gm_push_sell_sector', 'IGNORE');
+    return {
+      buy_market_gm_current: buyCurrent,
+      buy_market_gm_market: buyMarket,
+      buy_market_gm_sector: buySector,
+      buy_market_operator: value('buy_market_operator', 'AND'),
+      gm_buy_conditions: {
+        operator: value('buy_market_operator', 'AND'),
+        current: gmEntry(buyCurrent, value('buy_market_gm_current_threshold'), value('buy_market_gm_current_max_threshold')),
+        market: gmEntry(buyMarket, value('buy_market_gm_market_threshold'), value('buy_market_gm_market_max_threshold')),
+        sector: gmEntry(buySector, value('buy_market_gm_sector_threshold'), value('buy_market_gm_sector_max_threshold')),
+      },
+      gm_sell_market_exit_conditions: {
+        operator: value('sell_market_operator', 'AND'),
+        current: gmEntry(sellCurrent, value('sell_market_gm_current_threshold')),
+        market: gmEntry(sellMarket, value('sell_market_gm_market_threshold')),
+        sector: gmEntry(sellSector, value('sell_market_gm_sector_threshold')),
+      },
+      gm_push_buy_conditions: {
+        operator: value('gm_push_buy_operator', 'AND'),
+        current: gmPushEntry(pushBuyCurrent, value('gm_push_buy_current_threshold'), value('gm_push_buy_current_max_threshold')),
+        market: gmPushEntry(pushBuyMarket, value('gm_push_buy_market_threshold'), value('gm_push_buy_market_max_threshold')),
+        sector: gmPushEntry(pushBuySector, value('gm_push_buy_sector_threshold'), value('gm_push_buy_sector_max_threshold')),
+      },
+      gm_push_sell_market_exit_conditions: {
+        operator: value('gm_push_sell_operator', 'AND'),
+        current: gmPushEntry(pushSellCurrent, value('gm_push_sell_current_threshold')),
+        market: gmPushEntry(pushSellMarket, value('gm_push_sell_market_threshold')),
+        sector: gmPushEntry(pushSellSector, value('gm_push_sell_sector_threshold')),
+      },
+    };
+  }
+  function copyClassicGlobalFiltersToCouloirIfEmpty() {
+    if (hasActiveGlobalFilters(readCouloirGlobalFilters())) return;
+    const fallback = readClassicGlobalFiltersFallback();
+    if (hasActiveGlobalFilters(fallback)) makeCouloirGlobalFiltersPanel(fallback);
+  }
   function updateSummary() {
     if (!summary) return;
     if (currentStrategyMode() === 'couloir') {
-      summary.textContent = 'Mode=Stratégie Couloir | Achat=rebond depuis plus bas suivi | Vente=repli depuis plus haut suivi | Signaux BUY/SELL classiques ignorés en V1';
+      const filters = readCouloirGlobalFilters();
+      summary.textContent = `Mode=Stratégie Couloir | Achat=rebond depuis plus bas suivi | Vente=repli depuis plus haut suivi | Marché=${composeMarketSummary(filters.gm_buy_conditions, filters.gm_buy_conditions.operator)} | GM Push BUY=${composeGmPushSummary(filters.gm_push_buy_conditions, filters.gm_push_buy_conditions.operator)} | Protection marché GM=${composeMarketExitSummary(filters.gm_sell_market_exit_conditions, filters.gm_sell_market_exit_conditions.operator)} | Protection GM Push=${composeGmPushSummary(filters.gm_push_sell_market_exit_conditions, filters.gm_push_sell_market_exit_conditions.operator)} | Signaux BUY/SELL classiques ignorés en V1`;
       return;
     }
     const rows = body.querySelectorAll("tr");
@@ -1147,12 +1379,13 @@
     setStrategyMode('classic');
     loadCouloirConfig(null);
   }
+  makeCouloirGlobalFiltersPanel(couloirBaseLine || {});
   initial = Array.isArray(initial) ? initial.filter((item) => !isCouloirLine(item)) : [];
   if (!initial.length) initial = [{mode:'standard', trading_model:'PROGRESSIVE_AUTO_SELL', buy:['Af'], sell:['Bf'], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND', buy_market_gm_current:'IGNORE', buy_market_gm_market:'IGNORE', buy_market_gm_sector:'IGNORE', buy_market_operator:'AND', gm_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_buy_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}}];
   initial.forEach((it, idx) => addRow(idx, it));
   renumber();
   addBtn?.addEventListener('click', () => { addRow(body.querySelectorAll('tr').length, {mode:'standard', trading_model:'PROGRESSIVE_AUTO_SELL', buy:[], sell:[], buy_logic:'AND', sell_logic:'OR', buy_gm_filter:'IGNORE', buy_gm_operator:'AND', sell_gm_filter:'IGNORE', sell_gm_operator:'AND', buy_market_gm_current:'IGNORE', buy_market_gm_market:'IGNORE', buy_market_gm_sector:'IGNORE', buy_market_operator:'AND', gm_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_buy_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}, gm_push_sell_market_exit_conditions:{operator:'AND', current:{mode:'IGNORE'}, market:{mode:'IGNORE'}, sector:{mode:'IGNORE'}}}); renumber(); serialize(); });
-  strategyModeInputs.forEach((input) => input.addEventListener('change', () => { updateStrategyModeUi(); serialize(); }));
+  strategyModeInputs.forEach((input) => input.addEventListener('change', () => { if (currentStrategyMode() === 'couloir') copyClassicGlobalFiltersToCouloirIfEmpty(); updateStrategyModeUi(); serialize(); }));
   couloirStrategyPanel?.querySelectorAll('input').forEach((input) => input.addEventListener('change', serialize));
   updateStrategyModeUi();
   form?.addEventListener('submit', serialize);

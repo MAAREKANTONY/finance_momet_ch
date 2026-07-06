@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from django.contrib.auth import get_user_model
 from django.test import TestCase
@@ -246,6 +247,108 @@ class SymbolPickerFormTests(TestCase):
         self.assertEqual(cleaned[0]["couloir_buy_confirmation_days"], 3)
         self.assertEqual(cleaned[0]["couloir_sell_confirmation_days"], 2)
         self.assertEqual(cleaned[0]["gm_sell_market_exit_conditions"]["market"]["mode"], "NEG")
+
+    def test_couloir_signal_lines_keep_all_gm_and_gm_push_configs(self):
+        cleaned = _clean_signal_lines_json([
+            {
+                "buy": ["COULOIR"],
+                "sell": ["Bf"],
+                "gm_buy_conditions": {
+                    "operator": "OR",
+                    "current": {"mode": "GM_POS", "threshold": "0.2", "buy_max_threshold": "0.4"},
+                },
+                "gm_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "market": {"mode": "GM_NEG", "threshold": "0.3"},
+                },
+                "gm_push_buy_conditions": {
+                    "operator": "AND",
+                    "current": {"mode": "GM_POS", "threshold": "0.2", "buy_max_threshold": "0.4"},
+                },
+                "gm_push_sell_market_exit_conditions": {
+                    "operator": "OR",
+                    "market": {"mode": "GM_NEG", "threshold": "0.2"},
+                },
+            }
+        ])
+        line = cleaned[0]
+        self.assertEqual(line["buy"], ["COULOIR"])
+        self.assertEqual(line["sell"], [])
+        self.assertEqual(line["gm_buy_conditions"]["operator"], "OR")
+        self.assertEqual(line["gm_buy_conditions"]["current"]["mode"], "POS")
+        self.assertEqual(line["gm_buy_conditions"]["current"]["threshold"], "0.2")
+        self.assertEqual(line["gm_sell_market_exit_conditions"]["market"]["mode"], "NEG")
+        self.assertEqual(line["gm_push_buy_conditions"]["current"]["threshold"], "0.2")
+        self.assertEqual(line["gm_push_buy_conditions"]["current"]["buy_max_threshold"], "0.4")
+        self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["threshold"], "0.2")
+        self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["sell_threshold"], "0.2")
+
+    def test_game_scenario_form_keeps_couloir_gm_and_gm_push_configs(self):
+        form = GameScenarioForm(
+            data={
+                "name": "Game Couloir GM",
+                "description": "",
+                "active": "on",
+                "study_days": "1000",
+                "tradability_threshold": "0",
+                "npente": "100",
+                "slope_threshold": "0.1",
+                "npente_basse": "20",
+                "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
+                "nglobal": "20",
+                "presence_threshold_pct": "30",
+                "email_recipients": "",
+                "a": "1",
+                "b": "1",
+                "c": "1",
+                "d": "1",
+                "e": "1",
+                "n1": "5",
+                "n2": "3",
+                "capital_total": "10000",
+                "capital_per_ticker": "1000",
+                "capital_mode": "FIXED",
+                "signal_lines": json.dumps([
+                    {
+                        "buy": ["COULOIR"],
+                        "sell": [],
+                        "gm_buy_conditions": {"current": {"mode": "GM_POS", "threshold": "0.2"}},
+                        "gm_sell_market_exit_conditions": {"market": {"mode": "GM_NEG", "threshold": "0.3"}},
+                        "gm_push_buy_conditions": {"current": {"mode": "GM_POS", "threshold": "0.2"}},
+                        "gm_push_sell_market_exit_conditions": {"market": {"mode": "GM_NEG", "threshold": "0.2"}},
+                    }
+                ]),
+                "warmup_days": "30",
+                "close_positions_at_end": "on",
+            }
+        )
+        self.assertTrue(form.is_valid(), form.errors)
+        line = form.cleaned_data["signal_lines"][0]
+        self.assertEqual(line["buy"], ["COULOIR"])
+        self.assertEqual(line["gm_buy_conditions"]["current"]["threshold"], "0.2")
+        self.assertEqual(line["gm_sell_market_exit_conditions"]["market"]["threshold"], "0.3")
+        self.assertEqual(line["gm_push_buy_conditions"]["current"]["threshold"], "0.2")
+        self.assertEqual(line["gm_push_sell_market_exit_conditions"]["market"]["sell_threshold"], "0.2")
+
+    def test_couloir_templates_expose_global_gm_filters_outside_classic_panel(self):
+        for relative_path in (
+            "templates/backtest_create.html",
+            "templates/backtest_edit.html",
+            "templates/game_scenario_form.html",
+        ):
+            source = Path(relative_path).read_text()
+            self.assertIn('id="couloir-global-filters-panel"', source)
+            self.assertIn("Filtres GM / GM Push compatibles Couloir", source)
+            self.assertIn("couloir_buy_market_gm_current", source)
+            self.assertIn("couloir_gm_push_buy_current", source)
+            self.assertIn("copyClassicGlobalFiltersToCouloirIfEmpty", source)
+            self.assertLess(source.index('id="couloir-global-filters-panel"'), source.index('id="classic-signal-lines-panel"'))
+            self.assertIn("threshold: threshold || null", source)
+            self.assertNotIn("sell_threshold: threshold ? String(-Math.abs(Number(threshold)))", source)
 
     def test_game_scenario_form_renders_sell_threshold_fields(self):
         form = GameScenarioForm()
