@@ -1,5 +1,6 @@
 import json
 
+from django.contrib.auth import get_user_model
 from django.test import TestCase
 
 from core.forms import BacktestForm, ScenarioForm, StudyScenarioForm, UniverseForm, GameScenarioForm, _clean_signal_lines_json
@@ -1216,3 +1217,154 @@ class SymbolPickerFormTests(TestCase):
         saved = form.save()
         self.assertNotIn("min_price", saved.settings)
         self.assertNotIn("max_price", saved.settings)
+
+
+class RunConfigurationSnapshotTests(TestCase):
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(username="snapshot-user", password="secret123")
+        self.client.force_login(self.user)
+        self.symbol = Symbol.objects.create(ticker="AAA", exchange="NYSE", name="AAA Corp", sector="Tech", active=True)
+        self.scenario = Scenario.objects.create(
+            name="Snapshot scenario",
+            active=True,
+            a=1,
+            b=1,
+            c=1,
+            d=1,
+            e=1,
+            n1=5,
+            n2=3,
+            npente=100,
+            slope_threshold="0.1",
+            npente_basse=20,
+            slope_threshold_basse="0.02",
+            rhd_ok_reactivation_mode="rebound_confirmed",
+            rhd_ok_rebound_threshold="0.08",
+            rhd_ok_confirmation_days=2,
+            rhd_ok_reentry_max_drawdown="0.40",
+            nglobal=20,
+            history_years=2,
+        )
+        self.scenario.symbols.set([self.symbol])
+
+    def _backtest(self, **overrides):
+        data = {
+            "name": "Snapshot BT",
+            "scenario": self.scenario,
+            "capital_total": 10000,
+            "capital_per_ticker": 1000,
+            "ratio_threshold": 0,
+            "include_all_tickers": True,
+            "signal_lines": [{"buy": ["A1"], "sell": ["B1"], "gm_push_buy_conditions": {"current": {"mode": "NEG", "threshold": "0.2"}}}],
+            "universe_snapshot": [{"ticker": "AAA", "exchange": "NYSE", "sector": "Tech"}],
+            "results": {"tickers": {"AAA": {"daily": [1, 2, 3]}}},
+        }
+        data.update(overrides)
+        return Backtest.objects.create(**data)
+
+    def test_snapshot_hash_is_stable_and_changes_when_config_changes(self):
+        from core.services.run_configuration_snapshots import build_backtest_snapshot_payload, compute_config_hash
+
+        bt = self._backtest()
+        scenario_snapshot, run_snapshot = build_backtest_snapshot_payload(bt)
+        first = compute_config_hash("BACKTEST", scenario_snapshot, run_snapshot)
+        second = compute_config_hash("BACKTEST", scenario_snapshot, run_snapshot)
+        self.assertEqual(first, second)
+        changed = dict(run_snapshot)
+        changed["capital_total"] = "999"
+        self.assertNotEqual(first, compute_config_hash("BACKTEST", scenario_snapshot, changed))
+        self.assertNotIn("results", run_snapshot)
+
+    def test_capture_backtest_deduplicates_and_preserves_gm_push_threshold(self):
+        from core.services.run_configuration_snapshots import capture_backtest_configuration
+        from core.models import RunConfigurationSnapshot
+
+        bt = self._backtest()
+        first = capture_backtest_configuration(bt)
+        second = capture_backtest_configuration(bt)
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(RunConfigurationSnapshot.objects.filter(kind="BACKTEST").count(), 1)
+        line = first.run_snapshot["signal_lines"][0]
+        self.assertEqual(line["gm_push_buy_conditions"]["current"]["threshold"], "0.2")
+
+    def test_capture_game_deduplicates_and_keeps_rhd_fields(self):
+        from core.services.run_configuration_snapshots import capture_game_configuration
+        from core.models import RunConfigurationSnapshot
+
+        game = GameScenario.objects.create(
+            name="Snapshot Game",
+            study_days=120,
+            active=True,
+            rhd_ok_reactivation_mode="rebound_confirmed",
+            rhd_ok_rebound_threshold="0.09",
+            rhd_ok_confirmation_days=3,
+            rhd_ok_reentry_max_drawdown="0.35",
+            signal_lines=[{"buy": ["RHD_OK"], "sell": ["RHD_FAIL"]}],
+        )
+        first = capture_game_configuration(game)
+        second = capture_game_configuration(game)
+        self.assertIsNotNone(first)
+        self.assertIsNone(second)
+        self.assertEqual(RunConfigurationSnapshot.objects.filter(kind="GAME").count(), 1)
+        self.assertEqual(first.scenario_snapshot["rhd_ok_reactivation_mode"], "rebound_confirmed")
+        self.assertEqual(first.scenario_snapshot["rhd_ok_confirmation_days"], 3)
+
+    def test_purge_keeps_50_latest_per_kind(self):
+        from core.services.run_configuration_snapshots import capture_backtest_configuration
+        from core.models import RunConfigurationSnapshot
+
+        for idx in range(55):
+            bt = self._backtest(name=f"BT {idx}", capital_total=idx + 1)
+            capture_backtest_configuration(bt)
+        self.assertEqual(RunConfigurationSnapshot.objects.filter(kind="BACKTEST").count(), 50)
+
+    def test_restore_backtest_creates_scenario_and_backtest_copy(self):
+        from core.services.run_configuration_snapshots import capture_backtest_configuration, restore_backtest_snapshot
+
+        bt = self._backtest(signal_lines=[{"buy": ["COULOIR"], "sell": [], "couloir": {"buy_rebound_threshold": "0.10"}}])
+        snapshot = capture_backtest_configuration(bt)
+        restored = restore_backtest_snapshot(snapshot)
+        self.assertNotEqual(restored.id, bt.id)
+        self.assertNotEqual(restored.scenario_id, self.scenario.id)
+        self.assertEqual(restored.signal_lines[0]["buy"], ["COULOIR"])
+        self.assertEqual(restored.results, {})
+        self.assertEqual(list(restored.scenario.symbols.values_list("ticker", flat=True)), ["AAA"])
+
+    def test_restore_game_creates_copy(self):
+        from core.services.run_configuration_snapshots import capture_game_configuration, restore_game_snapshot
+
+        game = GameScenario.objects.create(
+            name="Game Restore",
+            study_days=90,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            today_results={"rows": [1]},
+            last_run_status="done",
+        )
+        snapshot = capture_game_configuration(game)
+        restored = restore_game_snapshot(snapshot)
+        self.assertNotEqual(restored.id, game.id)
+        self.assertEqual(restored.study_days, 90)
+        self.assertEqual(restored.signal_lines[0]["buy"], ["A1"])
+        self.assertEqual(restored.today_results, {})
+        self.assertEqual(restored.last_run_status, "")
+
+    def test_snapshot_ui_blocks_are_rendered_and_restore_redirects(self):
+        from core.services.run_configuration_snapshots import capture_backtest_configuration, capture_game_configuration
+
+        bt = self._backtest()
+        bt_snapshot = capture_backtest_configuration(bt)
+        response = self.client.get(f"/backtests/new/?snapshot_id={bt_snapshot.id}")
+        self.assertContains(response, "Configurations sauvegardées")
+        self.assertContains(response, "Charger cette configuration")
+        response = self.client.post("/backtests/snapshots/restore/", {"snapshot_id": bt_snapshot.id})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(Backtest.objects.count(), 2)
+
+        game = GameScenario.objects.create(name="UI Game", study_days=30, signal_lines=[{"buy": ["A1"], "sell": ["B1"]}])
+        game_snapshot = capture_game_configuration(game)
+        response = self.client.get(f"/games/new/?snapshot_id={game_snapshot.id}")
+        self.assertContains(response, "Configurations sauvegardées")
+        response = self.client.post("/games/snapshots/restore/", {"snapshot_id": game_snapshot.id})
+        self.assertEqual(response.status_code, 302)
+        self.assertEqual(GameScenario.objects.count(), 2)

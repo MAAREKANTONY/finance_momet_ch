@@ -1,0 +1,31 @@
+<div class="card" style="margin-bottom:16px;">
+  <h3 style="margin-top:0;">Configurations sauvegardées</h3>
+  <form method="get" style="display:flex; gap:8px; flex-wrap:wrap; align-items:flex-end;">
+    <div class="field" style="margin:0;">
+      <label for="id_snapshot_id">Configuration</label><br>
+      <select name="snapshot_id" id="id_snapshot_id">
+        <option value="">-- Choisir --</option>
+        {% for snapshot in configuration_snapshots %}
+          <option value="{{ snapshot.id }}" {% if snapshot_preview and snapshot_preview.id == snapshot.id %}selected{% endif %}>{{ snapshot.created_at|date:"Y-m-d H:i" }} - {{ snapshot.label }}</option>
+        {% endfor %}
+      </select>
+    </div>
+    <button type="submit" class="btn">Prévisualiser</button>
+  </form>
+
+  {% if snapshot_preview %}
+    <div style="margin-top:12px;">
+      <div><strong>{{ snapshot_preview.label }}</strong></div>
+      <div class="muted">{{ snapshot_preview.kind }} - {{ snapshot_preview.created_at|date:"Y-m-d H:i" }}</div>
+      <details open style="margin-top:8px;">
+        <summary>Configuration</summary>
+        <pre style="white-space:pre-wrap; max-height:360px; overflow:auto;">{{ snapshot_preview_json }}</pre>
+      </details>
+      <form method="post" action="{{ snapshot_restore_url }}" style="margin-top:8px;">
+        {% csrf_token %}
+        <input type="hidden" name="snapshot_id" value="{{ snapshot_preview.id }}">
+        <button type="submit" class="btn">Charger cette configuration</button>
+      </form>
+    </div>
+  {% endif %}
+</div>

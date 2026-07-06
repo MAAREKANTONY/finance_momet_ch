@@ -32,6 +32,7 @@ urlpatterns = [
     # Game Scenarios (Scénario de Jeu)
     path("games/", views.game_scenarios_page, name="game_scenarios_page"),
     path("games/new/", views.game_scenario_create, name="game_scenario_create"),
+    path("games/snapshots/restore/", views.game_snapshot_restore, name="game_snapshot_restore"),
     path("games/<int:pk>/", views.game_scenario_detail, name="game_scenario_detail"),
     path("games/<int:pk>/edit/", views.game_scenario_edit, name="game_scenario_edit"),
     path("games/<int:pk>/delete/", views.game_scenario_delete, name="game_scenario_delete"),
@@ -94,6 +95,7 @@ urlpatterns = [
     path("jobs/maintenance/recover-and-purge/", job_views.jobs_recover_and_purge, name="jobs_recover_and_purge"),
     path("backtests/", views.backtests_page, name="backtests_page"),
     path("backtests/new/", views.backtest_create, name="backtest_create"),
+    path("backtests/snapshots/restore/", views.backtest_snapshot_restore, name="backtest_snapshot_restore"),
     path("backtests/<int:pk>/edit/", views.backtest_update, name="backtest_update"),
     path("backtests/<int:pk>/", views.backtest_detail, name="backtest_detail"),
     path("backtests/<int:pk>/debug/", views.backtest_debug, name="backtest_debug"),

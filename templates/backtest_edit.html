@@ -6,6 +6,8 @@
   <div><strong>Attention :</strong> modifier un backtest réinitialise ses résultats (ils deviennent obsolètes). Après sauvegarde, relance les étapes <em>Fetch</em> → <em>Compute</em> → <em>Run</em>.</div>
 </div>
 
+{% include "partials/configuration_snapshots.html" %}
+
 <form method="post" id="backtest-form">
   {% csrf_token %}
 

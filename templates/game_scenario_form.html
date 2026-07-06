@@ -3,6 +3,8 @@
 {% block content %}
 <h2>{% if mode == 'edit' %}Modifier{% else %}Nouveau{% endif %} Scénario de Jeu</h2>
 
+{% include "partials/configuration_snapshots.html" %}
+
 <form method="post" id="game-scenario-form">
   {% csrf_token %}
 

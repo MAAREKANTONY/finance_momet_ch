@@ -819,6 +819,52 @@ class Backtest(models.Model):
         return f"{self.name} ({self.scenario.name})"
 
 
+class RunConfigurationSnapshot(models.Model):
+    class Kind(models.TextChoices):
+        BACKTEST = "BACKTEST", "Backtest"
+        GAME = "GAME", "Game"
+
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    kind = models.CharField(max_length=16, choices=Kind.choices, db_index=True)
+    label = models.CharField(max_length=255)
+    config_hash = models.CharField(max_length=64, db_index=True)
+    scenario_snapshot = models.JSONField(default=dict, blank=True)
+    run_snapshot = models.JSONField(default=dict, blank=True)
+    source_scenario = models.ForeignKey(
+        Scenario,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="configuration_snapshots",
+    )
+    source_backtest = models.ForeignKey(
+        Backtest,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="configuration_snapshots",
+    )
+    source_game_scenario = models.ForeignKey(
+        GameScenario,
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name="configuration_snapshots",
+    )
+
+    class Meta:
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["kind", "created_at"]),
+            models.Index(fields=["config_hash"]),
+            models.Index(fields=["source_backtest"]),
+            models.Index(fields=["source_game_scenario"]),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.kind} {self.label}"
+
+
 # ---------------------------
 # Feature 8 – Synthèse portefeuille globale
 # ---------------------------

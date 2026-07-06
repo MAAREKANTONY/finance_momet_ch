@@ -1,4 +1,5 @@
 import csv
+import logging
 import os
 from io import BytesIO, StringIO
 from typing import Iterable
@@ -27,6 +28,8 @@ import json
 import tempfile
 from pathlib import Path
 
+logger = logging.getLogger(__name__)
+
 from .models import (
     Alert,
     Scenario,
@@ -42,6 +45,7 @@ from .models import (
     Universe,
     Study,
     GameScenario,
+    RunConfigurationSnapshot,
 )
 from .forms import (
     ScenarioForm,
@@ -81,6 +85,13 @@ from .templatetags.backtest_extras import (
 )
 from .excel_utils import append_excel_row
 from .job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
+from .services.run_configuration_snapshots import (
+    capture_backtest_configuration,
+    capture_game_configuration,
+    restore_backtest_snapshot,
+    restore_game_snapshot,
+    snapshot_preview_payload,
+)
 from .services.derived_data import (
     backtest_impactful_changes,
     game_impactful_changes,
@@ -119,6 +130,26 @@ def _signal_lines_json_for_form(form) -> str:
         return json.dumps(_clean_signal_lines_json(parsed_value))
     except Exception:
         return raw_value if isinstance(raw_value, str) else json.dumps(parsed_value or [])
+
+
+def _configuration_snapshot_context(kind: str, selected_id=None) -> dict:
+    snapshots = list(RunConfigurationSnapshot.objects.filter(kind=kind).order_by("-created_at", "-id")[:50])
+    selected = None
+    preview_json = ""
+    if selected_id:
+        try:
+            selected = RunConfigurationSnapshot.objects.get(id=selected_id, kind=kind)
+            preview_json = json.dumps(snapshot_preview_payload(selected), indent=2, ensure_ascii=False, default=str)
+        except (RunConfigurationSnapshot.DoesNotExist, ValueError, TypeError):
+            selected = None
+    restore_url_name = "backtest_snapshot_restore" if kind == RunConfigurationSnapshot.Kind.BACKTEST else "game_snapshot_restore"
+    return {
+        "configuration_snapshots": snapshots,
+        "snapshot_preview": selected,
+        "snapshot_preview_json": preview_json,
+        "snapshot_restore_url": reverse(restore_url_name),
+        "snapshot_kind": kind,
+    }
 
 
 DU_STATUS_LABELS = {
@@ -2660,7 +2691,13 @@ def backtest_create(request):
     else:
         form = BacktestForm(initial={"include_all_tickers": True})
     signal_lines_json = _signal_lines_json_for_form(form)
-    return render(request, "backtest_create.html", {"form": form, "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES), "signal_lines_json": signal_lines_json})
+    context = {
+        "form": form,
+        "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES),
+        "signal_lines_json": signal_lines_json,
+        **_configuration_snapshot_context(RunConfigurationSnapshot.Kind.BACKTEST, request.GET.get("snapshot_id")),
+    }
+    return render(request, "backtest_create.html", context)
 
 
 @login_required
@@ -2709,8 +2746,27 @@ def backtest_update(request, pk: int):
             "bt": bt,
             "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES),
             "signal_lines_json": signal_lines_json,
+            **_configuration_snapshot_context(RunConfigurationSnapshot.Kind.BACKTEST, request.GET.get("snapshot_id")),
         },
     )
+
+
+@login_required
+@require_POST
+def backtest_snapshot_restore(request):
+    snapshot = get_object_or_404(
+        RunConfigurationSnapshot,
+        pk=request.POST.get("snapshot_id"),
+        kind=RunConfigurationSnapshot.Kind.BACKTEST,
+    )
+    try:
+        restored = restore_backtest_snapshot(snapshot, created_by=request.user if request.user.is_authenticated else None)
+    except Exception as exc:
+        logger.warning("backtest snapshot restore failed snapshot_id=%s error=%s", snapshot.id, exc)
+        messages.error(request, f"Impossible de charger cette configuration: {exc}")
+        return redirect("backtest_create")
+    messages.success(request, "Configuration restaurée dans une nouvelle copie de backtest.")
+    return redirect("backtest_update", pk=restored.pk)
 
 
 @login_required
@@ -2810,6 +2866,12 @@ def backtest_run(request, pk: int):
     # This ensures that scenario changes are taken into account when re-running a backtest.
     if bt.status != Backtest.Status.RUNNING:
         _refresh_backtest_universe_snapshot(bt)
+
+    try:
+        capture_backtest_configuration(bt)
+    except Exception as exc:
+        logger.warning("backtest snapshot capture failed backtest_id=%s error=%s", bt.id, exc)
+        messages.warning(request, "Le backtest sera lancé, mais le snapshot de configuration n'a pas été enregistré.")
 
     Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.PENDING, error_message="")
     from .tasks import run_backtest_job_task
@@ -4450,6 +4512,7 @@ def game_scenario_create(request: HttpRequest):
             "mode": "create",
             "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES),
             "signal_lines_json": signal_lines_json,
+            **_configuration_snapshot_context(RunConfigurationSnapshot.Kind.GAME, request.GET.get("snapshot_id")),
         },
     )
 
@@ -4480,8 +4543,27 @@ def game_scenario_edit(request: HttpRequest, pk: int):
             "obj": obj,
             "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES),
             "signal_lines_json": signal_lines_json,
+            **_configuration_snapshot_context(RunConfigurationSnapshot.Kind.GAME, request.GET.get("snapshot_id")),
         },
     )
+
+
+@login_required
+@require_POST
+def game_snapshot_restore(request: HttpRequest):
+    snapshot = get_object_or_404(
+        RunConfigurationSnapshot,
+        pk=request.POST.get("snapshot_id"),
+        kind=RunConfigurationSnapshot.Kind.GAME,
+    )
+    try:
+        restored = restore_game_snapshot(snapshot)
+    except Exception as exc:
+        logger.warning("game snapshot restore failed snapshot_id=%s error=%s", snapshot.id, exc)
+        messages.error(request, f"Impossible de charger cette configuration: {exc}")
+        return redirect("game_scenario_create")
+    messages.success(request, "Configuration restaurée dans une nouvelle copie de GameScenario.")
+    return redirect("game_scenario_edit", pk=restored.pk)
 
 
 @login_required
@@ -4530,6 +4612,12 @@ def game_scenario_launch(request: HttpRequest, pk: int):
         if existing:
             messages.warning(request, f"Un job Game est déjà actif pour ce scénario (job #{existing.id}, {existing.status.lower()}).")
             return redirect("game_scenario_detail", pk=obj.pk)
+
+        try:
+            capture_game_configuration(obj)
+        except Exception as exc:
+            logger.warning("game snapshot capture failed game_id=%s error=%s", obj.id, exc)
+            messages.warning(request, "Le Game sera lancé, mais le snapshot de configuration n'a pas été enregistré.")
 
         # Create a PENDING job immediately (same pattern as Backtests)
         launch = launch_processing_job(
