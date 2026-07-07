@@ -2908,6 +2908,84 @@ class BacktestResultsRenderTests(TestCase):
                 self.assertIn('data: buildMarkerSeriesFromValues(markerType, gmValues)', body)
                 self.assertNotIn("signal GM", body)
 
+    def test_backtest_results_couloir_summary_displays_couloir_params_and_marks_rhd_unused(self):
+        self.scenario.recent_high_drawdown_lookback_days = 10
+        self.scenario.recent_high_drawdown_max_drop_pct = Decimal("-0.20")
+        self.scenario.rhd_ok_reactivation_mode = Scenario.RhdOkReactivationMode.REBOUND_CONFIRMED
+        self.scenario.rhd_ok_rebound_threshold = Decimal("0.08")
+        self.scenario.rhd_ok_confirmation_days = 2
+        self.scenario.rhd_ok_reentry_max_drawdown = Decimal("0.40")
+        self.scenario.save(update_fields=[
+            "recent_high_drawdown_lookback_days",
+            "recent_high_drawdown_max_drop_pct",
+            "rhd_ok_reactivation_mode",
+            "rhd_ok_rebound_threshold",
+            "rhd_ok_confirmation_days",
+            "rhd_ok_reentry_max_drawdown",
+        ])
+        couloir_line = {
+            "buy": ["COULOIR"],
+            "sell": [],
+            "trading_model": "COULOIR_STATEFUL",
+            "couloir_initial_low_lookback_days": 120,
+            "couloir_buy_rebound_threshold": "0.20",
+            "couloir_sell_drawdown_threshold": "0.30",
+            "couloir_buy_confirmation_days": 3,
+            "couloir_sell_confirmation_days": 2,
+        }
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[couloir_line],
+            ticker_lines={
+                "AAA": {"lines": [{**couloir_line, "line_index": 1, "daily": [
+                    {"date": "2024-01-02", "price_close": "100"},
+                    {"date": "2024-01-03", "price_close": "120", "action": "BUY"},
+                ], "final": {}}]}
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["is_couloir_mode"])
+        body = response.content.decode()
+        self.assertIn("Stratégie : <b>Couloir</b>", body)
+        self.assertIn("lookback plus bas <b>120 jours</b>", body)
+        self.assertIn("seuil achat <b>+20.00%</b>", body)
+        self.assertIn("seuil vente <b>-30.00%</b>", body)
+        self.assertIn("confirmation achat <b>3 jour(s)</b>", body)
+        self.assertIn("confirmation vente <b>2 jour(s)</b>", body)
+        self.assertIn("GM / GM Push : actifs comme filtres/protections si configurés.", body)
+        self.assertIn("RHD : non utilisé comme signal BUY/SELL en mode Couloir V1.", body)
+        self.assertNotIn("Signal anti-chute RHD — Repli depuis haut récent:", body)
+
+    def test_backtest_results_classic_summary_keeps_rhd_display(self):
+        self.scenario.recent_high_drawdown_lookback_days = 10
+        self.scenario.recent_high_drawdown_max_drop_pct = Decimal("-0.20")
+        self.scenario.rhd_ok_reactivation_mode = Scenario.RhdOkReactivationMode.CLASSIC
+        self.scenario.save(update_fields=[
+            "recent_high_drawdown_lookback_days",
+            "recent_high_drawdown_max_drop_pct",
+            "rhd_ok_reactivation_mode",
+        ])
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["RHD_OK"], "sell": ["RHD_FAIL"]}],
+            ticker_lines={
+                "AAA": {"lines": [{"line_index": 1, "buy": ["RHD_OK"], "sell": ["RHD_FAIL"], "daily": [
+                    {"date": "2024-01-02", "price_close": "100"},
+                    {"date": "2024-01-03", "price_close": "101", "action": "BUY"},
+                ], "final": {}}]}
+            },
+        )
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.context["is_couloir_mode"])
+        body = response.content.decode()
+        self.assertIn("Signal anti-chute RHD — Repli depuis haut récent:", body)
+        self.assertIn("mode RHD_OK <b>Classique</b>", body)
+        self.assertNotIn("RHD : non utilisé comme signal BUY/SELL en mode Couloir V1.", body)
+
     def test_backtest_results_diagnostic_payload_includes_couloir_trace(self):
         bt = self._build_diagnostic_backtest(
             signal_lines=[{"buy": ["COULOIR"], "sell": [], "trading_model": "COULOIR_STATEFUL"}],

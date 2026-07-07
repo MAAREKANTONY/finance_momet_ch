@@ -74,6 +74,7 @@ from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
 from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
+from .services.couloir import is_couloir_line, normalize_couloir_line_config
 from .services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
 from .services.universe_resolver import UniverseResolver
 from .services.dynamic_universe_readiness import check_dynamic_universe_readiness, _gm_requirements_from_signal_lines
@@ -3110,6 +3111,7 @@ def backtest_results(request, pk: int):
     if line is None and lines:
         line = lines[0]
         line_index = int(line.get("line_index", 1))
+    couloir_config_summary = normalize_couloir_line_config(line) if is_couloir_line(line) else None
 
     # Daily series can be embedded in JSON (legacy) or offloaded to disk (large runs)
     try:
@@ -3311,6 +3313,8 @@ def backtest_results(request, pk: int):
             "ticker": ticker,
             "line_index": line_index,
             "line": line,
+            "is_couloir_mode": bool(couloir_config_summary),
+            "couloir_config_summary": couloir_config_summary,
             "daily": daily,
             "daily_json": json.dumps(daily),
             "final": final,
