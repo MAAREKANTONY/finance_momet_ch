@@ -210,7 +210,10 @@ class CouloirState:
             self.buy_armed = True
             return False
         if not self.buy_armed:
-            return False
+            # Once the OUT low history is usable, the rebound threshold is a
+            # level condition: do not wait forever for a fresh crossing if it
+            # already holds on the first eligible day.
+            self.buy_armed = True
         self.buy_confirmation_count += 1
         return self.buy_confirmation_count >= self.config.buy_confirmation_days
 

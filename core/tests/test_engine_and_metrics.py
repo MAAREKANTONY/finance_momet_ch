@@ -3298,6 +3298,69 @@ class CouloirStatefulSignalTests(TestCase):
         )
         self.assertEqual(self._actions(bt, symbol), [])
 
+    def test_couloir_buys_when_threshold_already_holds_after_history(self):
+        bt, symbol = self._make_backtest(
+            ["50", "61", "62", "63"],
+            line=self._couloir_line(couloir_buy_rebound_threshold="0.20"),
+        )
+
+        actions = self._actions(bt, symbol)
+
+        self.assertTrue(actions)
+        self.assertEqual(actions[0][1:3], ("BUY", "62.000000"))
+
+    def test_couloir_lower_threshold_is_not_less_permissive_than_higher_threshold(self):
+        closes = ["50", "61", "62", "65"]
+        lower_bt, lower_symbol = self._make_backtest(
+            closes,
+            line=self._couloir_line(couloir_buy_rebound_threshold="0.20"),
+        )
+        higher_bt, higher_symbol = self._make_backtest(
+            closes,
+            line=self._couloir_line(couloir_buy_rebound_threshold="0.30"),
+        )
+
+        lower_actions = self._actions(lower_bt, lower_symbol)
+        higher_actions = self._actions(higher_bt, higher_symbol)
+
+        self.assertTrue(lower_actions)
+        self.assertTrue(higher_actions)
+        self.assertEqual(lower_actions[0][1], "BUY")
+        self.assertEqual(higher_actions[0][1], "BUY")
+        self.assertLessEqual(lower_actions[0][0], higher_actions[0][0])
+
+    def test_couloir_retries_gm_blocked_buy_when_condition_stays_true(self):
+        line = self._couloir_line(
+            couloir_buy_rebound_threshold="0.20",
+            gm_buy_conditions={
+                "operator": "AND",
+                "current": {"mode": "GM_POS"},
+                "market": {"mode": "IGNORE"},
+                "sector": {"mode": "IGNORE"},
+            },
+        )
+        bt, symbol = self._make_backtest(["50", "61", "62", "62", "62"], line=line)
+        start = date(2024, 1, 1)
+        gm_regimes = {
+            start + timedelta(days=2): "GM_NEG",
+            start + timedelta(days=3): "GM_NEG",
+            start + timedelta(days=4): "GM_POS",
+        }
+
+        with patch("core.services.backtesting.engine._build_global_momentum_regime_from_values", return_value=gm_regimes):
+            daily = self._daily_rows(bt, symbol)
+
+        blocked = [row for row in daily if row.get("couloir_blocked_reason") == "GM"]
+        buy_row = next(row for row in daily if row.get("action") == "BUY")
+
+        self.assertTrue(blocked)
+        self.assertTrue(all(row["couloir_buy_candidate"] for row in blocked))
+        self.assertTrue(all(not row["couloir_buy_executed"] for row in blocked))
+        self.assertTrue(all(row["couloir_state"] == "OUT" for row in blocked))
+        self.assertEqual(buy_row["date"], str(start + timedelta(days=4)))
+        self.assertTrue(buy_row["couloir_buy_candidate"])
+        self.assertTrue(buy_row["couloir_buy_executed"])
+
     def test_couloir_sell_after_high_and_sell_without_higher_high(self):
         bt, symbol = self._make_backtest(["50", "52", "54", "55", "100", "120", "108"])
         actions = self._actions(bt, symbol)
