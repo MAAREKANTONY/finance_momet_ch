@@ -4,6 +4,7 @@ from datetime import date
 
 from django.core.management.base import BaseCommand, CommandError
 
+from core.management.commands.import_universe_memberships import write_import_summary
 from core.services.universe_import import UniverseImportError, import_universe_memberships_from_csv
 
 
@@ -25,6 +26,7 @@ class Command(BaseCommand):
             result = import_universe_memberships_from_csv(
                 csv_path=options["file"],
                 universe_code="SP500",
+                universe_name="S&P 500",
                 coverage_start=date.fromisoformat(options["coverage_start"]),
                 coverage_end=date.fromisoformat(options["coverage_end"]),
                 provider=options["provider"],
@@ -38,23 +40,4 @@ class Command(BaseCommand):
         except UniverseImportError as exc:
             raise CommandError(str(exc)) from exc
 
-        mode = "apply" if not result.dry_run else "dry-run"
-        self.stdout.write(
-            "summary "
-            f"mode={mode} "
-            f"universe={result.universe_code} "
-            f"period={result.period_start}..{result.period_end} "
-            f"rows={result.rows_read} "
-            f"created={result.memberships_created} "
-            f"updated={result.memberships_updated} "
-            f"imported={result.imported_member_count} "
-            f"mapped={result.mapped_member_count} "
-            f"unmapped={result.unmapped_member_count} "
-            f"coverage_days={result.coverage_days} "
-            f"status={result.status} "
-            f"batch_id={result.batch_id or ''}"
-        )
-        for warning in result.warnings:
-            self.stdout.write(self.style.WARNING(f"warning: {warning}"))
-        for error in result.errors:
-            self.stdout.write(self.style.ERROR(f"error: {error}"))
+        write_import_summary(self, result)

@@ -18,17 +18,24 @@ from core.models import (
     UniverseMembership,
 )
 
-SUPPORTED_UNIVERSE_CODE = "SP500"
-REQUIRED_COLUMNS = {
-    "universe_code",
-    "ticker",
-    "exchange",
-    "provider_symbol",
-    "valid_from",
-    "valid_to",
+DEFAULT_UNIVERSE_CODE = "SP500"
+# Backward-compatible name used by the existing S&P500 EODHD sync code.
+SUPPORTED_UNIVERSE_CODE = DEFAULT_UNIVERSE_CODE
+REQUIRED_COLUMN_GROUPS = (
+    ("universe_code",),
+    ("ticker", "symbol"),
+    ("valid_from", "start_date"),
+)
+OPTIONAL_SOURCE_PAYLOAD_COLUMNS = (
+    "weight",
+    "mic",
+    "name",
     "company_name",
-    "source",
-}
+    "country",
+    "currency",
+    "sector",
+    "industry",
+)
 
 
 class UniverseImportError(ValueError):
@@ -45,6 +52,7 @@ class ParsedMembershipRow:
     valid_from: date
     valid_to: date | None
     company_name: str
+    mic: str
     source: str
     raw: dict[str, str]
 
@@ -66,11 +74,20 @@ class UniverseImportResult:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     batch_id: int | None = None
+    rows_valid: int = 0
+    rows_rejected: int = 0
+    distinct_tickers: int = 0
+    exchanges: list[str] = field(default_factory=list)
+    valid_from_min: date | None = None
+    valid_to_max: date | None = None
+    open_memberships: int = 0
+    universe_name: str = ""
 
 
 def import_universe_memberships_from_csv(
     csv_path,
-    universe_code: str = SUPPORTED_UNIVERSE_CODE,
+    universe_code: str = DEFAULT_UNIVERSE_CODE,
+    universe_name: str = "",
     coverage_start: date | str | None = None,
     coverage_end: date | str | None = None,
     provider: str = "manual_csv",
@@ -80,13 +97,11 @@ def import_universe_memberships_from_csv(
     dry_run: bool = True,
 ) -> UniverseImportResult:
     requested_code = _normalize_code(universe_code)
-    if requested_code != SUPPORTED_UNIVERSE_CODE:
-        raise UniverseImportError(f"Unsupported universe_code={requested_code}. V1 supports only SP500.")
+    if not requested_code:
+        raise UniverseImportError("universe_code is required.")
 
     coverage_start = _parse_optional_date(coverage_start, "coverage_start")
     coverage_end = _parse_optional_date(coverage_end, "coverage_end")
-    if not dry_run and (coverage_start is None or coverage_end is None):
-        raise UniverseImportError("coverage_start and coverage_end are required when dry_run=False.")
     if coverage_start and coverage_end and coverage_end < coverage_start:
         raise UniverseImportError("coverage_end must be greater than or equal to coverage_start.")
     if expected_member_count < 1:
@@ -95,12 +110,23 @@ def import_universe_memberships_from_csv(
     rows = _read_csv_rows(csv_path, requested_code)
     period_start = coverage_start or min((row.valid_from for row in rows), default=None)
     period_end = coverage_end or _max_row_end(rows)
+    if not dry_run and (period_start is None or period_end is None):
+        raise UniverseImportError("coverage_start/coverage_end or CSV membership dates are required when dry_run=False.")
+
     result = UniverseImportResult(
         dry_run=bool(dry_run),
         universe_code=requested_code,
         period_start=period_start,
         period_end=period_end,
         rows_read=len(rows),
+        rows_valid=len(rows),
+        rows_rejected=0,
+        distinct_tickers=len({row.ticker for row in rows}),
+        exchanges=sorted({row.exchange for row in rows if row.exchange}),
+        valid_from_min=min((row.valid_from for row in rows), default=None),
+        valid_to_max=max((row.valid_to for row in rows if row.valid_to is not None), default=None),
+        open_memberships=sum(1 for row in rows if row.valid_to is None),
+        universe_name=(str(universe_name or "").strip() or _default_universe_name(requested_code)),
     )
 
     if not rows:
@@ -130,13 +156,13 @@ def import_universe_memberships_from_csv(
             period_start,
         )
         result.unmapped_member_count = max(result.imported_member_count - result.mapped_member_count, 0)
-        if coverage_start and coverage_end:
-            result.coverage_days = _count_calendar_days(coverage_start, coverage_end)
+        if period_start and period_end:
+            result.coverage_days = _count_calendar_days(period_start, period_end)
             status, _summary = _preview_coverage_status(
                 rows=rows,
                 symbols_by_row=mapped_by_row,
-                coverage_start=coverage_start,
-                coverage_end=coverage_end,
+                coverage_start=period_start,
+                coverage_end=period_end,
                 expected_member_count=expected_member_count,
                 has_mapping_errors=bool(mapping_errors),
             )
@@ -149,10 +175,24 @@ def import_universe_memberships_from_csv(
         if universe is None:
             universe = UniverseDefinition.objects.create(
                 code=requested_code,
-                name="S&P 500",
+                name=result.universe_name,
                 source=source_name or provider,
                 active=True,
             )
+        else:
+            changed_fields = []
+            requested_name = str(universe_name or "").strip()
+            if requested_name and universe.name != requested_name:
+                universe.name = requested_name
+                changed_fields.append("name")
+            if not universe.source and (source_name or provider):
+                universe.source = source_name or provider
+                changed_fields.append("source")
+            if not universe.active:
+                universe.active = True
+                changed_fields.append("active")
+            if changed_fields:
+                universe.save(update_fields=[*changed_fields, "updated_at"])
 
         created, updated = _upsert_memberships(universe, rows, mapped_by_row, mapping_errors)
         result.memberships_created = created
@@ -161,8 +201,8 @@ def import_universe_memberships_from_csv(
         active_summary = _imported_rows_coverage_summary(
             rows=rows,
             symbols_by_row=mapped_by_row,
-            coverage_start=coverage_start,
-            coverage_end=coverage_end,
+            coverage_start=period_start,
+            coverage_end=period_end,
             expected_member_count=expected_member_count,
             force_partial=bool(mapping_errors),
         )
@@ -177,8 +217,8 @@ def import_universe_memberships_from_csv(
             provider=provider,
             source_name=source_name,
             source_reference=source_reference,
-            period_start=coverage_start,
-            period_end=coverage_end,
+            period_start=period_start,
+            period_end=period_end,
             expected_member_count=expected_member_count,
             imported_member_count=result.imported_member_count,
             mapped_member_count=result.mapped_member_count,
@@ -187,6 +227,13 @@ def import_universe_memberships_from_csv(
             validated_at=timezone.now() if result.status == UniverseCoverageStatus.VALIDATED else None,
             metadata={
                 "rows_read": result.rows_read,
+                "rows_valid": result.rows_valid,
+                "rows_rejected": result.rows_rejected,
+                "distinct_tickers": result.distinct_tickers,
+                "exchanges": result.exchanges,
+                "valid_from_min": result.valid_from_min.isoformat() if result.valid_from_min else None,
+                "valid_to_max": result.valid_to_max.isoformat() if result.valid_to_max else None,
+                "open_memberships": result.open_memberships,
                 "memberships_created": created,
                 "memberships_updated": updated,
                 "mapping_errors": mapping_errors,
@@ -223,8 +270,12 @@ def _read_csv_rows(csv_path, requested_code: str) -> list[ParsedMembershipRow]:
     rows: list[ParsedMembershipRow] = []
     with path.open(newline="", encoding="utf-8") as handle:
         reader = csv.DictReader(handle)
-        fieldnames = set(reader.fieldnames or [])
-        missing = sorted(REQUIRED_COLUMNS - fieldnames)
+        fieldnames = {str(name or "").strip() for name in (reader.fieldnames or [])}
+        missing = [
+            "/".join(group)
+            for group in REQUIRED_COLUMN_GROUPS
+            if not any(name in fieldnames for name in group)
+        ]
         if missing:
             raise UniverseImportError(f"CSV is missing required columns: {', '.join(missing)}")
         for row_number, raw in enumerate(reader, start=2):
@@ -239,23 +290,26 @@ def _parse_row(raw: dict[str, Any], row_number: int, requested_code: str) -> Par
     if not row_code:
         raise UniverseImportError(f"row {row_number}: universe_code is required.")
     if row_code != requested_code:
-        raise UniverseImportError(f"row {row_number}: unsupported universe_code={row_code}. V1 supports only SP500.")
-    ticker = normalized.get("ticker", "").upper()
+        raise UniverseImportError(f"row {row_number}: universe_code={row_code} does not match requested universe_code={requested_code}.")
+    ticker = _first_value(normalized, "ticker", "symbol").upper()
     if not ticker:
-        raise UniverseImportError(f"row {row_number}: ticker is required.")
-    valid_from = _parse_required_date(normalized.get("valid_from", ""), f"row {row_number} valid_from")
-    valid_to = _parse_optional_date(normalized.get("valid_to", ""), f"row {row_number} valid_to")
+        raise UniverseImportError(f"row {row_number}: ticker/symbol is required.")
+    valid_from = _parse_required_date(_first_value(normalized, "valid_from", "start_date"), f"row {row_number} valid_from")
+    valid_to = _parse_optional_date(_first_value(normalized, "valid_to", "end_date"), f"row {row_number} valid_to")
     if valid_to and valid_to < valid_from:
         raise UniverseImportError(f"row {row_number}: valid_to must be greater than or equal to valid_from.")
+    exchange = _first_value(normalized, "exchange", "mic").upper()
+    company_name = _first_value(normalized, "company_name", "name")
     return ParsedMembershipRow(
         row_number=row_number,
         universe_code=row_code,
         ticker=ticker,
-        exchange=normalized.get("exchange", "").upper(),
+        exchange=exchange,
         provider_symbol=normalized.get("provider_symbol", ""),
         valid_from=valid_from,
         valid_to=valid_to,
-        company_name=normalized.get("company_name", ""),
+        company_name=company_name,
+        mic=normalized.get("mic", "").upper(),
         source=normalized.get("source", "") or "manual_csv",
         raw=normalized,
     )
@@ -285,7 +339,9 @@ def _upsert_memberships(
     for row in rows:
         source_payload = {
             "company_name": row.company_name,
+            "mic": row.mic,
             "source": row.source,
+            "extras": {key: row.raw.get(key, "") for key in OPTIONAL_SOURCE_PAYLOAD_COLUMNS if row.raw.get(key, "")},
             "row": row.raw,
             "mapping_error": mapping_errors.get(row.row_number, ""),
         }
@@ -388,8 +444,25 @@ def _preview_coverage_status(
             status = UniverseCoverageStatus.PARTIAL
         current += timedelta(days=1)
     return status, {"actual": max_actual, "mapped": max_mapped, "unmapped": max_unmapped}
+
+
 def _normalize_code(value: str) -> str:
     return str(value or "").strip().upper()
+
+
+def _first_value(row: dict[str, str], *keys: str) -> str:
+    for key in keys:
+        value = str(row.get(key, "") or "").strip()
+        if value:
+            return value
+    return ""
+
+
+def _default_universe_name(universe_code: str) -> str:
+    code = _normalize_code(universe_code)
+    if code == DEFAULT_UNIVERSE_CODE:
+        return "S&P 500"
+    return code
 
 
 def _parse_required_date(value: str, label: str) -> date:
