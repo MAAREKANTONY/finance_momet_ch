@@ -7,10 +7,33 @@
     Scénario: <b>{{ bt.scenario.name }}</b> • Période: <b>{{ results.meta.start_date }}</b> → <b>{{ results.meta.end_date }}</b>
     <br/>
     Éligibilité: <b>{% if bt.include_all_tickers %}tous les tickers du scénario (ignore ratio_p ≥ X){% else %}ratio_p ≥ X{% endif %}</b>
-    {% if is_couloir_mode and couloir_config_summary %}
+    {% if is_couloir_mode and couloir_effective_summary %}
+      {% with couloir_config_summary=couloir_effective_summary.couloir %}
       <br/>Stratégie : <b>Couloir</b>
-      <br/>Paramètres Couloir : lookback plus bas <b>{{ couloir_config_summary.couloir_initial_low_lookback_days }} jours</b> • seuil achat <b>+{{ couloir_config_summary.couloir_buy_rebound_threshold|pct:2 }}</b> depuis le plus bas • seuil vente <b>-{{ couloir_config_summary.couloir_sell_drawdown_threshold|pct:2 }}</b> depuis le plus haut • confirmation achat <b>{{ couloir_config_summary.couloir_buy_confirmation_days }} jour(s)</b> • confirmation vente <b>{{ couloir_config_summary.couloir_sell_confirmation_days }} jour(s)</b>
-      <br/>GM / GM Push : actifs comme filtres/protections si configurés.
+      <br/>Paramètres Couloir effectifs : lookback plus bas <b>{{ couloir_config_summary.couloir_initial_low_lookback_days }} jours</b> • seuil achat <b>+{{ couloir_config_summary.couloir_buy_rebound_threshold|pct:2 }}</b> depuis le plus bas • seuil vente <b>-{{ couloir_config_summary.couloir_sell_drawdown_threshold|pct:2 }}</b> depuis le plus haut • confirmation achat <b>{{ couloir_config_summary.couloir_buy_confirmation_days }} jour(s)</b> • confirmation vente <b>{{ couloir_config_summary.couloir_sell_confirmation_days }} jour(s)</b>
+      {% endwith %}
+      <div style="margin-top:8px;">
+        <b>Filtres/protections GM_XXXX effectifs :</b>
+        {% if couloir_effective_summary.gm_buy_rows or couloir_effective_summary.gm_sell_rows %}
+          <ul style="margin:4px 0 0 18px; padding:0;">
+            {% for row in couloir_effective_summary.gm_buy_rows %}<li>{{ row }}</li>{% endfor %}
+            {% for row in couloir_effective_summary.gm_sell_rows %}<li>{{ row }}</li>{% endfor %}
+          </ul>
+        {% else %}
+          Aucun filtre/protection GM configuré.
+        {% endif %}
+      </div>
+      <div style="margin-top:8px;">
+        <b>Filtres/protections GM Push effectifs :</b>
+        {% if couloir_effective_summary.gm_push_buy_rows or couloir_effective_summary.gm_push_sell_rows %}
+          <ul style="margin:4px 0 0 18px; padding:0;">
+            {% for row in couloir_effective_summary.gm_push_buy_rows %}<li>{{ row }}</li>{% endfor %}
+            {% for row in couloir_effective_summary.gm_push_sell_rows %}<li>{{ row }}</li>{% endfor %}
+          </ul>
+        {% else %}
+          Aucun filtre/protection GM Push configuré.
+        {% endif %}
+      </div>
       {% if bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
         <br/>RHD : non utilisé comme signal BUY/SELL en mode Couloir V1.
       {% endif %}
@@ -537,7 +560,7 @@
     <div>Visualisation dédiée au ticker et à la ligne sélectionnés.</div>
     <div>Les marqueurs BUY / SELL / FORCED_SELL sont tracés directement sur le panneau prix.</div>
     {% if diagnostic_chart_payload.recent_high_drawdown %}
-    <div>Le signal anti-chute RHD affiche le seuil calculé à partir du plus haut récent sur {{ diagnostic_chart_payload.recent_high_drawdown.lookback_days }} jours précédents, hors jour courant.</div>
+    <div>{% if is_couloir_mode %}Indicateur RHD affiché à titre informatif — non utilisé comme signal BUY/SELL en mode Couloir V1. {% endif %}Le signal anti-chute RHD affiche le seuil calculé à partir du plus haut récent sur {{ diagnostic_chart_payload.recent_high_drawdown.lookback_days }} jours précédents, hors jour courant.</div>
     {% endif %}
     {% if diagnostic_chart_payload.couloir and diagnostic_chart_payload.couloir.active and not diagnostic_chart_payload.couloir.has_trace %}
     <div>Trace Couloir indisponible en mode résultats larges ou pour un ancien résultat sans données détaillées.</div>

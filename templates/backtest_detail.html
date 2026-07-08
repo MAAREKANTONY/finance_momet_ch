@@ -34,10 +34,55 @@
           <th>Prix maximum d'achat</th>
           <td>{{ bt.settings.max_price|default:"aucune borne maximum" }}</td>
         </tr>
+        {% if is_couloir_mode and couloir_effective_summary %}
+          {% with couloir_config_summary=couloir_effective_summary.couloir %}
+          <tr>
+            <th>Stratégie effective</th>
+            <td>
+              <b>Couloir</b>
+              <div class="muted" style="margin-top:4px;">
+                Lookback plus bas <b>{{ couloir_config_summary.couloir_initial_low_lookback_days }} jours</b> • seuil achat <b>+{{ couloir_config_summary.couloir_buy_rebound_threshold|pct:2 }}</b> depuis le plus bas • seuil vente <b>-{{ couloir_config_summary.couloir_sell_drawdown_threshold|pct:2 }}</b> depuis le plus haut • confirmation achat <b>{{ couloir_config_summary.couloir_buy_confirmation_days }} jour(s)</b> • confirmation vente <b>{{ couloir_config_summary.couloir_sell_confirmation_days }} jour(s)</b>
+              </div>
+            </td>
+          </tr>
+          {% endwith %}
+          <tr>
+            <th>Filtres/protections GM_XXXX effectifs</th>
+            <td>
+              {% if couloir_effective_summary.gm_buy_rows or couloir_effective_summary.gm_sell_rows %}
+                <ul style="margin:0 0 0 18px; padding:0;">
+                  {% for row in couloir_effective_summary.gm_buy_rows %}<li>{{ row }}</li>{% endfor %}
+                  {% for row in couloir_effective_summary.gm_sell_rows %}<li>{{ row }}</li>{% endfor %}
+                </ul>
+              {% else %}
+                Aucun filtre/protection GM configuré.
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <th>Filtres/protections GM Push effectifs</th>
+            <td>
+              {% if couloir_effective_summary.gm_push_buy_rows or couloir_effective_summary.gm_push_sell_rows %}
+                <ul style="margin:0 0 0 18px; padding:0;">
+                  {% for row in couloir_effective_summary.gm_push_buy_rows %}<li>{{ row }}</li>{% endfor %}
+                  {% for row in couloir_effective_summary.gm_push_sell_rows %}<li>{{ row }}</li>{% endfor %}
+                </ul>
+              {% else %}
+                Aucun filtre/protection GM Push configuré.
+              {% endif %}
+            </td>
+          </tr>
+        {% endif %}
         <tr>
           <th>Signal anti-chute RHD — Repli depuis haut récent</th>
           <td>
-            {% if bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
+            {% if is_couloir_mode %}
+              {% if bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
+                non utilisé comme signal BUY/SELL en mode Couloir V1
+              {% else %}
+                désactivée
+              {% endif %}
+            {% elif bt.scenario.recent_high_drawdown_lookback_days and bt.scenario.recent_high_drawdown_max_drop_pct != None %}
               fenêtre {{ bt.scenario.recent_high_drawdown_lookback_days }} j précédents hors jour courant, repli max {{ bt.scenario.recent_high_drawdown_max_drop_pct|pct:2 }}, mode RHD_OK {{ bt.scenario.get_rhd_ok_reactivation_mode_display }}{% if bt.scenario.rhd_ok_reactivation_mode == "rebound_confirmed" %}, rebond minimum {{ bt.scenario.rhd_ok_rebound_threshold|pct:2 }}, confirmation {{ bt.scenario.rhd_ok_confirmation_days }} j, drawdown max réentrée {{ bt.scenario.rhd_ok_reentry_max_drawdown|pct:2 }}{% endif %}
             {% else %}
               désactivée

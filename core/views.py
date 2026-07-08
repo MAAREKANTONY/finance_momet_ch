@@ -2774,6 +2774,7 @@ def backtest_snapshot_restore(request):
 def backtest_detail(request, pk: int):
     bt = get_object_or_404(Backtest.objects.select_related("scenario"), pk=pk)
     jobs = ProcessingJob.objects.filter(backtest=bt).order_by("-created_at")[:30]
+    couloir_effective_summary = _build_couloir_effective_summary(bt, None, 1)
 
     latest_by_type = {}
     for jt in [
@@ -2792,6 +2793,8 @@ def backtest_detail(request, pk: int):
             "jobs": jobs,
             "latest_by_type": latest_by_type,
             "dynamic_universe_readiness": _dynamic_universe_readiness_panel(bt),
+            "is_couloir_mode": bool(couloir_effective_summary),
+            "couloir_effective_summary": couloir_effective_summary,
         },
     )
 
@@ -3018,6 +3021,120 @@ def _line_played_with_optional_daily(line: dict) -> bool:
     return _line_has_executed_trade(line, raw_daily)
 
 
+def _selected_effective_signal_line(bt: Backtest, result_line: dict | None, line_index: int) -> dict | None:
+    result_is_couloir = is_couloir_line(result_line)
+    stored_lines = getattr(bt, "signal_lines", None)
+    if isinstance(stored_lines, list) and stored_lines:
+        try:
+            stored_line = stored_lines[int(line_index or 1) - 1]
+        except (IndexError, TypeError, ValueError):
+            stored_line = None
+        if is_couloir_line(stored_line):
+            return stored_line
+        if result_is_couloir or result_line is None:
+            for stored_line in stored_lines:
+                if is_couloir_line(stored_line):
+                    return stored_line
+    return result_line if result_is_couloir else None
+
+
+def _threshold_display(value, *, plus_for_positive: bool = False) -> str:
+    if value in (None, ""):
+        return ""
+    raw = str(value).strip()
+    if plus_for_positive and raw and not raw.startswith(("-", "+")):
+        return f"+{raw}"
+    return raw
+
+
+def _effective_condition_rows(config, *, role: str, push: bool = False) -> list[str]:
+    if not isinstance(config, dict):
+        return []
+    scope_labels = (
+        ("current", "actuel"),
+        ("market", "marché"),
+        ("sector", "secteur"),
+    )
+    rows = []
+    for scope, scope_label in scope_labels:
+        entry = config.get(scope) if isinstance(config.get(scope), dict) else {}
+        mode = str((entry or {}).get("mode") or "IGNORE").upper()
+        if mode == "IGNORE":
+            continue
+
+        if push:
+            threshold = (
+                entry.get("threshold")
+                if entry.get("threshold") not in (None, "")
+                else entry.get("buy_threshold") if role == "Filtre achat" else entry.get("sell_threshold")
+            )
+            threshold_txt = _threshold_display(threshold, plus_for_positive=True)
+            buy_max = _threshold_display(entry.get("buy_max_threshold"), plus_for_positive=True)
+            if mode in {"NEG", "GM_NEG"}:
+                detail = f"impulsion négative, passage sous {threshold_txt}" if threshold_txt else "impulsion négative"
+            elif mode in {"POS", "GM_POS"}:
+                detail = f"impulsion positive, passage au-dessus de {threshold_txt}" if threshold_txt else "impulsion positive"
+            else:
+                detail = mode
+            if role == "Filtre achat" and buy_max:
+                detail = f"{detail}, achat bloqué au-dessus de {buy_max}"
+            rows.append(f"{role} — GM_push {scope_label}: {detail}")
+            continue
+
+        threshold = entry.get("threshold")
+        threshold_txt = _threshold_display(threshold)
+        buy_max = _threshold_display(entry.get("buy_max_threshold"))
+        if mode in {"GM_POS", "POS"}:
+            detail = f"GM positif > {threshold_txt}" if threshold_txt else "GM positif"
+            if role == "Filtre achat" and buy_max:
+                detail = f"{detail}, achat bloqué > {buy_max}"
+        elif mode in {"GM_NEG", "NEG"}:
+            detail = f"GM négatif < {threshold_txt}" if threshold_txt else "GM négatif"
+        elif mode in {"GM_NEU", "NEU"}:
+            detail = "GM neutre"
+            if threshold_txt:
+                detail = f"{detail}, seuil {threshold_txt}"
+        elif mode in {"GM_POS_OR_NEU", "POS_OR_NEU"}:
+            detail = f"GM positif ou neutre, seuil {threshold_txt}" if threshold_txt else "GM positif ou neutre"
+        elif mode in {"GM_NEG_OR_NEU", "NEG_OR_NEU"}:
+            detail = f"GM négatif ou neutre, seuil {threshold_txt}" if threshold_txt else "GM négatif ou neutre"
+        else:
+            detail = mode
+            if threshold_txt:
+                detail = f"{detail}, seuil {threshold_txt}"
+        rows.append(f"{role} — GM {scope_label}: {detail}")
+    return rows
+
+
+def _build_couloir_effective_summary(bt: Backtest, result_line: dict | None, line_index: int) -> dict | None:
+    effective_line = _selected_effective_signal_line(bt, result_line, line_index)
+    if not effective_line:
+        return None
+
+    return {
+        "line": effective_line,
+        "couloir": normalize_couloir_line_config(effective_line),
+        "gm_buy_rows": _effective_condition_rows(
+            effective_line.get("gm_buy_conditions"),
+            role="Filtre achat",
+        ),
+        "gm_sell_rows": _effective_condition_rows(
+            effective_line.get("gm_sell_market_exit_conditions"),
+            role="Protection vente",
+        ),
+        "gm_push_buy_rows": _effective_condition_rows(
+            effective_line.get("gm_push_buy_conditions"),
+            role="Filtre achat",
+            push=True,
+        ),
+        "gm_push_sell_rows": _effective_condition_rows(
+            effective_line.get("gm_push_sell_market_exit_conditions"),
+            role="Protection vente",
+            push=True,
+        ),
+    }
+
+
 @login_required
 def backtest_results(request, pk: int):
     """Readable results view for a computed backtest.
@@ -3111,7 +3228,8 @@ def backtest_results(request, pk: int):
     if line is None and lines:
         line = lines[0]
         line_index = int(line.get("line_index", 1))
-    couloir_config_summary = normalize_couloir_line_config(line) if is_couloir_line(line) else None
+    couloir_effective_summary = _build_couloir_effective_summary(bt, line, line_index)
+    couloir_config_summary = (couloir_effective_summary or {}).get("couloir")
 
     # Daily series can be embedded in JSON (legacy) or offloaded to disk (large runs)
     try:
@@ -3313,8 +3431,9 @@ def backtest_results(request, pk: int):
             "ticker": ticker,
             "line_index": line_index,
             "line": line,
-            "is_couloir_mode": bool(couloir_config_summary),
+            "is_couloir_mode": bool(couloir_effective_summary),
             "couloir_config_summary": couloir_config_summary,
+            "couloir_effective_summary": couloir_effective_summary,
             "daily": daily,
             "daily_json": json.dumps(daily),
             "final": final,

@@ -2908,7 +2908,7 @@ class BacktestResultsRenderTests(TestCase):
                 self.assertIn('data: buildMarkerSeriesFromValues(markerType, gmValues)', body)
                 self.assertNotIn("signal GM", body)
 
-    def test_backtest_results_couloir_summary_displays_couloir_params_and_marks_rhd_unused(self):
+    def test_backtest_results_couloir_summary_displays_effective_couloir_gm_and_gm_push(self):
         self.scenario.recent_high_drawdown_lookback_days = 10
         self.scenario.recent_high_drawdown_max_drop_pct = Decimal("-0.20")
         self.scenario.rhd_ok_reactivation_mode = Scenario.RhdOkReactivationMode.REBOUND_CONFIRMED
@@ -2927,20 +2927,45 @@ class BacktestResultsRenderTests(TestCase):
             "buy": ["COULOIR"],
             "sell": [],
             "trading_model": "COULOIR_STATEFUL",
-            "couloir_initial_low_lookback_days": 120,
+            "couloir_initial_low_lookback_days": 240,
             "couloir_buy_rebound_threshold": "0.20",
+            "couloir_sell_drawdown_threshold": "0.20",
+            "couloir_buy_confirmation_days": 4,
+            "couloir_sell_confirmation_days": 3,
+            "gm_buy_conditions": {
+                "operator": "AND",
+                "sector": {"mode": "GM_POS", "threshold": "0.4", "explicit_threshold": True},
+            },
+            "gm_sell_market_exit_conditions": {
+                "operator": "OR",
+                "market": {"mode": "GM_NEG", "threshold": "0.1", "explicit_threshold": True},
+            },
+            "gm_push_buy_conditions": {
+                "operator": "AND",
+                "current": {"mode": "POS", "threshold": "0.2", "buy_max_threshold": "0.5", "explicit_threshold": True},
+            },
+            "gm_push_sell_market_exit_conditions": {
+                "operator": "OR",
+                "market": {"mode": "NEG", "threshold": "0.2", "explicit_threshold": True},
+            },
+        }
+        result_line = {
+            "buy": ["COULOIR"],
+            "sell": [],
+            "trading_model": "COULOIR_STATEFUL",
+            "couloir_initial_low_lookback_days": 120,
+            "couloir_buy_rebound_threshold": "0.10",
             "couloir_sell_drawdown_threshold": "0.30",
-            "couloir_buy_confirmation_days": 3,
-            "couloir_sell_confirmation_days": 2,
+            "line_index": 1,
+            "daily": [
+                {"date": "2024-01-02", "price_close": "100"},
+                {"date": "2024-01-03", "price_close": "120", "action": "BUY"},
+            ],
+            "final": {},
         }
         bt = self._build_diagnostic_backtest(
             signal_lines=[couloir_line],
-            ticker_lines={
-                "AAA": {"lines": [{**couloir_line, "line_index": 1, "daily": [
-                    {"date": "2024-01-02", "price_close": "100"},
-                    {"date": "2024-01-03", "price_close": "120", "action": "BUY"},
-                ], "final": {}}]}
-            },
+            ticker_lines={"AAA": {"lines": [result_line]}},
         )
 
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
@@ -2949,14 +2974,91 @@ class BacktestResultsRenderTests(TestCase):
         self.assertTrue(response.context["is_couloir_mode"])
         body = response.content.decode()
         self.assertIn("Stratégie : <b>Couloir</b>", body)
-        self.assertIn("lookback plus bas <b>120 jours</b>", body)
+        self.assertIn("Paramètres Couloir effectifs", body)
+        self.assertIn("lookback plus bas <b>240 jours</b>", body)
         self.assertIn("seuil achat <b>+20.00%</b>", body)
-        self.assertIn("seuil vente <b>-30.00%</b>", body)
-        self.assertIn("confirmation achat <b>3 jour(s)</b>", body)
-        self.assertIn("confirmation vente <b>2 jour(s)</b>", body)
-        self.assertIn("GM / GM Push : actifs comme filtres/protections si configurés.", body)
+        self.assertIn("seuil vente <b>-20.00%</b>", body)
+        self.assertIn("confirmation achat <b>4 jour(s)</b>", body)
+        self.assertIn("confirmation vente <b>3 jour(s)</b>", body)
+        self.assertNotIn("lookback plus bas <b>120 jours</b>", body)
+        self.assertIn("Filtres/protections GM_XXXX effectifs", body)
+        self.assertIn("Filtre achat — GM secteur: GM positif &gt; 0.4", body)
+        self.assertIn("Protection vente — GM marché: GM négatif &lt; 0.1", body)
+        self.assertIn("Filtres/protections GM Push effectifs", body)
+        self.assertIn("Filtre achat — GM_push actuel: impulsion positive, passage au-dessus de +0.2, achat bloqué au-dessus de +0.5", body)
+        self.assertIn("Protection vente — GM_push marché: impulsion négative, passage sous +0.2", body)
+        self.assertNotIn("passage sous -0.2", body)
         self.assertIn("RHD : non utilisé comme signal BUY/SELL en mode Couloir V1.", body)
         self.assertNotIn("Signal anti-chute RHD — Repli depuis haut récent:", body)
+
+    def test_backtest_detail_couloir_summary_displays_effective_couloir_gm_and_gm_push(self):
+        self.scenario.recent_high_drawdown_lookback_days = 10
+        self.scenario.recent_high_drawdown_max_drop_pct = Decimal("-0.20")
+        self.scenario.rhd_ok_reactivation_mode = Scenario.RhdOkReactivationMode.REBOUND_CONFIRMED
+        self.scenario.rhd_ok_rebound_threshold = Decimal("0.08")
+        self.scenario.rhd_ok_confirmation_days = 2
+        self.scenario.rhd_ok_reentry_max_drawdown = Decimal("0.40")
+        self.scenario.save(update_fields=[
+            "recent_high_drawdown_lookback_days",
+            "recent_high_drawdown_max_drop_pct",
+            "rhd_ok_reactivation_mode",
+            "rhd_ok_rebound_threshold",
+            "rhd_ok_confirmation_days",
+            "rhd_ok_reentry_max_drawdown",
+        ])
+        couloir_line = {
+            "buy": ["COULOIR"],
+            "sell": [],
+            "trading_model": "COULOIR_STATEFUL",
+            "couloir_initial_low_lookback_days": 240,
+            "couloir_buy_rebound_threshold": "0.20",
+            "couloir_sell_drawdown_threshold": "0.20",
+            "couloir_buy_confirmation_days": 4,
+            "couloir_sell_confirmation_days": 3,
+            "gm_buy_conditions": {
+                "operator": "AND",
+                "sector": {"mode": "GM_POS", "threshold": "0.4", "explicit_threshold": True},
+            },
+            "gm_sell_market_exit_conditions": {
+                "operator": "OR",
+                "market": {"mode": "GM_NEG", "threshold": "0.1", "explicit_threshold": True},
+            },
+            "gm_push_buy_conditions": {
+                "operator": "AND",
+                "current": {"mode": "POS", "threshold": "0.2", "buy_max_threshold": "0.5", "explicit_threshold": True},
+            },
+            "gm_push_sell_market_exit_conditions": {
+                "operator": "OR",
+                "market": {"mode": "NEG", "threshold": "0.2", "explicit_threshold": True},
+            },
+        }
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[couloir_line],
+            ticker_lines={"AAA": {"lines": [{"line_index": 1, "buy": ["COULOIR"], "sell": [], "daily": [], "final": {}}]}},
+        )
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["is_couloir_mode"])
+        body = response.content.decode()
+        self.assertIn("Stratégie effective", body)
+        self.assertIn("<b>Couloir</b>", body)
+        self.assertIn("Lookback plus bas <b>240 jours</b>", body)
+        self.assertIn("seuil achat <b>+20.00%</b>", body)
+        self.assertIn("seuil vente <b>-20.00%</b>", body)
+        self.assertIn("confirmation achat <b>4 jour(s)</b>", body)
+        self.assertIn("confirmation vente <b>3 jour(s)</b>", body)
+        self.assertIn("Filtres/protections GM_XXXX effectifs", body)
+        self.assertIn("Filtre achat — GM secteur: GM positif &gt; 0.4", body)
+        self.assertIn("Protection vente — GM marché: GM négatif &lt; 0.1", body)
+        self.assertIn("Filtres/protections GM Push effectifs", body)
+        self.assertIn("Filtre achat — GM_push actuel: impulsion positive, passage au-dessus de +0.2, achat bloqué au-dessus de +0.5", body)
+        self.assertIn("Protection vente — GM_push marché: impulsion négative, passage sous +0.2", body)
+        self.assertNotIn("passage sous -0.2", body)
+        self.assertIn("non utilisé comme signal BUY/SELL en mode Couloir V1", body)
+        self.assertNotIn("fenêtre 10 j précédents", body)
+        self.assertNotIn("mode RHD_OK Confirmé par rebond", body)
 
     def test_backtest_results_classic_summary_keeps_rhd_display(self):
         self.scenario.recent_high_drawdown_lookback_days = 10
