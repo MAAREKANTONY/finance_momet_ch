@@ -103,12 +103,14 @@
     <details style="margin-top:14px;">
       <summary>Actions avancées / techniques</summary>
       <div style="border:1px solid #ddd; border-radius:8px; padding:12px; margin-top:10px;">
-        <h4>Importer une composition depuis CSV</h4>
-        <div class="muted">Import CSV depuis un fichier déjà présent sur le serveur. Réservé aux administrateurs techniques.</div>
+        <h4>Importer une composition historique depuis CSV</h4>
+        <div class="muted">Import CSV depuis un fichier déjà présent sur le serveur. Pour CSI300, ce CSV historique est obligatoire : aucun fallback composition actuelle ou provider.</div>
         <form method="post" style="margin-top:10px; display:grid; gap:8px;">
           {% csrf_token %}
           <input type="hidden" name="action" value="du_import_memberships">
-          <label>Fichier serveur <input name="du_import_file" placeholder="/chemin/serveur/sp500.csv"></label>
+          <label>Univers <input name="du_import_universe" value="SP500" placeholder="SP500 ou CSI300"></label>
+          <label>Nom univers <input name="du_import_universe_name" placeholder="CSI 300"></label>
+          <label>Fichier serveur <input name="du_import_file" placeholder="/chemin/serveur/csi300.csv"></label>
           <label>Date de début <input name="du_import_start" placeholder="YYYY-MM-DD"></label>
           <label>Date de fin <input name="du_import_end" placeholder="YYYY-MM-DD"></label>
           <label>Nombre attendu d'actions dans l'indice <input name="du_import_expected_member_count" type="number" min="1" value="500"></label>

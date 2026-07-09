@@ -66,7 +66,7 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
             ratio_threshold=Decimal("0"),
             include_all_tickers=True,
             signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
-            universe_snapshot=[] if scenario.universe_mode == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC else [self.old.ticker],
+            universe_snapshot=[] if scenario.universe_mode != Scenario.UniverseMode.STATIC_TICKERS else [self.old.ticker],
             warmup_days=0,
             close_positions_at_end=close_positions_at_end,
         )
@@ -161,6 +161,70 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
             )
         return universe
 
+    def _validated_csi300_universe(self):
+        universe = UniverseDefinition.objects.create(
+            code="CSI300",
+            name="CSI 300",
+            source="manual_csv",
+            active=True,
+        )
+        UniverseMembership.objects.create(
+            universe=universe,
+            symbol=self.old,
+            ticker=self.old.ticker,
+            exchange=self.old.exchange,
+            provider_symbol="",
+            valid_from=self.start,
+            valid_to=self.start + timedelta(days=1),
+            source="manual_csv",
+        )
+        UniverseMembership.objects.create(
+            universe=universe,
+            symbol=self.keep,
+            ticker=self.keep.ticker,
+            exchange=self.keep.exchange,
+            provider_symbol="",
+            valid_from=self.start,
+            valid_to=None,
+            source="manual_csv",
+        )
+        UniverseMembership.objects.create(
+            universe=universe,
+            symbol=self.new,
+            ticker=self.new.ticker,
+            exchange=self.new.exchange,
+            provider_symbol="",
+            valid_from=self.start + timedelta(days=2),
+            valid_to=None,
+            source="manual_csv",
+        )
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="manual_csv",
+            source_name="manual_csv",
+            period_start=self.start,
+            period_end=self.end,
+            expected_member_count=1,
+            imported_member_count=3,
+            mapped_member_count=3,
+            unmapped_member_count=0,
+            status=UniverseCoverageStatus.VALIDATED,
+            validated_at=timezone.now(),
+        )
+        for offset in range((self.end - self.start).days + 1):
+            current = self.start + timedelta(days=offset)
+            UniverseCoverageSnapshot.objects.create(
+                universe=universe,
+                import_batch=batch,
+                coverage_date=current,
+                expected_member_count=1,
+                actual_member_count=2,
+                mapped_member_count=2,
+                unmapped_member_count=0,
+                status=UniverseCoverageStatus.VALIDATED,
+            )
+        return universe
+
     def _fake_prep(self):
         return SimpleNamespace(did_fetch_bars=False, did_compute_metrics=False, notes=["test prep"])
 
@@ -219,6 +283,30 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         bt.refresh_from_db()
         self.assertEqual(bt.status, Backtest.Status.DONE)
         self.assertEqual({row["ticker"] for row in bt.universe_snapshot}, {"KEEP", "NEW", "OLD"})
+
+    def test_csi300_dynamic_backtest_uses_csv_universe_without_provider_sync(self):
+        self.scenario = Scenario.objects.create(
+            name="Dynamic CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+            nglobal=2,
+        )
+        self._validated_csi300_universe()
+        self._market_data()
+        Alert.objects.create(symbol=self.keep, scenario=self.scenario, date=self.start, alerts="A1")
+        bt = self._backtest(self.scenario, close_positions_at_end=True)
+
+        with patch("core.services.dynamic_universe_auto_prepare.bootstrap_sp500_symbols_from_eodhd") as bootstrap_mock:
+            with patch("core.services.dynamic_universe_auto_prepare.sync_sp500_historical_memberships_from_eodhd") as sync_mock:
+                with patch("core.services.backtesting.prep.prepare_backtest_data", return_value=self._fake_prep()):
+                    run_backtest_task(bt.id)
+
+        bootstrap_mock.assert_not_called()
+        sync_mock.assert_not_called()
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.DONE)
+        self.assertEqual({row["ticker"] for row in bt.universe_snapshot}, {"KEEP", "NEW", "OLD"})
+        self.assertEqual(bt.results["meta"]["universe"]["universe_code"], "CSI300")
 
     def test_dynamic_backtest_missing_coverage_fails_without_provider_sync(self):
         self.scenario = self._scenario(dynamic=True)

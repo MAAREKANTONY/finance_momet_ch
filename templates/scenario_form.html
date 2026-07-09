@@ -30,7 +30,7 @@
       <p>
         {{ form.universe_mode.label_tag }}<br/>
         {{ form.universe_mode }}
-        <br/><span class="muted">Mode d’univers du scénario. La sélection statique utilise les tickers choisis ci-dessous. Le mode S&amp;P500 historique dynamique détermine automatiquement les actions à partir de l’historique du S&amp;P 500 pour les backtests. Les Games restent inchangés.</span>
+        <br/><span class="muted">Mode d’univers du scénario. La sélection statique utilise les tickers choisis ci-dessous. Les modes historiques dynamiques déterminent les actions date par date depuis un historique importé. CSI300 nécessite un CSV historique explicite, sans composition actuelle ni fallback provider. Les Games restent inchangés.</span>
         {% for error in form.universe_mode.errors %}<br/><span class="error">{{ error }}</span>{% endfor %}
       </p>
 
@@ -330,7 +330,7 @@
 
     <div id="dynamic-universe-help" class="card" style="margin-bottom:16px; display:none;">
       <h3 style="margin-top:0;">Actions du backtest</h3>
-      <p class="muted">Les actions seront déterminées automatiquement à partir de l’historique du S&amp;P 500 sur la période du backtest. Vous n’avez pas besoin de sélectionner de tickers.</p>
+      <p class="muted">Les actions seront déterminées automatiquement date par date depuis l’historique de composition disponible pour l’univers choisi. Vous n’avez pas besoin de sélectionner de tickers. CSI300 repose uniquement sur un import CSV historique et ne fait aucun fallback vers une composition actuelle ou un provider.</p>
     </div>
 
     <button class="btn" type="submit">Enregistrer</button>
@@ -346,7 +346,7 @@
 
   function syncUniverseModeUi(){
     if (!universeMode || !staticTickerSelection || !dynamicUniverseHelp) return;
-    const isDynamic = universeMode.value === 'SP500_HISTORICAL_DYNAMIC';
+    const isDynamic = ['SP500_HISTORICAL_DYNAMIC', 'CSI300_HISTORICAL_DYNAMIC'].includes(universeMode.value);
     staticTickerSelection.style.display = isDynamic ? 'none' : '';
     dynamicUniverseHelp.style.display = isDynamic ? '' : 'none';
   }

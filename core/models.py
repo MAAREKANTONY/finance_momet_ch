@@ -33,6 +33,7 @@ class Scenario(models.Model):
     class UniverseMode(models.TextChoices):
         STATIC_TICKERS = "STATIC_TICKERS", "Sélection statique de tickers"
         SP500_HISTORICAL_DYNAMIC = "SP500_HISTORICAL_DYNAMIC", "S&P500 historique dynamique"
+        CSI300_HISTORICAL_DYNAMIC = "CSI300_HISTORICAL_DYNAMIC", "CSI 300 historique dynamique — via CSV"
 
     name = models.CharField(max_length=120)
     description = models.TextField(blank=True, default="")

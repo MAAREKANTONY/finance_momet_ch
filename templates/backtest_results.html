@@ -62,13 +62,13 @@
 {% with universe_meta=results.meta.universe %}
 <div class="card">
   <h3 style="margin-top:0;">Univers du backtest</h3>
-  {% if bt.scenario.universe_mode == "SP500_HISTORICAL_DYNAMIC" %}
+  {% if bt.scenario.universe_mode != "STATIC_TICKERS" %}
     {% if universe_meta %}
       <table>
         <tbody>
-          <tr><th>Mode</th><td>S&P500 historique dynamique</td></tr>
-          <tr><th>Univers</th><td>{{ universe_meta.universe_code|default:"SP500" }}</td></tr>
-          <tr><th>Période couverte par l’historique S&amp;P 500</th><td>{{ universe_meta.coverage_start|default:"—" }} → {{ universe_meta.coverage_end|default:"—" }}</td></tr>
+          <tr><th>Mode</th><td>{% if universe_meta.universe_code == "CSI300" %}CSI 300 historique dynamique — via CSV{% elif universe_meta.universe_code == "SP500" %}S&P500 historique dynamique{% else %}{{ universe_meta.universe_code|default:"Univers" }} historique dynamique{% endif %}</td></tr>
+          <tr><th>Univers</th><td>{{ universe_meta.universe_code|default:"—" }}</td></tr>
+          <tr><th>Période couverte par l’historique importé</th><td>{{ universe_meta.coverage_start|default:"—" }} → {{ universe_meta.coverage_end|default:"—" }}</td></tr>
           <tr><th>Actions analysées sur la période</th><td>{{ universe_meta.superset_count|default:"—" }}</td></tr>
           {% if universe_meta.ticker_count and universe_meta.ticker_count != universe_meta.superset_count %}
             <tr><th>Tickers</th><td>{{ universe_meta.ticker_count }}</td></tr>
@@ -77,7 +77,7 @@
         </tbody>
       </table>
       <div class="muted" style="margin-top:8px;">
-        Ce nombre correspond à toutes les actions ayant appartenu au S&amp;P 500 au moins une fois entre le début et la fin du backtest. L’appartenance à l’indice est ensuite évaluée date par date pour les nouveaux achats.
+        Ce nombre correspond à toutes les actions ayant appartenu à l’univers au moins une fois entre le début et la fin du backtest. L’appartenance à l’indice est ensuite évaluée date par date pour les nouveaux achats.
       </div>
     {% else %}
       <div style="border-left:4px solid #b45309; padding-left:10px;">

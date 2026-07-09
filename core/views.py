@@ -76,7 +76,12 @@ from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
 from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
 from .services.couloir import is_couloir_line, normalize_couloir_line_config
 from .services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
-from .services.universe_resolver import UniverseResolver
+from .services.universe_resolver import (
+    SP500_UNIVERSE_CODE,
+    UniverseResolver,
+    is_historical_dynamic_universe_mode,
+    universe_code_for_historical_dynamic_mode,
+)
 from .services.dynamic_universe_readiness import check_dynamic_universe_readiness, _gm_requirements_from_signal_lines
 from .templatetags.backtest_extras import (
     line_gm_push_buy_display,
@@ -297,7 +302,7 @@ def _refresh_backtest_universe_snapshot(bt: Backtest) -> None:
     - We keep the snapshot concept (it is still stored on the Backtest), but we update it
       whenever the user explicitly triggers a new processing action.
     """
-    if getattr(bt.scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS) == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+    if is_historical_dynamic_universe_mode(getattr(bt.scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)):
         return
     symbols = (
         bt.scenario.symbols.all()
@@ -331,7 +336,7 @@ def _latest_dynamic_ohlc_job(bt: Backtest) -> ProcessingJob | None:
 
 def _dynamic_ohlc_readiness_state(bt: Backtest) -> dict:
     mode = getattr(getattr(bt, "scenario", None), "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
-    if mode != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+    if not is_historical_dynamic_universe_mode(mode):
         return {"enabled": False}
 
     state = {
@@ -387,10 +392,11 @@ def _dynamic_ohlc_readiness_state(bt: Backtest) -> dict:
 
 def _dynamic_universe_readiness_panel(bt: Backtest) -> dict:
     mode = getattr(getattr(bt, "scenario", None), "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
-    if mode != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+    if not is_historical_dynamic_universe_mode(mode):
         return {"enabled": False}
 
-    trigger_params = {"universe": "SP500"}
+    universe_code = universe_code_for_historical_dynamic_mode(mode) or SP500_UNIVERSE_CODE
+    trigger_params = {"universe": universe_code}
     if bt.start_date:
         trigger_params["start"] = bt.start_date.isoformat()
     if bt.end_date:
@@ -403,6 +409,7 @@ def _dynamic_universe_readiness_panel(bt: Backtest) -> dict:
         "error": "",
         "needs_dates": False,
         "trigger_url": trigger_url,
+        "universe_code": universe_code,
     }
     if not bt.start_date or not bt.end_date:
         panel["needs_dates"] = True
@@ -412,7 +419,7 @@ def _dynamic_universe_readiness_panel(bt: Backtest) -> dict:
     require_gm_market, require_gm_sector = _gm_requirements_from_signal_lines(bt.signal_lines)
     try:
         panel["report"] = check_dynamic_universe_readiness(
-            universe="SP500",
+            universe=universe_code,
             start=bt.start_date,
             end=bt.end_date,
             warmup_days=int(getattr(bt, "warmup_days", 0) or 0),
@@ -2001,7 +2008,7 @@ def backtest_compute_metrics(request, pk: int):
         tickers = []
 
     symbol_ids = list(Symbol.objects.filter(ticker__in=tickers).values_list("id", flat=True)) if tickers else list(bt.scenario.symbols.values_list("id", flat=True))
-    if bt.scenario.universe_mode == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+    if is_historical_dynamic_universe_mode(bt.scenario.universe_mode):
         symbol_ids = None
 
     from core.tasks import compute_metrics_job_task
@@ -2803,8 +2810,13 @@ def backtest_detail(request, pk: int):
 @require_POST
 def backtest_prepare_dynamic_universe_ohlc(request, pk: int):
     bt = get_object_or_404(Backtest.objects.select_related("scenario"), pk=pk)
-    if bt.scenario.universe_mode != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
-        messages.warning(request, "Ce backtest n'utilise pas la composition historique du S&P500.")
+    mode = bt.scenario.universe_mode
+    if not is_historical_dynamic_universe_mode(mode):
+        messages.warning(request, "Ce backtest n'utilise pas un univers historique dynamique.")
+        return redirect("backtest_detail", pk=pk)
+    universe_code = universe_code_for_historical_dynamic_mode(mode) or ""
+    if universe_code != SP500_UNIVERSE_CODE:
+        messages.warning(request, "Préparation OHLC automatique non disponible pour CSI300 V1. Importez/préparez les OHLC séparément.")
         return redirect("backtest_detail", pk=pk)
     if bt.status == Backtest.Status.RUNNING:
         messages.warning(request, "Impossible de télécharger les prix pendant qu'un backtest est en cours.")
@@ -5037,7 +5049,7 @@ def trigger_page(request: HttpRequest):
                             backtest_id=_parse_optional_trigger_int(inputs["backtest_id"], field_name="Backtest ID"),
                         )
                     except Exception as exc:
-                        messages.error(request, f"Vérification du S&P500 historique impossible: {exc}")
+                        messages.error(request, f"Vérification de l’univers historique impossible: {exc}")
                         report = None
                     return render(
                         request,
@@ -5074,18 +5086,32 @@ def trigger_page(request: HttpRequest):
                     if not csv_path:
                         messages.error(request, "Import CSV: renseignez le chemin du fichier serveur.")
                     else:
+                        universe_code = str(request.POST.get("du_import_universe") or "SP500").strip().upper()
+                        universe_name = str(request.POST.get("du_import_universe_name") or "").strip()
                         start_arg = _parse_trigger_date(request.POST.get("du_import_start"), field_name="Date de début")
                         end_arg = _parse_trigger_date(request.POST.get("du_import_end"), field_name="Date de fin")
-                        expected_count = str(request.POST.get("du_import_expected_member_count") or "500").strip() or "500"
-                        output = _run_management_command_for_trigger(
-                            "import_sp500_memberships",
-                            "--file", csv_path,
-                            "--coverage-start", start_arg.isoformat(),
-                            "--coverage-end", end_arg.isoformat(),
-                            "--expected-member-count", expected_count,
-                            "--apply",
-                        )
-                        _message_command_output(request, "Import de la composition historique S&P500 lancé.", output)
+                        expected_count = str(request.POST.get("du_import_expected_member_count") or ("300" if universe_code == "CSI300" else "500")).strip() or "500"
+                        if universe_code == SP500_UNIVERSE_CODE:
+                            output = _run_management_command_for_trigger(
+                                "import_sp500_memberships",
+                                "--file", csv_path,
+                                "--coverage-start", start_arg.isoformat(),
+                                "--coverage-end", end_arg.isoformat(),
+                                "--expected-member-count", expected_count,
+                                "--apply",
+                            )
+                        else:
+                            output = _run_management_command_for_trigger(
+                                "import_universe_memberships",
+                                "--csv", csv_path,
+                                "--universe-code", universe_code,
+                                "--universe-name", universe_name or universe_code,
+                                "--coverage-start", start_arg.isoformat(),
+                                "--coverage-end", end_arg.isoformat(),
+                                "--expected-member-count", expected_count,
+                                "--apply",
+                            )
+                        _message_command_output(request, f"Import de la composition historique {universe_code} lancé.", output)
 
                 elif action in ("du_prepare_ohlc", "du_download_prices"):
                     from core.tasks import prepare_dynamic_universe_ohlc_job_task
@@ -5097,27 +5123,32 @@ def trigger_page(request: HttpRequest):
                     if not bt and (not start_value or not end_value):
                         messages.error(request, "Choisissez un backtest ou renseignez une date de début et une date de fin pour télécharger les prix.")
                     else:
-                        launch = launch_processing_job(
-                            task=prepare_dynamic_universe_ohlc_job_task,
-                            job_type=ProcessingJob.JobType.FETCH_BARS,
-                            backtest=bt,
-                            scenario=sc,
-                            created_by=request.user if request.user.is_authenticated else None,
-                            message="Téléchargement des prix des actions en attente depuis Trigger",
-                            task_kwargs={
-                                "universe_code": "SP500",
-                                "start_date": start_value or None,
-                                "end_date": end_value or None,
-                                "backtest_id": bt.id if bt else None,
-                                "scenario_id": sc.id if sc and not bt else None,
-                                "provider": "eodhd",
-                                "force_refresh": bool(request.POST.get("du_ohlc_force_refresh")),
-                                "user_id": user_id,
-                            },
-                        )
-                        if launch.dispatch_error:
-                            raise launch.dispatch_error
-                        messages.success(request, f"Téléchargement des prix des actions lancé (job #{launch.job.id}).")
+                        mode = getattr(sc, "universe_mode", Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC) if sc else Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+                        universe_code = universe_code_for_historical_dynamic_mode(mode) or SP500_UNIVERSE_CODE
+                        if universe_code != SP500_UNIVERSE_CODE:
+                            messages.warning(request, "Préparation OHLC automatique non disponible pour CSI300 V1. Importez/préparez les OHLC séparément.")
+                        else:
+                            launch = launch_processing_job(
+                                task=prepare_dynamic_universe_ohlc_job_task,
+                                job_type=ProcessingJob.JobType.FETCH_BARS,
+                                backtest=bt,
+                                scenario=sc,
+                                created_by=request.user if request.user.is_authenticated else None,
+                                message="Téléchargement des prix des actions en attente depuis Trigger",
+                                task_kwargs={
+                                    "universe_code": universe_code,
+                                    "start_date": start_value or None,
+                                    "end_date": end_value or None,
+                                    "backtest_id": bt.id if bt else None,
+                                    "scenario_id": sc.id if sc and not bt else None,
+                                    "provider": "eodhd",
+                                    "force_refresh": bool(request.POST.get("du_ohlc_force_refresh")),
+                                    "user_id": user_id,
+                                },
+                            )
+                            if launch.dispatch_error:
+                                raise launch.dispatch_error
+                            messages.success(request, f"Téléchargement des prix des actions lancé (job #{launch.job.id}).")
 
                 elif action in ("du_sync_benchmark_etfs", "du_prepare_benchmark_etfs"):
                     symbols = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
@@ -5252,7 +5283,7 @@ def trigger_page(request: HttpRequest):
                             if tickers else
                             list(bt.scenario.symbols.values_list("id", flat=True))
                         )
-                        if bt.scenario.universe_mode == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+                        if is_historical_dynamic_universe_mode(bt.scenario.universe_mode):
                             symbol_ids = None
 
                         from core.tasks import compute_metrics_job_task

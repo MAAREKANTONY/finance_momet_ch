@@ -109,12 +109,46 @@ class SymbolPickerFormTests(TestCase):
             "symbols": f"{self.sym1.id},{self.sym2.id}",
         })
         choices = {choice[0] for choice in form.fields["universe_mode"].choices}
+        labels = dict(form.fields["universe_mode"].choices)
         self.assertIn(Scenario.UniverseMode.STATIC_TICKERS, choices)
         self.assertIn(Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC, choices)
+        self.assertIn(Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC, choices)
+        self.assertEqual(labels[Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC], "CSI 300 historique dynamique — via CSV")
         self.assertTrue(form.is_valid(), form.errors)
         scenario = form.save()
         self.assertEqual(scenario.universe_mode, Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC)
         self.assertEqual(set(scenario.symbols.values_list("ticker", flat=True)), {"AAPL", "MSFT"})
+
+    def test_scenario_form_saves_csi300_historical_dynamic_mode(self):
+        form = ScenarioForm(data={
+            "name": "Scenario CSI300 dynamic universe",
+            "description": "test",
+            "is_default": "",
+            "universe_mode": Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            "a": "1",
+            "b": "1",
+            "c": "1",
+            "d": "1",
+            "e": "1",
+            "n1": "5",
+            "n2": "3",
+            "npente": "100",
+            "slope_threshold": "0.1",
+            "npente_basse": "20",
+            "slope_threshold_basse": "0.02",
+            "rhd_ok_reactivation_mode": "classic",
+            "rhd_ok_rebound_threshold": "0.08",
+            "rhd_ok_confirmation_days": "2",
+            "rhd_ok_reentry_max_drawdown": "0.40",
+            "nglobal": "20",
+            "history_years": "2",
+            "active": "on",
+            "symbols": f"{self.sym1.id},{self.sym2.id}",
+        })
+
+        self.assertTrue(form.is_valid(), form.errors)
+        scenario = form.save()
+        self.assertEqual(scenario.universe_mode, Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
 
     def test_scenario_form_missing_universe_mode_keeps_static_tickers_and_symbols(self):
         form = ScenarioForm(data={

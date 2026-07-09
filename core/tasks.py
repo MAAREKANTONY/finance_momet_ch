@@ -40,9 +40,9 @@ TRANSIENT_DB_EXCEPTIONS = (OperationalError, InterfaceError)
 logger = logging.getLogger(__name__)
 
 DYNAMIC_UNIVERSE_USER_ERROR = (
-    "Impossible de préparer automatiquement l’historique S&P 500 pour cette période. "
-    "Certains symboles ne sont pas disponibles ou la couverture n’est pas validée. "
-    "Vérifiez la synchronisation S&P 500 dans l’administration."
+    "Impossible de préparer l’univers historique dynamique pour cette période. "
+    "Certains symboles ne sont pas disponibles, les memberships CSV sont absents, "
+    "ou la couverture n’est pas validée."
 )
 
 
@@ -180,30 +180,59 @@ def _snapshot_from_resolved_universe(resolved_universe) -> list[dict]:
 
 def _resolve_dynamic_universe_for_backtest(backtest: Backtest):
     scenario = getattr(backtest, "scenario", None)
-    if not scenario or getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS) != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
-        return None
-    from .services.dynamic_universe_auto_prepare import (
-        DynamicUniverseAutoPrepareError,
-        ensure_sp500_historical_universe_ready,
+    mode = getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS) if scenario else None
+    from .services.universe_resolver import (
+        SP500_UNIVERSE_CODE,
+        UniverseResolver,
+        UniverseResolverError,
+        is_historical_dynamic_universe_mode,
+        universe_code_for_historical_dynamic_mode,
     )
 
+    if not scenario or not is_historical_dynamic_universe_mode(mode):
+        return None
+
+    universe_code = universe_code_for_historical_dynamic_mode(mode) or ""
     try:
-        prepare_result = ensure_sp500_historical_universe_ready(
-            scenario=scenario,
-            start_date=backtest.start_date,
-            end_date=backtest.end_date,
-            warmup_start_date=_dynamic_universe_warmup_start(backtest),
-            allow_provider_sync=False,
-        )
-    except DynamicUniverseAutoPrepareError as exc:
-        if getattr(exc, "technical_detail", ""):
-            logger.warning(
-                "[dynamic-universe] auto-prepare failed backtest_id=%s detail=%s",
-                getattr(backtest, "id", None),
-                exc.technical_detail,
+        if universe_code == SP500_UNIVERSE_CODE:
+            from .services.dynamic_universe_auto_prepare import (
+                DynamicUniverseAutoPrepareError,
+                ensure_sp500_historical_universe_ready,
             )
+
+            try:
+                prepare_result = ensure_sp500_historical_universe_ready(
+                    scenario=scenario,
+                    start_date=backtest.start_date,
+                    end_date=backtest.end_date,
+                    warmup_start_date=_dynamic_universe_warmup_start(backtest),
+                    allow_provider_sync=False,
+                )
+            except DynamicUniverseAutoPrepareError as exc:
+                if getattr(exc, "technical_detail", ""):
+                    logger.warning(
+                        "[dynamic-universe] auto-prepare failed backtest_id=%s detail=%s",
+                        getattr(backtest, "id", None),
+                        exc.technical_detail,
+                    )
+                raise ValueError(DYNAMIC_UNIVERSE_USER_ERROR) from exc
+            resolved_universe = prepare_result.resolved_universe
+        else:
+            resolved_universe = UniverseResolver().resolve(
+                scenario=scenario,
+                start_date=backtest.start_date,
+                end_date=backtest.end_date,
+                warmup_start_date=_dynamic_universe_warmup_start(backtest),
+            )
+    except UniverseResolverError as exc:
+        logger.warning(
+            "[dynamic-universe] resolve failed backtest_id=%s universe=%s detail=%s",
+            getattr(backtest, "id", None),
+            universe_code,
+            exc,
+        )
         raise ValueError(DYNAMIC_UNIVERSE_USER_ERROR) from exc
-    resolved_universe = prepare_result.resolved_universe
+
     if resolved_universe is None:
         return None
     backtest.universe_snapshot = _snapshot_from_resolved_universe(resolved_universe)
@@ -907,13 +936,23 @@ def compute_metrics_job_task(self, *, scenario_id, symbol_ids=None, recompute_al
         if symbol_ids:
             symbols_qs = Symbol.objects.filter(id__in=list(symbol_ids))
             scope_note = f"explicit_ids={len(list(symbol_ids))}"
-        elif (
-            backtest is not None
-            and scenario.universe_mode == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
-        ):
-            resolved_universe = _resolve_dynamic_universe_for_backtest(backtest)
-            symbols_qs = Symbol.objects.filter(id__in=[symbol.id for symbol in resolved_universe.symbols])
-            scope_note = f"dynamic_sp500={symbols_qs.count()}"
+        elif backtest is not None:
+            from .services.universe_resolver import is_historical_dynamic_universe_mode
+
+            if is_historical_dynamic_universe_mode(scenario.universe_mode):
+                resolved_universe = _resolve_dynamic_universe_for_backtest(backtest)
+                symbols_qs = Symbol.objects.filter(id__in=[symbol.id for symbol in resolved_universe.symbols])
+                scope_note = f"dynamic_{resolved_universe.universe_code.lower()}={symbols_qs.count()}"
+            else:
+                scenario_symbols_qs = scenario.symbols.filter(active=True)
+                if not scenario_symbols_qs.exists():
+                    job.status = ProcessingJob.Status.DONE
+                    job.message = "No symbols linked to this scenario (nothing to compute)."
+                    job.finished_at = timezone.now()
+                    _job_save(job, update_fields=["status", "message", "finished_at"])
+                    return job.message
+                symbols_qs = scenario_symbols_qs
+                scope_note = f"scenario_symbols={symbols_qs.count()}"
         else:
             # When no explicit symbol_ids are provided, we interpret this job as "compute this scenario".
             # To avoid surprise recomputes across the whole universe, we scope strictly to the scenario symbols.

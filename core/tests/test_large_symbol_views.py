@@ -1579,10 +1579,10 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("SP500", body)
         self.assertIn("2024-01-01", body)
         self.assertIn("2024-01-31", body)
-        self.assertIn("Période couverte par l’historique S&amp;P 500", body)
+        self.assertIn("Période couverte par l’historique importé", body)
         self.assertIn("Actions analysées sur la période", body)
         self.assertIn("manual_csv", body)
-        self.assertIn("Ce nombre correspond à toutes les actions ayant appartenu au S&amp;P 500", body)
+        self.assertIn("Ce nombre correspond à toutes les actions ayant appartenu à l’univers", body)
         self.assertIn("L’appartenance à l’indice est ensuite évaluée date par date", body)
         self.assertNotIn("Tickers dans le superset", body)
         self.assertNotIn("Superset de tickers du backtest", body)
@@ -1610,11 +1610,34 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("SP500", body)
         self.assertIn("2024-01-01", body)
         self.assertIn("2024-01-31", body)
-        self.assertIn("Période couverte par l’historique S&amp;P 500", body)
+        self.assertIn("Période couverte par l’historique importé", body)
         self.assertIn("Actions analysées sur la période", body)
         self.assertIn("manual_csv", body)
         self.assertNotIn("Tickers dans le superset", body)
         self.assertNotIn("metadata d’univers", body)
+
+    def test_backtest_results_displays_csi300_without_sp500_wording(self):
+        self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        bt = self._create_done_backtest(results=self._minimal_results(universe_meta={
+            "mode": Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            "universe_code": "CSI300",
+            "coverage_start": "2024-01-01",
+            "coverage_end": "2024-01-31",
+            "superset_count": 300,
+            "ticker_count": 300,
+            "source": "manual_csv",
+        }))
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("CSI 300 historique dynamique — via CSV", body)
+        self.assertIn("CSI300", body)
+        self.assertIn("Période couverte par l’historique importé", body)
+        self.assertNotIn("S&P500 historique", body)
+        self.assertNotIn("S&amp;P 500 historique", body)
 
     def test_backtest_detail_warns_when_dynamic_universe_metadata_missing(self):
         self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
@@ -1654,7 +1677,7 @@ class BacktestResultsRenderTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Préparation du S&amp;P500 historique", body)
+        self.assertIn("Préparation de l’univers historique dynamique SP500", body)
         self.assertIn("Prêt", body)
         self.assertIn("Prêt pour le backtest", body)
         self.assertIn("Les prix sont disponibles pour les 1 actions attendues", body)
@@ -1672,7 +1695,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         launch_mock.assert_not_called()
         body = response.content.decode()
-        self.assertIn("Préparation du S&amp;P500 historique", body)
+        self.assertIn("Préparation de l’univers historique dynamique SP500", body)
         self.assertIn("Prêt avec avertissement", body)
         self.assertIn("0 actions sur 1 ont des prix disponibles", body)
         self.assertIn("AAA", body)

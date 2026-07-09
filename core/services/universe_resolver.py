@@ -15,7 +15,42 @@ from core.models import (
 )
 
 SP500_UNIVERSE_CODE = "SP500"
+CSI300_UNIVERSE_CODE = "CSI300"
 
+HISTORICAL_DYNAMIC_UNIVERSE_CODES = {
+    Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC: SP500_UNIVERSE_CODE,
+    Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC: CSI300_UNIVERSE_CODE,
+}
+
+HISTORICAL_DYNAMIC_UNIVERSE_LABELS = {
+    Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC: "S&P500 historique dynamique",
+    Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC: "CSI 300 historique dynamique — via CSV",
+}
+
+
+def _normalize_universe_mode(mode: str) -> str:
+    return str(mode or "").strip()
+
+
+def is_historical_dynamic_universe_mode(mode: str) -> bool:
+    return _normalize_universe_mode(mode) in HISTORICAL_DYNAMIC_UNIVERSE_CODES
+
+
+def universe_code_for_historical_dynamic_mode(mode: str) -> str | None:
+    return HISTORICAL_DYNAMIC_UNIVERSE_CODES.get(_normalize_universe_mode(mode))
+
+
+def label_for_historical_dynamic_mode(mode: str) -> str:
+    normalized = _normalize_universe_mode(mode)
+    return HISTORICAL_DYNAMIC_UNIVERSE_LABELS.get(normalized, normalized or "Univers historique dynamique")
+
+
+def historical_dynamic_mode_for_universe_code(universe_code: str) -> str | None:
+    normalized_code = str(universe_code or "").strip().upper()
+    for mode, code in HISTORICAL_DYNAMIC_UNIVERSE_CODES.items():
+        if code == normalized_code:
+            return mode
+    return None
 
 class UniverseResolverError(Exception):
     pass
@@ -99,15 +134,15 @@ def _active_memberships_for_day(memberships: list[UniverseMembership], day: date
     ]
 
 
-def _coverage_error_message(day: date, snapshot: UniverseCoverageSnapshot | None) -> str:
+def _coverage_error_message(day: date, snapshot: UniverseCoverageSnapshot | None, *, universe_code: str) -> str:
     if snapshot is None:
         return (
-            "Historical SP500 coverage is not validated: "
+            f"Historical {universe_code} coverage is not validated: "
             f"missing coverage snapshot for {day.isoformat()}."
         )
     batch = snapshot.import_batch
     return (
-        "Historical SP500 coverage is not validated: "
+        f"Historical {universe_code} coverage is not validated: "
         f"date={day.isoformat()} "
         f"snapshot_status={snapshot.status} "
         f"batch_status={batch.status} "
@@ -129,11 +164,19 @@ class UniverseResolver:
         if end_date < start_date:
             raise UniverseCoverageError("Universe resolution requires end_date greater than or equal to start_date.")
 
-        mode = getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
+        mode = _normalize_universe_mode(getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS))
         if mode == Scenario.UniverseMode.STATIC_TICKERS:
             return self._resolve_static_tickers(scenario, start_date, end_date, warmup_start_date)
-        if mode == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
-            return self._resolve_sp500_historical(scenario, start_date, end_date, warmup_start_date)
+        universe_code = universe_code_for_historical_dynamic_mode(mode)
+        if universe_code:
+            return self._resolve_historical_dynamic(
+                scenario,
+                start_date,
+                end_date,
+                warmup_start_date,
+                mode=mode,
+                universe_code=universe_code,
+            )
         raise UniverseConfigurationError(f"Unsupported universe mode: {mode}")
 
     def _resolve_static_tickers(
@@ -176,20 +219,23 @@ class UniverseResolver:
             metadata={"source": "scenario.symbols", "symbol_count": len(symbols)},
         )
 
-    def _resolve_sp500_historical(
+    def _resolve_historical_dynamic(
         self,
         scenario: Scenario,
         start_date: date,
         end_date: date,
         warmup_start_date: date | None,
+        *,
+        mode: str,
+        universe_code: str,
     ) -> ResolvedUniverse:
         coverage_start = _effective_start(start_date, warmup_start_date)
         try:
-            universe = UniverseDefinition.objects.get(code=SP500_UNIVERSE_CODE, active=True)
+            universe = UniverseDefinition.objects.get(code=universe_code, active=True)
         except UniverseDefinition.DoesNotExist as exc:
-            raise UniverseConfigurationError("UniverseDefinition SP500 is missing or inactive.") from exc
+            raise UniverseConfigurationError(f"UniverseDefinition {universe_code} is missing or inactive.") from exc
 
-        self._validate_historical_coverage(universe, coverage_start, end_date)
+        self._validate_historical_coverage(universe, coverage_start, end_date, universe_code=universe_code)
 
         memberships = list(
             UniverseMembership.objects.filter(
@@ -202,7 +248,7 @@ class UniverseResolver:
         )
         if not memberships:
             raise UniverseCoverageError(
-                f"Historical SP500 membership is incomplete for {coverage_start.isoformat()}..{end_date.isoformat()}: "
+                f"Historical {universe_code} membership is incomplete for {coverage_start.isoformat()}..{end_date.isoformat()}: "
                 "no memberships overlap the requested period."
             )
 
@@ -212,7 +258,7 @@ class UniverseResolver:
             active_memberships = _active_memberships_for_day(memberships, day)
             if not active_memberships:
                 raise UniverseCoverageError(
-                    f"Historical SP500 membership is incomplete for {coverage_start.isoformat()}..{end_date.isoformat()}: "
+                    f"Historical {universe_code} membership is incomplete for {coverage_start.isoformat()}..{end_date.isoformat()}: "
                     f"no active members on {day.isoformat()}."
                 )
             active_by_date[day] = frozenset(membership.ticker for membership in active_memberships)
@@ -246,7 +292,7 @@ class UniverseResolver:
         coverage_end = end_date if open_ended or max_valid_to is None or max_valid_to >= end_date else max_valid_to
 
         return ResolvedUniverse(
-            mode=Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC,
+            mode=mode,
             universe_code=universe.code,
             start_date=start_date,
             end_date=end_date,
@@ -267,7 +313,7 @@ class UniverseResolver:
             },
         )
 
-    def _validate_historical_coverage(self, universe: UniverseDefinition, coverage_start: date, end_date: date) -> None:
+    def _validate_historical_coverage(self, universe: UniverseDefinition, coverage_start: date, end_date: date, *, universe_code: str) -> None:
         snapshots = {
             snapshot.coverage_date: snapshot
             for snapshot in UniverseCoverageSnapshot.objects.filter(
@@ -279,7 +325,7 @@ class UniverseResolver:
         for day in _iter_calendar_days(coverage_start, end_date):
             snapshot = snapshots.get(day)
             if snapshot is None:
-                raise UniverseCoverageError(_coverage_error_message(day, None))
+                raise UniverseCoverageError(_coverage_error_message(day, None, universe_code=universe_code))
             if (
                 snapshot.status != UniverseCoverageStatus.VALIDATED
                 or snapshot.import_batch.status != UniverseCoverageStatus.VALIDATED
@@ -287,7 +333,7 @@ class UniverseResolver:
                 or snapshot.mapped_member_count < snapshot.actual_member_count
                 or snapshot.unmapped_member_count != 0
             ):
-                raise UniverseCoverageError(_coverage_error_message(day, snapshot))
+                raise UniverseCoverageError(_coverage_error_message(day, snapshot, universe_code=universe_code))
 
 
 def resolve_universe_for_backtest(

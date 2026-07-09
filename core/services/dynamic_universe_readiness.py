@@ -18,7 +18,12 @@ from core.models import (
 )
 from core.services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
 from core.services.trend_filters import market_benchmark_ticker_for_symbol
-from core.services.universe_resolver import ResolvedMembershipInterval, SP500_UNIVERSE_CODE
+from core.services.universe_resolver import (
+    CSI300_UNIVERSE_CODE,
+    ResolvedMembershipInterval,
+    SP500_UNIVERSE_CODE,
+    universe_code_for_historical_dynamic_mode,
+)
 
 
 CHECK_OK = "OK"
@@ -110,6 +115,11 @@ IMPORT_MEMBERSHIPS_ACTION = ReadinessAction(
     label="Importer les memberships historiques S&P500 depuis CSV",
     command="python manage.py import_sp500_memberships --file PATH --coverage-start {start} --coverage-end {end} --apply",
 )
+IMPORT_GENERIC_MEMBERSHIPS_ACTION = ReadinessAction(
+    code="import_universe_memberships",
+    label="Importer les memberships historiques depuis CSV",
+    command='python manage.py import_universe_memberships --csv <file.csv> --universe-code CSI300 --universe-name "CSI 300" --apply',
+)
 PREPARE_OHLC_ACTION = ReadinessAction(
     code="prepare_dynamic_universe_ohlc",
     label="Préparer explicitement les OHLC Dynamic Universe",
@@ -126,6 +136,24 @@ FETCH_DAILY_BARS_ACTION = ReadinessAction(
     command="python manage.py fetch_daily_bars",
 )
 
+SUPPORTED_READINESS_UNIVERSE_CODES = {SP500_UNIVERSE_CODE, CSI300_UNIVERSE_CODE}
+
+
+def _membership_recovery_actions(universe_code: str) -> list[ReadinessAction]:
+    if universe_code == SP500_UNIVERSE_CODE:
+        return [SYNC_MEMBERSHIPS_ACTION, IMPORT_MEMBERSHIPS_ACTION]
+    return [IMPORT_GENERIC_MEMBERSHIPS_ACTION]
+
+
+def _symbol_recovery_actions(universe_code: str) -> list[ReadinessAction]:
+    if universe_code == SP500_UNIVERSE_CODE:
+        return [BOOTSTRAP_SYMBOLS_ACTION]
+    return []
+
+
+def _formatted_action_commands(actions: list[ReadinessAction], coverage_start: date | None, end: date | None) -> list[str]:
+    return [_format_action_command(action, coverage_start, end) for action in actions]
+
 
 def check_dynamic_universe_readiness(
     *,
@@ -141,8 +169,8 @@ def check_dynamic_universe_readiness(
     universe_code = str(universe or "").strip().upper()
     if end < start:
         raise ValueError("end must be greater than or equal to start.")
-    if universe_code != SP500_UNIVERSE_CODE:
-        raise ValueError(f"Unsupported universe={universe_code}. P0 supports only SP500.")
+    if universe_code not in SUPPORTED_READINESS_UNIVERSE_CODES:
+        raise ValueError(f"Unsupported universe={universe_code}. V1 supports SP500 and CSI300.")
 
     scenario = None
     backtest = None
@@ -156,6 +184,11 @@ def check_dynamic_universe_readiness(
         scenario = Scenario.objects.get(id=scenario_id)
 
     if scenario is not None:
+        scenario_universe_code = universe_code_for_historical_dynamic_mode(
+            getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
+        )
+        if scenario_universe_code:
+            universe_code = scenario_universe_code
         inferred_market, inferred_sector = _gm_requirements_from_signal_lines(getattr(scenario, "signal_lines", None))
         require_gm_market = bool(require_gm_market or inferred_market)
         require_gm_sector = bool(require_gm_sector or inferred_sector)
@@ -176,14 +209,14 @@ def check_dynamic_universe_readiness(
     checks.append(_check_universe_definition(universe_code, universe_obj))
 
     memberships = list(_membership_qs(universe_obj, coverage_start, end)) if universe_obj else []
-    checks.append(_check_memberships(universe_obj, memberships, coverage_start, end))
-    checks.append(_check_import_batch(universe_obj, coverage_start, end))
+    checks.append(_check_memberships(universe_code, universe_obj, memberships, coverage_start, end))
+    checks.append(_check_import_batch(universe_code, universe_obj, coverage_start, end))
 
-    coverage_check = _check_coverage_snapshots(universe_obj, coverage_start, end)
+    coverage_check = _check_coverage_snapshots(universe_code, universe_obj, coverage_start, end)
     checks.append(coverage_check)
     coverage_ready = coverage_check.status == CHECK_OK
 
-    mapping_check, mapped_memberships = _check_historical_symbols(universe_obj, memberships, coverage_ready)
+    mapping_check, mapped_memberships = _check_historical_symbols(universe_code, universe_obj, memberships, coverage_ready)
     checks.append(mapping_check)
     mappings_ready = mapping_check.status == CHECK_OK
 
@@ -200,12 +233,12 @@ def check_dynamic_universe_readiness(
     )
 
     if require_gm_market:
-        checks.append(_check_gm_market_daily_bars(symbols, coverage_start, end, prerequisites_ready=mappings_ready))
+        checks.append(_check_gm_market_daily_bars(universe_code, symbols, coverage_start, end, prerequisites_ready=mappings_ready))
     else:
         checks.append(_skipped_check("gm_market_daily_bars", "DailyBars GM_market", "GM_market non demandé."))
 
     if require_gm_sector:
-        checks.append(_check_gm_sector_daily_bars(coverage_start, end))
+        checks.append(_check_gm_sector_daily_bars(universe_code, coverage_start, end))
     else:
         checks.append(_skipped_check("gm_sector_daily_bars", "DailyBars GM_sector", "GM_sector non demandé."))
 
@@ -237,8 +270,12 @@ def _check_universe_definition(universe_code: str, universe: UniverseDefinition 
             label=f"Référentiel {universe_code}",
             status=CHECK_ERROR,
             message=f"UniverseDefinition {universe_code} est absent.",
-            suggested_actions=[INIT_REFERENCE_DATA_ACTION],
-            suggested_commands=[INIT_REFERENCE_DATA_ACTION.command],
+            suggested_actions=_membership_recovery_actions(universe_code) if universe_code != SP500_UNIVERSE_CODE else [INIT_REFERENCE_DATA_ACTION],
+            suggested_commands=(
+                _formatted_action_commands(_membership_recovery_actions(universe_code), None, None)
+                if universe_code != SP500_UNIVERSE_CODE
+                else [INIT_REFERENCE_DATA_ACTION.command]
+            ),
         )
     if not universe.active:
         return ReadinessCheck(
@@ -271,6 +308,7 @@ def _membership_qs(universe: UniverseDefinition | None, coverage_start: date, en
 
 
 def _check_memberships(
+    universe_code: str,
     universe: UniverseDefinition | None,
     memberships: list[UniverseMembership],
     coverage_start: date,
@@ -280,8 +318,8 @@ def _check_memberships(
         return _skipped_check(
             "memberships",
             "Memberships historiques",
-            "Impossible d'évaluer les memberships tant que le référentiel SP500 est absent.",
-            actions=[INIT_REFERENCE_DATA_ACTION],
+            f"Impossible d'évaluer les memberships tant que le référentiel {universe_code} est absent.",
+            actions=_membership_recovery_actions(universe_code),
         )
     if not memberships:
         return ReadinessCheck(
@@ -289,11 +327,8 @@ def _check_memberships(
             label="Memberships historiques",
             status=CHECK_ERROR,
             message=f"Aucun UniverseMembership ne recouvre {coverage_start.isoformat()}..{end.isoformat()}.",
-            suggested_actions=[SYNC_MEMBERSHIPS_ACTION, IMPORT_MEMBERSHIPS_ACTION],
-            suggested_commands=[
-                _format_action_command(SYNC_MEMBERSHIPS_ACTION, coverage_start, end),
-                _format_action_command(IMPORT_MEMBERSHIPS_ACTION, coverage_start, end),
-            ],
+            suggested_actions=_membership_recovery_actions(universe_code),
+            suggested_commands=_formatted_action_commands(_membership_recovery_actions(universe_code), coverage_start, end),
         )
     active_missing_days = _active_membership_missing_days(memberships, coverage_start, end)
     if active_missing_days:
@@ -308,11 +343,8 @@ def _check_memberships(
                 "missing_active_member_days": len(active_missing_days),
                 "examples": examples,
             },
-            suggested_actions=[SYNC_MEMBERSHIPS_ACTION, IMPORT_MEMBERSHIPS_ACTION],
-            suggested_commands=[
-                _format_action_command(SYNC_MEMBERSHIPS_ACTION, coverage_start, end),
-                _format_action_command(IMPORT_MEMBERSHIPS_ACTION, coverage_start, end),
-            ],
+            suggested_actions=_membership_recovery_actions(universe_code),
+            suggested_commands=_formatted_action_commands(_membership_recovery_actions(universe_code), coverage_start, end),
         )
     return ReadinessCheck(
         code="memberships",
@@ -323,7 +355,7 @@ def _check_memberships(
     )
 
 
-def _check_import_batch(universe: UniverseDefinition | None, coverage_start: date, end: date) -> ReadinessCheck:
+def _check_import_batch(universe_code: str, universe: UniverseDefinition | None, coverage_start: date, end: date) -> ReadinessCheck:
     if universe is None:
         return _skipped_check("import_batch", "Batch d'import", "Référentiel absent.")
     batches = list(
@@ -366,26 +398,20 @@ def _check_import_batch(universe: UniverseDefinition | None, coverage_start: dat
                     for batch in batches[:10]
                 ],
             },
-            suggested_actions=[SYNC_MEMBERSHIPS_ACTION, IMPORT_MEMBERSHIPS_ACTION],
-            suggested_commands=[
-                _format_action_command(SYNC_MEMBERSHIPS_ACTION, coverage_start, end),
-                _format_action_command(IMPORT_MEMBERSHIPS_ACTION, coverage_start, end),
-            ],
+            suggested_actions=_membership_recovery_actions(universe_code),
+            suggested_commands=_formatted_action_commands(_membership_recovery_actions(universe_code), coverage_start, end),
         )
     return ReadinessCheck(
         code="import_batch",
         label="Batch d'import validé",
         status=CHECK_ERROR,
         message="Aucun UniverseImportBatch trouvé pour la période demandée.",
-        suggested_actions=[SYNC_MEMBERSHIPS_ACTION, IMPORT_MEMBERSHIPS_ACTION],
-        suggested_commands=[
-            _format_action_command(SYNC_MEMBERSHIPS_ACTION, coverage_start, end),
-            _format_action_command(IMPORT_MEMBERSHIPS_ACTION, coverage_start, end),
-        ],
+        suggested_actions=_membership_recovery_actions(universe_code),
+        suggested_commands=_formatted_action_commands(_membership_recovery_actions(universe_code), coverage_start, end),
     )
 
 
-def _check_coverage_snapshots(universe: UniverseDefinition | None, coverage_start: date, end: date) -> ReadinessCheck:
+def _check_coverage_snapshots(universe_code: str, universe: UniverseDefinition | None, coverage_start: date, end: date) -> ReadinessCheck:
     if universe is None:
         return _skipped_check("coverage_snapshots", "Coverage snapshots", "Référentiel absent.")
 
@@ -424,11 +450,8 @@ def _check_coverage_snapshots(universe: UniverseDefinition | None, coverage_star
                 "missing_examples": [day.isoformat() for day in missing[:10]],
                 "policy": "La logique actuelle exige un UniverseCoverageSnapshot par jour calendaire.",
             },
-            suggested_actions=[SYNC_MEMBERSHIPS_ACTION, IMPORT_MEMBERSHIPS_ACTION],
-            suggested_commands=[
-                _format_action_command(SYNC_MEMBERSHIPS_ACTION, coverage_start, end),
-                _format_action_command(IMPORT_MEMBERSHIPS_ACTION, coverage_start, end),
-            ],
+            suggested_actions=_membership_recovery_actions(universe_code),
+            suggested_commands=_formatted_action_commands(_membership_recovery_actions(universe_code), coverage_start, end),
         )
     if invalid:
         day, snapshot, reason = invalid[0]
@@ -453,11 +476,8 @@ def _check_coverage_snapshots(universe: UniverseDefinition | None, coverage_star
                     for item_day, item_snapshot, item_reason in invalid[:10]
                 ],
             },
-            suggested_actions=[SYNC_MEMBERSHIPS_ACTION, IMPORT_MEMBERSHIPS_ACTION],
-            suggested_commands=[
-                _format_action_command(SYNC_MEMBERSHIPS_ACTION, coverage_start, end),
-                _format_action_command(IMPORT_MEMBERSHIPS_ACTION, coverage_start, end),
-            ],
+            suggested_actions=_membership_recovery_actions(universe_code),
+            suggested_commands=_formatted_action_commands(_membership_recovery_actions(universe_code), coverage_start, end),
         )
     return ReadinessCheck(
         code="coverage_snapshots",
@@ -469,6 +489,7 @@ def _check_coverage_snapshots(universe: UniverseDefinition | None, coverage_star
 
 
 def _check_historical_symbols(
+    universe_code: str,
     universe: UniverseDefinition | None,
     memberships: list[UniverseMembership],
     coverage_ready: bool,
@@ -488,7 +509,7 @@ def _check_historical_symbols(
                 "historical_symbols",
                 "Symbols historiques",
                 "Impossible d'évaluer les symbols historiques tant que les memberships ne sont pas disponibles.",
-                actions=[BOOTSTRAP_SYMBOLS_ACTION],
+                actions=_symbol_recovery_actions(universe_code),
             ),
             [],
         )
@@ -498,7 +519,7 @@ def _check_historical_symbols(
                 "historical_symbols",
                 "Symbols historiques",
                 "Impossible d'évaluer les symbols historiques tant que la coverage n'est pas validée.",
-                actions=[BOOTSTRAP_SYMBOLS_ACTION],
+                actions=_symbol_recovery_actions(universe_code),
             ),
             [],
         )
@@ -529,8 +550,8 @@ def _check_historical_symbols(
                     "missing_examples": missing[:10],
                     "ambiguous_examples": ambiguous[:10],
                 },
-                suggested_actions=[BOOTSTRAP_SYMBOLS_ACTION],
-                suggested_commands=[_format_action_command(BOOTSTRAP_SYMBOLS_ACTION, None, None)],
+                suggested_actions=_symbol_recovery_actions(universe_code),
+                suggested_commands=_formatted_action_commands(_symbol_recovery_actions(universe_code), None, None),
             ),
             mapped,
         )
@@ -592,12 +613,20 @@ def _check_member_daily_bars(
 
 
 def _check_gm_market_daily_bars(
+    universe_code: str,
     symbols: list[Symbol],
     coverage_start: date,
     end: date,
     *,
     prerequisites_ready: bool,
 ) -> ReadinessCheck:
+    if universe_code != SP500_UNIVERSE_CODE:
+        return ReadinessCheck(
+            code="gm_market_daily_bars",
+            label="DailyBars GM_market",
+            status=CHECK_ERROR,
+            message=f"GM market non supporté pour {universe_code} V1 sans benchmark {universe_code} explicite.",
+        )
     if not prerequisites_ready:
         return _skipped_check(
             "gm_market_daily_bars",
@@ -617,7 +646,14 @@ def _check_gm_market_daily_bars(
     )
 
 
-def _check_gm_sector_daily_bars(coverage_start: date, end: date) -> ReadinessCheck:
+def _check_gm_sector_daily_bars(universe_code: str, coverage_start: date, end: date) -> ReadinessCheck:
+    if universe_code != SP500_UNIVERSE_CODE:
+        return ReadinessCheck(
+            code="gm_sector_daily_bars",
+            label="DailyBars GM_sector",
+            status=CHECK_ERROR,
+            message=f"GM sectoriel non supporté pour {universe_code} V1 : les benchmarks sectoriels actuels sont US.",
+        )
     return _check_benchmark_daily_bars(
         code="gm_sector_daily_bars",
         label="DailyBars GM_sector",
