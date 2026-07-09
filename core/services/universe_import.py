@@ -268,7 +268,7 @@ def _read_csv_rows(csv_path, requested_code: str) -> list[ParsedMembershipRow]:
         raise UniverseImportError(f"CSV file not found: {path}")
 
     rows: list[ParsedMembershipRow] = []
-    with path.open(newline="", encoding="utf-8") as handle:
+    with path.open(newline="", encoding="utf-8-sig") as handle:
         reader = csv.DictReader(handle)
         fieldnames = {str(name or "").strip() for name in (reader.fieldnames or [])}
         missing = [
