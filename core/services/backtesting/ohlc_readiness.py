@@ -8,6 +8,7 @@ from django.conf import settings
 from django.db.models import Max, Min
 
 from core.models import Backtest, DailyBar, Scenario, Symbol
+from core.services.universe_resolver import is_historical_dynamic_universe_mode
 
 
 OHLC_READINESS_USER_MESSAGE = (
@@ -211,7 +212,7 @@ def ensure_ohlc_ready_for_backtest(
     """Ensure scoped DailyBar coverage before a dynamic backtest reaches the engine.
 
     Phase 6A is intentionally a guard, not a hidden preparation step. Missing OHLC data
-    must be prepared by an explicit job before launching a dynamic S&P 500 backtest.
+    must be prepared by an explicit job before launching a historical dynamic backtest.
     """
     scoped_symbols = list(symbols)
     notes: list[str] = []
@@ -220,11 +221,10 @@ def ensure_ohlc_ready_for_backtest(
         start_date=start_date,
         end_date=end_date,
     )
-    is_dynamic_sp500 = (
+    is_dynamic_universe = is_historical_dynamic_universe_mode(
         getattr(getattr(backtest, "scenario", None), "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
-        == Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
     )
-    if is_dynamic_sp500:
+    if is_dynamic_universe:
         try:
             from core.services.universe_resolver import UniverseResolver
 

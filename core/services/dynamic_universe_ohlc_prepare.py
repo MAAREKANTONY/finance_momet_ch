@@ -21,7 +21,13 @@ from core.services.provider_eodhd import (
     sanitize_provider_error_message,
     to_eodhd_symbol,
 )
-from core.services.universe_resolver import SP500_UNIVERSE_CODE, UniverseResolver
+from core.services.universe_resolver import (
+    CSI300_UNIVERSE_CODE,
+    SP500_UNIVERSE_CODE,
+    UniverseResolver,
+    is_historical_dynamic_universe_mode,
+    universe_code_for_historical_dynamic_mode,
+)
 
 
 class DynamicUniverseOHLCPrepareError(RuntimeError):
@@ -101,11 +107,25 @@ def _resolve_scope(
     elif scenario_id:
         scenario = Scenario.objects.get(id=scenario_id)
     else:
-        if str(universe_code or "").upper() != SP500_UNIVERSE_CODE:
+        requested_universe = str(universe_code or "").upper()
+        if requested_universe == CSI300_UNIVERSE_CODE:
+            raise DynamicUniverseOHLCPrepareError(
+                "Préparation OHLC automatique non disponible pour CSI300 V1. "
+                "Importez/préparez les OHLC séparément."
+            )
+        if requested_universe != SP500_UNIVERSE_CODE:
             raise DynamicUniverseOHLCPrepareError(f"Unsupported dynamic universe: {universe_code}")
         scenario = SimpleNamespace(universe_mode=Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC)
 
-    if getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS) != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+    mode = getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
+    if mode != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
+        if is_historical_dynamic_universe_mode(mode):
+            resolved_code = universe_code_for_historical_dynamic_mode(mode) or str(universe_code or "").upper()
+            if resolved_code == CSI300_UNIVERSE_CODE:
+                raise DynamicUniverseOHLCPrepareError(
+                    "Préparation OHLC automatique non disponible pour CSI300 V1. "
+                    "Importez/préparez les OHLC séparément."
+                )
         raise DynamicUniverseOHLCPrepareError("OHLC preparation is only supported for SP500_HISTORICAL_DYNAMIC scenarios.")
 
     resolved_start = _parse_date_value(start_date, name="start_date") or getattr(backtest, "start_date", None)

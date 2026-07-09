@@ -455,6 +455,17 @@ class DynamicUniverseOHLCPrepareServiceTests(DynamicUniverseOHLCTestCase):
         self.backtest.refresh_from_db()
         self.assertEqual(self.backtest.scenario, static)
 
+    def test_csi300_ohlc_prepare_is_rejected_without_provider_call(self):
+        csi = Scenario.objects.create(name="CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
+        self.backtest.scenario = csi
+        self.backtest.save(update_fields=["scenario"])
+        client = FakeEODHDClient({})
+
+        with self.assertRaisesMessage(Exception, "Préparation OHLC automatique non disponible pour CSI300 V1"):
+            prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual(client.calls, [])
+
 
 class DynamicUniverseOHLCPrepareJobTests(DynamicUniverseOHLCTestCase):
     def test_job_marks_done_when_preparation_completes(self):

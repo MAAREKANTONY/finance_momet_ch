@@ -19,7 +19,7 @@ class Command(BaseCommand):
     help = "Check Dynamic Universe readiness without provider calls or database writes."
 
     def add_arguments(self, parser):
-        parser.add_argument("--universe", default="SP500", help="Universe code. P0 supports SP500.")
+        parser.add_argument("--universe", default="SP500", help="Universe code. V1 supports SP500 and CSI300.")
         parser.add_argument("--start", dest="start_date", help="Start date, YYYY-MM-DD.")
         parser.add_argument("--end", dest="end_date", help="End date, YYYY-MM-DD.")
         parser.add_argument("--require-gm-market", action="store_true", help="Check GM_market benchmark DailyBars.")

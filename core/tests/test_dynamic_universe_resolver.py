@@ -33,6 +33,11 @@ class DynamicUniverseResolverTests(TestCase):
             ticker: Symbol.objects.create(ticker=ticker, exchange="NYSE", name=ticker, active=True)
             for ticker in ("AAA", "BBB", "CCC", "OLD", "NEW")
         }
+        self.csi_symbols = {
+            "600519": Symbol.objects.create(ticker="600519", exchange="XSHG", name="Kweichow Moutai", active=True),
+            "000001": Symbol.objects.create(ticker="000001", exchange="XSHE", name="Ping An Bank", active=True),
+            "600000": Symbol.objects.create(ticker="600000", exchange="XSHG", name="SPD Bank", active=True),
+        }
         self.scenario = Scenario.objects.create(
             name="Dynamic SP500",
             universe_mode=Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC,
@@ -45,6 +50,15 @@ class DynamicUniverseResolverTests(TestCase):
             code=SP500_UNIVERSE_CODE,
             name="S&P 500",
             source="manual_fixture",
+            active=True,
+            metadata={"fixture": True},
+        )
+
+    def _create_csi300(self) -> UniverseDefinition:
+        return UniverseDefinition.objects.create(
+            code="CSI300",
+            name="CSI 300",
+            source="manual_csv",
             active=True,
             metadata={"fixture": True},
         )
@@ -209,6 +223,50 @@ class DynamicUniverseResolverTests(TestCase):
         self.assertEqual(result.membership_by_ticker["OLD"][0].valid_to, date(2020, 1, 10))
         self.assertIsNone(result.membership_by_ticker["NEW"][0].valid_to)
         self.assertEqual(result.metadata["membership_count"], 5)
+
+    def test_resolves_csi300_historical_dynamic_from_csv_universe(self):
+        universe = self._create_csi300()
+        self._add_membership(universe, "600519", date(2020, 1, 1), None, symbol=self.csi_symbols["600519"], exchange="XSHG")
+        self._add_membership(universe, "000001", date(2020, 1, 1), date(2020, 1, 2), symbol=self.csi_symbols["000001"], exchange="XSHE")
+        self._add_membership(universe, "600000", date(2020, 1, 3), None, symbol=self.csi_symbols["600000"], exchange="XSHG")
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 4), expected_member_count=1)
+        scenario = Scenario.objects.create(
+            name="Dynamic CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+
+        result = self.resolver.resolve(scenario, start_date=date(2020, 1, 1), end_date=date(2020, 1, 4))
+
+        self.assertEqual(result.mode, Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
+        self.assertEqual(result.universe_code, "CSI300")
+        self.assertEqual(set(result.tickers), {"600519", "000001", "600000"})
+        self.assertEqual(result.active_by_date[date(2020, 1, 1)], frozenset({"600519", "000001"}))
+        self.assertEqual(result.active_by_date[date(2020, 1, 3)], frozenset({"600519", "600000"}))
+        self.assertEqual(result.membership_by_ticker["000001"][0].exchange, "XSHE")
+        self.assertEqual(result.metadata["source"], "manual_csv")
+
+    def test_missing_csi300_definition_raises_configuration_error(self):
+        scenario = Scenario.objects.create(
+            name="Missing CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+
+        with self.assertRaisesRegex(UniverseConfigurationError, "CSI300"):
+            self.resolver.resolve(scenario, start_date=date(2020, 1, 1), end_date=date(2020, 1, 4))
+
+    def test_csi300_without_memberships_raises_coverage_error(self):
+        universe = self._create_csi300()
+        self._create_coverage(universe, date(2020, 1, 1), date(2020, 1, 4), expected_member_count=1, actual_member_count=1, mapped_member_count=1)
+        scenario = Scenario.objects.create(
+            name="Empty CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+
+        with self.assertRaisesRegex(UniverseCoverageError, "Historical CSI300 membership"):
+            self.resolver.resolve(scenario, start_date=date(2020, 1, 1), end_date=date(2020, 1, 4))
 
     def test_survivorship_bias_members_are_not_reduced_to_end_date_composition(self):
         universe = self._create_fixture_memberships()

@@ -164,7 +164,9 @@
         <tr>
           <th>Mode d’univers</th>
           <td>
-            {% if bt.scenario.universe_mode == "SP500_HISTORICAL_DYNAMIC" %}
+            {% if bt.scenario.universe_mode == "CSI300_HISTORICAL_DYNAMIC" %}
+              CSI 300 historique dynamique — via CSV
+            {% elif bt.scenario.universe_mode == "SP500_HISTORICAL_DYNAMIC" %}
               S&P500 historique dynamique
             {% else %}
               Sélection statique de tickers
@@ -229,7 +231,7 @@
 
 {% if dynamic_universe_readiness.enabled %}
 <div class="card" style="margin-top:12px;">
-  <strong>Préparation du S&amp;P500 historique</strong>
+  <strong>Préparation de l’univers historique dynamique{% if dynamic_universe_readiness.universe_code %} {{ dynamic_universe_readiness.universe_code }}{% endif %}</strong>
   <div class="muted" style="margin-top:6px;">Cette vérification indique si les données nécessaires au backtest sont disponibles. Si certaines données manquent, vous pouvez les préparer depuis la page <a href="{{ dynamic_universe_readiness.trigger_url }}">Trigger</a>.</div>
 
   {% if dynamic_universe_readiness.needs_dates %}
@@ -368,13 +370,13 @@
     {% with universe_meta=bt.results.meta.universe %}
       <div class="card" style="margin-bottom:12px;">
         <h3 style="margin-top:0;">Univers du backtest</h3>
-        {% if bt.scenario.universe_mode == "SP500_HISTORICAL_DYNAMIC" %}
+        {% if bt.scenario.universe_mode != "STATIC_TICKERS" %}
           {% if universe_meta %}
             <table class="table">
               <tbody>
-                <tr><th>Mode</th><td>S&P500 historique dynamique</td></tr>
-                <tr><th>Univers</th><td>{{ universe_meta.universe_code|default:"SP500" }}</td></tr>
-                <tr><th>Période couverte par l’historique S&amp;P 500</th><td>{{ universe_meta.coverage_start|default:"—" }} → {{ universe_meta.coverage_end|default:"—" }}</td></tr>
+                <tr><th>Mode</th><td>{% if universe_meta.universe_code == "CSI300" %}CSI 300 historique dynamique — via CSV{% elif universe_meta.universe_code == "SP500" %}S&P500 historique dynamique{% else %}{{ universe_meta.universe_code|default:"Univers" }} historique dynamique{% endif %}</td></tr>
+                <tr><th>Univers</th><td>{{ universe_meta.universe_code|default:"—" }}</td></tr>
+                <tr><th>Période couverte par l’historique importé</th><td>{{ universe_meta.coverage_start|default:"—" }} → {{ universe_meta.coverage_end|default:"—" }}</td></tr>
                 <tr><th>Actions analysées sur la période</th><td>{{ universe_meta.superset_count|default:"—" }}</td></tr>
                 {% if universe_meta.ticker_count and universe_meta.ticker_count != universe_meta.superset_count %}
                   <tr><th>Tickers</th><td>{{ universe_meta.ticker_count }}</td></tr>
@@ -383,7 +385,7 @@
               </tbody>
             </table>
             <div class="muted" style="margin-top:8px;">
-              Ce nombre correspond à toutes les actions ayant appartenu au S&amp;P 500 au moins une fois entre le début et la fin du backtest. L’appartenance à l’indice est ensuite évaluée date par date pour les nouveaux achats.
+              Ce nombre correspond à toutes les actions ayant appartenu à l’univers au moins une fois entre le début et la fin du backtest. L’appartenance à l’indice est ensuite évaluée date par date pour les nouveaux achats.
             </div>
           {% else %}
             <div style="border-left:4px solid #b45309; padding-left:10px;">
@@ -397,7 +399,7 @@
       </div>
     {% endwith %}
 
-    <h3>{% if bt.scenario.universe_mode == "SP500_HISTORICAL_DYNAMIC" %}Actions analysées sur la période{% else %}Univers du backtest{% endif %}</h3>
+    <h3>{% if bt.scenario.universe_mode != "STATIC_TICKERS" %}Actions analysées sur la période{% else %}Univers du backtest{% endif %}</h3>
     {% if bt.universe_snapshot %}
       <div class="card" style="max-height:420px; overflow:auto;">
         <table class="table">

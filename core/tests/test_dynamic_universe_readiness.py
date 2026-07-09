@@ -41,6 +41,9 @@ class DynamicUniverseReadinessTestCase(TestCase):
     def _sp500(self, *, active: bool = True) -> UniverseDefinition:
         return UniverseDefinition.objects.create(code="SP500", name="S&P 500", active=active, source="test")
 
+    def _csi300(self, *, active: bool = True) -> UniverseDefinition:
+        return UniverseDefinition.objects.create(code="CSI300", name="CSI 300", active=active, source="manual_csv")
+
     def _membership(self, universe: UniverseDefinition, symbol: Symbol, *, valid_to=None) -> UniverseMembership:
         return UniverseMembership.objects.create(
             universe=universe,
@@ -224,6 +227,54 @@ class DynamicUniverseReadinessTestCase(TestCase):
             "dailybars": DailyBar.objects.count(),
         }
         self.assertEqual(after, before)
+
+    def test_csi300_without_memberships_suggests_generic_csv_import_only(self):
+        self._csi300()
+
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        check = self._check(report, "memberships")
+        self.assertEqual(check.status, CHECK_ERROR)
+        commands = " ".join(action.command for action in report.suggested_actions)
+        self.assertIn("import_universe_memberships", commands)
+        self.assertIn("--universe-code CSI300", commands)
+        self.assertNotIn("sync_sp500_historical_memberships", commands)
+        self.assertNotIn("bootstrap_sp500_symbols_from_eodhd", commands)
+
+    @patch("core.services.dynamic_universe_ohlc_prepare.prepare_dynamic_universe_ohlc")
+    @patch("core.services.universe_eodhd_sync.sync_sp500_historical_memberships_from_eodhd")
+    @patch("core.services.sp500_symbol_bootstrap.bootstrap_sp500_symbols_from_eodhd")
+    def test_csi300_readiness_does_not_call_provider_helpers(self, bootstrap_mock, sync_mock, prepare_mock):
+        check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        bootstrap_mock.assert_not_called()
+        sync_mock.assert_not_called()
+        prepare_mock.assert_not_called()
+
+    def test_csi300_gm_market_is_blocked_without_explicit_benchmark(self):
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_market=True,
+        )
+
+        check = self._check(report, "gm_market_daily_bars")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertIn("GM market non supporté pour CSI300 V1", check.message)
+        self.assertNotIn("SPY", check.message)
+
+    def test_csi300_gm_sector_is_blocked_for_us_sector_benchmarks(self):
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_sector=True,
+        )
+
+        check = self._check(report, "gm_sector_daily_bars")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertIn("GM sectoriel non supporté pour CSI300 V1", check.message)
 
 
 class DynamicUniverseReadinessCommandTests(TestCase):
