@@ -100,24 +100,46 @@
       </div>
     </div>
 
+    {% if can_import_historical_universe_csv %}
     <details style="margin-top:14px;">
       <summary>Actions avancées / techniques</summary>
       <div style="border:1px solid #ddd; border-radius:8px; padding:12px; margin-top:10px;">
-        <h4>Importer une composition historique depuis CSV</h4>
-        <div class="muted">Import CSV depuis un fichier déjà présent sur le serveur. Pour CSI300, ce CSV historique est obligatoire : aucun fallback composition actuelle ou provider.</div>
-        <form method="post" style="margin-top:10px; display:grid; gap:8px;">
+        <h4>Import univers historique par CSV</h4>
+        <div class="muted">
+          Importe un historique de constituants d'indice depuis un CSV.
+          Utilisable pour CSI300, S&amp;P500 ou tout autre univers historique.
+          Aucun provider n'est appelé.
+          Aucune composition actuelle n'est utilisée comme fallback.
+          Les OHLC doivent être préparés séparément.
+          Réservé aux administrateurs/staff.
+        </div>
+        <form method="post" enctype="multipart/form-data" style="margin-top:10px; display:grid; gap:8px;">
           {% csrf_token %}
           <input type="hidden" name="action" value="du_import_memberships">
-          <label>Univers <input name="du_import_universe" value="SP500" placeholder="SP500 ou CSI300"></label>
-          <label>Nom univers <input name="du_import_universe_name" placeholder="CSI 300"></label>
-          <label>Fichier serveur <input name="du_import_file" placeholder="/chemin/serveur/csi300.csv"></label>
-          <label>Date de début <input name="du_import_start" placeholder="YYYY-MM-DD"></label>
-          <label>Date de fin <input name="du_import_end" placeholder="YYYY-MM-DD"></label>
-          <label>Nombre attendu d'actions dans l'indice <input name="du_import_expected_member_count" type="number" min="1" value="500"></label>
-          <button class="btn danger" type="submit">Importer le CSV</button>
+          <label>Fichier CSV <input name="du_import_csv_file" type="file" accept=".csv,text/csv"></label>
+          <label>Chemin serveur optionnel <input name="du_import_file" placeholder="/chemin/serveur/csi300.csv"></label>
+          <label>Univers <input name="du_import_universe" value="CSI300" placeholder="CSI300, SP500, SSE50, SSE180, NASDAQ100"></label>
+          <label>Nom univers <input name="du_import_universe_name" value="CSI 300" placeholder="CSI 300"></label>
+          <label>Nombre attendu d'actions dans l'indice <input name="du_import_expected_member_count" type="number" min="1" placeholder="300"></label>
+          <label>Date de début optionnelle <input name="du_import_start" placeholder="YYYY-MM-DD"></label>
+          <label>Date de fin optionnelle <input name="du_import_end" placeholder="YYYY-MM-DD"></label>
+          <div>
+            <button class="btn" name="du_import_mode" value="dry_run" type="submit">Dry-run / Vérifier</button>
+            <button class="btn danger" name="du_import_mode" value="apply" type="submit">Importer réellement</button>
+          </div>
         </form>
+        <details style="margin-top:10px;">
+          <summary>Format CSV accepté</summary>
+          <div class="muted" style="margin-top:8px;">Préserve les zéros initiaux des tickers. Pour la Chine, utilisez par exemple exchange=SHG avec mic=XSHG ou exchange=SHE avec mic=XSHE.</div>
+          <pre style="overflow:auto; font-size:12px;">universe_code,symbol,exchange,mic,name,start_date,end_date,weight,provider_symbol,source,country,currency,sector,industry
+CSI300,600519,SHG,XSHG,Kweichow Moutai,2020-01-01,,0.052,600519.SHG,manual_csv,CN,CNY,Consumer Staples,Distillers &amp; Wineries
+CSI300,000001,SHE,XSHE,Ping An Bank,2020-01-01,2023-06-30,0.014,000001.SHE,manual_csv,CN,CNY,Financials,Banks</pre>
+          <pre style="overflow:auto; font-size:12px;">universe_code,ticker,exchange,provider_symbol,valid_from,valid_to,company_name,source
+SP500,AAPL,US,AAPL.US,2020-01-01,,Apple Inc,eodhd_csv</pre>
+        </details>
       </div>
     </details>
+    {% endif %}
 
     {% if dynamic_universe_report %}
       <div style="margin-top:16px; border-top:1px solid #ddd; padding-top:12px;">

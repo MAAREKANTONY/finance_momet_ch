@@ -5,19 +5,44 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
+from django.core.files.uploadedfile import SimpleUploadedFile
 from django.test import Client, TestCase
 from django.urls import reverse
 
 from core.job_launch import JobLaunchOutcome
-from core.models import ProcessingJob
+from core.models import ProcessingJob, UniverseDefinition, UniverseMembership
 from core.services.dynamic_universe_readiness import ReadinessAction, ReadinessCheck, ReadinessReport
 
 
 class DynamicUniverseTriggerPageTests(TestCase):
     def setUp(self):
         self.user = get_user_model().objects.create_user(username="du-trigger-user", password="secret123")
+        self.staff_user = get_user_model().objects.create_user(
+            username="du-trigger-admin",
+            password="secret123",
+            is_staff=True,
+        )
         self.client = Client()
         self.client.force_login(self.user)
+
+    def _login_staff(self):
+        self.client.force_login(self.staff_user)
+
+    def _uploaded_csv(self, body: str, *, name: str = "memberships.csv") -> SimpleUploadedFile:
+        return SimpleUploadedFile(name, body.encode("utf-8"), content_type="text/csv")
+
+    def _csi300_csv(self) -> str:
+        return (
+            "universe_code,symbol,exchange,mic,name,start_date,end_date,weight,provider_symbol,source,country,currency,sector,industry\n"
+            "CSI300,600519,SHG,XSHG,Kweichow Moutai,2020-01-01,,0.052,600519.SHG,manual_csv,CN,CNY,Consumer Staples,Distillers & Wineries\n"
+            "CSI300,000001,SHE,XSHE,Ping An Bank,2020-01-01,2023-06-30,0.014,000001.SHE,manual_csv,CN,CNY,Financials,Banks\n"
+        )
+
+    def _legacy_sp500_csv(self) -> str:
+        return (
+            "universe_code,ticker,exchange,provider_symbol,valid_from,valid_to,company_name,source\n"
+            "SP500,AAPL,US,AAPL.US,2020-01-01,,Apple Inc,eodhd_csv\n"
+        )
 
     def _report(self, *, ready: bool = False) -> ReadinessReport:
         return ReadinessReport(
@@ -131,8 +156,30 @@ class DynamicUniverseTriggerPageTests(TestCase):
             "python manage.py",
         ):
             self.assertNotIn(technical, main_section)
-        self.assertIn("Actions avancées / techniques", body)
-        self.assertIn("Importer une composition depuis CSV", body)
+        self.assertNotIn("Actions avancées / techniques", body)
+        self.assertNotIn("Import univers historique par CSV", body)
+
+    def test_non_staff_does_not_see_historical_universe_csv_import_block(self):
+        response = self.client.get(reverse("trigger_page"))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertNotIn("Import univers historique par CSV", body)
+        self.assertNotIn("du_import_csv_file", body)
+
+    def test_staff_sees_historical_universe_csv_import_block(self):
+        self._login_staff()
+
+        response = self.client.get(reverse("trigger_page"))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Import univers historique par CSV", body)
+        self.assertIn("Réservé aux administrateurs/staff", body)
+        self.assertIn('enctype="multipart/form-data"', body)
+        self.assertIn("du_import_csv_file", body)
+        self.assertIn("Dry-run / Vérifier", body)
+        self.assertIn("Importer réellement", body)
 
     def test_trigger_readiness_missing_params_shows_clean_error(self):
         response = self.client.post(reverse("trigger_page"), {"action": "du_readiness"})
@@ -141,7 +188,49 @@ class DynamicUniverseTriggerPageTests(TestCase):
         messages = list(response.context["messages"])
         self.assertTrue(any("Start est requis" in str(message) for message in messages))
 
-    def test_trigger_import_memberships_missing_path_shows_clean_error(self):
+    @patch("core.views.import_universe_memberships_from_csv")
+    def test_non_staff_upload_import_is_rejected_without_writes(self, import_mock):
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_import_memberships",
+                "du_import_universe": "CSI300",
+                "du_import_csv_file": self._uploaded_csv(self._csi300_csv(), name="csi300.csv"),
+                "du_import_mode": "apply",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        import_mock.assert_not_called()
+        self.assertEqual(UniverseDefinition.objects.count(), 0)
+        self.assertEqual(UniverseMembership.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("réservé aux administrateurs/staff" in str(message) for message in messages))
+
+    @patch("core.views.import_universe_memberships_from_csv")
+    def test_non_staff_server_path_import_is_rejected_without_writes(self, import_mock):
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_import_memberships",
+                "du_import_universe": "CSI300",
+                "du_import_file": "/tmp/csi300.csv",
+                "du_import_mode": "apply",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        import_mock.assert_not_called()
+        self.assertEqual(UniverseDefinition.objects.count(), 0)
+        self.assertEqual(UniverseMembership.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("réservé aux administrateurs/staff" in str(message) for message in messages))
+
+    def test_staff_import_memberships_missing_file_shows_clean_error(self):
+        self._login_staff()
+
         response = self.client.post(
             reverse("trigger_page"),
             {
@@ -154,7 +243,120 @@ class DynamicUniverseTriggerPageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         messages = list(response.context["messages"])
-        self.assertTrue(any("renseignez le chemin du fichier serveur" in str(message) for message in messages))
+        self.assertTrue(any("fichier CSV à uploader" in str(message) for message in messages))
+
+    def test_staff_upload_import_dry_run_shows_summary_without_writes(self):
+        self._login_staff()
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_import_memberships",
+                "du_import_universe": "CSI300",
+                "du_import_universe_name": "CSI 300",
+                "du_import_expected_member_count": "1",
+                "du_import_csv_file": self._uploaded_csv(self._csi300_csv(), name="csi300.csv"),
+                "du_import_mode": "dry_run",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(UniverseDefinition.objects.count(), 0)
+        self.assertEqual(UniverseMembership.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Import univers historique CSV (dry-run)" in str(message) for message in messages))
+        self.assertTrue(any("lignes lues=2" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
+    @patch("core.views.call_command")
+    def test_staff_upload_import_apply_creates_csi300_without_provider_or_jobs(self, call_command_mock, launch_mock):
+        self._login_staff()
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_import_memberships",
+                "du_import_universe": "CSI300",
+                "du_import_universe_name": "CSI 300",
+                "du_import_expected_member_count": "1",
+                "du_import_csv_file": self._uploaded_csv(self._csi300_csv(), name="csi300.csv"),
+                "du_import_mode": "apply",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        call_command_mock.assert_not_called()
+        launch_mock.assert_not_called()
+        universe = UniverseDefinition.objects.get(code="CSI300")
+        self.assertEqual(universe.name, "CSI 300")
+        self.assertEqual(UniverseMembership.objects.filter(universe=universe).count(), 2)
+        self.assertTrue(UniverseMembership.objects.filter(universe=universe, ticker="000001", exchange="SHE").exists())
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Import univers historique CSV (apply)" in str(message) for message in messages))
+
+    def test_staff_upload_import_rejects_universe_code_mismatch(self):
+        self._login_staff()
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_import_memberships",
+                "du_import_universe": "SP500",
+                "du_import_csv_file": self._uploaded_csv(self._csi300_csv(), name="csi300.csv"),
+                "du_import_mode": "apply",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(UniverseDefinition.objects.count(), 0)
+        self.assertEqual(UniverseMembership.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("does not match requested universe_code=SP500" in str(message) for message in messages))
+
+    def test_staff_upload_import_invalid_csv_shows_clean_error(self):
+        self._login_staff()
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_import_memberships",
+                "du_import_universe": "CSI300",
+                "du_import_csv_file": self._uploaded_csv("not,a,valid\n1,2,3\n", name="csi300.csv"),
+                "du_import_mode": "apply",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(UniverseDefinition.objects.count(), 0)
+        self.assertEqual(UniverseMembership.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("CSV is missing required columns" in str(message) for message in messages))
+
+    def test_staff_upload_import_accepts_sp500_legacy_csv(self):
+        self._login_staff()
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_import_memberships",
+                "du_import_universe": "SP500",
+                "du_import_universe_name": "S&P 500",
+                "du_import_expected_member_count": "1",
+                "du_import_csv_file": self._uploaded_csv(self._legacy_sp500_csv(), name="sp500.csv"),
+                "du_import_mode": "apply",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        universe = UniverseDefinition.objects.get(code="SP500")
+        self.assertEqual(UniverseMembership.objects.filter(universe=universe, ticker="AAPL", exchange="US").count(), 1)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Import univers historique CSV (apply)" in str(message) for message in messages))
 
     @patch("core.views.launch_processing_job")
     def test_trigger_prepare_ohlc_launches_existing_job(self, launch_mock):

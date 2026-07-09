@@ -83,6 +83,7 @@ from .services.universe_resolver import (
     universe_code_for_historical_dynamic_mode,
 )
 from .services.dynamic_universe_readiness import check_dynamic_universe_readiness, _gm_requirements_from_signal_lines
+from .services.universe_import import UniverseImportError, import_universe_memberships_from_csv
 from .templatetags.backtest_extras import (
     line_gm_push_buy_display,
     line_gm_push_sell_market_exit_display,
@@ -121,6 +122,7 @@ TRADING_SIGNAL_CHOICES = [
 
 DYNAMIC_UNIVERSE_OHLC_DEFAULT_MAX_SYMBOLS = 50
 DYNAMIC_UNIVERSE_OHLC_EXCLUDE_TICKERS = ["DKEEP", "DNEW", "KEEP", "NEW", "OLD", "DOLD"]
+HISTORICAL_UNIVERSE_CSV_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 
 
 def _signal_lines_json_for_form(form) -> str:
@@ -4801,7 +4803,7 @@ def game_scenario_export_xlsx(request: HttpRequest, pk: int):
     return redirect("job_detail", pk=launch.job.id)
 
 
-def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inputs=None):
+def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inputs=None, user=None):
     scenarios = Scenario.objects.only("id", "name").order_by("name", "id")
     backtests = Backtest.objects.only("id", "name").defer(
         "results", "settings", "universe_snapshot", "signal_lines", "error_message"
@@ -4818,6 +4820,7 @@ def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inpu
         "dynamic_universe_report": dynamic_universe_report,
         "dynamic_universe_display": _dynamic_universe_report_display(dynamic_universe_report),
         "dynamic_universe_inputs": dynamic_universe_inputs or {},
+        "can_import_historical_universe_csv": bool(getattr(user, "is_staff", False)),
     }
 
 
@@ -4839,6 +4842,56 @@ def _parse_optional_trigger_int(value: str, *, field_name: str) -> int | None:
         return int(value)
     except ValueError as exc:
         raise ValueError(f"{field_name} doit être un entier.") from exc
+
+
+def _parse_optional_trigger_date(value: str, *, field_name: str) -> date | None:
+    value = str(value or "").strip()
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} doit être au format YYYY-MM-DD.") from exc
+
+
+def _historical_universe_import_expected_count(value: str, universe_code: str) -> int:
+    default = "300" if universe_code == "CSI300" else "500" if universe_code == SP500_UNIVERSE_CODE else "1"
+    raw_value = str(value or default).strip() or default
+    try:
+        expected_count = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("Nombre attendu d'actions dans l'indice doit être un entier.") from exc
+    if expected_count < 1:
+        raise ValueError("Nombre attendu d'actions dans l'indice doit être supérieur à zéro.")
+    return expected_count
+
+
+def _format_universe_import_summary(result) -> str:
+    mode = "apply" if not result.dry_run else "dry-run"
+    exchanges = ", ".join(result.exchanges) if result.exchanges else "—"
+    valid_to_max = result.valid_to_max.isoformat() if result.valid_to_max else "—"
+    valid_from_min = result.valid_from_min.isoformat() if result.valid_from_min else "—"
+    return (
+        f"Import univers historique CSV ({mode}) — "
+        f"univers={result.universe_code}, "
+        f"nom={result.universe_name}, "
+        f"lignes lues={result.rows_read}, "
+        f"lignes valides={result.rows_valid}, "
+        f"lignes rejetées={result.rows_rejected}, "
+        f"tickers distincts={result.distinct_tickers}, "
+        f"exchanges/mic={exchanges}, "
+        f"valid_from min={valid_from_min}, "
+        f"valid_to max={valid_to_max}, "
+        f"memberships ouverts={result.open_memberships}, "
+        f"créés={result.memberships_created}, "
+        f"mis à jour={result.memberships_updated}, "
+        f"status={result.status}."
+    )
+
+
+def _validate_csv_filename(name: str) -> None:
+    if not str(name or "").lower().endswith(".csv"):
+        raise ValueError("Import CSV: le fichier doit avoir l'extension .csv.")
 
 
 def _run_management_command_for_trigger(command_name: str, *args) -> str:
@@ -4868,7 +4921,7 @@ def trigger_page(request: HttpRequest):
         This page is intentionally operational: it exposes explicit buttons for
         common Celery jobs, with optional scoping to a scenario/backtest/game.
         """
-        context = _trigger_page_context()
+        context = _trigger_page_context(user=request.user)
         scenarios = context["scenarios"]
         backtests = context["backtests"]
         games = context["games"]
@@ -5054,7 +5107,7 @@ def trigger_page(request: HttpRequest):
                     return render(
                         request,
                         "trigger.html",
-                        _trigger_page_context(dynamic_universe_report=report, dynamic_universe_inputs=inputs),
+                        _trigger_page_context(dynamic_universe_report=report, dynamic_universe_inputs=inputs, user=request.user),
                     )
 
                 elif action in ("du_bootstrap_symbols", "du_create_historical_symbols"):
@@ -5082,36 +5135,62 @@ def trigger_page(request: HttpRequest):
                     _message_command_output(request, "Récupération de la composition historique S&P500 lancée.", output)
 
                 elif action == "du_import_memberships":
-                    csv_path = str(request.POST.get("du_import_file") or "").strip()
-                    if not csv_path:
-                        messages.error(request, "Import CSV: renseignez le chemin du fichier serveur.")
+                    if not request.user.is_staff:
+                        messages.error(request, "Import CSV univers historique réservé aux administrateurs/staff.")
                     else:
-                        universe_code = str(request.POST.get("du_import_universe") or "SP500").strip().upper()
+                        universe_code = str(request.POST.get("du_import_universe") or "CSI300").strip().upper()
                         universe_name = str(request.POST.get("du_import_universe_name") or "").strip()
-                        start_arg = _parse_trigger_date(request.POST.get("du_import_start"), field_name="Date de début")
-                        end_arg = _parse_trigger_date(request.POST.get("du_import_end"), field_name="Date de fin")
-                        expected_count = str(request.POST.get("du_import_expected_member_count") or ("300" if universe_code == "CSI300" else "500")).strip() or "500"
-                        if universe_code == SP500_UNIVERSE_CODE:
-                            output = _run_management_command_for_trigger(
-                                "import_sp500_memberships",
-                                "--file", csv_path,
-                                "--coverage-start", start_arg.isoformat(),
-                                "--coverage-end", end_arg.isoformat(),
-                                "--expected-member-count", expected_count,
-                                "--apply",
+                        expected_count = _historical_universe_import_expected_count(
+                            request.POST.get("du_import_expected_member_count"),
+                            universe_code,
+                        )
+                        coverage_start = _parse_optional_trigger_date(request.POST.get("du_import_start"), field_name="Date de début")
+                        coverage_end = _parse_optional_trigger_date(request.POST.get("du_import_end"), field_name="Date de fin")
+                        apply_import = (request.POST.get("du_import_mode") == "apply")
+                        upload = request.FILES.get("du_import_csv_file")
+                        csv_path = str(request.POST.get("du_import_file") or "").strip()
+                        temp_path = None
+
+                        try:
+                            if upload is not None:
+                                _validate_csv_filename(upload.name)
+                                if getattr(upload, "size", 0) > HISTORICAL_UNIVERSE_CSV_MAX_UPLOAD_BYTES:
+                                    raise ValueError("Import CSV: fichier trop volumineux (maximum 10 Mo).")
+                                with tempfile.NamedTemporaryFile(prefix="universe_memberships_", suffix=".csv", delete=False) as tmp:
+                                    for chunk in upload.chunks():
+                                        tmp.write(chunk)
+                                    temp_path = Path(tmp.name)
+                                source_path = temp_path
+                                source_reference = upload.name
+                            else:
+                                if not csv_path:
+                                    raise ValueError("Import CSV: renseignez un fichier CSV à uploader ou le chemin du fichier serveur.")
+                                _validate_csv_filename(csv_path)
+                                source_path = Path(csv_path)
+                                source_reference = csv_path
+
+                            result = import_universe_memberships_from_csv(
+                                csv_path=source_path,
+                                universe_code=universe_code,
+                                universe_name=universe_name or universe_code,
+                                coverage_start=coverage_start,
+                                coverage_end=coverage_end,
+                                provider="manual_csv",
+                                source_name="manual_csv",
+                                source_reference=source_reference,
+                                expected_member_count=expected_count,
+                                dry_run=not apply_import,
                             )
-                        else:
-                            output = _run_management_command_for_trigger(
-                                "import_universe_memberships",
-                                "--csv", csv_path,
-                                "--universe-code", universe_code,
-                                "--universe-name", universe_name or universe_code,
-                                "--coverage-start", start_arg.isoformat(),
-                                "--coverage-end", end_arg.isoformat(),
-                                "--expected-member-count", expected_count,
-                                "--apply",
-                            )
-                        _message_command_output(request, f"Import de la composition historique {universe_code} lancé.", output)
+                            messages.success(request, _format_universe_import_summary(result))
+                            for warning in result.warnings[:10]:
+                                messages.warning(request, f"Import CSV warning: {warning}")
+                            for error in result.errors[:10]:
+                                messages.error(request, f"Import CSV erreur: {error}")
+                        except (UniverseImportError, ValueError) as exc:
+                            messages.error(request, f"Import CSV impossible: {exc}")
+                        finally:
+                            if temp_path is not None:
+                                temp_path.unlink(missing_ok=True)
 
                 elif action in ("du_prepare_ohlc", "du_download_prices"):
                     from core.tasks import prepare_dynamic_universe_ohlc_job_task
@@ -5369,7 +5448,7 @@ def trigger_page(request: HttpRequest):
 
             return redirect("trigger_page")
 
-        return render(request, "trigger.html", _trigger_page_context())
+        return render(request, "trigger.html", _trigger_page_context(user=request.user))
 
 
 @login_required
