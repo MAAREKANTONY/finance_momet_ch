@@ -20,11 +20,13 @@ from core.services.provider_eodhd import (
     UnsupportedEODHDSymbolError,
     sanitize_provider_error_message,
     to_eodhd_symbol,
+    to_eodhd_symbol_from_parts,
 )
 from core.services.universe_resolver import (
     CSI300_UNIVERSE_CODE,
     SP500_UNIVERSE_CODE,
     UniverseResolver,
+    historical_dynamic_mode_for_universe_code,
     is_historical_dynamic_universe_mode,
     universe_code_for_historical_dynamic_mode,
 )
@@ -108,25 +110,17 @@ def _resolve_scope(
         scenario = Scenario.objects.get(id=scenario_id)
     else:
         requested_universe = str(universe_code or "").upper()
-        if requested_universe == CSI300_UNIVERSE_CODE:
-            raise DynamicUniverseOHLCPrepareError(
-                "Préparation OHLC automatique non disponible pour CSI300 V1. "
-                "Importez/préparez les OHLC séparément."
-            )
-        if requested_universe != SP500_UNIVERSE_CODE:
+        mode = historical_dynamic_mode_for_universe_code(requested_universe)
+        if not mode:
             raise DynamicUniverseOHLCPrepareError(f"Unsupported dynamic universe: {universe_code}")
-        scenario = SimpleNamespace(universe_mode=Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC)
+        scenario = SimpleNamespace(universe_mode=mode)
 
     mode = getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
-    if mode != Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC:
-        if is_historical_dynamic_universe_mode(mode):
-            resolved_code = universe_code_for_historical_dynamic_mode(mode) or str(universe_code or "").upper()
-            if resolved_code == CSI300_UNIVERSE_CODE:
-                raise DynamicUniverseOHLCPrepareError(
-                    "Préparation OHLC automatique non disponible pour CSI300 V1. "
-                    "Importez/préparez les OHLC séparément."
-                )
-        raise DynamicUniverseOHLCPrepareError("OHLC preparation is only supported for SP500_HISTORICAL_DYNAMIC scenarios.")
+    if not is_historical_dynamic_universe_mode(mode):
+        raise DynamicUniverseOHLCPrepareError(
+            "OHLC preparation is only supported for historical dynamic universe scenarios "
+            "(SP500_HISTORICAL_DYNAMIC or CSI300_HISTORICAL_DYNAMIC)."
+        )
 
     resolved_start = _parse_date_value(start_date, name="start_date") or getattr(backtest, "start_date", None)
     resolved_end = _parse_date_value(end_date, name="end_date") or getattr(backtest, "end_date", None)
@@ -189,6 +183,22 @@ def _fetch_window_for_symbol(symbol: Symbol, ranges_by_symbol_id: dict[int, list
         min(required_range.start for required_range in required_ranges),
         max(required_range.end for required_range in required_ranges),
     )
+
+
+def _provider_symbol_for_dynamic_symbol(symbol: Symbol, membership_by_ticker: dict[str, tuple[Any, ...]]) -> str:
+    intervals = membership_by_ticker.get(str(symbol.ticker or "").strip().upper()) or ()
+    symbol_intervals = [interval for interval in intervals if interval.symbol_id == symbol.id]
+    for interval in symbol_intervals:
+        if interval.provider_symbol:
+            return to_eodhd_symbol_from_parts(
+                ticker=symbol.ticker,
+                exchange=interval.exchange,
+                provider_symbol=interval.provider_symbol,
+            )
+    for interval in symbol_intervals:
+        if interval.exchange:
+            return to_eodhd_symbol_from_parts(ticker=symbol.ticker, exchange=interval.exchange)
+    return to_eodhd_symbol(symbol)
 
 
 def _normalize_ticker_set(tickers: Any | None) -> set[str]:
@@ -286,7 +296,7 @@ def prepare_dynamic_universe_ohlc(
         if progress_callback:
             progress_callback(f"{index}/{len(target_symbols)} {symbol.ticker}")
         try:
-            provider_symbol = to_eodhd_symbol(symbol)
+            provider_symbol = _provider_symbol_for_dynamic_symbol(symbol, resolved_universe.membership_by_ticker)
         except UnsupportedEODHDSymbolError as exc:
             result.skipped_symbols[symbol.ticker] = str(exc)
             continue

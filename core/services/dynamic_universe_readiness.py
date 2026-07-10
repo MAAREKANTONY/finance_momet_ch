@@ -125,6 +125,11 @@ PREPARE_OHLC_ACTION = ReadinessAction(
     label="Préparer explicitement les OHLC Dynamic Universe",
     command="Lancer prepare_dynamic_universe_ohlc_job_task depuis l'action opérationnelle dédiée.",
 )
+PREPARE_CSI300_OHLC_ACTION = ReadinessAction(
+    code="prepare_csi300_eodhd_ohlc",
+    label="Préparer les OHLC CSI300 via EODHD",
+    command="Préparation OHLC CSI300 via EODHD disponible pour les tickers issus du CSV importé. Aucun constituant n'est récupéré depuis EODHD.",
+)
 SYNC_BENCHMARK_ACTION = ReadinessAction(
     code="sync_benchmark_etfs",
     label="Synchroniser les ETFs benchmark requis",
@@ -149,6 +154,12 @@ def _symbol_recovery_actions(universe_code: str) -> list[ReadinessAction]:
     if universe_code == SP500_UNIVERSE_CODE:
         return [BOOTSTRAP_SYMBOLS_ACTION]
     return []
+
+
+def _prepare_ohlc_action(universe_code: str) -> ReadinessAction:
+    if universe_code == CSI300_UNIVERSE_CODE:
+        return PREPARE_CSI300_OHLC_ACTION
+    return PREPARE_OHLC_ACTION
 
 
 def _formatted_action_commands(actions: list[ReadinessAction], coverage_start: date | None, end: date | None) -> list[str]:
@@ -224,6 +235,7 @@ def check_dynamic_universe_readiness(
     symbols = _unique_symbols(mapped_memberships) if mappings_ready else []
     checks.append(
         _check_member_daily_bars(
+            universe_code=universe_code,
             symbols=symbols,
             membership_by_ticker=membership_by_ticker,
             coverage_start=coverage_start,
@@ -569,18 +581,20 @@ def _check_historical_symbols(
 
 def _check_member_daily_bars(
     *,
+    universe_code: str,
     symbols: list[Symbol],
     membership_by_ticker: dict[str, tuple[ResolvedMembershipInterval, ...]],
     coverage_start: date,
     end: date,
     prerequisites_ready: bool,
 ) -> ReadinessCheck:
+    prepare_action = _prepare_ohlc_action(universe_code)
     if not prerequisites_ready:
         return _skipped_check(
             "member_daily_bars",
             "DailyBars membres",
             "Impossible de vérifier les DailyBars membres tant que l'univers historique n'est pas résolu.",
-            actions=[PREPARE_OHLC_ACTION],
+            actions=[prepare_action],
         )
     missing = get_missing_ohlc_symbols_for_dynamic_universe(
         symbols=symbols,
@@ -600,8 +614,8 @@ def _check_member_daily_bars(
                 "missing_symbols": len(missing),
                 "missing_examples": [symbol.ticker for symbol in missing[:20]],
             },
-            suggested_actions=[PREPARE_OHLC_ACTION],
-            suggested_commands=[PREPARE_OHLC_ACTION.command],
+            suggested_actions=[prepare_action],
+            suggested_commands=[prepare_action.command],
         )
     return ReadinessCheck(
         code="member_daily_bars",

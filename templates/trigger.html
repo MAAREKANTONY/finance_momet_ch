@@ -70,7 +70,7 @@
 
       <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
         <h4>5. Télécharger les prix des actions</h4>
-        <div class="muted">Télécharge les prix historiques nécessaires au backtest pour les actions du S&amp;P500 sur la période choisie.</div>
+        <div class="muted">Télécharge les prix historiques nécessaires au backtest pour les actions de l’univers dynamique sur la période choisie. Pour CSI300, seuls les tickers issus du CSV importé sont utilisés ; aucun constituant n’est récupéré depuis EODHD.</div>
         <div style="margin-top:6px;"><span class="pill">Modifie les prix</span> <span class="pill">Utilise un service externe</span> <span class="pill">Peut être long</span></div>
         <form method="post" style="margin-top:10px; display:grid; gap:8px;">
           {% csrf_token %}

@@ -251,6 +251,22 @@ class DynamicUniverseReadinessTestCase(TestCase):
         sync_mock.assert_not_called()
         prepare_mock.assert_not_called()
 
+    def test_csi300_with_memberships_recommends_eodhd_ohlc_not_sp500_commands(self):
+        universe = self._csi300()
+        symbol = self._symbol("600519", exchange="SHG")
+        self._membership(universe, symbol)
+        self._coverage(universe)
+
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        check = self._check(report, "member_daily_bars")
+        self.assertEqual(check.status, CHECK_WARNING)
+        commands = " ".join(action.command for action in report.suggested_actions)
+        self.assertIn("Préparation OHLC CSI300 via EODHD", commands)
+        self.assertIn("tickers issus du CSV importé", commands)
+        self.assertNotIn("sync_sp500_historical_memberships", commands)
+        self.assertNotIn("bootstrap_sp500_symbols_from_eodhd", commands)
+
     def test_csi300_gm_market_is_blocked_without_explicit_benchmark(self):
         report = check_dynamic_universe_readiness(
             universe="CSI300",

@@ -77,6 +77,7 @@ from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on
 from .services.couloir import is_couloir_line, normalize_couloir_line_config
 from .services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
 from .services.universe_resolver import (
+    CSI300_UNIVERSE_CODE,
     SP500_UNIVERSE_CODE,
     UniverseResolver,
     is_historical_dynamic_universe_mode,
@@ -5204,8 +5205,8 @@ def trigger_page(request: HttpRequest):
                     else:
                         mode = getattr(sc, "universe_mode", Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC) if sc else Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
                         universe_code = universe_code_for_historical_dynamic_mode(mode) or SP500_UNIVERSE_CODE
-                        if universe_code != SP500_UNIVERSE_CODE:
-                            messages.warning(request, "Préparation OHLC automatique non disponible pour CSI300 V1. Importez/préparez les OHLC séparément.")
+                        if universe_code == CSI300_UNIVERSE_CODE and not request.user.is_staff:
+                            messages.error(request, "Préparation OHLC CSI300 via EODHD réservée aux administrateurs/staff.")
                         else:
                             launch = launch_processing_job(
                                 task=prepare_dynamic_universe_ohlc_job_task,
@@ -5227,7 +5228,7 @@ def trigger_page(request: HttpRequest):
                             )
                             if launch.dispatch_error:
                                 raise launch.dispatch_error
-                            messages.success(request, f"Téléchargement des prix des actions lancé (job #{launch.job.id}).")
+                            messages.success(request, f"Téléchargement des prix des actions lancé pour {universe_code} (job #{launch.job.id}).")
 
                 elif action in ("du_sync_benchmark_etfs", "du_prepare_benchmark_etfs"):
                     symbols = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
