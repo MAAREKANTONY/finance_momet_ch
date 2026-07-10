@@ -20,7 +20,7 @@ from core.models import (
     UniverseMembership,
 )
 from core.services.dynamic_universe_ohlc_prepare import prepare_dynamic_universe_ohlc
-from core.services.provider_eodhd import EODHDError
+from core.services.provider_eodhd import EODHDError, to_eodhd_symbol_from_parts
 from core.tasks import prepare_dynamic_universe_ohlc_job_task
 
 
@@ -72,13 +72,26 @@ class DynamicUniverseOHLCTestCase(TestCase):
             source="test",
             active=True,
         )
+        self._validated_universe(universe, symbols, provider_symbol_for=lambda symbol: f"{symbol.ticker}.US")
+
+    def _validated_csi300(self, *symbols: Symbol, provider_symbol_for=None):
+        universe = UniverseDefinition.objects.create(
+            code="CSI300",
+            name="CSI 300",
+            source="manual_csv",
+            active=True,
+        )
+        self._validated_universe(universe, symbols, provider_symbol_for=provider_symbol_for or (lambda symbol: ""))
+        return universe
+
+    def _validated_universe(self, universe: UniverseDefinition, symbols, *, provider_symbol_for):
         for symbol in symbols:
             UniverseMembership.objects.create(
                 universe=universe,
                 symbol=symbol,
                 ticker=symbol.ticker,
                 exchange=symbol.exchange,
-                provider_symbol=f"{symbol.ticker}.US",
+                provider_symbol=provider_symbol_for(symbol),
                 valid_from=self.start,
                 valid_to=None,
                 source="test",
@@ -455,13 +468,66 @@ class DynamicUniverseOHLCPrepareServiceTests(DynamicUniverseOHLCTestCase):
         self.backtest.refresh_from_db()
         self.assertEqual(self.backtest.scenario, static)
 
-    def test_csi300_ohlc_prepare_is_rejected_without_provider_call(self):
+    def test_eodhd_china_mapping_preserves_numeric_tickers(self):
+        self.assertEqual(to_eodhd_symbol_from_parts(ticker="600519", exchange="SHG"), "600519.SHG")
+        self.assertEqual(to_eodhd_symbol_from_parts(ticker="000001", exchange="SHE"), "000001.SHE")
+        self.assertEqual(to_eodhd_symbol_from_parts(ticker="300750", exchange="SHE"), "300750.SHE")
+        self.assertEqual(to_eodhd_symbol_from_parts(ticker="600519", exchange="XSHG"), "600519.SHG")
+        self.assertEqual(to_eodhd_symbol_from_parts(ticker="000001", exchange="XSHE"), "000001.SHE")
+        self.assertEqual(to_eodhd_symbol_from_parts(ticker="AAPL", exchange="NASDAQ"), "AAPL.US")
+
+    def test_csi300_ohlc_prepare_uses_csv_provider_symbols_without_constituents_provider(self):
+        csi = Scenario.objects.create(name="CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
+        self.backtest.scenario = csi
+        self.backtest.save(update_fields=["scenario"])
+        shg = Symbol.objects.create(ticker="600519", exchange="SHG", instrument_type="Common Stock", active=True)
+        she = Symbol.objects.create(ticker="000001", exchange="SHE", instrument_type="Common Stock", active=True)
+        self._validated_csi300(shg, she, provider_symbol_for=lambda symbol: f"{symbol.ticker}.{symbol.exchange}")
+        client = FakeEODHDClient({
+            "600519.SHG": self._rows(close="100"),
+            "000001.SHE": self._rows(close="20"),
+        })
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual({call[0] for call in client.calls}, {"600519.SHG", "000001.SHE"})
+        self.assertEqual(result.missing_after, [])
+        self.assertEqual(DailyBar.objects.filter(symbol=she).count(), 2)
+
+    def test_csi300_ohlc_prepare_builds_provider_symbol_from_exchange_when_missing(self):
+        csi = Scenario.objects.create(name="CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
+        self.backtest.scenario = csi
+        self.backtest.save(update_fields=["scenario"])
+        symbol = Symbol.objects.create(ticker="300750", exchange="SHE", instrument_type="Common Stock", active=True)
+        self._validated_csi300(symbol)
+        client = FakeEODHDClient({"300750.SHE": self._rows(close="30")})
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual(client.calls, [("300750.SHE", self.start, self.end)])
+        self.assertEqual(result.missing_after, [])
+
+    def test_csi300_ohlc_prepare_skips_unsupported_exchange_without_provider_call(self):
+        csi = Scenario.objects.create(name="CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
+        self.backtest.scenario = csi
+        self.backtest.save(update_fields=["scenario"])
+        symbol = Symbol.objects.create(ticker="123456", exchange="HK", instrument_type="Common Stock", active=True)
+        self._validated_csi300(symbol)
+        client = FakeEODHDClient({})
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual(client.calls, [])
+        self.assertIn("123456", result.skipped_symbols)
+        self.assertIn("Unsupported EODHD exchange mapping: HK", result.skipped_symbols["123456"])
+
+    def test_csi300_ohlc_prepare_missing_universe_is_clear_without_provider_call(self):
         csi = Scenario.objects.create(name="CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
         self.backtest.scenario = csi
         self.backtest.save(update_fields=["scenario"])
         client = FakeEODHDClient({})
 
-        with self.assertRaisesMessage(Exception, "Préparation OHLC automatique non disponible pour CSI300 V1"):
+        with self.assertRaisesMessage(Exception, "UniverseDefinition CSI300 is missing or inactive"):
             prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
 
         self.assertEqual(client.calls, [])

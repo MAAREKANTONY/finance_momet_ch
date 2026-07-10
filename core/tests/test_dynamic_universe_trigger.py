@@ -10,7 +10,7 @@ from django.test import Client, TestCase
 from django.urls import reverse
 
 from core.job_launch import JobLaunchOutcome
-from core.models import ProcessingJob, UniverseDefinition, UniverseMembership
+from core.models import ProcessingJob, Scenario, UniverseDefinition, UniverseMembership
 from core.services.dynamic_universe_readiness import ReadinessAction, ReadinessCheck, ReadinessReport
 
 
@@ -377,3 +377,53 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertTrue(launch_mock.called)
         self.assertEqual(launch_mock.call_args.kwargs["job_type"], ProcessingJob.JobType.FETCH_BARS)
         self.assertEqual(launch_mock.call_args.kwargs["task_kwargs"]["start_date"], "2022-01-01")
+
+    @patch("core.views.launch_processing_job")
+    def test_non_staff_cannot_trigger_csi300_ohlc_prepare(self, launch_mock):
+        scenario = Scenario.objects.create(
+            name="CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+        )
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_download_prices",
+                "scenario_id": str(scenario.id),
+                "du_ohlc_start": "2022-01-01",
+                "du_ohlc_end": "2022-01-03",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Préparation OHLC CSI300 via EODHD réservée" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
+    def test_staff_can_trigger_csi300_ohlc_prepare(self, launch_mock):
+        self._login_staff()
+        scenario = Scenario.objects.create(
+            name="CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+        )
+        job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.FETCH_BARS, status=ProcessingJob.Status.PENDING)
+        launch_mock.return_value = JobLaunchOutcome(job=job, dispatch_error=None)
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_download_prices",
+                "scenario_id": str(scenario.id),
+                "du_ohlc_start": "2022-01-01",
+                "du_ohlc_end": "2022-01-03",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(launch_mock.called)
+        kwargs = launch_mock.call_args.kwargs["task_kwargs"]
+        self.assertEqual(kwargs["universe_code"], "CSI300")
+        self.assertEqual(kwargs["provider"], "eodhd")

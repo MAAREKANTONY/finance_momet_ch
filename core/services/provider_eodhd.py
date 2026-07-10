@@ -35,17 +35,41 @@ US_EODHD_EXCHANGES = {
     "US",
 }
 
+CHINA_EODHD_EXCHANGE_SUFFIXES = {
+    "SHG": "SHG",
+    "SHE": "SHE",
+    "XSHG": "SHG",
+    "XSHE": "SHE",
+}
 
-def to_eodhd_symbol(symbol: Symbol) -> str:
-    ticker = str(getattr(symbol, "ticker", "") or "").strip().upper()
-    exchange = str(getattr(symbol, "exchange", "") or "").strip().upper()
+
+def to_eodhd_symbol_from_parts(
+    *,
+    ticker: str,
+    exchange: str = "",
+    provider_symbol: str = "",
+) -> str:
+    explicit_provider_symbol = str(provider_symbol or "").strip().upper()
+    if explicit_provider_symbol:
+        return explicit_provider_symbol
+    ticker = str(ticker or "").strip().upper()
+    exchange = str(exchange or "").strip().upper()
     if not ticker:
         raise UnsupportedEODHDSymbolError("Symbol ticker is empty")
     if not exchange:
         return ticker
     if exchange in US_EODHD_EXCHANGES:
         return f"{ticker}.US"
+    if exchange in CHINA_EODHD_EXCHANGE_SUFFIXES:
+        return f"{ticker}.{CHINA_EODHD_EXCHANGE_SUFFIXES[exchange]}"
     raise UnsupportedEODHDSymbolError(f"Unsupported EODHD exchange mapping: {exchange}")
+
+
+def to_eodhd_symbol(symbol: Symbol) -> str:
+    return to_eodhd_symbol_from_parts(
+        ticker=str(getattr(symbol, "ticker", "") or ""),
+        exchange=str(getattr(symbol, "exchange", "") or ""),
+    )
 
 
 class EODHDClient:
