@@ -20,6 +20,7 @@ from core.models import (
     UniverseImportBatch,
     UniverseMembership,
 )
+from core.services.dynamic_universe_symbols import ensure_universe_membership_symbols
 from core.services.dynamic_universe_readiness import (
     CHECK_ERROR,
     CHECK_OK,
@@ -266,6 +267,52 @@ class DynamicUniverseReadinessTestCase(TestCase):
         self.assertIn("tickers issus du CSV importé", commands)
         self.assertNotIn("sync_sp500_historical_memberships", commands)
         self.assertNotIn("bootstrap_sp500_symbols_from_eodhd", commands)
+
+    def test_csi300_mapping_refreshes_readiness_to_missing_dailybars_warning(self):
+        universe = self._csi300()
+        UniverseMembership.objects.create(
+            universe=universe,
+            ticker="600519",
+            exchange="SHG",
+            provider_symbol="600519.SHG",
+            valid_from=self.start,
+            valid_to=None,
+            source="manual_csv",
+            source_payload={"company_name": "Kweichow Moutai", "row": {"country": "CN", "currency": "CNY"}},
+        )
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="manual_csv",
+            source_name="manual_csv",
+            period_start=self.start,
+            period_end=self.end,
+            expected_member_count=1,
+            imported_member_count=1,
+            mapped_member_count=0,
+            unmapped_member_count=1,
+            status=UniverseCoverageStatus.PARTIAL,
+        )
+        current = self.start
+        while current <= self.end:
+            UniverseCoverageSnapshot.objects.create(
+                universe=universe,
+                import_batch=batch,
+                coverage_date=current,
+                expected_member_count=1,
+                actual_member_count=1,
+                mapped_member_count=0,
+                unmapped_member_count=1,
+                status=UniverseCoverageStatus.PARTIAL,
+            )
+            current += timedelta(days=1)
+
+        mapping = ensure_universe_membership_symbols("CSI300")
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        self.assertEqual(mapping.created_symbols, 1)
+        self.assertEqual(self._check(report, "coverage_snapshots").status, CHECK_OK)
+        self.assertEqual(self._check(report, "historical_symbols").status, CHECK_OK)
+        self.assertEqual(self._check(report, "member_daily_bars").status, CHECK_WARNING)
 
     def test_csi300_gm_market_is_blocked_without_explicit_benchmark(self):
         report = check_dynamic_universe_readiness(

@@ -19,6 +19,7 @@ from core.models import (
     UniverseImportBatch,
     UniverseMembership,
 )
+from core.services.dynamic_universe_symbols import ensure_universe_membership_symbols
 from core.services.universe_import import UniverseImportError, import_universe_memberships_from_csv
 from core.services.universe_resolver import UniverseCoverageError, UniverseResolver
 
@@ -520,6 +521,85 @@ class DynamicUniverseImportTests(TestCase):
         )
 
         requests_get_mock.assert_not_called()
+
+    def test_symbol_mapping_creates_csi300_symbols_and_refreshes_coverage(self):
+        csv_path = self._raw_csv_file(
+            "universe_code,symbol,exchange,mic,name,start_date,end_date,weight,provider_symbol,source,country,currency,sector,industry\n",
+            "CSI300,600519,SHG,XSHG,Kweichow Moutai,2020-01-01,,0.052,600519.SHG,manual_csv,CN,CNY,Consumer Staples,Distillers & Wineries\n"
+            "CSI300,000001,SHE,XSHE,Ping An Bank,2020-01-01,,0.014,000001.SHE,manual_csv,CN,CNY,Financials,Banks\n",
+        )
+        imported = import_universe_memberships_from_csv(
+            csv_path,
+            universe_code="CSI300",
+            universe_name="CSI 300",
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 2),
+            expected_member_count=2,
+            dry_run=False,
+        )
+        self.assertEqual(imported.status, UniverseCoverageStatus.PARTIAL)
+
+        report = ensure_universe_membership_symbols("CSI300")
+
+        self.assertEqual(report.memberships_total, 2)
+        self.assertEqual(report.created_symbols, 2)
+        self.assertEqual(report.still_unmapped, 0)
+        self.assertTrue(Symbol.objects.filter(ticker="000001", exchange="SHE", country="CN", currency="CNY").exists())
+        self.assertFalse(Symbol.objects.filter(ticker="1", exchange="SHE").exists())
+        membership = UniverseMembership.objects.get(ticker="000001", exchange="SHE")
+        self.assertIsNotNone(membership.symbol_id)
+        self.assertEqual(membership.provider_symbol, "000001.SHE")
+        batch = UniverseImportBatch.objects.get(id=imported.batch_id)
+        self.assertEqual(batch.status, UniverseCoverageStatus.VALIDATED)
+        self.assertEqual(batch.mapped_member_count, 2)
+        self.assertEqual(batch.unmapped_member_count, 0)
+        self.assertEqual(set(UniverseCoverageSnapshot.objects.values_list("status", flat=True)), {UniverseCoverageStatus.VALIDATED})
+        self.assertEqual(set(UniverseCoverageSnapshot.objects.values_list("mapped_member_count", flat=True)), {2})
+
+    def test_symbol_mapping_links_existing_symbol_without_duplicate(self):
+        csv_path = self._raw_csv_file(
+            "universe_code,symbol,exchange,start_date,provider_symbol\n",
+            "CSI300,000001,SHE,2020-01-01,000001.SHE\n",
+        )
+        import_universe_memberships_from_csv(
+            csv_path,
+            universe_code="CSI300",
+            universe_name="CSI 300",
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 1),
+            expected_member_count=1,
+            dry_run=False,
+        )
+        existing = Symbol.objects.create(ticker="000001", exchange="SHE", name="Ping An Bank", active=True)
+
+        report = ensure_universe_membership_symbols("CSI300")
+
+        self.assertEqual(report.linked_existing_symbols, 1)
+        self.assertEqual(report.created_symbols, 0)
+        self.assertEqual(Symbol.objects.filter(ticker="000001", exchange="SHE").count(), 1)
+        self.assertEqual(UniverseMembership.objects.get(ticker="000001").symbol, existing)
+
+    def test_symbol_mapping_warns_on_unsupported_csi300_exchange(self):
+        csv_path = self._raw_csv_file(
+            "universe_code,symbol,exchange,start_date,provider_symbol\n",
+            "CSI300,123456,HK,2020-01-01,123456.HK\n",
+        )
+        import_universe_memberships_from_csv(
+            csv_path,
+            universe_code="CSI300",
+            universe_name="CSI 300",
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 1),
+            expected_member_count=1,
+            dry_run=False,
+        )
+
+        report = ensure_universe_membership_symbols("CSI300")
+
+        self.assertEqual(report.created_symbols, 0)
+        self.assertEqual(report.still_unmapped, 1)
+        self.assertEqual(report.unsupported_exchanges, ["123456:HK"])
+        self.assertFalse(Symbol.objects.filter(ticker="123456", exchange="HK").exists())
 
     def test_backtest_game_and_provider_files_do_not_import_dynamic_universe_import(self):
         base = Path(__file__).resolve().parents[1]

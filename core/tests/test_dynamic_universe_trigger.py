@@ -10,7 +10,16 @@ from django.test import Client, TestCase
 from django.urls import reverse
 
 from core.job_launch import JobLaunchOutcome
-from core.models import ProcessingJob, Scenario, UniverseDefinition, UniverseMembership
+from core.models import (
+    ProcessingJob,
+    Scenario,
+    Symbol,
+    UniverseCoverageSnapshot,
+    UniverseCoverageStatus,
+    UniverseDefinition,
+    UniverseImportBatch,
+    UniverseMembership,
+)
 from core.services.dynamic_universe_readiness import ReadinessAction, ReadinessCheck, ReadinessReport
 
 
@@ -74,7 +83,10 @@ class DynamicUniverseTriggerPageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Préparer le S&amp;P500 historique", body)
+        self.assertIn("Parcours S&amp;P500 historique", body)
+        self.assertIn("Parcours CSI300 historique via CSV", body)
+        self.assertIn("Créer / mapper les actions depuis les memberships CSV", body)
+        self.assertIn("GM_market et GM_sector restent non supportés", body)
         self.assertIn("Vérifier si le S&amp;P500 est prêt", body)
         self.assertIn("Initialiser le référentiel de base", body)
         self.assertIn("Créer les actions historiques manquantes", body)
@@ -158,6 +170,7 @@ class DynamicUniverseTriggerPageTests(TestCase):
             self.assertNotIn(technical, main_section)
         self.assertNotIn("Actions avancées / techniques", body)
         self.assertNotIn("Import univers historique par CSV", body)
+        self.assertNotIn("du_map_membership_symbols", body)
 
     def test_non_staff_does_not_see_historical_universe_csv_import_block(self):
         response = self.client.get(reverse("trigger_page"))
@@ -165,6 +178,7 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertNotIn("Import univers historique par CSV", body)
+        self.assertNotIn("du_map_membership_symbols", body)
         self.assertNotIn("du_import_csv_file", body)
 
     def test_staff_sees_historical_universe_csv_import_block(self):
@@ -175,6 +189,8 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
         self.assertIn("Import univers historique par CSV", body)
+        self.assertIn("Créer / mapper les actions depuis les memberships CSV", body)
+        self.assertIn("du_map_membership_symbols", body)
         self.assertIn("Réservé aux administrateurs/staff", body)
         self.assertIn('enctype="multipart/form-data"', body)
         self.assertIn("du_import_csv_file", body)
@@ -357,6 +373,86 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertEqual(UniverseMembership.objects.filter(universe=universe, ticker="AAPL", exchange="US").count(), 1)
         messages = list(response.context["messages"])
         self.assertTrue(any("Import univers historique CSV (apply)" in str(message) for message in messages))
+
+    def _partial_csi300_membership(self):
+        universe = UniverseDefinition.objects.create(code="CSI300", name="CSI 300", source="manual_csv", active=True)
+        UniverseMembership.objects.create(
+            universe=universe,
+            ticker="000001",
+            exchange="SHE",
+            provider_symbol="000001.SHE",
+            valid_from=date(2020, 1, 1),
+            valid_to=None,
+            source="manual_csv",
+            source_payload={"company_name": "Ping An Bank", "row": {"country": "CN", "currency": "CNY"}},
+        )
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="manual_csv",
+            source_name="manual_csv",
+            period_start=date(2020, 1, 1),
+            period_end=date(2020, 1, 1),
+            expected_member_count=1,
+            imported_member_count=1,
+            mapped_member_count=0,
+            unmapped_member_count=1,
+            status=UniverseCoverageStatus.PARTIAL,
+        )
+        UniverseCoverageSnapshot.objects.create(
+            universe=universe,
+            import_batch=batch,
+            coverage_date=date(2020, 1, 1),
+            expected_member_count=1,
+            actual_member_count=1,
+            mapped_member_count=0,
+            unmapped_member_count=1,
+            status=UniverseCoverageStatus.PARTIAL,
+        )
+        return universe
+
+    @patch("core.views.launch_processing_job")
+    def test_non_staff_mapping_membership_symbols_is_rejected(self, launch_mock):
+        self._partial_csi300_membership()
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_map_membership_symbols",
+                "du_symbol_mapping_universe": "CSI300",
+                "du_symbol_mapping_mode": "apply",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        self.assertEqual(Symbol.objects.filter(ticker="000001", exchange="SHE").count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("réservé aux administrateurs/staff" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
+    @patch("core.views.call_command")
+    def test_staff_mapping_membership_symbols_creates_symbols_without_provider_or_jobs(self, call_command_mock, launch_mock):
+        self._login_staff()
+        universe = self._partial_csi300_membership()
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_map_membership_symbols",
+                "du_symbol_mapping_universe": "CSI300",
+                "du_symbol_mapping_mode": "apply",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        call_command_mock.assert_not_called()
+        launch_mock.assert_not_called()
+        self.assertTrue(Symbol.objects.filter(ticker="000001", exchange="SHE", country="CN", currency="CNY").exists())
+        self.assertIsNotNone(UniverseMembership.objects.get(universe=universe, ticker="000001").symbol_id)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Mapping symbols univers historique (apply)" in str(message) for message in messages))
 
     @patch("core.views.launch_processing_job")
     def test_trigger_prepare_ohlc_launches_existing_job(self, launch_mock):
