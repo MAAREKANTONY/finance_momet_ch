@@ -84,6 +84,7 @@ from .services.universe_resolver import (
     universe_code_for_historical_dynamic_mode,
 )
 from .services.dynamic_universe_readiness import check_dynamic_universe_readiness, _gm_requirements_from_signal_lines
+from .services.dynamic_universe_symbols import UniverseSymbolMappingError, ensure_universe_membership_symbols
 from .services.universe_import import UniverseImportError, import_universe_memberships_from_csv
 from .templatetags.backtest_extras import (
     line_gm_push_buy_display,
@@ -4890,6 +4891,23 @@ def _format_universe_import_summary(result) -> str:
     )
 
 
+def _format_universe_symbol_mapping_summary(result) -> str:
+    mode = "dry-run" if result.dry_run else "apply"
+    unsupported = len(result.unsupported_exchanges)
+    return (
+        f"Mapping symbols univers historique ({mode}) — "
+        f"univers={result.universe_code}, "
+        f"memberships={result.memberships_total}, "
+        f"déjà mappés={result.already_mapped}, "
+        f"liés existants={result.linked_existing_symbols}, "
+        f"symbols créés={result.created_symbols}, "
+        f"encore non mappés={result.still_unmapped}, "
+        f"exchanges non supportés={unsupported}, "
+        f"batches recalculés={result.coverage_batches_updated}, "
+        f"snapshots recalculés={result.coverage_snapshots_updated}."
+    )
+
+
 def _validate_csv_filename(name: str) -> None:
     if not str(name or "").lower().endswith(".csv"):
         raise ValueError("Import CSV: le fichier doit avoir l'extension .csv.")
@@ -5192,6 +5210,24 @@ def trigger_page(request: HttpRequest):
                         finally:
                             if temp_path is not None:
                                 temp_path.unlink(missing_ok=True)
+
+                elif action == "du_map_membership_symbols":
+                    if not request.user.is_staff:
+                        messages.error(request, "Mapping des actions depuis memberships réservé aux administrateurs/staff.")
+                    else:
+                        universe_code = str(request.POST.get("du_symbol_mapping_universe") or "CSI300").strip().upper()
+                        apply_mapping = request.POST.get("du_symbol_mapping_mode") == "apply"
+                        try:
+                            result = ensure_universe_membership_symbols(
+                                universe_code,
+                                create_missing=apply_mapping,
+                                dry_run=not apply_mapping,
+                            )
+                            messages.success(request, _format_universe_symbol_mapping_summary(result))
+                            for warning in result.warnings[:10]:
+                                messages.warning(request, f"Mapping symbols warning: {warning}")
+                        except UniverseSymbolMappingError as exc:
+                            messages.error(request, f"Mapping symbols impossible: {exc}")
 
                 elif action in ("du_prepare_ohlc", "du_download_prices"):
                     from core.tasks import prepare_dynamic_universe_ohlc_job_task

@@ -120,6 +120,11 @@ IMPORT_GENERIC_MEMBERSHIPS_ACTION = ReadinessAction(
     label="Importer les memberships historiques depuis CSV",
     command='python manage.py import_universe_memberships --csv <file.csv> --universe-code CSI300 --universe-name "CSI 300" --apply',
 )
+MAP_MEMBERSHIP_SYMBOLS_ACTION = ReadinessAction(
+    code="map_membership_symbols",
+    label="Créer / mapper les actions depuis les memberships CSV",
+    command="Action Trigger staff-only: Créer / mapper les actions depuis les memberships CSV.",
+)
 PREPARE_OHLC_ACTION = ReadinessAction(
     code="prepare_dynamic_universe_ohlc",
     label="Préparer explicitement les OHLC Dynamic Universe",
@@ -147,6 +152,8 @@ SUPPORTED_READINESS_UNIVERSE_CODES = {SP500_UNIVERSE_CODE, CSI300_UNIVERSE_CODE}
 def _membership_recovery_actions(universe_code: str) -> list[ReadinessAction]:
     if universe_code == SP500_UNIVERSE_CODE:
         return [SYNC_MEMBERSHIPS_ACTION, IMPORT_MEMBERSHIPS_ACTION]
+    if universe_code == CSI300_UNIVERSE_CODE:
+        return [IMPORT_GENERIC_MEMBERSHIPS_ACTION, MAP_MEMBERSHIP_SYMBOLS_ACTION]
     return [IMPORT_GENERIC_MEMBERSHIPS_ACTION]
 
 

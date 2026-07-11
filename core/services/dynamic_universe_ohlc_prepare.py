@@ -22,6 +22,10 @@ from core.services.provider_eodhd import (
     to_eodhd_symbol,
     to_eodhd_symbol_from_parts,
 )
+from core.services.dynamic_universe_symbols import (
+    UniverseSymbolMappingError,
+    ensure_universe_membership_symbols,
+)
 from core.services.universe_resolver import (
     CSI300_UNIVERSE_CODE,
     SP500_UNIVERSE_CODE,
@@ -201,6 +205,24 @@ def _provider_symbol_for_dynamic_symbol(symbol: Symbol, membership_by_ticker: di
     return to_eodhd_symbol(symbol)
 
 
+def _ensure_csi300_membership_symbols(scenario: Any) -> None:
+    mode = getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
+    universe_code = universe_code_for_historical_dynamic_mode(mode)
+    if universe_code != CSI300_UNIVERSE_CODE:
+        return
+    try:
+        report = ensure_universe_membership_symbols(CSI300_UNIVERSE_CODE, create_missing=True)
+    except UniverseSymbolMappingError as exc:
+        raise DynamicUniverseOHLCPrepareError(str(exc)) from exc
+    if report.still_unmapped:
+        examples = ", ".join(report.unsupported_exchanges[:5]) or "voir warnings"
+        raise DynamicUniverseOHLCPrepareError(
+            "Les memberships CSI300 ne sont pas encore tous liés à des Symbol. "
+            "Lancez l'action \"Créer / mapper les actions depuis les memberships CSV\". "
+            f"still_unmapped={report.still_unmapped}; exemples={examples}."
+        )
+
+
 def _normalize_ticker_set(tickers: Any | None) -> set[str]:
     if not tickers:
         return set()
@@ -242,6 +264,7 @@ def prepare_dynamic_universe_ohlc(
         backtest_id=backtest_id,
         scenario_id=scenario_id,
     )
+    _ensure_csi300_membership_symbols(scenario)
     resolved_universe = UniverseResolver().resolve(
         scenario=scenario,
         start_date=scoped_start,

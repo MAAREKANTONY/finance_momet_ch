@@ -7,8 +7,22 @@
 <div class="grid2">
 
 <div class="card" style="grid-column: 1 / -1;">
-    <h3>Préparer le S&amp;P500 historique</h3>
-    <p class="muted">Ces actions préparent les données nécessaires pour lancer un backtest avec la composition historique du S&amp;P500. Lancez les étapes dans l'ordre. Aucune étape ne lance toute la chaîne automatiquement.</p>
+    <h3>Parcours S&amp;P500 historique</h3>
+    <p class="muted">Utilise les outils historiques S&amp;P500 existants : initialisation du référentiel, récupération de la composition historique via EODHD, création des actions manquantes et préparation des prix. Lancez les étapes dans l'ordre. Aucune étape ne lance toute la chaîne automatiquement.</p>
+
+    <div style="border:1px solid #ddd; border-radius:8px; padding:12px; margin-top:12px;">
+      <h4>Parcours CSI300 historique via CSV</h4>
+      <ol style="margin-top:8px;">
+        <li>Générer le CSV CSI300 avec l'outil unliftedq vers StockAlert.</li>
+        <li>Importer le fichier CSV CSI300 dans le bloc d'import staff-only.</li>
+        <li>Créer / mapper les actions depuis les memberships CSV.</li>
+        <li>Préparer les prix CSI300 via EODHD.</li>
+        <li>Vérifier la readiness CSI300.</li>
+        <li>Lancer le backtest avec le mode “CSI 300 historique dynamique — via CSV”.</li>
+      </ol>
+      <p class="muted">Aucun constituant CSI300 n'est récupéré depuis EODHD. Aucune composition actuelle n'est utilisée comme fallback. EODHD sert uniquement à récupérer les prix des tickers issus du CSV importé.</p>
+      <p class="muted">Note CSI300 : les filtres GM_market et GM_sector restent non supportés en V1 tant que les benchmarks marché/secteur Chine ne sont pas configurés. Les benchmarks US type SPY/ETF sectoriels ne sont pas utilisés pour CSI300.</p>
+    </div>
 
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:12px; margin-top:12px;">
       <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
@@ -70,7 +84,7 @@
 
       <div style="border:1px solid #ddd; border-radius:8px; padding:12px;">
         <h4>5. Télécharger les prix des actions</h4>
-        <div class="muted">Télécharge les prix historiques nécessaires au backtest pour les actions de l’univers dynamique sur la période choisie. Pour CSI300, seuls les tickers issus du CSV importé sont utilisés ; aucun constituant n’est récupéré depuis EODHD.</div>
+        <div class="muted">Télécharge les prix historiques nécessaires au backtest pour les actions de l’univers dynamique sur la période choisie. Pour CSI300, cette action prépare les prix via EODHD uniquement pour les tickers issus du CSV importé ; elle ne crée pas la composition historique.</div>
         <div style="margin-top:6px;"><span class="pill">Modifie les prix</span> <span class="pill">Utilise un service externe</span> <span class="pill">Peut être long</span></div>
         <form method="post" style="margin-top:10px; display:grid; gap:8px;">
           {% csrf_token %}
@@ -103,6 +117,20 @@
     {% if can_import_historical_universe_csv %}
     <details style="margin-top:14px;">
       <summary>Actions avancées / techniques</summary>
+      <div style="border:1px solid #ddd; border-radius:8px; padding:12px; margin-top:10px;">
+        <h4>Créer / mapper les actions depuis les memberships CSV</h4>
+        <div class="muted">Crée ou lie les Symbol à partir des memberships déjà importés. N'appelle aucun provider, ne télécharge aucun prix et ne lance aucun backtest. À utiliser après l'import CSV CSI300 si la couverture reste PARTIAL avec des memberships non mappés.</div>
+        <form method="post" style="margin-top:10px; display:grid; gap:8px;">
+          {% csrf_token %}
+          <input type="hidden" name="action" value="du_map_membership_symbols">
+          <label>Univers <input name="du_symbol_mapping_universe" value="CSI300" placeholder="CSI300, SP500, SSE50, SSE180, NASDAQ100"></label>
+          <div>
+            <button class="btn" name="du_symbol_mapping_mode" value="dry_run" type="submit">Dry-run / Vérifier</button>
+            <button class="btn danger" name="du_symbol_mapping_mode" value="apply" type="submit">Créer / mapper réellement</button>
+          </div>
+        </form>
+      </div>
+
       <div style="border:1px solid #ddd; border-radius:8px; padding:12px; margin-top:10px;">
         <h4>Import univers historique par CSV</h4>
         <div class="muted">

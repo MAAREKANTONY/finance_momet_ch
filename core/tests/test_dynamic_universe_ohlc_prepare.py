@@ -494,6 +494,60 @@ class DynamicUniverseOHLCPrepareServiceTests(DynamicUniverseOHLCTestCase):
         self.assertEqual(result.missing_after, [])
         self.assertEqual(DailyBar.objects.filter(symbol=she).count(), 2)
 
+    def test_csi300_ohlc_prepare_auto_maps_unmapped_memberships_before_fake_eodhd_call(self):
+        csi = Scenario.objects.create(name="CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
+        self.backtest.scenario = csi
+        self.backtest.save(update_fields=["scenario"])
+        universe = UniverseDefinition.objects.create(code="CSI300", name="CSI 300", source="manual_csv", active=True)
+        UniverseMembership.objects.create(
+            universe=universe,
+            symbol=None,
+            ticker="600519",
+            exchange="SHG",
+            provider_symbol="600519.SHG",
+            valid_from=self.start,
+            valid_to=None,
+            source="manual_csv",
+            source_payload={"company_name": "Kweichow Moutai", "row": {"country": "CN", "currency": "CNY"}},
+        )
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="manual_csv",
+            source_name="manual_csv",
+            period_start=self.start,
+            period_end=self.end,
+            expected_member_count=1,
+            imported_member_count=1,
+            mapped_member_count=0,
+            unmapped_member_count=1,
+            status=UniverseCoverageStatus.PARTIAL,
+        )
+        current = self.start
+        while current <= self.end:
+            UniverseCoverageSnapshot.objects.create(
+                universe=universe,
+                import_batch=batch,
+                coverage_date=current,
+                expected_member_count=1,
+                actual_member_count=1,
+                mapped_member_count=0,
+                unmapped_member_count=1,
+                status=UniverseCoverageStatus.PARTIAL,
+            )
+            current += timedelta(days=1)
+        client = FakeEODHDClient({"600519.SHG": self._rows(close="100")})
+
+        result = prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        self.assertEqual(client.calls, [("600519.SHG", self.start, self.end)])
+        self.assertEqual(result.missing_after, [])
+        membership = UniverseMembership.objects.get(universe=universe, ticker="600519")
+        self.assertIsNotNone(membership.symbol_id)
+        self.assertTrue(Symbol.objects.filter(ticker="600519", exchange="SHG", country="CN", currency="CNY").exists())
+        batch.refresh_from_db()
+        self.assertEqual(batch.status, UniverseCoverageStatus.VALIDATED)
+        self.assertEqual(batch.unmapped_member_count, 0)
+
     def test_csi300_ohlc_prepare_builds_provider_symbol_from_exchange_when_missing(self):
         csi = Scenario.objects.create(name="CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
         self.backtest.scenario = csi
