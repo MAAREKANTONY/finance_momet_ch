@@ -38,6 +38,23 @@ class UniverseSymbolMappingReport:
     coverage_snapshots_updated: int = 0
 
 
+def format_universe_symbol_mapping_summary(result: UniverseSymbolMappingReport) -> str:
+    mode = "dry-run" if result.dry_run else "apply"
+    unsupported = len(result.unsupported_exchanges)
+    return (
+        f"Mapping symbols univers historique ({mode}) — "
+        f"univers={result.universe_code}, "
+        f"memberships={result.memberships_total}, "
+        f"déjà mappés={result.already_mapped}, "
+        f"liés existants={result.linked_existing_symbols}, "
+        f"symbols créés={result.created_symbols}, "
+        f"encore non mappés={result.still_unmapped}, "
+        f"exchanges non supportés={unsupported}, "
+        f"batches recalculés={result.coverage_batches_updated}, "
+        f"snapshots recalculés={result.coverage_snapshots_updated}."
+    )
+
+
 SUPPORTED_MEMBERSHIP_EXCHANGES_BY_UNIVERSE = {
     CSI300_UNIVERSE_CODE: {"SHG", "SHE", "XSHG", "XSHE"},
 }

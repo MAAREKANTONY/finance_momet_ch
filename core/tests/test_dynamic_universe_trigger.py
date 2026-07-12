@@ -21,6 +21,8 @@ from core.models import (
     UniverseMembership,
 )
 from core.services.dynamic_universe_readiness import ReadinessAction, ReadinessCheck, ReadinessReport
+from core.services.dynamic_universe_symbols import UniverseSymbolMappingError, UniverseSymbolMappingReport
+from core.tasks import map_universe_membership_symbols_job_task
 
 
 class DynamicUniverseTriggerPageTests(TestCase):
@@ -430,11 +432,19 @@ class DynamicUniverseTriggerPageTests(TestCase):
         messages = list(response.context["messages"])
         self.assertTrue(any("réservé aux administrateurs/staff" in str(message) for message in messages))
 
+    @patch("core.tasks.ensure_universe_membership_symbols")
     @patch("core.views.launch_processing_job")
     @patch("core.views.call_command")
-    def test_staff_mapping_membership_symbols_creates_symbols_without_provider_or_jobs(self, call_command_mock, launch_mock):
+    def test_staff_mapping_membership_symbols_launches_async_job_without_provider_or_inline_mapping(
+        self,
+        call_command_mock,
+        launch_mock,
+        ensure_symbols_mock,
+    ):
         self._login_staff()
         universe = self._partial_csi300_membership()
+        job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.FETCH_BARS, status=ProcessingJob.Status.PENDING)
+        launch_mock.return_value = JobLaunchOutcome(job=job, dispatch_error=None)
 
         response = self.client.post(
             reverse("trigger_page"),
@@ -448,11 +458,58 @@ class DynamicUniverseTriggerPageTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         call_command_mock.assert_not_called()
-        launch_mock.assert_not_called()
-        self.assertTrue(Symbol.objects.filter(ticker="000001", exchange="SHE", country="CN", currency="CNY").exists())
-        self.assertIsNotNone(UniverseMembership.objects.get(universe=universe, ticker="000001").symbol_id)
+        ensure_symbols_mock.assert_not_called()
+        self.assertTrue(launch_mock.called)
+        self.assertEqual(launch_mock.call_args.kwargs["task"], map_universe_membership_symbols_job_task)
+        self.assertEqual(launch_mock.call_args.kwargs["job_type"], ProcessingJob.JobType.FETCH_BARS)
+        self.assertEqual(launch_mock.call_args.kwargs["task_kwargs"]["universe_code"], "CSI300")
+        self.assertTrue(launch_mock.call_args.kwargs["task_kwargs"]["create_missing"])
+        self.assertFalse(launch_mock.call_args.kwargs["task_kwargs"]["dry_run"])
+        self.assertFalse(Symbol.objects.filter(ticker="000001", exchange="SHE").exists())
+        self.assertIsNone(UniverseMembership.objects.get(universe=universe, ticker="000001").symbol_id)
         messages = list(response.context["messages"])
-        self.assertTrue(any("Mapping symbols univers historique (apply)" in str(message) for message in messages))
+        self.assertTrue(any("lancé en arrière-plan" in str(message) for message in messages))
+
+    @patch("core.tasks.ensure_universe_membership_symbols")
+    def test_mapping_membership_symbols_task_marks_done(self, ensure_symbols_mock):
+        ensure_symbols_mock.return_value = UniverseSymbolMappingReport(
+            universe_code="CSI300",
+            memberships_total=1,
+            created_symbols=1,
+            coverage_batches_updated=1,
+            coverage_snapshots_updated=1,
+        )
+        job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.FETCH_BARS, status=ProcessingJob.Status.PENDING)
+
+        message = map_universe_membership_symbols_job_task.apply(kwargs={
+            "job_id": job.id,
+            "universe_code": "CSI300",
+            "create_missing": True,
+            "dry_run": False,
+        }).get(propagate=True)
+
+        job.refresh_from_db()
+        ensure_symbols_mock.assert_called_once_with("CSI300", create_missing=True, dry_run=False)
+        self.assertEqual(job.status, ProcessingJob.Status.DONE)
+        self.assertIn("Mapping symbols univers historique (apply)", message)
+        self.assertEqual(job.error, "")
+
+    @patch("core.tasks.ensure_universe_membership_symbols")
+    def test_mapping_membership_symbols_task_marks_failed_on_mapping_error(self, ensure_symbols_mock):
+        ensure_symbols_mock.side_effect = UniverseSymbolMappingError("UniverseDefinition CSI300 is missing or inactive.")
+        job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.FETCH_BARS, status=ProcessingJob.Status.PENDING)
+
+        message = map_universe_membership_symbols_job_task.apply(kwargs={
+            "job_id": job.id,
+            "universe_code": "CSI300",
+            "create_missing": True,
+            "dry_run": False,
+        }).get(propagate=True)
+
+        job.refresh_from_db()
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertIn("UniverseDefinition CSI300", message)
+        self.assertIn("UniverseDefinition CSI300", job.error)
 
     @patch("core.views.launch_processing_job")
     def test_trigger_prepare_ohlc_launches_existing_job(self, launch_mock):

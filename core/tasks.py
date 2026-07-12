@@ -19,6 +19,11 @@ from .services.calculations_fast import compute_full_for_symbol_scenario
 from .services.market_cap_sync import sync_market_caps_for_symbols
 from .services.game_scenarios.sync import sync_game_engine_scenario
 from .services.benchmark_etf_sync import format_benchmark_sync_summary, sync_benchmark_etfs_for_symbols
+from .services.dynamic_universe_symbols import (
+    UniverseSymbolMappingError,
+    ensure_universe_membership_symbols,
+    format_universe_symbol_mapping_summary,
+)
 from .job_tracking import JobCancelled, JobCheckpointPulse, JobKilled, job_checkpoint, mark_job_running
 from .job_status_sync import sync_related_state_for_terminal_job
 from .excel_utils import append_excel_row
@@ -774,6 +779,80 @@ def fetch_daily_bars_job_task(self, *, symbol_ids=None, scenario_id=None, force_
         return "killed"
     except TRANSIENT_DB_EXCEPTIONS as e:
         _retryable_job(self, e)
+    except Exception as e:
+        job.status = ProcessingJob.Status.FAILED
+        job.error = str(e)
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
+        raise
+
+
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
+def map_universe_membership_symbols_job_task(
+    self,
+    *,
+    universe_code="CSI300",
+    create_missing: bool = True,
+    dry_run: bool = False,
+    user_id=None,
+    job_id=None,
+):
+    """Create/link Symbol rows from imported dynamic-universe memberships.
+
+    This is intentionally local DB work only: no provider, no OHLC download, no backtest.
+    """
+    job = None
+    if job_id:
+        job = ProcessingJob.objects.filter(id=job_id).first()
+        if job:
+            mark_job_running(job, task_request=self.request, message="Dynamic Universe symbol mapping started")
+    if job is None:
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.PENDING,
+            created_by_id=user_id,
+            message="Dynamic Universe symbol mapping queued",
+        )
+        mark_job_running(job, task_request=self.request, message="Dynamic Universe symbol mapping started")
+
+    try:
+        job_checkpoint(job, task_request=self.request, checkpoint="dynamic_universe_symbol_mapping:start")
+        result = ensure_universe_membership_symbols(
+            universe_code,
+            create_missing=bool(create_missing),
+            dry_run=bool(dry_run),
+        )
+        summary = format_universe_symbol_mapping_summary(result)
+        if result.warnings:
+            summary = summary + " Warnings: " + "; ".join(result.warnings[:10])
+        job.status = ProcessingJob.Status.DONE
+        job.message = summary
+        job.error = ""
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "error", "finished_at"])
+        return job.message
+    except JobCancelled:
+        job.status = ProcessingJob.Status.CANCELLED
+        job.message = (job.message or "") + "\nCancelled by user."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "cancelled"
+    except JobKilled:
+        job.status = ProcessingJob.Status.KILLED
+        job.message = (job.message or "") + "\nKilled by user."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "killed"
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
+    except UniverseSymbolMappingError as e:
+        job.status = ProcessingJob.Status.FAILED
+        job.error = str(e)
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
+        return job.error
     except Exception as e:
         job.status = ProcessingJob.Status.FAILED
         job.error = str(e)
