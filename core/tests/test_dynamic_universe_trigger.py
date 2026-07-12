@@ -21,7 +21,7 @@ from core.models import (
     UniverseImportBatch,
     UniverseMembership,
 )
-from core.services.dynamic_universe_readiness import ReadinessAction, ReadinessCheck, ReadinessReport
+from core.services.dynamic_universe_readiness import ReadinessAction, ReadinessCheck, ReadinessReport, readiness_confirmation_hash
 from core.services.dynamic_universe_symbols import UniverseSymbolMappingError, UniverseSymbolMappingReport
 from core.tasks import map_universe_membership_symbols_job_task
 
@@ -556,8 +556,10 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertIn("UniverseDefinition CSI300", message)
         self.assertIn("UniverseDefinition CSI300", job.error)
 
+    @patch("core.views.check_dynamic_universe_readiness")
     @patch("core.views.launch_processing_job")
-    def test_trigger_prepare_ohlc_launches_existing_job(self, launch_mock):
+    def test_trigger_prepare_ohlc_launches_existing_job(self, launch_mock, readiness_mock):
+        readiness_mock.return_value = self._report(ready=True)
         job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.FETCH_BARS, status=ProcessingJob.Status.PENDING)
         launch_mock.return_value = JobLaunchOutcome(job=job, dispatch_error=None)
 
@@ -594,6 +596,97 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertEqual(ProcessingJob.objects.count(), 0)
         messages = list(response.context["messages"])
         self.assertTrue(any("Univers est requis" in str(message) for message in messages))
+
+    @patch("core.views.check_dynamic_universe_readiness")
+    @patch("core.views.launch_processing_job")
+    def test_trigger_prepare_ohlc_warning_requires_confirmation_without_job(self, launch_mock, readiness_mock):
+        self._login_staff()
+        scenario = Scenario.objects.create(
+            name="CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+        )
+        readiness_mock.return_value = ReadinessReport(
+            universe="CSI300",
+            start=date(2018, 1, 1),
+            end=date(2018, 1, 2),
+            ready=True,
+            status="READY_WITH_WARNINGS",
+            checks=[
+                ReadinessCheck(
+                    code="coverage_snapshots",
+                    label="Coverage",
+                    status="WARNING",
+                    message="La composition historique CSI300 est incomplète sur 2 dates.",
+                    details={"partial_snapshot_count": 2},
+                )
+            ],
+        )
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_download_prices",
+                "du_universe": "CSI300",
+                "scenario_id": str(scenario.id),
+                "du_ohlc_start": "2018-01-01",
+                "du_ohlc_end": "2018-01-02",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+        body = response.content.decode()
+        self.assertIn("Je souhaite continuer avec les données disponibles", body)
+
+    @patch("core.views.check_dynamic_universe_readiness")
+    @patch("core.views.launch_processing_job")
+    def test_trigger_prepare_ohlc_warning_with_confirmation_dispatches_job(self, launch_mock, readiness_mock):
+        self._login_staff()
+        scenario = Scenario.objects.create(
+            name="CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+        )
+        report = ReadinessReport(
+            universe="CSI300",
+            start=date(2018, 1, 1),
+            end=date(2018, 1, 2),
+            ready=True,
+            status="READY_WITH_WARNINGS",
+            checks=[
+                ReadinessCheck(
+                    code="coverage_snapshots",
+                    label="Coverage",
+                    status="WARNING",
+                    message="La composition historique CSI300 est incomplète sur 2 dates.",
+                    details={"partial_snapshot_count": 2},
+                )
+            ],
+        )
+        readiness_mock.return_value = report
+        job = ProcessingJob.objects.create(job_type=ProcessingJob.JobType.FETCH_BARS, status=ProcessingJob.Status.PENDING)
+        launch_mock.return_value = JobLaunchOutcome(job=job, dispatch_error=None)
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_download_prices",
+                "du_universe": "CSI300",
+                "scenario_id": str(scenario.id),
+                "du_ohlc_start": "2018-01-01",
+                "du_ohlc_end": "2018-01-02",
+                "du_readiness_warning_ack": "1",
+                "du_readiness_warning_hash": readiness_confirmation_hash(report),
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(launch_mock.called)
+        kwargs = launch_mock.call_args.kwargs["task_kwargs"]
+        self.assertEqual(kwargs["universe_code"], "CSI300")
+        self.assertTrue(kwargs["allow_partial_coverage"])
+        self.assertEqual(kwargs["provider"], "eodhd")
 
     @patch("core.views.launch_processing_job")
     def test_trigger_prepare_ohlc_rejects_universe_scenario_mismatch(self, launch_mock):
@@ -732,8 +825,17 @@ class DynamicUniverseTriggerPageTests(TestCase):
         messages = list(response.context["messages"])
         self.assertTrue(any("Préparation OHLC CSI300 via EODHD réservée" in str(message) for message in messages))
 
+    @patch("core.views.check_dynamic_universe_readiness")
     @patch("core.views.launch_processing_job")
-    def test_staff_can_trigger_csi300_ohlc_prepare(self, launch_mock):
+    def test_staff_can_trigger_csi300_ohlc_prepare(self, launch_mock, readiness_mock):
+        readiness_mock.return_value = ReadinessReport(
+            universe="CSI300",
+            start=date(2022, 1, 1),
+            end=date(2022, 1, 3),
+            ready=True,
+            status="READY",
+            checks=[ReadinessCheck(code="coverage_snapshots", label="Coverage", status="OK", message="OK")],
+        )
         self._login_staff()
         scenario = Scenario.objects.create(
             name="CSI300",

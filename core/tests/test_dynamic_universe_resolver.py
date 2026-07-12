@@ -499,6 +499,39 @@ class DynamicUniverseResolverTests(TestCase):
         self.assertEqual(result.universe_code, "CSI300")
         self.assertEqual(set(result.tickers), {"600519", "000001", "600000"})
 
+    def test_csi300_partial_snapshot_requires_explicit_partial_coverage_acceptance(self):
+        universe = self._create_csi300()
+        self._add_membership(universe, "600519", date(2020, 1, 1), None, symbol=self.csi_symbols["600519"], exchange="XSHG")
+        self._create_coverage(
+            universe,
+            date(2020, 1, 1),
+            date(2020, 1, 1),
+            snapshot_status=UniverseCoverageStatus.PARTIAL,
+            batch_status=UniverseCoverageStatus.PARTIAL,
+            expected_member_count=300,
+            actual_member_count=299,
+            mapped_member_count=299,
+        )
+        scenario = Scenario.objects.create(
+            name="Dynamic CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+
+        with self.assertRaisesRegex(UniverseCoverageError, "snapshot_status=PARTIAL"):
+            self.resolver.resolve(scenario, start_date=date(2020, 1, 1), end_date=date(2020, 1, 1))
+
+        result = self.resolver.resolve(
+            scenario,
+            start_date=date(2020, 1, 1),
+            end_date=date(2020, 1, 1),
+            allow_partial_coverage=True,
+        )
+
+        self.assertEqual(result.universe_code, "CSI300")
+        self.assertEqual(result.metadata["partial_coverage_accepted"], True)
+        self.assertEqual(set(result.tickers), {"600519"})
+
     def test_blocking_import_batch_statuses_reject_dynamic_resolution(self):
         for status in (
             UniverseCoverageStatus.IMPORTED,

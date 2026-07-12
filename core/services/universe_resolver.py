@@ -165,6 +165,8 @@ class UniverseResolver:
         start_date: date,
         end_date: date,
         warmup_start_date: date | None = None,
+        *,
+        allow_partial_coverage: bool = False,
     ) -> ResolvedUniverse:
         if end_date < start_date:
             raise UniverseCoverageError("Universe resolution requires end_date greater than or equal to start_date.")
@@ -181,6 +183,7 @@ class UniverseResolver:
                 warmup_start_date,
                 mode=mode,
                 universe_code=universe_code,
+                allow_partial_coverage=allow_partial_coverage,
             )
         raise UniverseConfigurationError(f"Unsupported universe mode: {mode}")
 
@@ -233,6 +236,7 @@ class UniverseResolver:
         *,
         mode: str,
         universe_code: str,
+        allow_partial_coverage: bool = False,
     ) -> ResolvedUniverse:
         coverage_start = _effective_start(start_date, warmup_start_date)
         try:
@@ -240,7 +244,14 @@ class UniverseResolver:
         except UniverseDefinition.DoesNotExist as exc:
             raise UniverseConfigurationError(f"UniverseDefinition {universe_code} is missing or inactive.") from exc
 
-        self._validate_historical_coverage(universe, coverage_start, end_date, universe_code=universe_code)
+        partial_allowed = bool(allow_partial_coverage and universe_code == CSI300_UNIVERSE_CODE)
+        self._validate_historical_coverage(
+            universe,
+            coverage_start,
+            end_date,
+            universe_code=universe_code,
+            allow_partial_coverage=partial_allowed,
+        )
 
         memberships = list(
             UniverseMembership.objects.filter(
@@ -257,10 +268,27 @@ class UniverseResolver:
                 "no memberships overlap the requested period."
             )
 
-        symbol_by_membership_id = {membership.id: _resolve_membership_symbol(membership) for membership in memberships}
+        resolved_memberships: list[tuple[UniverseMembership, Symbol]] = []
+        skipped_unmapped = 0
+        for membership in memberships:
+            try:
+                symbol = _resolve_membership_symbol(membership)
+            except UniverseMappingError:
+                if not partial_allowed:
+                    raise
+                skipped_unmapped += 1
+                continue
+            resolved_memberships.append((membership, symbol))
+        if not resolved_memberships:
+            raise UniverseCoverageError(
+                f"Historical {universe_code} membership is incomplete for {coverage_start.isoformat()}..{end_date.isoformat()}: "
+                "no exploitable mapped memberships overlap the requested period."
+            )
+
+        exploitable_memberships = [membership for membership, _symbol in resolved_memberships]
         active_by_date: dict[date, frozenset[str]] = {}
         for day in _iter_calendar_days(coverage_start, end_date):
-            active_memberships = _active_memberships_for_day(memberships, day)
+            active_memberships = _active_memberships_for_day(exploitable_memberships, day)
             if not active_memberships:
                 raise UniverseCoverageError(
                     f"Historical {universe_code} membership is incomplete for {coverage_start.isoformat()}..{end_date.isoformat()}: "
@@ -270,8 +298,7 @@ class UniverseResolver:
 
         intervals_by_ticker: dict[str, list[ResolvedMembershipInterval]] = {}
         symbols_by_id: dict[int, Symbol] = {}
-        for membership in memberships:
-            symbol = symbol_by_membership_id[membership.id]
+        for membership, symbol in resolved_memberships:
             symbols_by_id[symbol.id] = symbol
             intervals_by_ticker.setdefault(membership.ticker, []).append(
                 ResolvedMembershipInterval(
@@ -314,11 +341,22 @@ class UniverseResolver:
                 "coverage_end": coverage_end.isoformat(),
                 "first_membership_valid_from": first_valid_from.isoformat(),
                 "membership_count": len(memberships),
+                "exploitable_membership_count": len(resolved_memberships),
+                "skipped_unmapped_memberships": skipped_unmapped,
+                "partial_coverage_accepted": partial_allowed,
                 "ticker_count": len(tickers),
             },
         )
 
-    def _validate_historical_coverage(self, universe: UniverseDefinition, coverage_start: date, end_date: date, *, universe_code: str) -> None:
+    def _validate_historical_coverage(
+        self,
+        universe: UniverseDefinition,
+        coverage_start: date,
+        end_date: date,
+        *,
+        universe_code: str,
+        allow_partial_coverage: bool = False,
+    ) -> None:
         snapshots = {
             snapshot.coverage_date: snapshot
             for snapshot in UniverseCoverageSnapshot.objects.filter(
@@ -332,13 +370,22 @@ class UniverseResolver:
             if snapshot is None:
                 raise UniverseCoverageError(_coverage_error_message(day, None, universe_code=universe_code))
             if (
-                snapshot.status != UniverseCoverageStatus.VALIDATED
-                or snapshot.import_batch.status in _BLOCKING_IMPORT_BATCH_STATUSES
-                or snapshot.actual_member_count < snapshot.expected_member_count
-                or snapshot.mapped_member_count < snapshot.actual_member_count
-                or snapshot.unmapped_member_count != 0
+                snapshot.import_batch.status in _BLOCKING_IMPORT_BATCH_STATUSES
+                or not _snapshot_is_usable(snapshot, allow_partial_coverage=allow_partial_coverage)
             ):
                 raise UniverseCoverageError(_coverage_error_message(day, snapshot, universe_code=universe_code))
+
+
+def _snapshot_is_usable(snapshot: UniverseCoverageSnapshot, *, allow_partial_coverage: bool = False) -> bool:
+    if snapshot.status == UniverseCoverageStatus.VALIDATED:
+        return (
+            snapshot.actual_member_count >= snapshot.expected_member_count
+            and snapshot.mapped_member_count >= snapshot.actual_member_count
+            and snapshot.unmapped_member_count == 0
+        )
+    if snapshot.status == UniverseCoverageStatus.PARTIAL and allow_partial_coverage:
+        return snapshot.actual_member_count > 0 and snapshot.mapped_member_count > 0
+    return False
 
 
 def resolve_universe_for_backtest(
@@ -346,10 +393,13 @@ def resolve_universe_for_backtest(
     start_date: date,
     end_date: date,
     warmup_start_date: date | None = None,
+    *,
+    allow_partial_coverage: bool = False,
 ) -> ResolvedUniverse:
     return UniverseResolver().resolve(
         scenario=scenario,
         start_date=start_date,
         end_date=end_date,
         warmup_start_date=warmup_start_date,
+        allow_partial_coverage=allow_partial_coverage,
     )

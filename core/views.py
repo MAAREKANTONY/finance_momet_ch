@@ -85,7 +85,16 @@ from .services.universe_resolver import (
     label_for_historical_dynamic_mode,
     universe_code_for_historical_dynamic_mode,
 )
-from .services.dynamic_universe_readiness import check_dynamic_universe_readiness, _gm_requirements_from_signal_lines
+from .services.dynamic_universe_readiness import (
+    BACKTEST_READINESS_ACK_SETTINGS_KEY,
+    READINESS_CONFIRMATION_FIELD,
+    READINESS_CONFIRMATION_HASH_FIELD,
+    build_readiness_ack_payload,
+    check_dynamic_universe_readiness,
+    readiness_confirmation_hash,
+    readiness_requires_confirmation,
+    _gm_requirements_from_signal_lines,
+)
 from .services.universe_import import UniverseImportError, import_universe_memberships_from_csv
 from .templatetags.backtest_extras import (
     line_gm_push_buy_display,
@@ -221,6 +230,18 @@ def _du_check_message(check) -> str:
     if code == "coverage_snapshots":
         if status == "OK":
             return "La période demandée est couverte."
+        if status == "WARNING":
+            partial_count = int(details.get("partial_snapshot_count") or 0)
+            min_actual = details.get("minimum_actual_member_count")
+            expected = details.get("expected_member_count")
+            ratio = details.get("minimum_coverage_ratio_percent")
+            first = details.get("first_partial_date")
+            last = details.get("last_partial_date")
+            return (
+                f"Composition historique incomplète sur {partial_count} dates"
+                f" ({first} → {last}). Couverture minimale: {min_actual}/{expected}"
+                f" ({float(ratio or 0):.2f} %)."
+            )
         missing = details.get("missing_examples") or []
         invalid = details.get("invalid_examples") or []
         examples = missing or invalid
@@ -263,6 +284,53 @@ def _du_check_message(check) -> str:
     return getattr(check, "message", "")
 
 
+def _readiness_has_partial_coverage_warning(report) -> bool:
+    if report is None:
+        return False
+    return any(
+        check.code in {"coverage_snapshots", "historical_symbols"} and check.status == "WARNING"
+        for check in getattr(report, "checks", [])
+    )
+
+
+def _readiness_ack_matches_request(request: HttpRequest, report) -> bool:
+    if not readiness_requires_confirmation(report):
+        return True
+    return (
+        request.POST.get(READINESS_CONFIRMATION_FIELD) == "1"
+        and request.POST.get(READINESS_CONFIRMATION_HASH_FIELD) == readiness_confirmation_hash(report)
+    )
+
+
+def _readiness_confirmation_context(report) -> dict:
+    return {
+        "requires_confirmation": readiness_requires_confirmation(report),
+        "confirmation_hash": readiness_confirmation_hash(report),
+        "confirmation_field": READINESS_CONFIRMATION_FIELD,
+        "confirmation_hash_field": READINESS_CONFIRMATION_HASH_FIELD,
+    }
+
+
+def _store_backtest_readiness_ack(bt: Backtest, report) -> None:
+    settings_payload = dict(bt.settings or {}) if isinstance(bt.settings, dict) else {}
+    if readiness_requires_confirmation(report):
+        ack = build_readiness_ack_payload(report)
+        ack["allow_partial_coverage"] = _readiness_has_partial_coverage_warning(report)
+        ack["confirmed_at"] = timezone.now().isoformat()
+        settings_payload[BACKTEST_READINESS_ACK_SETTINGS_KEY] = ack
+    else:
+        settings_payload.pop(BACKTEST_READINESS_ACK_SETTINGS_KEY, None)
+    bt.settings = settings_payload
+    bt.save(update_fields=["settings", "updated_at"])
+
+
+def _report_readiness_warnings_for_message(report) -> str:
+    if report is None:
+        return ""
+    parts = [check.message for check in report.checks if check.status == "WARNING"]
+    return " | ".join(parts[:3])
+
+
 def _dynamic_universe_report_display(report) -> dict:
     if report is None:
         return {}
@@ -290,10 +358,10 @@ def _dynamic_universe_report_display(report) -> dict:
     if status == "READY":
         global_message = "Prêt pour le backtest."
     elif status == "READY_WITH_WARNINGS":
-        global_message = "Prêt avec avertissement : certaines actions n'ont pas de prix disponibles et seront ignorées."
+        global_message = "Prêt avec avertissement : certaines données sont incomplètes et seront ignorées après confirmation."
     else:
         global_message = "Certaines données doivent être préparées avant de lancer le backtest."
-    return {
+    display = {
         "status": _du_status_label(status),
         "raw_status": status,
         "ready": bool(getattr(report, "ready", False)),
@@ -301,6 +369,8 @@ def _dynamic_universe_report_display(report) -> dict:
         "checks": display_checks,
         "suggested_actions": suggested_actions,
     }
+    display.update(_readiness_confirmation_context(report))
+    return display
 
 
 def _refresh_backtest_universe_snapshot(bt: Backtest) -> None:
@@ -438,6 +508,7 @@ def _dynamic_universe_readiness_panel(bt: Backtest) -> dict:
             backtest_id=bt.id,
         )
         panel["display"] = _dynamic_universe_report_display(panel["report"])
+        panel.update(_readiness_confirmation_context(panel["report"]))
     except Exception as exc:
         panel["error"] = str(exc)
     return panel
@@ -2893,6 +2964,34 @@ def backtest_run(request, pk: int):
     if bt.status != Backtest.Status.RUNNING:
         _refresh_backtest_universe_snapshot(bt)
 
+    mode = getattr(getattr(bt, "scenario", None), "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
+    if is_historical_dynamic_universe_mode(mode):
+        universe_code = universe_code_for_historical_dynamic_mode(mode) or ""
+        try:
+            require_gm_market, require_gm_sector = _gm_requirements_from_signal_lines(bt.signal_lines)
+            readiness_report = check_dynamic_universe_readiness(
+                universe=universe_code,
+                start=bt.start_date,
+                end=bt.end_date,
+                warmup_days=int(getattr(bt, "warmup_days", 0) or 0),
+                require_gm_market=require_gm_market,
+                require_gm_sector=require_gm_sector,
+                backtest_id=bt.id,
+            )
+        except Exception as exc:
+            messages.error(request, f"Readiness univers dynamique indisponible: {exc}")
+            return redirect("backtest_detail", pk=pk)
+        if not readiness_report.ready:
+            messages.error(request, "Le backtest n'est pas lancé: des blocages de données restent à corriger.")
+            return redirect("backtest_detail", pk=pk)
+        if readiness_requires_confirmation(readiness_report) and not _readiness_ack_matches_request(request, readiness_report):
+            messages.warning(
+                request,
+                "Confirmez explicitement que vous souhaitez continuer avec les données disponibles malgré les avertissements.",
+            )
+            return redirect("backtest_detail", pk=pk)
+        _store_backtest_readiness_ack(bt, readiness_report)
+
     try:
         capture_backtest_configuration(bt)
     except Exception as exc:
@@ -4844,6 +4943,7 @@ def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inpu
         "alert_defs": alert_defs,
         "dynamic_universe_report": dynamic_universe_report,
         "dynamic_universe_display": _dynamic_universe_report_display(dynamic_universe_report),
+        "dynamic_universe_confirmation": _readiness_confirmation_context(dynamic_universe_report),
         "dynamic_universe_inputs": inputs,
         "dynamic_universe_choices": TRIGGER_DYNAMIC_UNIVERSE_CHOICES,
         "selected_dynamic_universe": selected_universe,
@@ -5327,13 +5427,68 @@ def trigger_page(request: HttpRequest):
                     elif universe_code == CSI300_UNIVERSE_CODE and not request.user.is_staff:
                         messages.error(request, "Préparation OHLC CSI300 via EODHD réservée aux administrateurs/staff.")
                     else:
+                        if bt:
+                            readiness_start = bt.start_date
+                            readiness_end = bt.end_date
+                            readiness_warmup = int(getattr(bt, "warmup_days", 0) or 0)
+                            readiness_backtest_id = bt.id
+                            readiness_scenario_id = None
+                        else:
+                            readiness_start = _parse_trigger_date(start_value, field_name="Date de début")
+                            readiness_end = _parse_trigger_date(end_value, field_name="Date de fin")
+                            readiness_warmup = 0
+                            readiness_backtest_id = None
+                            readiness_scenario_id = sc.id if sc else None
+                        report = check_dynamic_universe_readiness(
+                            universe=universe_code,
+                            start=readiness_start,
+                            end=readiness_end,
+                            warmup_days=readiness_warmup,
+                            scenario_id=readiness_scenario_id,
+                            backtest_id=readiness_backtest_id,
+                        )
+                        if not report.ready:
+                            messages.error(request, "Téléchargement non lancé: des blocages de données restent à corriger.")
+                            inputs = {
+                                "universe": universe_code,
+                                "start": start_value or (readiness_start.isoformat() if readiness_start else ""),
+                                "end": end_value or (readiness_end.isoformat() if readiness_end else ""),
+                                "backtest_id": str(bt.id) if bt else "",
+                                "scenario_id": str(sc.id) if sc and not bt else "",
+                            }
+                            return render(
+                                request,
+                                "trigger.html",
+                                _trigger_page_context(dynamic_universe_report=report, dynamic_universe_inputs=inputs, user=request.user),
+                            )
+                        if readiness_requires_confirmation(report) and not _readiness_ack_matches_request(request, report):
+                            messages.warning(
+                                request,
+                                "Confirmez explicitement que vous souhaitez continuer avec les données disponibles malgré les avertissements.",
+                            )
+                            inputs = {
+                                "universe": universe_code,
+                                "start": start_value or (readiness_start.isoformat() if readiness_start else ""),
+                                "end": end_value or (readiness_end.isoformat() if readiness_end else ""),
+                                "backtest_id": str(bt.id) if bt else "",
+                                "scenario_id": str(sc.id) if sc and not bt else "",
+                            }
+                            return render(
+                                request,
+                                "trigger.html",
+                                _trigger_page_context(dynamic_universe_report=report, dynamic_universe_inputs=inputs, user=request.user),
+                            )
+                        warning_message = _report_readiness_warnings_for_message(report)
+                        launch_message = f"Téléchargement des prix des actions {universe_code} en attente depuis Trigger"
+                        if warning_message:
+                            launch_message += f"\nWarnings acceptés: {warning_message}"
                         launch = launch_processing_job(
                             task=prepare_dynamic_universe_ohlc_job_task,
                             job_type=ProcessingJob.JobType.FETCH_BARS,
                             backtest=bt,
                             scenario=sc,
                             created_by=request.user if request.user.is_authenticated else None,
-                            message=f"Téléchargement des prix des actions {universe_code} en attente depuis Trigger",
+                            message=launch_message,
                             task_kwargs={
                                 "universe_code": universe_code,
                                 "start_date": start_value or None,
@@ -5342,6 +5497,7 @@ def trigger_page(request: HttpRequest):
                                 "scenario_id": sc.id if sc and not bt else None,
                                 "provider": "eodhd",
                                 "force_refresh": bool(request.POST.get("du_ohlc_force_refresh")),
+                                "allow_partial_coverage": _readiness_has_partial_coverage_warning(report),
                                 "user_id": user_id,
                             },
                         )

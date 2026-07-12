@@ -528,6 +528,61 @@ class DynamicUniverseOHLCPrepareServiceTests(DynamicUniverseOHLCTestCase):
         self.assertEqual(client.calls, [("600519.SHG", self.start, self.end)])
         self.assertEqual(result.missing_after, [])
 
+    def test_csi300_ohlc_prepare_requires_confirmation_for_partial_snapshots(self):
+        csi = Scenario.objects.create(name="CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
+        self.backtest.scenario = csi
+        self.backtest.save(update_fields=["scenario"])
+        universe = UniverseDefinition.objects.create(code="CSI300", name="CSI 300", source="manual_csv", active=True)
+        symbol = Symbol.objects.create(ticker="600519", exchange="SHG", instrument_type="Common Stock", active=True)
+        UniverseMembership.objects.create(
+            universe=universe,
+            symbol=symbol,
+            ticker="600519",
+            exchange="SHG",
+            provider_symbol="600519.SHG",
+            valid_from=self.start,
+            valid_to=None,
+            source="manual_csv",
+        )
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="manual_csv",
+            source_name="manual_csv",
+            period_start=self.start,
+            period_end=self.end,
+            expected_member_count=300,
+            imported_member_count=299,
+            mapped_member_count=299,
+            unmapped_member_count=0,
+            status=UniverseCoverageStatus.PARTIAL,
+        )
+        current = self.start
+        while current <= self.end:
+            UniverseCoverageSnapshot.objects.create(
+                universe=universe,
+                import_batch=batch,
+                coverage_date=current,
+                expected_member_count=300,
+                actual_member_count=299,
+                mapped_member_count=299,
+                unmapped_member_count=0,
+                status=UniverseCoverageStatus.PARTIAL,
+            )
+            current += timedelta(days=1)
+        client = FakeEODHDClient({"600519.SHG": self._rows(close="100")})
+
+        with self.assertRaisesMessage(Exception, "snapshot_status=PARTIAL"):
+            prepare_dynamic_universe_ohlc(backtest_id=self.backtest.id, client=client)
+
+        result = prepare_dynamic_universe_ohlc(
+            backtest_id=self.backtest.id,
+            client=client,
+            allow_partial_coverage=True,
+        )
+
+        self.assertEqual(client.calls, [("600519.SHG", self.start, self.end)])
+        self.assertEqual(result.missing_after, [])
+
     def test_csi300_ohlc_prepare_auto_maps_unmapped_memberships_before_fake_eodhd_call(self):
         csi = Scenario.objects.create(name="CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
         self.backtest.scenario = csi

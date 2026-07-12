@@ -226,12 +226,17 @@ def ensure_ohlc_ready_for_backtest(
     )
     if is_dynamic_universe:
         try:
-            from core.services.universe_resolver import UniverseResolver
+            from core.services.dynamic_universe_readiness import BACKTEST_READINESS_ACK_SETTINGS_KEY
+            from core.services.universe_resolver import CSI300_UNIVERSE_CODE, UniverseResolver, universe_code_for_historical_dynamic_mode
 
+            settings_payload = backtest.settings if isinstance(getattr(backtest, "settings", None), dict) else {}
+            ack = settings_payload.get(BACKTEST_READINESS_ACK_SETTINGS_KEY) or {}
+            universe_code = universe_code_for_historical_dynamic_mode(backtest.scenario.universe_mode) or ""
             resolved_universe = UniverseResolver().resolve(
                 scenario=backtest.scenario,
                 start_date=start_date,
                 end_date=end_date,
+                allow_partial_coverage=bool(universe_code == CSI300_UNIVERSE_CODE and ack.get("allow_partial_coverage")),
             )
             ranges_by_symbol_id = get_required_ohlc_ranges_for_dynamic_universe(
                 symbols=scoped_symbols,

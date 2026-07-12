@@ -186,7 +186,11 @@ def _snapshot_from_resolved_universe(resolved_universe) -> list[dict]:
 def _resolve_dynamic_universe_for_backtest(backtest: Backtest):
     scenario = getattr(backtest, "scenario", None)
     mode = getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS) if scenario else None
+    from .services.dynamic_universe_readiness import (
+        BACKTEST_READINESS_ACK_SETTINGS_KEY,
+    )
     from .services.universe_resolver import (
+        CSI300_UNIVERSE_CODE,
         SP500_UNIVERSE_CODE,
         UniverseResolver,
         UniverseResolverError,
@@ -223,11 +227,15 @@ def _resolve_dynamic_universe_for_backtest(backtest: Backtest):
                 raise ValueError(DYNAMIC_UNIVERSE_USER_ERROR) from exc
             resolved_universe = prepare_result.resolved_universe
         else:
+            settings_payload = backtest.settings if isinstance(backtest.settings, dict) else {}
+            ack = settings_payload.get(BACKTEST_READINESS_ACK_SETTINGS_KEY) or {}
+            allow_partial = bool(universe_code == CSI300_UNIVERSE_CODE and ack.get("allow_partial_coverage"))
             resolved_universe = UniverseResolver().resolve(
                 scenario=scenario,
                 start_date=backtest.start_date,
                 end_date=backtest.end_date,
                 warmup_start_date=_dynamic_universe_warmup_start(backtest),
+                allow_partial_coverage=allow_partial,
             )
     except UniverseResolverError as exc:
         logger.warning(
@@ -875,6 +883,7 @@ def prepare_dynamic_universe_ohlc_job_task(
     force_refresh: bool = False,
     max_symbols=None,
     exclude_tickers=None,
+    allow_partial_coverage: bool = False,
     user_id=None,
     job_id=None,
 ):
@@ -921,6 +930,7 @@ def prepare_dynamic_universe_ohlc_job_task(
             force_refresh=bool(force_refresh),
             max_symbols=max_symbols,
             exclude_tickers=exclude_tickers,
+            allow_partial_coverage=bool(allow_partial_coverage),
             job=job,
             progress_callback=lambda checkpoint: pulse.hit(checkpoint=checkpoint, force=True),
         )

@@ -66,6 +66,10 @@ class DynamicUniverseReadinessTestCase(TestCase):
         status=UniverseCoverageStatus.VALIDATED,
         batch_status=None,
         snapshot_status=None,
+        expected_member_count=1,
+        actual_member_count=2,
+        mapped_member_count=2,
+        unmapped_member_count=0,
     ):
         start = start or self.start
         end = end or self.end
@@ -77,10 +81,10 @@ class DynamicUniverseReadinessTestCase(TestCase):
             source_name="test",
             period_start=start,
             period_end=end,
-            expected_member_count=1,
-            imported_member_count=2,
-            mapped_member_count=2,
-            unmapped_member_count=0,
+            expected_member_count=expected_member_count,
+            imported_member_count=actual_member_count,
+            mapped_member_count=mapped_member_count,
+            unmapped_member_count=unmapped_member_count,
             status=batch_status,
             validated_at=timezone.now() if batch_status == UniverseCoverageStatus.VALIDATED else None,
         )
@@ -90,10 +94,10 @@ class DynamicUniverseReadinessTestCase(TestCase):
                 universe=universe,
                 import_batch=batch,
                 coverage_date=current,
-                expected_member_count=1,
-                actual_member_count=2,
-                mapped_member_count=2,
-                unmapped_member_count=0,
+                expected_member_count=expected_member_count,
+                actual_member_count=actual_member_count,
+                mapped_member_count=mapped_member_count,
+                unmapped_member_count=unmapped_member_count,
                 status=snapshot_status,
             )
             current += timedelta(days=1)
@@ -172,17 +176,48 @@ class DynamicUniverseReadinessTestCase(TestCase):
         self.assertEqual(self._check(report, "coverage_snapshots").status, CHECK_OK)
         self.assertEqual(self._check(report, "historical_symbols").status, CHECK_OK)
 
-    def test_csi300_partial_snapshots_in_partial_batch_block_coverage_readiness(self):
+    def test_csi300_partial_snapshots_in_partial_batch_warn_without_blocking_readiness(self):
         universe = self._csi300()
         symbol = self._symbol("600519", exchange="SHG", sector="Consumer Defensive")
         self._membership(universe, symbol)
-        self._coverage(universe, status=UniverseCoverageStatus.PARTIAL)
+        self._coverage(
+            universe,
+            status=UniverseCoverageStatus.PARTIAL,
+            expected_member_count=300,
+            actual_member_count=299,
+            mapped_member_count=299,
+            unmapped_member_count=0,
+        )
+
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        self.assertTrue(report.ready)
+        self.assertEqual(report.status, REPORT_READY_WITH_WARNINGS)
+        check = self._check(report, "coverage_snapshots")
+        self.assertEqual(check.status, CHECK_WARNING)
+        self.assertEqual(check.details["partial_snapshot_count"], 3)
+        self.assertEqual(check.details["minimum_actual_member_count"], 299)
+        self.assertEqual(check.details["expected_member_count"], 300)
+        self.assertAlmostEqual(check.details["minimum_coverage_ratio_percent"], 99.66666666666666)
+
+    def test_csi300_partial_snapshot_with_no_mapped_member_blocks_readiness(self):
+        universe = self._csi300()
+        symbol = self._symbol("600519", exchange="SHG", sector="Consumer Defensive")
+        self._membership(universe, symbol)
+        self._coverage(
+            universe,
+            status=UniverseCoverageStatus.PARTIAL,
+            expected_member_count=300,
+            actual_member_count=299,
+            mapped_member_count=0,
+            unmapped_member_count=299,
+        )
 
         report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
 
         check = self._check(report, "coverage_snapshots")
         self.assertEqual(check.status, CHECK_ERROR)
-        self.assertIn("snapshot_status=PARTIAL", check.message)
+        self.assertIn("mapped_member_count=0", check.message)
 
     def test_symbols_and_dailybars_are_skipped_when_memberships_or_coverage_are_unavailable(self):
         universe = self._sp500()
