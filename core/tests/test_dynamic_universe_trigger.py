@@ -11,6 +11,7 @@ from django.urls import reverse
 
 from core.job_launch import JobLaunchOutcome
 from core.models import (
+    Backtest,
     ProcessingJob,
     Scenario,
     Symbol,
@@ -89,7 +90,10 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertIn("Parcours CSI300 historique via CSV", body)
         self.assertIn("Créer / mapper les actions depuis les memberships CSV", body)
         self.assertIn("GM_market et GM_sector restent non supportés", body)
-        self.assertIn("Vérifier si le S&amp;P500 est prêt", body)
+        self.assertIn("Vérifier si l’univers est prêt", body)
+        self.assertIn('id="du-universe-selector"', body)
+        self.assertIn('value="SP500"', body)
+        self.assertIn('value="CSI300"', body)
         self.assertIn("Initialiser le référentiel de base", body)
         self.assertIn("Créer les actions historiques manquantes", body)
         self.assertIn("Récupérer la composition historique", body)
@@ -143,7 +147,7 @@ class DynamicUniverseTriggerPageTests(TestCase):
     def test_trigger_init_reference_data_calls_management_command(self, call_command_mock):
         call_command_mock.return_value = None
 
-        response = self.client.post(reverse("trigger_page"), {"action": "du_init_reference_data"}, follow=True)
+        response = self.client.post(reverse("trigger_page"), {"action": "du_init_reference_data", "du_universe": "SP500"}, follow=True)
 
         self.assertEqual(response.status_code, 200)
         call_command_mock.assert_called_once()
@@ -199,12 +203,52 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertIn("Dry-run / Vérifier", body)
         self.assertIn("Importer réellement", body)
 
+    def test_trigger_get_invalid_universe_shows_warning_without_trusting_query_string(self):
+        response = self.client.get(reverse("trigger_page"), {"universe": "sp500"})
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Univers ignoré: sp500", body)
+        self.assertIn('value="SP500" selected', body)
+
+    def test_trigger_dynamic_universe_lists_are_filtered_by_selected_universe(self):
+        sp500 = Scenario.objects.create(name="Dynamic SP500", universe_mode=Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC)
+        csi300 = Scenario.objects.create(name="Dynamic CSI300", universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)
+        Backtest.objects.create(name="BT SP500", scenario=sp500)
+        Backtest.objects.create(name="BT CSI300", scenario=csi300)
+
+        response = self.client.get(reverse("trigger_page"), {"universe": "CSI300"})
+
+        self.assertEqual(response.status_code, 200)
+        dynamic_section = response.content.decode().split("Collecte (Fetch Daily Bars)", 1)[0]
+        self.assertIn("Dynamic CSI300", dynamic_section)
+        self.assertIn("BT CSI300", dynamic_section)
+        self.assertNotIn("Dynamic SP500", dynamic_section)
+        self.assertNotIn("BT SP500", dynamic_section)
+
     def test_trigger_readiness_missing_params_shows_clean_error(self):
         response = self.client.post(reverse("trigger_page"), {"action": "du_readiness"})
 
         self.assertEqual(response.status_code, 200)
         messages = list(response.context["messages"])
-        self.assertTrue(any("Start est requis" in str(message) for message in messages))
+        self.assertTrue(any("Univers est requis" in str(message) for message in messages))
+
+    @patch("core.views.check_dynamic_universe_readiness")
+    def test_trigger_readiness_rejects_lowercase_universe_without_service_call(self, readiness_mock):
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_readiness",
+                "du_universe": "sp500",
+                "du_start": "2022-01-01",
+                "du_end": "2022-01-03",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        readiness_mock.assert_not_called()
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Univers non supporté: sp500" in str(message) for message in messages))
 
     @patch("core.views.import_universe_memberships_from_csv")
     def test_non_staff_upload_import_is_rejected_without_writes(self, import_mock):
@@ -253,6 +297,7 @@ class DynamicUniverseTriggerPageTests(TestCase):
             reverse("trigger_page"),
             {
                 "action": "du_import_memberships",
+                "du_import_universe": "CSI300",
                 "du_import_start": "2022-01-01",
                 "du_import_end": "2022-01-03",
             },
@@ -520,6 +565,7 @@ class DynamicUniverseTriggerPageTests(TestCase):
             reverse("trigger_page"),
             {
                 "action": "du_download_prices",
+                "du_universe": "SP500",
                 "du_ohlc_start": "2022-01-01",
                 "du_ohlc_end": "2022-01-03",
             },
@@ -532,6 +578,137 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertEqual(launch_mock.call_args.kwargs["task_kwargs"]["start_date"], "2022-01-01")
 
     @patch("core.views.launch_processing_job")
+    def test_trigger_prepare_ohlc_requires_explicit_universe_without_sp500_fallback(self, launch_mock):
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_download_prices",
+                "du_ohlc_start": "2022-01-01",
+                "du_ohlc_end": "2022-01-03",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Univers est requis" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
+    def test_trigger_prepare_ohlc_rejects_universe_scenario_mismatch(self, launch_mock):
+        scenario = Scenario.objects.create(
+            name="CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+        )
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_download_prices",
+                "du_universe": "SP500",
+                "scenario_id": str(scenario.id),
+                "du_ohlc_start": "2022-01-01",
+                "du_ohlc_end": "2022-01-03",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("ne correspond pas au scénario/backtest" in str(message) for message in messages))
+
+    @patch("core.views.check_dynamic_universe_readiness")
+    def test_trigger_readiness_rejects_csi300_gm_filters(self, readiness_mock):
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_readiness",
+                "du_universe": "CSI300",
+                "du_start": "2022-01-01",
+                "du_end": "2022-01-03",
+                "du_require_gm_market": "on",
+            },
+        )
+
+        self.assertEqual(response.status_code, 200)
+        readiness_mock.assert_not_called()
+        messages = list(response.context["messages"])
+        self.assertTrue(any("ne sont pas supportés pour CSI300" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
+    def test_trigger_prepare_ohlc_rejects_backtest_universe_mismatch(self, launch_mock):
+        scenario = Scenario.objects.create(
+            name="SP500",
+            universe_mode=Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC,
+        )
+        backtest = Backtest.objects.create(name="BT SP500", scenario=scenario)
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_download_prices",
+                "du_universe": "CSI300",
+                "backtest_id": str(backtest.id),
+                "du_ohlc_start": "2022-01-01",
+                "du_ohlc_end": "2022-01-03",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("ne correspond pas au scénario/backtest" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
+    def test_trigger_prepare_ohlc_rejects_static_scenario_without_processing_job(self, launch_mock):
+        scenario = Scenario.objects.create(
+            name="Static",
+            universe_mode=Scenario.UniverseMode.STATIC_TICKERS,
+        )
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_download_prices",
+                "du_universe": "SP500",
+                "scenario_id": str(scenario.id),
+                "du_ohlc_start": "2022-01-01",
+                "du_ohlc_end": "2022-01-03",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("doit utiliser un univers historique dynamique" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
+    def test_trigger_prepare_ohlc_rejects_lowercase_universe_without_processing_job(self, launch_mock):
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "du_download_prices",
+                "du_universe": "sp500",
+                "du_ohlc_start": "2022-01-01",
+                "du_ohlc_end": "2022-01-03",
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("Univers non supporté: sp500" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
     def test_non_staff_cannot_trigger_csi300_ohlc_prepare(self, launch_mock):
         scenario = Scenario.objects.create(
             name="CSI300",
@@ -542,6 +719,7 @@ class DynamicUniverseTriggerPageTests(TestCase):
             reverse("trigger_page"),
             {
                 "action": "du_download_prices",
+                "du_universe": "CSI300",
                 "scenario_id": str(scenario.id),
                 "du_ohlc_start": "2022-01-01",
                 "du_ohlc_end": "2022-01-03",
@@ -568,6 +746,7 @@ class DynamicUniverseTriggerPageTests(TestCase):
             reverse("trigger_page"),
             {
                 "action": "du_download_prices",
+                "du_universe": "CSI300",
                 "scenario_id": str(scenario.id),
                 "du_ohlc_start": "2022-01-01",
                 "du_ohlc_end": "2022-01-03",

@@ -231,7 +231,7 @@
 
 {% if dynamic_universe_readiness.enabled %}
 <div class="card" style="margin-top:12px;">
-  <strong>Préparation de l’univers historique dynamique{% if dynamic_universe_readiness.universe_code %} {{ dynamic_universe_readiness.universe_code }}{% endif %}</strong>
+  <strong>{% if dynamic_universe_readiness.universe_code == "CSI300" %}Préparation du CSI 300 historique dynamique — via CSV{% elif dynamic_universe_readiness.universe_code == "SP500" %}Préparation du S&amp;P500 historique{% else %}Préparation de l’univers historique dynamique{% endif %}</strong>
   <div class="muted" style="margin-top:6px;">Cette vérification indique si les données nécessaires au backtest sont disponibles. Si certaines données manquent, vous pouvez les préparer depuis la page <a href="{{ dynamic_universe_readiness.trigger_url }}">Trigger</a>.</div>
 
   {% if dynamic_universe_readiness.needs_dates %}
