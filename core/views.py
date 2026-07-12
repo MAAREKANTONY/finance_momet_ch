@@ -80,7 +80,9 @@ from .services.universe_resolver import (
     CSI300_UNIVERSE_CODE,
     SP500_UNIVERSE_CODE,
     UniverseResolver,
+    historical_dynamic_mode_for_universe_code,
     is_historical_dynamic_universe_mode,
+    label_for_historical_dynamic_mode,
     universe_code_for_historical_dynamic_mode,
 )
 from .services.dynamic_universe_readiness import check_dynamic_universe_readiness, _gm_requirements_from_signal_lines
@@ -124,6 +126,11 @@ TRADING_SIGNAL_CHOICES = [
 DYNAMIC_UNIVERSE_OHLC_DEFAULT_MAX_SYMBOLS = 50
 DYNAMIC_UNIVERSE_OHLC_EXCLUDE_TICKERS = ["DKEEP", "DNEW", "KEEP", "NEW", "OLD", "DOLD"]
 HISTORICAL_UNIVERSE_CSV_MAX_UPLOAD_BYTES = 10 * 1024 * 1024
+TRIGGER_DYNAMIC_UNIVERSE_CHOICES = (
+    (SP500_UNIVERSE_CODE, label_for_historical_dynamic_mode(Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC)),
+    (CSI300_UNIVERSE_CODE, label_for_historical_dynamic_mode(Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC)),
+)
+TRIGGER_DYNAMIC_UNIVERSE_CODES = {code for code, _label in TRIGGER_DYNAMIC_UNIVERSE_CHOICES}
 
 
 def _signal_lines_json_for_form(form) -> str:
@@ -4804,7 +4811,7 @@ def game_scenario_export_xlsx(request: HttpRequest, pk: int):
     return redirect("job_detail", pk=launch.job.id)
 
 
-def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inputs=None, user=None):
+def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inputs=None, user=None, selected_dynamic_universe=None):
     scenarios = Scenario.objects.only("id", "name").order_by("name", "id")
     backtests = Backtest.objects.only("id", "name").defer(
         "results", "settings", "universe_snapshot", "signal_lines", "error_message"
@@ -4813,6 +4820,23 @@ def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inpu
         "today_results", "settings", "signal_lines", "last_run_message", "description"
     ).order_by("-id")
     alert_defs = AlertDefinition.objects.only("id", "name").order_by("name", "id")
+    inputs = dynamic_universe_inputs or {}
+    selected_universe = SP500_UNIVERSE_CODE
+    selection_warning = ""
+    raw_selection = selected_dynamic_universe if selected_dynamic_universe is not None else inputs.get("universe")
+    if raw_selection:
+        candidate = str(raw_selection).strip()
+        if candidate in TRIGGER_DYNAMIC_UNIVERSE_CODES:
+            selected_universe = candidate
+        else:
+            selection_warning = f"Univers ignoré: {candidate}. Choisissez SP500 ou CSI300."
+    selected_mode = historical_dynamic_mode_for_universe_code(selected_universe)
+    dynamic_universe_scenarios = Scenario.objects.only("id", "name", "universe_mode").filter(
+        universe_mode=selected_mode
+    ).order_by("name", "id")
+    dynamic_universe_backtests = Backtest.objects.select_related("scenario").only(
+        "id", "name", "scenario_id", "scenario__name", "scenario__universe_mode"
+    ).filter(scenario__universe_mode=selected_mode).order_by("-id")
     return {
         "scenarios": scenarios,
         "backtests": backtests,
@@ -4820,7 +4844,12 @@ def _trigger_page_context(*, dynamic_universe_report=None, dynamic_universe_inpu
         "alert_defs": alert_defs,
         "dynamic_universe_report": dynamic_universe_report,
         "dynamic_universe_display": _dynamic_universe_report_display(dynamic_universe_report),
-        "dynamic_universe_inputs": dynamic_universe_inputs or {},
+        "dynamic_universe_inputs": inputs,
+        "dynamic_universe_choices": TRIGGER_DYNAMIC_UNIVERSE_CHOICES,
+        "selected_dynamic_universe": selected_universe,
+        "dynamic_universe_selection_warning": selection_warning,
+        "dynamic_universe_scenarios": dynamic_universe_scenarios,
+        "dynamic_universe_backtests": dynamic_universe_backtests,
         "can_import_historical_universe_csv": bool(getattr(user, "is_staff", False)),
     }
 
@@ -4855,8 +4884,45 @@ def _parse_optional_trigger_date(value: str, *, field_name: str) -> date | None:
         raise ValueError(f"{field_name} doit être au format YYYY-MM-DD.") from exc
 
 
+def _parse_trigger_dynamic_universe_code(value: str, *, field_name: str = "Univers") -> str:
+    universe_code = str(value or "").strip()
+    if not universe_code:
+        raise ValueError(f"{field_name} est requis.")
+    if universe_code not in TRIGGER_DYNAMIC_UNIVERSE_CODES:
+        supported = ", ".join(code for code, _label in TRIGGER_DYNAMIC_UNIVERSE_CHOICES)
+        raise ValueError(f"{field_name} non supporté: {universe_code}. Choisissez {supported}.")
+    return universe_code
+
+
+def _historical_universe_code_for_trigger_scenario(scenario: Scenario) -> str:
+    mode = getattr(scenario, "universe_mode", Scenario.UniverseMode.STATIC_TICKERS)
+    universe_code = universe_code_for_historical_dynamic_mode(mode)
+    if universe_code not in TRIGGER_DYNAMIC_UNIVERSE_CODES:
+        raise ValueError("Le scénario choisi doit utiliser un univers historique dynamique S&P500 ou CSI300.")
+    return universe_code
+
+
+def _validate_trigger_scenario_matches_universe(scenario: Scenario, selected_universe: str) -> None:
+    scenario_universe = _historical_universe_code_for_trigger_scenario(scenario)
+    if scenario_universe != selected_universe:
+        raise ValueError(
+            f"L'univers sélectionné ({selected_universe}) ne correspond pas au scénario/backtest ({scenario_universe})."
+        )
+
+
+def _parse_trigger_warmup_days(value: str) -> int:
+    raw_value = str(value or "0").strip() or "0"
+    try:
+        warmup_days = int(raw_value)
+    except ValueError as exc:
+        raise ValueError("Jours d'historique avant la date de début doit être un entier.") from exc
+    if warmup_days < 0:
+        raise ValueError("Jours d'historique avant la date de début doit être positif ou nul.")
+    return warmup_days
+
+
 def _historical_universe_import_expected_count(value: str, universe_code: str) -> int:
-    default = "300" if universe_code == "CSI300" else "500" if universe_code == SP500_UNIVERSE_CODE else "1"
+    default = "300" if universe_code == CSI300_UNIVERSE_CODE else "500" if universe_code == SP500_UNIVERSE_CODE else "1"
     raw_value = str(value or default).strip() or default
     try:
         expected_count = int(raw_value)
@@ -5074,14 +5140,17 @@ def trigger_page(request: HttpRequest):
                         messages.success(request, "Envoi demandé pour l'alerte sélectionnée.")
 
 
-                # --- DYNAMIC UNIVERSE / SP500 actions ---
+                # --- DYNAMIC UNIVERSE actions ---
                 elif action == "du_init_reference_data":
+                    universe_code = _parse_trigger_dynamic_universe_code(request.POST.get("du_universe"))
+                    if universe_code != SP500_UNIVERSE_CODE:
+                        raise ValueError("Initialiser le référentiel de base est réservé au parcours S&P500.")
                     output = _run_management_command_for_trigger("init_reference_data")
                     _message_command_output(request, "Référentiel initialisé", output)
 
                 elif action == "du_readiness":
                     inputs = {
-                        "universe": (request.POST.get("du_universe") or "SP500").strip().upper(),
+                        "universe": (request.POST.get("du_universe") or "").strip(),
                         "start": (request.POST.get("du_start") or "").strip(),
                         "end": (request.POST.get("du_end") or "").strip(),
                         "warmup_days": (request.POST.get("du_warmup_days") or "0").strip(),
@@ -5091,13 +5160,16 @@ def trigger_page(request: HttpRequest):
                         "require_gm_sector": bool(request.POST.get("du_require_gm_sector")),
                     }
                     try:
+                        inputs["universe"] = _parse_trigger_dynamic_universe_code(inputs["universe"])
+                        if inputs["universe"] == CSI300_UNIVERSE_CODE and (inputs["require_gm_market"] or inputs["require_gm_sector"]):
+                            raise ValueError("Les filtres GM marché/secteur ne sont pas supportés pour CSI300 en Phase 1.")
                         readiness_start = _parse_trigger_date(inputs["start"], field_name="Start")
                         readiness_end = _parse_trigger_date(inputs["end"], field_name="End")
                         report = check_dynamic_universe_readiness(
                             universe=inputs["universe"],
                             start=readiness_start,
                             end=readiness_end,
-                            warmup_days=int(inputs["warmup_days"] or 0),
+                            warmup_days=_parse_trigger_warmup_days(inputs["warmup_days"]),
                             require_gm_market=inputs["require_gm_market"],
                             require_gm_sector=inputs["require_gm_sector"],
                             scenario_id=_parse_optional_trigger_int(inputs["scenario_id"], field_name="Scenario ID"),
@@ -5113,6 +5185,9 @@ def trigger_page(request: HttpRequest):
                     )
 
                 elif action in ("du_bootstrap_symbols", "du_create_historical_symbols"):
+                    universe_code = _parse_trigger_dynamic_universe_code(request.POST.get("du_universe"))
+                    if universe_code != SP500_UNIVERSE_CODE:
+                        raise ValueError("La création des actions historiques via EODHD est réservée au S&P500.")
                     start_arg = _parse_trigger_date(request.POST.get("du_bootstrap_start"), field_name="Date de début")
                     end_arg = _parse_trigger_date(request.POST.get("du_bootstrap_end"), field_name="Date de fin")
                     output = _run_management_command_for_trigger(
@@ -5124,14 +5199,20 @@ def trigger_page(request: HttpRequest):
                     _message_command_output(request, "Création des actions historiques S&P500 lancée.", output)
 
                 elif action in ("du_sync_memberships", "du_fetch_composition"):
+                    universe_code = _parse_trigger_dynamic_universe_code(request.POST.get("du_universe"))
+                    if universe_code != SP500_UNIVERSE_CODE:
+                        raise ValueError("La récupération de composition via EODHD est réservée au S&P500.")
                     start_arg = _parse_trigger_date(request.POST.get("du_sync_start"), field_name="Date de début")
                     end_arg = _parse_trigger_date(request.POST.get("du_sync_end"), field_name="Date de fin")
-                    expected_count = str(request.POST.get("du_expected_member_count") or "500").strip() or "500"
+                    expected_count = _historical_universe_import_expected_count(
+                        request.POST.get("du_expected_member_count"),
+                        SP500_UNIVERSE_CODE,
+                    )
                     output = _run_management_command_for_trigger(
                         "sync_sp500_historical_memberships",
                         "--coverage-start", start_arg.isoformat(),
                         "--coverage-end", end_arg.isoformat(),
-                        "--expected-member-count", expected_count,
+                        "--expected-member-count", str(expected_count),
                         "--apply",
                     )
                     _message_command_output(request, "Récupération de la composition historique S&P500 lancée.", output)
@@ -5140,7 +5221,10 @@ def trigger_page(request: HttpRequest):
                     if not request.user.is_staff:
                         messages.error(request, "Import CSV univers historique réservé aux administrateurs/staff.")
                     else:
-                        universe_code = str(request.POST.get("du_import_universe") or "CSI300").strip().upper()
+                        universe_code = _parse_trigger_dynamic_universe_code(
+                            request.POST.get("du_import_universe"),
+                            field_name="Univers import",
+                        )
                         universe_name = str(request.POST.get("du_import_universe_name") or "").strip()
                         expected_count = _historical_universe_import_expected_count(
                             request.POST.get("du_import_expected_member_count"),
@@ -5200,7 +5284,12 @@ def trigger_page(request: HttpRequest):
                     else:
                         from core.tasks import map_universe_membership_symbols_job_task
 
-                        universe_code = str(request.POST.get("du_symbol_mapping_universe") or "CSI300").strip().upper()
+                        universe_code = _parse_trigger_dynamic_universe_code(
+                            request.POST.get("du_symbol_mapping_universe"),
+                            field_name="Univers mapping",
+                        )
+                        if universe_code != CSI300_UNIVERSE_CODE:
+                            raise ValueError("Le mapping des actions depuis memberships CSV est réservé au parcours CSI300 en Phase 1.")
                         apply_mapping = request.POST.get("du_symbol_mapping_mode") == "apply"
                         mode_label = "apply" if apply_mapping else "dry-run"
                         launch = launch_processing_job(
@@ -5222,41 +5311,48 @@ def trigger_page(request: HttpRequest):
                 elif action in ("du_prepare_ohlc", "du_download_prices"):
                     from core.tasks import prepare_dynamic_universe_ohlc_job_task
 
-                    bt = Backtest.objects.filter(id=int(backtest_id)).select_related("scenario").first() if backtest_id else None
-                    sc = Scenario.objects.filter(id=int(scenario_id)).first() if scenario_id else (bt.scenario if bt else None)
+                    universe_code = _parse_trigger_dynamic_universe_code(request.POST.get("du_universe"))
+                    backtest_id_int = _parse_optional_trigger_int(backtest_id, field_name="Backtest ID")
+                    scenario_id_int = _parse_optional_trigger_int(scenario_id, field_name="Scenario ID")
+                    bt = Backtest.objects.select_related("scenario").get(id=backtest_id_int) if backtest_id_int else None
+                    sc = Scenario.objects.get(id=scenario_id_int) if scenario_id_int else (bt.scenario if bt else None)
+                    if bt and scenario_id_int and bt.scenario_id != scenario_id_int:
+                        raise ValueError("Le scénario choisi ne correspond pas au backtest choisi.")
+                    if sc:
+                        _validate_trigger_scenario_matches_universe(sc, universe_code)
                     start_value = (request.POST.get("du_ohlc_start") or "").strip()
                     end_value = (request.POST.get("du_ohlc_end") or "").strip()
                     if not bt and (not start_value or not end_value):
                         messages.error(request, "Choisissez un backtest ou renseignez une date de début et une date de fin pour télécharger les prix.")
+                    elif universe_code == CSI300_UNIVERSE_CODE and not request.user.is_staff:
+                        messages.error(request, "Préparation OHLC CSI300 via EODHD réservée aux administrateurs/staff.")
                     else:
-                        mode = getattr(sc, "universe_mode", Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC) if sc else Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
-                        universe_code = universe_code_for_historical_dynamic_mode(mode) or SP500_UNIVERSE_CODE
-                        if universe_code == CSI300_UNIVERSE_CODE and not request.user.is_staff:
-                            messages.error(request, "Préparation OHLC CSI300 via EODHD réservée aux administrateurs/staff.")
-                        else:
-                            launch = launch_processing_job(
-                                task=prepare_dynamic_universe_ohlc_job_task,
-                                job_type=ProcessingJob.JobType.FETCH_BARS,
-                                backtest=bt,
-                                scenario=sc,
-                                created_by=request.user if request.user.is_authenticated else None,
-                                message="Téléchargement des prix des actions en attente depuis Trigger",
-                                task_kwargs={
-                                    "universe_code": universe_code,
-                                    "start_date": start_value or None,
-                                    "end_date": end_value or None,
-                                    "backtest_id": bt.id if bt else None,
-                                    "scenario_id": sc.id if sc and not bt else None,
-                                    "provider": "eodhd",
-                                    "force_refresh": bool(request.POST.get("du_ohlc_force_refresh")),
-                                    "user_id": user_id,
-                                },
-                            )
-                            if launch.dispatch_error:
-                                raise launch.dispatch_error
-                            messages.success(request, f"Téléchargement des prix des actions lancé pour {universe_code} (job #{launch.job.id}).")
+                        launch = launch_processing_job(
+                            task=prepare_dynamic_universe_ohlc_job_task,
+                            job_type=ProcessingJob.JobType.FETCH_BARS,
+                            backtest=bt,
+                            scenario=sc,
+                            created_by=request.user if request.user.is_authenticated else None,
+                            message=f"Téléchargement des prix des actions {universe_code} en attente depuis Trigger",
+                            task_kwargs={
+                                "universe_code": universe_code,
+                                "start_date": start_value or None,
+                                "end_date": end_value or None,
+                                "backtest_id": bt.id if bt else None,
+                                "scenario_id": sc.id if sc and not bt else None,
+                                "provider": "eodhd",
+                                "force_refresh": bool(request.POST.get("du_ohlc_force_refresh")),
+                                "user_id": user_id,
+                            },
+                        )
+                        if launch.dispatch_error:
+                            raise launch.dispatch_error
+                        messages.success(request, f"Téléchargement des prix des actions lancé pour {universe_code} (job #{launch.job.id}).")
 
                 elif action in ("du_sync_benchmark_etfs", "du_prepare_benchmark_etfs"):
+                    universe_code = _parse_trigger_dynamic_universe_code(request.POST.get("du_universe"))
+                    if universe_code != SP500_UNIVERSE_CODE:
+                        raise ValueError("La préparation des ETFs de marché et de secteur n'est pas supportée pour CSI300 en Phase 1.")
                     symbols = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
                     totals = sync_benchmark_etfs_for_symbols(
                         symbols,
@@ -5473,9 +5569,25 @@ def trigger_page(request: HttpRequest):
             except Exception as e:
                 messages.error(request, f"Erreur trigger: {e}")
 
-            return redirect("trigger_page")
+            redirect_params = {}
+            posted_universe = (
+                request.POST.get("du_universe")
+                or request.POST.get("du_import_universe")
+                or request.POST.get("du_symbol_mapping_universe")
+            )
+            if str(posted_universe or "").strip() in TRIGGER_DYNAMIC_UNIVERSE_CODES:
+                redirect_params["universe"] = str(posted_universe).strip()
+            redirect_url = reverse("trigger_page")
+            if redirect_params:
+                redirect_url = f"{redirect_url}?{urlencode(redirect_params)}"
+            return redirect(redirect_url)
 
-        return render(request, "trigger.html", _trigger_page_context(user=request.user))
+        selected_universe = request.GET.get("universe")
+        return render(
+            request,
+            "trigger.html",
+            _trigger_page_context(user=request.user, selected_dynamic_universe=selected_universe),
+        )
 
 
 @login_required

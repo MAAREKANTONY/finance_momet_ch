@@ -1677,7 +1677,7 @@ class BacktestResultsRenderTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         body = response.content.decode()
-        self.assertIn("Préparation de l’univers historique dynamique SP500", body)
+        self.assertIn("Préparation du S&amp;P500 historique", body)
         self.assertIn("Prêt", body)
         self.assertIn("Prêt pour le backtest", body)
         self.assertIn("Les prix sont disponibles pour les 1 actions attendues", body)
@@ -1695,7 +1695,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.status_code, 200)
         launch_mock.assert_not_called()
         body = response.content.decode()
-        self.assertIn("Préparation de l’univers historique dynamique SP500", body)
+        self.assertIn("Préparation du S&amp;P500 historique", body)
         self.assertIn("Prêt avec avertissement", body)
         self.assertIn("0 actions sur 1 ont des prix disponibles", body)
         self.assertIn("AAA", body)
