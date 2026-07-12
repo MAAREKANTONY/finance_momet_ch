@@ -37,6 +37,15 @@ REPORT_NOT_READY = "NOT_READY"
 SECTOR_ETF_TICKERS = (
     "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC",
 )
+_COVERAGE_BLOCKING_IMPORT_BATCH_STATUSES = {
+    UniverseCoverageStatus.IMPORTED,
+    UniverseCoverageStatus.FAILED,
+    UniverseCoverageStatus.STALE,
+}
+_COVERAGE_ACCEPTABLE_IMPORT_BATCH_STATUSES = {
+    UniverseCoverageStatus.VALIDATED,
+    UniverseCoverageStatus.PARTIAL,
+}
 
 
 @dataclass(frozen=True)
@@ -384,20 +393,24 @@ def _check_import_batch(universe_code: str, universe: UniverseDefinition | None,
             period_end__gte=coverage_start,
         ).order_by("-period_start", "-id")
     )
-    validated = [
+    covering = [
         batch
         for batch in batches
-        if batch.status == UniverseCoverageStatus.VALIDATED
+        if batch.status in _COVERAGE_ACCEPTABLE_IMPORT_BATCH_STATUSES
         and batch.period_start <= coverage_start
         and batch.period_end >= end
     ]
-    if validated:
-        batch = validated[0]
+    if covering:
+        batch = covering[0]
         return ReadinessCheck(
             code="import_batch",
-            label="Batch d'import validé",
+            label="Batch d'import disponible",
             status=CHECK_OK,
-            message=f"UniverseImportBatch VALIDATED couvre {coverage_start.isoformat()}..{end.isoformat()}.",
+            message=(
+                f"UniverseImportBatch {batch.status} couvre "
+                f"{coverage_start.isoformat()}..{end.isoformat()}; "
+                "la validation journalière est portée par les coverage snapshots."
+            ),
             details={"batch_id": batch.id, "status": batch.status},
         )
     if batches:
@@ -405,7 +418,7 @@ def _check_import_batch(universe_code: str, universe: UniverseDefinition | None,
             code="import_batch",
             label="Batch d'import validé",
             status=CHECK_ERROR,
-            message="Aucun UniverseImportBatch VALIDATED ne couvre toute la période demandée.",
+            message="Aucun UniverseImportBatch exploitable ne couvre toute la période demandée.",
             details={
                 "batches": [
                     {
@@ -729,7 +742,7 @@ def _check_benchmark_daily_bars(
 def _snapshot_invalid_reason(snapshot: UniverseCoverageSnapshot) -> str:
     if snapshot.status != UniverseCoverageStatus.VALIDATED:
         return f"snapshot_status={snapshot.status}"
-    if snapshot.import_batch.status != UniverseCoverageStatus.VALIDATED:
+    if snapshot.import_batch.status in _COVERAGE_BLOCKING_IMPORT_BATCH_STATUSES:
         return f"batch_status={snapshot.import_batch.status}"
     if snapshot.actual_member_count < snapshot.expected_member_count:
         return f"actual_member_count={snapshot.actual_member_count} expected_member_count={snapshot.expected_member_count}"

@@ -451,10 +451,57 @@ class DynamicUniverseResolverTests(TestCase):
                         end_date=date(2020, 1, 1),
                     )
 
-    def test_import_batch_status_must_be_validated(self):
+    def test_validated_csi300_snapshot_in_partial_batch_resolves_requested_period(self):
+        universe = self._create_csi300()
+        self._add_membership(
+            universe,
+            "600519",
+            date(2020, 1, 1),
+            None,
+            symbol=self.csi_symbols["600519"],
+            exchange="XSHG",
+        )
+        self._add_membership(
+            universe,
+            "000001",
+            date(2020, 1, 1),
+            None,
+            symbol=self.csi_symbols["000001"],
+            exchange="XSHE",
+        )
+        self._add_membership(
+            universe,
+            "600000",
+            date(2020, 1, 1),
+            None,
+            symbol=self.csi_symbols["600000"],
+            exchange="XSHG",
+        )
+        self._create_coverage(
+            universe,
+            date(2020, 1, 1),
+            date(2020, 1, 1),
+            expected_member_count=3,
+            batch_status=UniverseCoverageStatus.PARTIAL,
+        )
+        scenario = Scenario.objects.create(
+            name="Dynamic CSI300",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+
+        result = self.resolver.resolve(
+            scenario,
+            start_date=date(2020, 1, 1),
+            end_date=date(2020, 1, 1),
+        )
+
+        self.assertEqual(result.universe_code, "CSI300")
+        self.assertEqual(set(result.tickers), {"600519", "000001", "600000"})
+
+    def test_blocking_import_batch_statuses_reject_dynamic_resolution(self):
         for status in (
             UniverseCoverageStatus.IMPORTED,
-            UniverseCoverageStatus.PARTIAL,
             UniverseCoverageStatus.FAILED,
             UniverseCoverageStatus.STALE,
         ):

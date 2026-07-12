@@ -16,6 +16,11 @@ from core.models import (
 
 SP500_UNIVERSE_CODE = "SP500"
 CSI300_UNIVERSE_CODE = "CSI300"
+_BLOCKING_IMPORT_BATCH_STATUSES = {
+    UniverseCoverageStatus.IMPORTED,
+    UniverseCoverageStatus.FAILED,
+    UniverseCoverageStatus.STALE,
+}
 
 HISTORICAL_DYNAMIC_UNIVERSE_CODES = {
     Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC: SP500_UNIVERSE_CODE,
@@ -328,7 +333,7 @@ class UniverseResolver:
                 raise UniverseCoverageError(_coverage_error_message(day, None, universe_code=universe_code))
             if (
                 snapshot.status != UniverseCoverageStatus.VALIDATED
-                or snapshot.import_batch.status != UniverseCoverageStatus.VALIDATED
+                or snapshot.import_batch.status in _BLOCKING_IMPORT_BATCH_STATUSES
                 or snapshot.actual_member_count < snapshot.expected_member_count
                 or snapshot.mapped_member_count < snapshot.actual_member_count
                 or snapshot.unmapped_member_count != 0

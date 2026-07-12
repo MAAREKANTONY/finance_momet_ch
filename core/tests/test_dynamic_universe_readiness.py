@@ -57,9 +57,20 @@ class DynamicUniverseReadinessTestCase(TestCase):
             source="test",
         )
 
-    def _coverage(self, universe: UniverseDefinition, *, start=None, end=None, status=UniverseCoverageStatus.VALIDATED):
+    def _coverage(
+        self,
+        universe: UniverseDefinition,
+        *,
+        start=None,
+        end=None,
+        status=UniverseCoverageStatus.VALIDATED,
+        batch_status=None,
+        snapshot_status=None,
+    ):
         start = start or self.start
         end = end or self.end
+        batch_status = batch_status or status
+        snapshot_status = snapshot_status or status
         batch = UniverseImportBatch.objects.create(
             universe=universe,
             provider="test",
@@ -70,8 +81,8 @@ class DynamicUniverseReadinessTestCase(TestCase):
             imported_member_count=2,
             mapped_member_count=2,
             unmapped_member_count=0,
-            status=status,
-            validated_at=timezone.now() if status == UniverseCoverageStatus.VALIDATED else None,
+            status=batch_status,
+            validated_at=timezone.now() if batch_status == UniverseCoverageStatus.VALIDATED else None,
         )
         current = start
         while current <= end:
@@ -83,7 +94,7 @@ class DynamicUniverseReadinessTestCase(TestCase):
                 actual_member_count=2,
                 mapped_member_count=2,
                 unmapped_member_count=0,
-                status=status,
+                status=snapshot_status,
             )
             current += timedelta(days=1)
         return batch
@@ -144,6 +155,34 @@ class DynamicUniverseReadinessTestCase(TestCase):
         check = self._check(report, "coverage_snapshots")
         self.assertEqual(check.status, CHECK_ERROR)
         self.assertIn("missing coverage snapshot for 2022-01-01", check.message)
+
+    def test_csi300_valid_snapshots_in_partial_batch_pass_coverage_readiness(self):
+        universe = self._csi300()
+        symbol = self._symbol("600519", exchange="SHG", sector="Consumer Defensive")
+        self._membership(universe, symbol)
+        self._coverage(
+            universe,
+            batch_status=UniverseCoverageStatus.PARTIAL,
+            snapshot_status=UniverseCoverageStatus.VALIDATED,
+        )
+
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        self.assertEqual(self._check(report, "import_batch").status, CHECK_OK)
+        self.assertEqual(self._check(report, "coverage_snapshots").status, CHECK_OK)
+        self.assertEqual(self._check(report, "historical_symbols").status, CHECK_OK)
+
+    def test_csi300_partial_snapshots_in_partial_batch_block_coverage_readiness(self):
+        universe = self._csi300()
+        symbol = self._symbol("600519", exchange="SHG", sector="Consumer Defensive")
+        self._membership(universe, symbol)
+        self._coverage(universe, status=UniverseCoverageStatus.PARTIAL)
+
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        check = self._check(report, "coverage_snapshots")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertIn("snapshot_status=PARTIAL", check.message)
 
     def test_symbols_and_dailybars_are_skipped_when_memberships_or_coverage_are_unavailable(self):
         universe = self._sp500()
