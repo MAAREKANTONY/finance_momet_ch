@@ -70,6 +70,7 @@ from .services.trend_filters import (
     normalize_trend_filter_code,
     normalize_trend_filter_operator,
 )
+from .services.backtesting.capital_validation import validate_backtest_capital
 from .trading_model_config import (
     TRADING_MODEL_AUTO_SELL_VALUES,
     TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL,
@@ -866,6 +867,15 @@ class StudyBacktestForm(forms.ModelForm):
     def clean_signal_lines(self):
         return _clean_signal_lines_json(self.cleaned_data.get("signal_lines"))
 
+    def clean(self):
+        cleaned = super().clean()
+        for error in validate_backtest_capital(
+            cleaned.get("capital_total"),
+            cleaned.get("capital_per_ticker"),
+        ):
+            self.add_error(error.field, error.message)
+        return cleaned
+
 
 class StudyMetaForm(forms.ModelForm):
     class Meta:
@@ -1103,6 +1113,11 @@ class BacktestForm(forms.ModelForm):
 
     def clean(self):
         cleaned = _apply_rhd_ok_defaults(super().clean())
+        for error in validate_backtest_capital(
+            cleaned.get("capital_total"),
+            cleaned.get("capital_per_ticker"),
+        ):
+            self.add_error(error.field, error.message)
         min_price = cleaned.get("min_price")
         max_price = cleaned.get("max_price")
         if min_price is not None and max_price is not None and min_price > max_price:
@@ -1322,6 +1337,11 @@ class GameScenarioForm(forms.ModelForm):
 
     def clean(self):
         cleaned = _apply_rhd_ok_defaults(super().clean())
+        for error in validate_backtest_capital(
+            cleaned.get("capital_total"),
+            cleaned.get("capital_per_ticker"),
+        ):
+            self.add_error(error.field, error.message)
         min_price = cleaned.get("min_price")
         max_price = cleaned.get("max_price")
         if min_price is not None and max_price is not None and min_price > max_price:

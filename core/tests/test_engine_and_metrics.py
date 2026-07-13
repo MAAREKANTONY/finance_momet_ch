@@ -599,6 +599,151 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(Decimal(portfolio["BT"]), expected_bt)
         self.assertEqual(Decimal(portfolio["BMJ"]), expected_bt / Decimal(portfolio["NB_DAYS"]))
 
+    def test_buy_candidate_with_zero_effective_capital_records_blocker(self):
+        start = date(2024, 3, 14)
+        self._create_bars_for_symbol(self.symbol, ["10", "10"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(2)
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+        bt = Backtest.objects.create(
+            name="Zero Effective Capital",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=1),
+            capital_total=Decimal("0"),
+            capital_per_ticker=Decimal("0"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        line = run_backtest(bt).results["tickers"][self.symbol.ticker]["lines"][0]
+        explain = line["explain"]
+
+        self.assertGreaterEqual(explain["buy_candidates"], 1)
+        self.assertEqual(explain["buy_executed"], 0)
+        self.assertIn("ZERO_EFFECTIVE_CAPITAL", explain["blocked_counts"])
+        blocker = explain["last_blockers"][-1]
+        self.assertEqual(blocker["code"], "ZERO_EFFECTIVE_CAPITAL")
+        self.assertEqual(blocker["cash"], "0")
+        self.assertEqual(blocker["quantity"], 0)
+
+    def test_buy_candidate_with_budget_below_price_records_order_quantity_zero_blocker(self):
+        start = date(2024, 3, 15)
+        self._create_bars_for_symbol(self.symbol, ["10", "10"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(2)
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+        bt = Backtest.objects.create(
+            name="Quantity Zero",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=1),
+            capital_total=Decimal("0"),
+            capital_per_ticker=Decimal("5"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        line = run_backtest(bt).results["tickers"][self.symbol.ticker]["lines"][0]
+        explain = line["explain"]
+
+        self.assertGreaterEqual(explain["buy_candidates"], 1)
+        self.assertEqual(explain["buy_executed"], 0)
+        self.assertIn("ORDER_QUANTITY_ZERO", explain["blocked_counts"])
+        blocker = explain["last_blockers"][-1]
+        self.assertEqual(blocker["code"], "ORDER_QUANTITY_ZERO")
+        self.assertEqual(blocker["cash"], "5")
+        self.assertEqual(blocker["price"], "10.000000")
+        self.assertEqual(blocker["quantity"], 0)
+
+    def test_buy_candidate_with_invalid_execution_price_records_blocker(self):
+        start = date(2024, 3, 18)
+        self._create_bars_for_symbol(self.symbol, ["0", "0"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("0"), ratio_P=Decimal("1"))
+            for i in range(2)
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+        bt = Backtest.objects.create(
+            name="Invalid Execution Price",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=1),
+            capital_total=Decimal("0"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        line = run_backtest(bt).results["tickers"][self.symbol.ticker]["lines"][0]
+        explain = line["explain"]
+
+        self.assertGreaterEqual(explain["buy_candidates"], 1)
+        self.assertEqual(explain["buy_executed"], 0)
+        self.assertIn("INVALID_EXECUTION_PRICE", explain["blocked_counts"])
+        blocker = explain["last_blockers"][-1]
+        self.assertEqual(blocker["code"], "INVALID_EXECUTION_PRICE")
+        self.assertEqual(blocker["price"], "0.000000")
+
+    def test_buy_candidate_without_remaining_global_cash_records_insufficient_cash_blocker(self):
+        start = date(2024, 3, 19)
+        other = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
+        self._create_bars_for_symbol(self.symbol, ["10", "10"], start=start)
+        self._create_bars_for_symbol(other, ["10", "10"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(symbol=self.symbol, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("2"))
+            for i in range(2)
+        ] + [
+            DailyMetric(symbol=other, scenario=self.scenario, date=start + timedelta(days=i), P=Decimal("10"), ratio_P=Decimal("1"))
+            for i in range(2)
+        ])
+        Alert.objects.bulk_create([
+            Alert(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1"),
+            Alert(symbol=other, scenario=self.scenario, date=start, alerts="A1"),
+        ])
+        bt = Backtest.objects.create(
+            name="Insufficient Global Cash",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=1),
+            capital_total=Decimal("100"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker, other.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        results = run_backtest(bt).results
+        first_explain = results["tickers"][self.symbol.ticker]["lines"][0]["explain"]
+        second_explain = results["tickers"][other.ticker]["lines"][0]["explain"]
+
+        self.assertEqual(first_explain["buy_executed"], 1)
+        self.assertGreater(second_explain["buy_candidates"], 0)
+        self.assertEqual(second_explain["buy_executed"], 0)
+        self.assertGreater(second_explain["blocked_counts"].get("INSUFFICIENT_CASH", 0), 0)
+        self.assertTrue(
+            any(blocker["code"] == "INSUFFICIENT_CASH" for blocker in second_explain["last_blockers"])
+        )
+
     def test_backtest_portfolio_bt_uses_equity_model_with_forced_sell(self):
         start = date(2024, 3, 20)
         self._create_bars_for_symbol(self.symbol, ["10", "10", "13"], start=start)

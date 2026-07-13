@@ -4,7 +4,7 @@ from pathlib import Path
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 
-from core.forms import BacktestForm, ScenarioForm, StudyScenarioForm, UniverseForm, GameScenarioForm, _clean_signal_lines_json
+from core.forms import BacktestForm, ScenarioForm, StudyBacktestForm, StudyScenarioForm, UniverseForm, GameScenarioForm, _clean_signal_lines_json
 from core.models import Backtest, GameScenario, Scenario, Study, Symbol, Universe
 
 
@@ -446,6 +446,110 @@ class SymbolPickerFormTests(TestCase):
         self.assertEqual(game.rhd_ok_reactivation_mode, "rebound_confirmed")
         self.assertEqual(str(game.rhd_ok_rebound_threshold), "0.08")
         self.assertEqual(str(game.rhd_ok_reentry_max_drawdown), "0.40")
+
+    def _backtest_form_payload(self, scenario, **overrides):
+        data = {
+            "name": "BT capital",
+            "description": "",
+            "scenario": str(scenario.id),
+            "start_date": "2024-01-01",
+            "end_date": "2024-01-03",
+            "capital_total": "1000",
+            "capital_per_ticker": "100",
+            "capital_mode": "FIXED",
+            "ratio_threshold": "0",
+            "include_all_tickers": "on",
+            "signal_lines": json.dumps([
+                {"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}
+            ]),
+            "warmup_days": "0",
+            "close_positions_at_end": "on",
+        }
+        data.update(overrides)
+        return data
+
+    def test_backtest_form_allows_unlimited_total_capital_with_positive_per_ticker_capital(self):
+        scenario = Scenario.objects.create(name="Capital unlimited", active=True)
+        form = BacktestForm(data=self._backtest_form_payload(scenario, capital_total="0", capital_per_ticker="100"))
+
+        self.assertTrue(form.is_valid(), form.errors)
+
+    def test_backtest_form_rejects_zero_capital_per_ticker(self):
+        scenario = Scenario.objects.create(name="Capital CT zero", active=True)
+        form = BacktestForm(data=self._backtest_form_payload(scenario, capital_total="0", capital_per_ticker="0"))
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("capital_per_ticker", form.errors)
+        self.assertIn("Le capital par action doit être supérieur à zéro.", form.errors["capital_per_ticker"])
+
+    def test_backtest_form_rejects_total_capital_below_capital_per_ticker(self):
+        scenario = Scenario.objects.create(name="Capital CP too low", active=True)
+        form = BacktestForm(data=self._backtest_form_payload(scenario, capital_total="50", capital_per_ticker="100"))
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("capital_total", form.errors)
+        self.assertIn("Le capital total doit être supérieur ou égal au capital par action, ou égal à zéro pour un capital global illimité.", form.errors["capital_total"])
+
+    def test_study_backtest_form_rejects_zero_capital_per_ticker(self):
+        scenario = Scenario.objects.create(name="Study Capital", active=True)
+        bt = Backtest.objects.create(name="Study BT", scenario=scenario, capital_total="0", capital_per_ticker="100")
+        form = StudyBacktestForm(
+            data={
+                "name": "Study BT",
+                "description": "",
+                "start_date": "2024-01-01",
+                "end_date": "2024-01-03",
+                "capital_total": "0",
+                "capital_per_ticker": "0",
+                "ratio_threshold": "0",
+                "include_all_tickers": "on",
+                "signal_lines": json.dumps([{"buy": ["A1"], "sell": ["B1"]}]),
+                "warmup_days": "0",
+                "close_positions_at_end": "on",
+            },
+            instance=bt,
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("capital_per_ticker", form.errors)
+
+    def test_game_scenario_form_rejects_total_capital_below_capital_per_ticker(self):
+        form = GameScenarioForm(
+            data={
+                "name": "Game capital",
+                "description": "",
+                "active": "on",
+                "study_days": "30",
+                "tradability_threshold": "0",
+                "npente": "100",
+                "slope_threshold": "0.1",
+                "npente_basse": "20",
+                "slope_threshold_basse": "0.02",
+                "rhd_ok_reactivation_mode": "classic",
+                "rhd_ok_rebound_threshold": "0.08",
+                "rhd_ok_confirmation_days": "2",
+                "rhd_ok_reentry_max_drawdown": "0.40",
+                "nglobal": "20",
+                "presence_threshold_pct": "30",
+                "email_recipients": "",
+                "a": "1",
+                "b": "1",
+                "c": "1",
+                "d": "1",
+                "e": "1",
+                "n1": "5",
+                "n2": "3",
+                "capital_total": "50",
+                "capital_per_ticker": "100",
+                "capital_mode": "FIXED",
+                "signal_lines": json.dumps([{ "buy": ["A1"], "sell": ["B1"] }]),
+                "warmup_days": "0",
+                "close_positions_at_end": "on",
+            }
+        )
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("capital_total", form.errors)
 
     def test_backtest_form_rejects_invalid_price_range(self):
         scenario = Scenario.objects.create(name="Price Range", active=True)
@@ -1019,8 +1123,8 @@ class SymbolPickerFormTests(TestCase):
                 "e": str(obj.e),
                 "n1": str(obj.n1),
                 "n2": str(obj.n2),
-                "capital_total": str(obj.capital_total),
-                "capital_per_ticker": str(obj.capital_per_ticker),
+                "capital_total": "0",
+                "capital_per_ticker": "100",
                 "capital_mode": obj.capital_mode,
                 "signal_lines": json.dumps([
                     {"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}
@@ -1336,8 +1440,8 @@ class SymbolPickerFormTests(TestCase):
                 "e": str(obj.e),
                 "n1": str(obj.n1),
                 "n2": str(obj.n2),
-                "capital_total": str(obj.capital_total),
-                "capital_per_ticker": str(obj.capital_per_ticker),
+                "capital_total": "0",
+                "capital_per_ticker": "100",
                 "capital_mode": obj.capital_mode,
                 "signal_lines": json.dumps([
                     {"trading_model": "LATCH_STATEFUL", "buy": ["Af"], "sell": []}

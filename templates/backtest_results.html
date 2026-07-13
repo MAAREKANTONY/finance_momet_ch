@@ -7,6 +7,7 @@
     Scénario: <b>{{ bt.scenario.name }}</b> • Période: <b>{{ results.meta.start_date }}</b> → <b>{{ results.meta.end_date }}</b>
     <br/>
     Éligibilité: <b>{% if bt.include_all_tickers %}tous les tickers du scénario (ignore ratio_p ≥ X){% else %}ratio_p ≥ X{% endif %}</b>
+    <br/>Capital: CP <b>{{ bt.capital_total|num:2 }}{% if bt.capital_total == 0 %} (illimité){% endif %}</b> • CT <b>{{ bt.capital_per_ticker|num:2 }}</b> • Mode <b>{{ bt.get_capital_mode_display }}</b>
     {% if is_couloir_mode and couloir_effective_summary %}
       {% with couloir_config_summary=couloir_effective_summary.couloir %}
       <br/>Stratégie : <b>Couloir</b>
@@ -690,6 +691,9 @@
 
     {% if not explain.buy_candidates %}
       <div class="muted" style="margin-bottom:10px; color:#92400e;">Aucun signal BUY candidat détecté pour ce ticker.</div>
+    {% endif %}
+    {% if explain.buy_candidates and not explain.buy_executed and explain_has_capital_sizing_blocker %}
+      <div class="muted" style="margin-bottom:10px; color:#92400e;">Des signaux BUY ont été détectés, mais aucun achat n'a pu être exécuté à cause du capital disponible, du prix d'exécution ou de la quantité calculée.</div>
     {% endif %}
 
     <h4 style="margin:0 0 8px 0;">Principales raisons de blocage</h4>

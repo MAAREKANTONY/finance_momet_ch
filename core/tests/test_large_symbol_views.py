@@ -2285,6 +2285,51 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("Aucun trade pour ce ticker.", body)
         self.assertIn('const currentTickerLineValue = "BBB|1";', body)
 
+    def test_backtest_results_shows_capital_settings_and_sizing_blocker_message(self):
+        blockers = [{
+            "date": "2024-01-03",
+            "code": "ORDER_QUANTITY_ZERO",
+            "type": "SIZING",
+            "cash": "5",
+            "price": "10",
+            "quantity": 0,
+            "decision": "blocked",
+            "reason": "Quantité d'achat arrondie à zéro",
+        }]
+        bt = self._build_diagnostic_backtest(
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            ticker_lines={
+                "AAA": {
+                    "lines": [{
+                        "line_index": 1,
+                        "buy": ["A1"],
+                        "sell": ["B1"],
+                        "daily": [],
+                        "final": {"N": 0, "BT": "0"},
+                        "explain": {
+                            "played": False,
+                            "buy_candidates": 1,
+                            "buy_executed": 0,
+                            "sell_executed": 0,
+                            "blocked_counts": {"ORDER_QUANTITY_ZERO": 1},
+                            "last_blockers": blockers,
+                        },
+                    }]
+                },
+            },
+        )
+        Backtest.objects.filter(id=bt.id).update(capital_total=Decimal("0"), capital_per_ticker=Decimal("5"), capital_mode="FIXED")
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]), {"debug_all_tickers": "1", "ticker": "AAA", "line": "1"})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.context["explain_has_capital_sizing_blocker"])
+        body = response.content.decode()
+        self.assertIn("CP <b>0.00 (illimité)</b>", body)
+        self.assertIn("CT <b>5.00</b>", body)
+        self.assertIn("Des signaux BUY ont été détectés", body)
+        self.assertIn("ORDER_QUANTITY_ZERO", body)
+
     def test_backtest_results_shows_compact_explain_for_unplayed_debug_ticker(self):
         bbb = Symbol.objects.create(ticker="BBB", exchange="NYSE", active=True)
         bt = self._build_diagnostic_backtest(
