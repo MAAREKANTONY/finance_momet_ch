@@ -18,6 +18,7 @@ from core.services.provider_eodhd import (
     normalize_historical_ohlc_payload,
     normalize_historical_market_cap_payload,
     normalize_sp500_historical_components_payload,
+    normalize_symbol_general_metadata_payload,
     sanitize_provider_error_message,
     to_eodhd_symbol,
 )
@@ -127,6 +128,57 @@ class EODHDMarketCapClientTests(TestCase):
         args, kwargs = mock_get.call_args
         self.assertEqual(args[0], "https://example.test/api/fundamentals/GSPC.INDX")
         self.assertEqual(kwargs["params"]["filter"], "HistoricalTickerComponents")
+        self.assertEqual(kwargs["params"]["fmt"], "json")
+        self.assertNotIn("token", args[0])
+
+    def test_normalize_symbol_general_metadata_payload_extracts_sector_and_industry(self):
+        payload = {
+            "Code": "600000",
+            "Name": "SPD Bank",
+            "Exchange": "SHG",
+            "CurrencyCode": "CNY",
+            "CountryName": "China",
+            "Sector": "Financial Services",
+            "Industry": "Banks - Regional",
+            "GicSector": "Financials",
+            "GicIndustry": "Banks",
+        }
+
+        row = normalize_symbol_general_metadata_payload(payload, "600000.SHG")
+
+        self.assertEqual(row["provider_symbol"], "600000.SHG")
+        self.assertEqual(row["name"], "SPD Bank")
+        self.assertEqual(row["exchange"], "SHG")
+        self.assertEqual(row["currency"], "CNY")
+        self.assertEqual(row["country"], "China")
+        self.assertEqual(row["sector"], "Financial Services")
+        self.assertEqual(row["industry"], "Banks - Regional")
+        self.assertEqual(row["gic_sector"], "Financials")
+
+    @override_settings(EODHD_API_KEY="token", EODHD_BASE_URL="https://example.test/api")
+    @patch("core.services.provider_eodhd.requests.get")
+    def test_client_fetch_symbol_general_metadata_uses_fundamentals_general_filter(self, mock_get):
+        response = Mock()
+        response.status_code = 200
+        response.raise_for_status.return_value = None
+        response.json.return_value = {
+            "Code": "600000",
+            "Name": "SPD Bank",
+            "Exchange": "SHG",
+            "CurrencyCode": "CNY",
+            "CountryName": "China",
+            "Sector": "Financial Services",
+            "Industry": "Banks - Regional",
+        }
+        mock_get.return_value = response
+
+        row = EODHDClient().fetch_symbol_general_metadata("600000.SHG")
+
+        self.assertEqual(row["sector"], "Financial Services")
+        mock_get.assert_called_once()
+        args, kwargs = mock_get.call_args
+        self.assertEqual(args[0], "https://example.test/api/fundamentals/600000.SHG")
+        self.assertEqual(kwargs["params"]["filter"], "General")
         self.assertEqual(kwargs["params"]["fmt"], "json")
         self.assertNotIn("token", args[0])
 
