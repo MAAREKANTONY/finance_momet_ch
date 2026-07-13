@@ -43,6 +43,11 @@ from core.services.gm_push import (
     compute_push_state_by_date,
     compute_push_values_for_series,
 )
+from core.services.china_benchmark_registry import (
+    CSI300_MARKET_BENCHMARK,
+    csi300_market_benchmark_exchange,
+    csi300_market_benchmark_ticker,
+)
 from core.services.market_cap import preload_market_cap_series
 from core.services.couloir import (
     COULOIR_SIGNAL_CODE,
@@ -1035,27 +1040,69 @@ def _gm_conditions_to_trend_settings(config: dict[str, Any] | None) -> dict[str,
 def _collect_distinct_benchmark_tickers_for_line_market_conditions(
     symbols: list[Symbol],
     signal_lines: list[dict[str, Any]] | None,
+    *,
+    universe_code: str | None = None,
 ) -> set[str]:
     benchmark_tickers: set[str] = set()
     for line in signal_lines or []:
-        benchmark_tickers |= collect_distinct_benchmark_tickers(symbols, _line_market_conditions_settings(line))
+        benchmark_tickers |= collect_distinct_benchmark_tickers(
+            symbols,
+            _line_market_conditions_settings(line),
+            universe_code=universe_code,
+        )
         benchmark_tickers |= collect_distinct_benchmark_tickers(
             symbols,
             _gm_conditions_to_trend_settings(line.get("gm_buy_conditions")),
+            universe_code=universe_code,
         )
         benchmark_tickers |= collect_distinct_benchmark_tickers(
             symbols,
             _gm_conditions_to_trend_settings(line.get("gm_sell_market_exit_conditions")),
+            universe_code=universe_code,
         )
         benchmark_tickers |= collect_distinct_benchmark_tickers(
             symbols,
             _gm_conditions_to_trend_settings(line.get("gm_push_buy_conditions")),
+            universe_code=universe_code,
         )
         benchmark_tickers |= collect_distinct_benchmark_tickers(
             symbols,
             _gm_conditions_to_trend_settings(line.get("gm_push_sell_market_exit_conditions")),
+            universe_code=universe_code,
         )
     return benchmark_tickers
+
+
+def _universe_code_for_backtest(backtest: Backtest, resolved_universe=None) -> str | None:
+    if resolved_universe is not None:
+        universe_code = getattr(resolved_universe, "universe_code", None)
+        if universe_code:
+            return str(universe_code).strip().upper()
+    mode = str(getattr(getattr(backtest, "scenario", None), "universe_mode", "") or "").strip().upper()
+    if mode == "CSI300_HISTORICAL_DYNAMIC":
+        return "CSI300"
+    if mode == "SP500_HISTORICAL_DYNAMIC":
+        return "SP500"
+    return None
+
+
+def _should_replace_benchmark_symbol(existing: Symbol | None, candidate: Symbol) -> bool:
+    if existing is None:
+        return True
+    if str(candidate.ticker).upper() == csi300_market_benchmark_ticker().upper():
+        return str(candidate.exchange or "").upper() == csi300_market_benchmark_exchange().upper()
+    return False
+
+
+def _load_benchmark_symbols_by_ticker(benchmark_tickers: list[str]) -> dict[str, Symbol]:
+    symbols_by_ticker: dict[str, Symbol] = {}
+    if not benchmark_tickers:
+        return symbols_by_ticker
+    for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
+        existing = symbols_by_ticker.get(benchmark_symbol.ticker)
+        if _should_replace_benchmark_symbol(existing, benchmark_symbol):
+            symbols_by_ticker[benchmark_symbol.ticker] = benchmark_symbol
+    return symbols_by_ticker
 
 
 def _line_market_conditions_label(state_row: dict[str, Any]) -> str:
@@ -1149,13 +1196,14 @@ def _gm_value_for_condition_family(
     nglobal: int,
     gm_current_value: Decimal | None,
     benchmark_cache_by_ticker: dict[str, dict[str, list[Any]]] | None,
+    universe_code: str | None = None,
 ) -> tuple[Decimal | None, str | None]:
     if family == "current":
         return gm_current_value, None
     if family == "market":
-        benchmark_ticker = market_benchmark_ticker_for_symbol(symbol)
+        benchmark_ticker = market_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
     elif family == "sector":
-        benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol)
+        benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
     else:
         return None, None
     if not benchmark_ticker:
@@ -1190,13 +1238,14 @@ def _gm_push_value_for_condition_family(
     as_of: date,
     gm_push_current_values: dict[date, Decimal | None] | None,
     gm_push_benchmark_values_by_ticker: dict[str, dict[date, Decimal | None]] | None,
+    universe_code: str | None = None,
 ) -> tuple[Decimal | None, str | None]:
     if family == "current":
         return (gm_push_current_values or {}).get(as_of), None
     if family == "market":
-        benchmark_ticker = market_benchmark_ticker_for_symbol(symbol)
+        benchmark_ticker = market_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
     elif family == "sector":
-        benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol)
+        benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
     else:
         return None, None
     if not benchmark_ticker:
@@ -1341,6 +1390,7 @@ def _evaluate_gm_push_conditions(
     gm_push_benchmark_values_by_ticker: dict[str, dict[date, Decimal | None]] | None,
     gm_push_state_cache: dict[tuple[Any, ...], dict[date, str]],
     apply_buy_max_threshold: bool = False,
+    universe_code: str | None = None,
 ) -> dict[str, Any]:
     config = config if isinstance(config, dict) else {}
     active_results = []
@@ -1357,6 +1407,7 @@ def _evaluate_gm_push_conditions(
             as_of=as_of,
             gm_push_current_values=gm_push_current_values,
             gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
+            universe_code=universe_code,
         )
         buy_threshold, sell_threshold = _gm_push_thresholds_for_entry(entry)
         if family == "current":
@@ -1429,6 +1480,7 @@ def _evaluate_gm_conditions(
     gm_current_regime: str | None = None,
     benchmark_cache_by_ticker: dict[str, dict[str, list[Any]]] | None,
     apply_buy_max_threshold: bool = False,
+    universe_code: str | None = None,
 ) -> dict[str, Any]:
     config = config if isinstance(config, dict) else {}
     active_results = []
@@ -1446,6 +1498,7 @@ def _evaluate_gm_conditions(
             nglobal=nglobal,
             gm_current_value=gm_current_value,
             benchmark_cache_by_ticker=benchmark_cache_by_ticker,
+            universe_code=universe_code,
         )
         if family == "current" and not bool(entry.get("explicit_threshold")) and gm_current_regime:
             passed = _gm_filter_match(gm_current_regime, f"GM_{mode}")
@@ -2018,15 +2071,32 @@ def run_backtest(
         if resolved_universe is None:
             return None
         metadata = getattr(resolved_universe, "metadata", {}) or {}
-        return {
+        universe_code_value = getattr(resolved_universe, "universe_code", None)
+        meta = {
             "mode": getattr(resolved_universe, "mode", None),
-            "universe_code": getattr(resolved_universe, "universe_code", None),
+            "universe_code": universe_code_value,
             "coverage_start": str(getattr(resolved_universe, "coverage_start", "")),
             "coverage_end": str(getattr(resolved_universe, "coverage_end", "")),
             "superset_count": len(getattr(resolved_universe, "tickers", ()) or ()),
             "ticker_count": len(getattr(resolved_universe, "tickers", ()) or ()),
             "source": metadata.get("source"),
         }
+        if str(universe_code_value or "").strip().upper() == "CSI300":
+            provider_symbol = CSI300_MARKET_BENCHMARK.provider_symbol or (
+                f"{csi300_market_benchmark_ticker()}.{csi300_market_benchmark_exchange()}"
+            )
+            meta["market_benchmark"] = {
+                "name": "CSI 300",
+                "ticker": csi300_market_benchmark_ticker(),
+                "exchange": csi300_market_benchmark_exchange(),
+                "provider_symbol": provider_symbol,
+                "label": f"CSI 300 / {provider_symbol}",
+            }
+            meta["sector_benchmark_status"] = (
+                "GM secteur CSI300 non supporté dans cette phase; aucun fallback vers 510300 "
+                "ou vers le marché n'est appliqué."
+            )
+        return meta
 
     def _state_copy_for_buy_probe(st: dict[str, Any]) -> dict[str, Any]:
         probe = dict(st)
@@ -2144,6 +2214,7 @@ def run_backtest(
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
     needs_gm_conditions = _signal_lines_have_gm_conditions(signal_lines)
     needs_gm_push_conditions = _signal_lines_have_gm_push_conditions(signal_lines)
+    universe_code = _universe_code_for_backtest(backtest, resolved_universe)
 
     # Resolve symbols in one query
     symbols = list(Symbol.objects.filter(ticker__in=tickers))
@@ -2185,14 +2256,15 @@ def run_backtest(
         else {}
     )
     benchmark_tickers = sorted(
-        _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
+        _collect_distinct_benchmark_tickers_for_line_market_conditions(
+            list(sym_by_ticker.values()),
+            signal_lines,
+            universe_code=universe_code,
+        )
         if (needs_gm_conditions or needs_gm_push_conditions)
         else set()
     )
-    benchmark_symbols_by_ticker: dict[str, Symbol] = {}
-    if benchmark_tickers:
-        for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
-            benchmark_symbols_by_ticker.setdefault(benchmark_symbol.ticker, benchmark_symbol)
+    benchmark_symbols_by_ticker = _load_benchmark_symbols_by_ticker(benchmark_tickers)
     benchmark_price_cache = (
         preload_benchmark_price_cache(
             symbols=list(benchmark_symbols_by_ticker.values()),
@@ -2295,6 +2367,7 @@ def run_backtest(
                 gm_current_regime=gm_code,
                 benchmark_cache_by_ticker=benchmark_price_cache,
                 suppress_gm_current=_normalize_global_regime_filter(buy_gm_filter) != "IGNORE",
+                universe_code=universe_code,
             )["passed"]
         )
 
@@ -2318,6 +2391,7 @@ def run_backtest(
             gm_current_regime=gm_code,
             benchmark_cache_by_ticker=benchmark_price_cache,
             apply_buy_max_threshold=True,
+            universe_code=universe_code,
         )
         st["_last_gm_buy_max_blocked"] = _evaluation_blocked_by_buy_max_threshold(evaluation)
         st["_last_gm_buy_debug"] = _compact_gm_buy_debug(evaluation, st)
@@ -2335,6 +2409,7 @@ def run_backtest(
             gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
             gm_current_regime=global_momentum_regime_by_date.get(d),
             benchmark_cache_by_ticker=benchmark_price_cache,
+            universe_code=universe_code,
         )
         evaluation["passed"] = bool(evaluation.get("passed"))
         return evaluation
@@ -2353,6 +2428,7 @@ def run_backtest(
             gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
             gm_push_state_cache=gm_push_state_cache,
             apply_buy_max_threshold=True,
+            universe_code=universe_code,
         )
         st["_last_gm_push_buy_max_blocked"] = _evaluation_blocked_by_buy_max_threshold(evaluation)
         st["_last_gm_push_buy_debug"] = _compact_gm_push_buy_debug(evaluation)
@@ -2369,6 +2445,7 @@ def run_backtest(
             gm_push_current_values=gm_push_current_values_by_date,
             gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
             gm_push_state_cache=gm_push_state_cache,
+            universe_code=universe_code,
         )
         evaluation["passed"] = bool(evaluation.get("passed"))
         return evaluation
@@ -3787,6 +3864,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     signal_lines = _normalize_signal_lines_config(backtest.signal_lines)
     needs_gm_conditions = _signal_lines_have_gm_conditions(signal_lines)
     needs_gm_push_conditions = _signal_lines_have_gm_push_conditions(signal_lines)
+    universe_code = _universe_code_for_backtest(backtest)
 
     symbols = list(Symbol.objects.filter(ticker__in=tickers))
     sym_by_ticker = {s.ticker: s for s in symbols}
@@ -3809,14 +3887,15 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         else {}
     )
     benchmark_tickers = sorted(
-        _collect_distinct_benchmark_tickers_for_line_market_conditions(list(sym_by_ticker.values()), signal_lines)
+        _collect_distinct_benchmark_tickers_for_line_market_conditions(
+            list(sym_by_ticker.values()),
+            signal_lines,
+            universe_code=universe_code,
+        )
         if (needs_gm_conditions or needs_gm_push_conditions)
         else set()
     )
-    benchmark_symbols_by_ticker: dict[str, Symbol] = {}
-    if benchmark_tickers:
-        for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
-            benchmark_symbols_by_ticker.setdefault(benchmark_symbol.ticker, benchmark_symbol)
+    benchmark_symbols_by_ticker = _load_benchmark_symbols_by_ticker(benchmark_tickers)
     benchmark_price_cache = (
         preload_benchmark_price_cache(
             symbols=list(benchmark_symbols_by_ticker.values()),
@@ -3968,6 +4047,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
                 gm_current_regime=gm_code,
                 benchmark_cache_by_ticker=benchmark_price_cache,
                 suppress_gm_current=_normalize_global_regime_filter(buy_gm_filter) != "IGNORE",
+                universe_code=universe_code,
             )["passed"]
         )
 
@@ -3991,6 +4071,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             gm_current_regime=gm_code,
             benchmark_cache_by_ticker=benchmark_price_cache,
             apply_buy_max_threshold=True,
+            universe_code=universe_code,
         )
         st["_last_gm_buy_max_blocked"] = _evaluation_blocked_by_buy_max_threshold(evaluation)
         return bool(evaluation["passed"])
@@ -4007,6 +4088,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             gm_current_value=_to_dec(global_momentum_values_by_date.get(d)),
             gm_current_regime=global_momentum_regime_by_date.get(d),
             benchmark_cache_by_ticker=benchmark_price_cache,
+            universe_code=universe_code,
         )
         evaluation["passed"] = bool(evaluation.get("passed"))
         return evaluation
@@ -4024,6 +4106,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
             gm_push_state_cache=gm_push_state_cache,
             apply_buy_max_threshold=True,
+            universe_code=universe_code,
         )
         st["_last_gm_push_buy_max_blocked"] = _evaluation_blocked_by_buy_max_threshold(evaluation)
         return bool(evaluation["passed"])
@@ -4039,6 +4122,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             gm_push_current_values=gm_push_current_values_by_date,
             gm_push_benchmark_values_by_ticker=gm_push_benchmark_values_by_ticker,
             gm_push_state_cache=gm_push_state_cache,
+            universe_code=universe_code,
         )
         evaluation["passed"] = bool(evaluation.get("passed"))
         return evaluation

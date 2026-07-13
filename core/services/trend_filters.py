@@ -7,6 +7,7 @@ from decimal import Decimal
 from typing import Any
 
 from core.models import DailyBar, Symbol
+from core.services.china_benchmark_registry import csi300_market_benchmark_ticker
 from core.services.global_momentum import (
     DEFAULT_GLOBAL_MOMENTUM_NEUTRAL_BAND,
     regime_for_value,
@@ -34,6 +35,8 @@ _US_EXCHANGES = {
     "NYSE ARCA",
 }
 _US_COUNTRIES = {"US", "USA", "UNITED STATES", "UNITED STATES OF AMERICA"}
+_CHINA_A_SHARE_EXCHANGES = {"SHG", "SHE"}
+_CSI300_UNIVERSE_CODE = "CSI300"
 _MARKET_BENCHMARK_OVERRIDES: dict[str, str] = {
     "SPY": "SPY",
 }
@@ -106,10 +109,19 @@ def _normalize_sector_name(value: Any) -> str:
     return " ".join(text.split())
 
 
-def market_benchmark_ticker_for_symbol(symbol: Symbol | None) -> str | None:
+def _is_china_a_share_symbol(symbol: Symbol | None) -> bool:
+    exchange = str(getattr(symbol, "exchange", "") or "").strip().upper()
+    return exchange in _CHINA_A_SHARE_EXCHANGES
+
+
+def market_benchmark_ticker_for_symbol(symbol: Symbol | None, *, universe_code: str | None = None) -> str | None:
     if symbol is None:
         return None
     ticker = str(getattr(symbol, "ticker", "") or "").strip().upper()
+    if _is_china_a_share_symbol(symbol):
+        if str(universe_code or "").strip().upper() == _CSI300_UNIVERSE_CODE:
+            return csi300_market_benchmark_ticker()
+        return None
     if ticker in _MARKET_BENCHMARK_OVERRIDES:
         return _MARKET_BENCHMARK_OVERRIDES[ticker]
     country = str(getattr(symbol, "country", "") or "").strip().upper()
@@ -119,27 +131,34 @@ def market_benchmark_ticker_for_symbol(symbol: Symbol | None) -> str | None:
     return None
 
 
-def sector_benchmark_ticker_for_symbol(symbol: Symbol | None) -> str | None:
+def sector_benchmark_ticker_for_symbol(symbol: Symbol | None, *, universe_code: str | None = None) -> str | None:
     if symbol is None:
         return None
     ticker = str(getattr(symbol, "ticker", "") or "").strip().upper()
+    if _is_china_a_share_symbol(symbol):
+        return None
     if ticker in _SECTOR_ETF_BY_NORMALIZED_SECTOR.values():
         return ticker
     normalized_sector = _normalize_sector_name(getattr(symbol, "sector", ""))
     return _SECTOR_ETF_BY_NORMALIZED_SECTOR.get(normalized_sector)
 
 
-def collect_distinct_benchmark_tickers(symbols: list[Symbol], settings: Any) -> set[str]:
+def collect_distinct_benchmark_tickers(
+    symbols: list[Symbol],
+    settings: Any,
+    *,
+    universe_code: str | None = None,
+) -> set[str]:
     normalized = normalize_trend_filter_settings(settings)
     out: set[str] = set()
     if normalized[TREND_FILTER_GM_MARKET_KEY] != "IGNORE":
         for symbol in symbols:
-            ticker = market_benchmark_ticker_for_symbol(symbol)
+            ticker = market_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
             if ticker:
                 out.add(ticker)
     if normalized[TREND_FILTER_GM_SECTOR_KEY] != "IGNORE":
         for symbol in symbols:
-            ticker = sector_benchmark_ticker_for_symbol(symbol)
+            ticker = sector_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
             if ticker:
                 out.add(ticker)
     return out
@@ -305,6 +324,7 @@ def evaluate_trend_filters_for_symbol(
     gm_current_regime: str | None,
     benchmark_cache_by_ticker: dict[str, dict[str, list[Any]]] | None,
     suppress_gm_current: bool = False,
+    universe_code: str | None = None,
 ) -> dict[str, Any]:
     normalized = normalize_trend_filter_settings(settings)
     if suppress_gm_current:
@@ -346,7 +366,7 @@ def evaluate_trend_filters_for_symbol(
         actual=gm_current_regime,
     )
 
-    market_benchmark_ticker = market_benchmark_ticker_for_symbol(symbol)
+    market_benchmark_ticker = market_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
     market_reason = None
     market_regime = None
     if normalized[TREND_FILTER_GM_MARKET_KEY] != "IGNORE":
@@ -368,7 +388,7 @@ def evaluate_trend_filters_for_symbol(
         reason=market_reason,
     )
 
-    sector_benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol)
+    sector_benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
     sector_reason = None
     sector_regime = None
     if normalized[TREND_FILTER_GM_SECTOR_KEY] != "IGNORE":
@@ -406,20 +426,26 @@ def evaluate_trend_filters_for_symbol(
     }
 
 
-def summarize_benchmark_usage(*, symbols: list[Symbol], settings: Any, max_sector_curves: int = 6) -> dict[str, Any]:
+def summarize_benchmark_usage(
+    *,
+    symbols: list[Symbol],
+    settings: Any,
+    max_sector_curves: int = 6,
+    universe_code: str | None = None,
+) -> dict[str, Any]:
     normalized = normalize_trend_filter_settings(settings)
     market_tickers: list[str] = []
     sector_tickers: list[str] = []
     if normalized[TREND_FILTER_GM_MARKET_KEY] != "IGNORE":
         market_tickers = sorted({
             ticker
-            for ticker in (market_benchmark_ticker_for_symbol(symbol) for symbol in symbols)
+            for ticker in (market_benchmark_ticker_for_symbol(symbol, universe_code=universe_code) for symbol in symbols)
             if ticker
         })
     if normalized[TREND_FILTER_GM_SECTOR_KEY] != "IGNORE":
         sector_tickers = sorted({
             ticker
-            for ticker in (sector_benchmark_ticker_for_symbol(symbol) for symbol in symbols)
+            for ticker in (sector_benchmark_ticker_for_symbol(symbol, universe_code=universe_code) for symbol in symbols)
             if ticker
         })
     sector_warning = None

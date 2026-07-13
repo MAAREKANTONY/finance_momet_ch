@@ -75,6 +75,12 @@
             <tr><th>Tickers</th><td>{{ universe_meta.ticker_count }}</td></tr>
           {% endif %}
           <tr><th>Source des données</th><td>{{ universe_meta.source|default:"—" }}</td></tr>
+          {% if universe_meta.market_benchmark %}
+            <tr><th>Benchmark marché effectif</th><td>{{ universe_meta.market_benchmark.label }}</td></tr>
+          {% endif %}
+          {% if universe_meta.sector_benchmark_status %}
+            <tr><th>Benchmark secteur</th><td>{{ universe_meta.sector_benchmark_status }}</td></tr>
+          {% endif %}
         </tbody>
       </table>
       <div class="muted" style="margin-top:8px;">

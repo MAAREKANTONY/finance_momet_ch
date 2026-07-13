@@ -372,6 +372,7 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
         messages = list(response.context["messages"])
         self.assertTrue(any("Confirmez explicitement" in str(message) for message in messages))
 
@@ -396,6 +397,7 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertTrue(launch_mock.called)
+        self.assertEqual(ProcessingJob.objects.filter(job_type=ProcessingJob.JobType.RUN_BACKTEST).count(), 1)
         bt.refresh_from_db()
         ack = bt.settings[BACKTEST_READINESS_ACK_SETTINGS_KEY]
         self.assertEqual(ack["hash"], readiness_confirmation_hash(report))
@@ -421,6 +423,7 @@ class DynamicUniverseBacktestWizardTests(TestCase):
 
         self.assertEqual(response.status_code, 200)
         launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
 
     @patch("core.views.launch_processing_job")
     @patch("core.services.dynamic_universe_ohlc_prepare.prepare_dynamic_universe_ohlc")

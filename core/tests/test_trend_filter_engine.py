@@ -16,6 +16,7 @@ from core.forms import _normalize_gm_condition_entry as normalize_form_gm_condit
 from core.forms import _normalize_gm_push_condition_entry as normalize_form_gm_push_condition_entry
 from core.models import Alert, Backtest, DailyBar, DailyMetric, HistoricalMarketCap, Scenario, Symbol
 from core.services.backtesting.engine import (
+    _gm_push_value_for_condition_family,
     _normalize_gm_condition_entry as normalize_engine_gm_condition_entry,
     _normalize_gm_push_condition_entry as normalize_engine_gm_push_condition_entry,
     run_backtest,
@@ -35,7 +36,9 @@ from core.services.trend_filters import (
     TREND_FILTER_GM_SECTOR_KEY,
     TREND_FILTER_OPERATOR_KEY,
     evaluate_trend_filters_for_symbol,
+    market_benchmark_ticker_for_symbol,
     preload_benchmark_price_cache,
+    sector_benchmark_ticker_for_symbol,
 )
 
 
@@ -648,6 +651,131 @@ class TrendFilterEngineTests(TestCase):
         self.assertTrue(line["daily_rows_omitted"])
         self.assertTrue(line["explain"]["played"])
         self.assertEqual(line["explain"]["buy_executed"], 1)
+
+    def test_market_benchmark_resolution_keeps_us_spy_and_requires_csi300_context_for_china(self):
+        china = Symbol.objects.create(
+            ticker="600519",
+            exchange="SHG",
+            country="China",
+            sector="Technology",
+            active=True,
+        )
+
+        self.assertEqual(market_benchmark_ticker_for_symbol(self.symbol), "SPY")
+        self.assertIsNone(market_benchmark_ticker_for_symbol(china))
+        self.assertEqual(market_benchmark_ticker_for_symbol(china, universe_code="CSI300"), "000300")
+        self.assertNotEqual(market_benchmark_ticker_for_symbol(china), "510300")
+        china_named_spy = Symbol.objects.create(ticker="SPY", exchange="SHG", country="US", active=True)
+        self.assertIsNone(market_benchmark_ticker_for_symbol(china_named_spy))
+
+    def test_china_sector_benchmark_never_resolves_to_us_xl_etf(self):
+        china = Symbol.objects.create(
+            ticker="000001",
+            exchange="SHE",
+            country="China",
+            sector="Technology",
+            active=True,
+        )
+
+        self.assertEqual(sector_benchmark_ticker_for_symbol(self.symbol), "XLK")
+        self.assertIsNone(sector_benchmark_ticker_for_symbol(china))
+        self.assertIsNone(sector_benchmark_ticker_for_symbol(china, universe_code="CSI300"))
+        china_named_xlk = Symbol.objects.create(ticker="XLK", exchange="SHE", country="US", sector="Technology", active=True)
+        self.assertIsNone(sector_benchmark_ticker_for_symbol(china_named_xlk))
+
+    @patch("core.services.provider_twelvedata.TwelveDataClient.time_series_daily", side_effect=AssertionError("no provider"))
+    @patch("core.services.provider_eodhd.EODHDClient.fetch_historical_ohlc", side_effect=AssertionError("no provider"))
+    def test_csi300_market_gm_reads_000300_bars_without_spy(self, _eodhd_mock, _td_mock):
+        wrong_exchange = Symbol.objects.create(ticker="000300", exchange="SHE", country="China", instrument_type="ETF", active=True)
+        self._add_benchmark_fixture(
+            wrong_exchange,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+                {"date": self.start + timedelta(days=2), "open": "80", "high": "80", "low": "80", "close": "80"},
+            ],
+        )
+        csi300 = Symbol.objects.create(ticker="000300", exchange="SHG", country="China", instrument_type="INDEX", active=True)
+        self._add_benchmark_fixture(
+            csi300,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+                {"date": self.start + timedelta(days=2), "open": "99", "high": "99", "low": "99", "close": "99"},
+            ],
+        )
+        china = self._fresh_symbol(exchange="SHG", country="China", sector="Technology")
+        bt = self._create_backtest(
+            symbol=china,
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "buy_market_gm_market": "GM_POS",
+                "buy_market_operator": "AND",
+            }],
+            prices=["10", "20", "40"],
+            alerts_by_offset={1: "Af"},
+        )
+        self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+
+        daily = self._daily(bt)
+        self.assertIsNone(daily[1]["action"])
+        self.assertEqual(daily[2]["action"], "BUY")
+
+    def test_static_china_market_gm_does_not_implicitly_use_csi300(self):
+        csi300 = Symbol.objects.create(ticker="000300", exchange="SHG", country="China", instrument_type="INDEX", active=True)
+        self._add_benchmark_fixture(
+            csi300,
+            rows=[
+                {"date": self.start, "open": "100", "high": "100", "low": "100", "close": "100"},
+                {"date": self.start + timedelta(days=1), "open": "90", "high": "90", "low": "90", "close": "90"},
+                {"date": self.start + timedelta(days=2), "open": "99", "high": "99", "low": "99", "close": "99"},
+            ],
+        )
+        china = self._fresh_symbol(exchange="SHG", country="China", sector="Technology")
+        bt = self._create_backtest(
+            symbol=china,
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "buy_logic": "AND",
+                "sell": [],
+                "buy_market_gm_market": "GM_POS",
+                "buy_market_operator": "AND",
+            }],
+            prices=["10", "20", "40"],
+            alerts_by_offset={1: "Af"},
+        )
+
+        daily = self._daily(bt)
+
+        self.assertEqual([row["action"] for row in daily], [None, None, None])
+        self.assertIsNone(daily[1]["gm_buy_debug"]["families"]["market"].get("benchmark_ticker"))
+
+    def test_csi300_gm_push_market_uses_000300_resolution(self):
+        china = Symbol.objects.create(
+            ticker="600000",
+            exchange="SHG",
+            country="China",
+            sector="Financial Services",
+            active=True,
+        )
+        as_of = self.start + timedelta(days=2)
+
+        value, benchmark_ticker = _gm_push_value_for_condition_family(
+            family="market",
+            symbol=china,
+            as_of=as_of,
+            gm_push_current_values={},
+            gm_push_benchmark_values_by_ticker={"000300": {as_of: Decimal("0.12")}},
+            universe_code="CSI300",
+        )
+
+        self.assertEqual(benchmark_ticker, "000300")
+        self.assertEqual(value, Decimal("0.12"))
 
     def test_gm_push_market_buy_without_explicit_threshold_does_not_block_backtest_or_kpi_path(self):
         self._add_benchmark_fixture(

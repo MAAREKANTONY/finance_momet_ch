@@ -121,6 +121,14 @@ class DynamicUniverseReadinessTestCase(TestCase):
     def _check(self, report, code: str):
         return next(check for check in report.checks if check.code == code)
 
+    def _ready_csi300_member(self) -> Symbol:
+        universe = self._csi300()
+        symbol = self._symbol("600519", exchange="SHG", sector="Consumer Defensive")
+        self._membership(universe, symbol)
+        self._coverage(universe)
+        self._bar_edges(symbol)
+        return symbol
+
     def test_universe_definition_absent_is_not_ready_and_suggests_init(self):
         report = check_dynamic_universe_readiness(universe="SP500", start=self.start, end=self.end)
 
@@ -388,7 +396,9 @@ class DynamicUniverseReadinessTestCase(TestCase):
         self.assertEqual(self._check(report, "historical_symbols").status, CHECK_OK)
         self.assertEqual(self._check(report, "member_daily_bars").status, CHECK_WARNING)
 
-    def test_csi300_gm_market_is_blocked_without_explicit_benchmark(self):
+    def test_csi300_gm_market_requires_explicit_market_benchmark_symbol(self):
+        self._ready_csi300_member()
+
         report = check_dynamic_universe_readiness(
             universe="CSI300",
             start=self.start,
@@ -398,10 +408,79 @@ class DynamicUniverseReadinessTestCase(TestCase):
 
         check = self._check(report, "gm_market_daily_bars")
         self.assertEqual(check.status, CHECK_ERROR)
-        self.assertIn("GM market non supporté pour CSI300 V1", check.message)
+        self.assertIn("Benchmark marché CSI300 absent: 000300.SHG", check.message)
+        self.assertEqual(check.details["missing_symbols"], ["000300.SHG"])
         self.assertNotIn("SPY", check.message)
 
+    def test_csi300_gm_market_errors_when_benchmark_has_no_ohlc(self):
+        self._ready_csi300_member()
+        Symbol.objects.create(ticker="000300", exchange="SHG", instrument_type="INDEX", country="China", currency="CNY")
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_market=True,
+        )
+
+        check = self._check(report, "gm_market_daily_bars")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertIn("sans OHLC exploitable", check.message)
+        self.assertEqual(check.details["missing_ohlc"], ["000300.SHG"])
+
+    def test_csi300_gm_market_is_ready_with_complete_benchmark_coverage(self):
+        self._ready_csi300_member()
+        benchmark = Symbol.objects.create(ticker="000300", exchange="SHG", instrument_type="INDEX", country="China", currency="CNY")
+        self._bar_edges(benchmark)
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_market=True,
+        )
+
+        check = self._check(report, "gm_market_daily_bars")
+        self.assertEqual(check.status, CHECK_OK)
+        self.assertIn("CSI 300 Index / 000300.SHG", check.message)
+        self.assertEqual(check.details["required_provider_symbols"], ["000300.SHG"])
+        self.assertTrue(report.ready)
+
+    def test_csi300_gm_market_partial_benchmark_coverage_requires_confirmation(self):
+        longer_end = self.start + timedelta(days=10)
+        universe = self._csi300()
+        member = self._symbol("600519", exchange="SHG", sector="Consumer Defensive")
+        self._membership(universe, member, valid_to=longer_end)
+        self._coverage(universe, end=longer_end)
+        self._bar_edges(member, end=longer_end)
+        benchmark = Symbol.objects.create(ticker="000300", exchange="SHG", instrument_type="INDEX", country="China", currency="CNY")
+        DailyBar.objects.create(
+            symbol=benchmark,
+            date=longer_end,
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=1000,
+            source="test",
+        )
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=longer_end,
+            require_gm_market=True,
+        )
+
+        check = self._check(report, "gm_market_daily_bars")
+        self.assertEqual(check.status, CHECK_WARNING)
+        self.assertEqual(report.status, REPORT_READY_WITH_WARNINGS)
+        self.assertTrue(check.details["requires_confirmation"])
+        self.assertEqual(check.details["first_available_date"], longer_end.isoformat())
+
     def test_csi300_gm_sector_is_blocked_for_us_sector_benchmarks(self):
+        self._ready_csi300_member()
+
         report = check_dynamic_universe_readiness(
             universe="CSI300",
             start=self.start,
@@ -412,6 +491,7 @@ class DynamicUniverseReadinessTestCase(TestCase):
         check = self._check(report, "gm_sector_daily_bars")
         self.assertEqual(check.status, CHECK_ERROR)
         self.assertIn("GM sectoriel non supporté pour CSI300 V1", check.message)
+        self.assertIn("Industrials et Utilities", check.message)
 
 
 class DynamicUniverseReadinessCommandTests(TestCase):

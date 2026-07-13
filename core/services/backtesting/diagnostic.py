@@ -13,11 +13,14 @@ from core.services.recent_high_drawdown import (
     normalize_recent_high_drawdown_params,
 )
 from core.services.gm_push import compute_current_push_values_by_date, compute_push_state_by_date, compute_push_values_for_series
+from core.services.china_benchmark_registry import csi300_market_benchmark_exchange, csi300_market_benchmark_ticker
 from core.services.trend_filters import (
     collect_distinct_benchmark_tickers,
     evaluate_trend_filters_for_symbol,
+    market_benchmark_ticker_for_symbol,
     normalize_trend_filter_settings,
     preload_benchmark_price_cache,
+    sector_benchmark_ticker_for_symbol,
     summarize_benchmark_usage,
     trend_return_from_cache,
 )
@@ -43,6 +46,37 @@ _SIGNAL_SERIES_FIELDS = {
     "G1": ("K4",),
     "H1": ("K4",),
 }
+
+
+def _universe_code_for_backtest(backtest) -> str | None:
+    meta = ((getattr(backtest, "results", None) or {}).get("meta") or {}).get("universe") or {}
+    if meta.get("universe_code"):
+        return str(meta["universe_code"]).strip().upper()
+    mode = str(getattr(getattr(backtest, "scenario", None), "universe_mode", "") or "").strip().upper()
+    if mode == "CSI300_HISTORICAL_DYNAMIC":
+        return "CSI300"
+    if mode == "SP500_HISTORICAL_DYNAMIC":
+        return "SP500"
+    return None
+
+
+def _should_replace_benchmark_symbol(existing: Symbol | None, candidate: Symbol) -> bool:
+    if existing is None:
+        return True
+    if str(candidate.ticker).upper() == csi300_market_benchmark_ticker().upper():
+        return str(candidate.exchange or "").upper() == csi300_market_benchmark_exchange().upper()
+    return False
+
+
+def _load_benchmark_symbols_by_ticker(benchmark_tickers: list[str]) -> dict[str, Symbol]:
+    symbols_by_ticker: dict[str, Symbol] = {}
+    if not benchmark_tickers:
+        return symbols_by_ticker
+    for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
+        existing = symbols_by_ticker.get(benchmark_symbol.ticker)
+        if _should_replace_benchmark_symbol(existing, benchmark_symbol):
+            symbols_by_ticker[benchmark_symbol.ticker] = benchmark_symbol
+    return symbols_by_ticker
 
 _ACTION_MARKERS = {"BUY", "SELL", "FORCED_SELL"}
 
@@ -521,6 +555,7 @@ def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[
 
     settings = line_config["settings"]
     roles_by_family = line_config["roles_by_family"]
+    universe_code = _universe_code_for_backtest(backtest)
     normalized = normalize_trend_filter_settings(settings)
     gm_values_by_date = {
         str((row or {}).get("date") or ""): None if (row or {}).get("avg_global_nglobal") in (None, "") else str((row or {}).get("avg_global_nglobal"))
@@ -549,10 +584,8 @@ def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[
                 universe_tickers.append(str(item))
     universe_symbols = list(Symbol.objects.filter(ticker__in=universe_tickers).order_by("ticker", "id"))
 
-    benchmark_tickers = sorted(collect_distinct_benchmark_tickers(universe_symbols, settings))
-    benchmark_symbols_by_ticker: dict[str, Symbol] = {}
-    for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
-        benchmark_symbols_by_ticker.setdefault(benchmark_symbol.ticker, benchmark_symbol)
+    benchmark_tickers = sorted(collect_distinct_benchmark_tickers(universe_symbols, settings, universe_code=universe_code))
+    benchmark_symbols_by_ticker = _load_benchmark_symbols_by_ticker(benchmark_tickers)
     benchmark_cache = preload_benchmark_price_cache(
         symbols=list(benchmark_symbols_by_ticker.values()),
         scenario=backtest.scenario,
@@ -567,6 +600,7 @@ def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[
         nglobal=int(getattr(backtest.scenario, "nglobal", 20) or 20),
         gm_current_regime=gm_regime_by_date.get(dates[-1]),
         benchmark_cache_by_ticker=benchmark_cache,
+        universe_code=universe_code,
     )
 
     filters = evaluated["filters"]
@@ -642,7 +676,7 @@ def _build_trend_filter_payload(*, backtest, symbol: Symbol | None, dates: list[
                 for row_date in dates
             ],
         ),
-        "universe": summarize_benchmark_usage(symbols=universe_symbols, settings=settings),
+        "universe": summarize_benchmark_usage(symbols=universe_symbols, settings=settings, universe_code=universe_code),
     }
 
 
@@ -718,6 +752,7 @@ def _build_gm_push_payload(*, backtest, symbol: Symbol | None, dates: list[str],
         return None
 
     roles_by_family = line_config["roles_by_family"]
+    universe_code = _universe_code_for_backtest(backtest)
     nglobal = int(getattr(backtest.scenario, "nglobal", 20) or 20)
     date_objects = [date.fromisoformat(row_date) for row_date in dates]
 
@@ -753,10 +788,8 @@ def _build_gm_push_payload(*, backtest, symbol: Symbol | None, dates: list[str],
         roles = roles_by_family.get(family) or []
         settings[_GM_FAMILY_TO_SETTING_KEY[family]] = _gm_mode_to_filter_code(roles[0].get("mode")) if roles else "IGNORE"
 
-    benchmark_tickers = sorted(collect_distinct_benchmark_tickers(universe_symbols, settings))
-    benchmark_symbols_by_ticker: dict[str, Symbol] = {}
-    for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
-        benchmark_symbols_by_ticker.setdefault(benchmark_symbol.ticker, benchmark_symbol)
+    benchmark_tickers = sorted(collect_distinct_benchmark_tickers(universe_symbols, settings, universe_code=universe_code))
+    benchmark_symbols_by_ticker = _load_benchmark_symbols_by_ticker(benchmark_tickers)
     benchmark_cache = preload_benchmark_price_cache(
         symbols=list(benchmark_symbols_by_ticker.values()),
         scenario=backtest.scenario,
@@ -816,10 +849,8 @@ def _build_gm_push_payload(*, backtest, symbol: Symbol | None, dates: list[str],
     market_benchmark_ticker = None
     sector_benchmark_ticker = None
     if symbol is not None:
-        from core.services.trend_filters import market_benchmark_ticker_for_symbol, sector_benchmark_ticker_for_symbol
-
-        market_benchmark_ticker = market_benchmark_ticker_for_symbol(symbol)
-        sector_benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol)
+        market_benchmark_ticker = market_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
+        sector_benchmark_ticker = sector_benchmark_ticker_for_symbol(symbol, universe_code=universe_code)
 
     return {
         "operator_buy": line_config["operator_buy"] if line_config["operator_buy"] in {"AND", "OR"} else "AND",
@@ -839,7 +870,7 @@ def _build_gm_push_payload(*, backtest, symbol: Symbol | None, dates: list[str],
             benchmark_ticker=sector_benchmark_ticker,
             values_by_date=_benchmark_series(sector_benchmark_ticker),
         ),
-        "universe": summarize_benchmark_usage(symbols=universe_symbols, settings=settings),
+        "universe": summarize_benchmark_usage(symbols=universe_symbols, settings=settings, universe_code=universe_code),
     }
 
 
