@@ -28,14 +28,21 @@ def get_default_queue_name() -> str:
     return str(getattr(settings, "CELERY_TASK_DEFAULT_QUEUE", "celery") or "celery")
 
 
+def _is_test_mode() -> bool:
+    return bool(getattr(settings, "TESTING", False))
+
 
 def get_redis_client():
+    if _is_test_mode():
+        raise RuntimeError("Redis broker client is disabled during tests.")
     return redis.Redis.from_url(settings.CELERY_BROKER_URL)
 
 
 
 def get_broker_queue_length(queue_name: str | None = None) -> int:
     queue = (queue_name or get_default_queue_name()).strip() or "celery"
+    if _is_test_mode():
+        return 0
     client = get_redis_client()
     return int(client.llen(queue))
 
@@ -43,6 +50,8 @@ def get_broker_queue_length(queue_name: str | None = None) -> int:
 
 def purge_broker_queue(queue_name: str | None = None) -> int:
     queue = (queue_name or get_default_queue_name()).strip() or "celery"
+    if _is_test_mode():
+        return 0
     client = get_redis_client()
     before = int(client.llen(queue))
     client.delete(queue)
@@ -78,7 +87,7 @@ def _extract_task_name(raw_value: str) -> str:
 def sample_broker_queue(queue_name: str | None = None, *, limit: int = 5) -> list[str]:
     queue = (queue_name or get_default_queue_name()).strip() or "celery"
     limit = max(0, int(limit or 0))
-    if limit <= 0:
+    if limit <= 0 or _is_test_mode():
         return []
     client = get_redis_client()
     raw_items = client.lrange(queue, 0, max(0, limit - 1))
