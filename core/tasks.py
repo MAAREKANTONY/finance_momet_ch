@@ -24,6 +24,11 @@ from .services.csi300_eodhd_metadata import (
     enrich_csi300_symbols_from_eodhd_metadata,
     format_csi300_eodhd_metadata_summary,
 )
+from .services.csi300_benchmark_preparation import (
+    CSI300BenchmarkPreparationReport,
+    format_csi300_benchmark_report_summary,
+    prepare_csi300_benchmarks,
+)
 from .services.dynamic_universe_symbols import (
     UniverseSymbolMappingError,
     ensure_universe_membership_symbols,
@@ -252,6 +257,64 @@ def _format_csi300_eodhd_metadata_progress(report: CSI300EODHDMetadataReport, *,
         f"erreurs={report.errors} "
         f"secteurs_génériques={report.generic_sector} "
         f"secteurs_absents={report.missing_sector}"
+    )
+
+
+def _csi300_benchmark_job_report(report: CSI300BenchmarkPreparationReport) -> dict:
+    payload = report.as_dict()
+    error_details = []
+    for detail in payload.get("per_benchmark") or []:
+        error = str(detail.get("error") or "").strip()
+        if not error:
+            continue
+        error_details.append(
+            {
+                "provider_symbol": detail.get("provider_symbol", ""),
+                "canonical_sector": detail.get("canonical_sector", ""),
+                "error": _sanitize_provider_error_message(error),
+            }
+        )
+    payload["error_details"] = error_details[:25]
+    return payload
+
+
+def _format_csi300_benchmark_job_message(report: CSI300BenchmarkPreparationReport) -> str:
+    payload = _csi300_benchmark_job_report(report)
+    lines = [
+        format_csi300_benchmark_report_summary(report),
+        (
+            "Rapport: "
+            f"expected={payload['expected']} supported={payload['supported']} "
+            f"unsupported={len(payload['unsupported_sectors'])} existing_symbols={payload['existing_symbols']} "
+            f"created_symbols={payload['created_symbols']} conflicts={payload['conflicts']} "
+            f"provider_successes={payload['provider_successes']} errors={payload['errors']} "
+            f"inserted_bars={payload['inserted_bars']} updated_bars={payload['updated_bars']} "
+            f"unchanged_bars={payload['unchanged_bars']} no_data={payload['no_data']} "
+            f"dry_run={payload['dry_run']} period={payload['start_date']}..{payload['end_date']}"
+        ),
+    ]
+    if payload["unsupported_sectors"]:
+        lines.append("Secteurs non couverts: " + ", ".join(payload["unsupported_sectors"]))
+    if payload["error_details"]:
+        errors = "; ".join(
+            f"{item['canonical_sector']} {item['provider_symbol']}: {item['error']}"
+            for item in payload["error_details"][:10]
+        )
+        lines.append(f"Erreurs: {errors}")
+    lines.append("report_json=" + json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+    return "\n".join(lines)
+
+
+def _format_csi300_benchmark_progress(report: CSI300BenchmarkPreparationReport, *, processed: int, total: int) -> str:
+    return (
+        "Préparation benchmarks CSI300 en cours: "
+        f"traités={processed}/{total} "
+        f"créés={report.created_symbols} "
+        f"existants={report.existing_symbols} "
+        f"provider_ok={report.provider_successes} "
+        f"erreurs={report.errors} "
+        f"barres_insérées={report.inserted_bars} "
+        f"barres_mises_à_jour={report.updated_bars}"
     )
 
 
@@ -1135,6 +1198,84 @@ def enrich_csi300_metadata_job_task(
         )
         job.status = ProcessingJob.Status.DONE
         job.message = _format_csi300_eodhd_metadata_job_message(report)
+        job.error = ""
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "error", "finished_at"])
+        return job.message
+    except JobCancelled:
+        job.status = ProcessingJob.Status.CANCELLED
+        job.message = (job.message or "") + "\nAnnulé par l'utilisateur."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "annulé"
+    except JobKilled:
+        job.status = ProcessingJob.Status.KILLED
+        job.message = (job.message or "") + "\nArrêt forcé demandé par l'utilisateur."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "arrêt forcé"
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
+    except Exception as e:
+        job.status = ProcessingJob.Status.FAILED
+        job.error = _sanitize_provider_error_message(e)
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
+        raise
+
+
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
+def prepare_csi300_benchmarks_job_task(
+    self,
+    *,
+    apply: bool = False,
+    start_date=None,
+    end_date=None,
+    verify_provider: bool = False,
+    user_id=None,
+    job_id=None,
+):
+    """Tracked job wrapper around CSI300 benchmark Symbol/OHLC preparation."""
+    job = None
+    if job_id:
+        job = ProcessingJob.objects.filter(id=job_id).first()
+        if job:
+            mark_job_running(job, task_request=self.request, message="Préparation benchmarks CSI300 démarrée")
+    if job is None:
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.FETCH_BARS,
+            status=ProcessingJob.Status.PENDING,
+            created_by_id=user_id,
+            message="Préparation benchmarks CSI300 en attente",
+        )
+        mark_job_running(job, task_request=self.request, message="Préparation benchmarks CSI300 démarrée")
+
+    try:
+        dry_run = not bool(apply)
+        pulse = JobCheckpointPulse(
+            job,
+            every_n=1,
+            every_seconds=20,
+            task_request=self.request,
+            base_label="csi300_benchmarks",
+        )
+        job_checkpoint(job, checkpoint="csi300_benchmarks:démarrage", task_request=self.request)
+
+        def _progress_callback(report, processed: int, total: int) -> None:
+            emitted = pulse.hit(checkpoint=f"{processed}/{total}", force=bool(processed >= total))
+            if emitted:
+                _job_update(job, message=_format_csi300_benchmark_progress(report, processed=processed, total=total))
+
+        report = prepare_csi300_benchmarks(
+            dry_run=dry_run,
+            start_date=start_date,
+            end_date=end_date,
+            verify_provider=bool(verify_provider),
+            progress_callback=_progress_callback,
+        )
+        job.status = ProcessingJob.Status.DONE
+        job.message = _format_csi300_benchmark_job_message(report)
         job.error = ""
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "message", "error", "finished_at"])

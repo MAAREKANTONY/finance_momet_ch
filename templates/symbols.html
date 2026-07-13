@@ -19,6 +19,34 @@
 </div>
 
 <div class="card">
+  <h3>Benchmarks CSI300 — marché et secteurs</h3>
+  <p class="muted">
+    Prépare le benchmark marché CSI300, {{ csi300_benchmark_supported_count|default:"9" }} benchmarks sectoriels couverts
+    et signale les secteurs non couverts{% if csi300_benchmark_unsupported_sectors %} ({{ csi300_benchmark_unsupported_sectors|join:", " }}){% endif %}.
+  </p>
+  <p class="muted">
+    Dry-run: aucune donnée modifiée. Apply: crée uniquement les Symbol benchmarks manquants et récupère leurs OHLC EODHD
+    depuis le 2021-08-20. Le fallback marché n'est pas activé automatiquement.
+  </p>
+  <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
+    <form method="post" action="{% url 'symbols_csi300_benchmarks' %}" style="display:inline;">
+      {% csrf_token %}
+      <input type="hidden" name="mode" value="dry_run">
+      <button class="btn" type="submit">Analyser les benchmarks CSI300</button>
+    </form>
+    <form method="post" action="{% url 'symbols_csi300_benchmarks' %}" style="display:inline;">
+      {% csrf_token %}
+      <input type="hidden" name="mode" value="apply">
+      <label class="muted" style="display:inline-flex; gap:6px; align-items:center;">
+        <input type="checkbox" name="confirm_apply" value="1">
+        Confirmer la préparation
+      </label>
+      <button class="btn" type="submit">Préparer les benchmarks CSI300 et leurs OHLC</button>
+    </form>
+  </div>
+</div>
+
+<div class="card">
   <h3>Métadonnées CSI300 — EODHD</h3>
   <p class="muted">
     Enrichissement asynchrone via EODHD Fundamentals General pour les symboles CSI300 mappés

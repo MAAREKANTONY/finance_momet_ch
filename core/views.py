@@ -70,6 +70,7 @@ from .forms import (
 from .backtest_row_projection import augment_tradable_projection_row
 from .services.provider_twelvedata import TwelveDataClient
 from .services.benchmark_etf_sync import format_benchmark_sync_summary, sync_benchmark_etfs_for_symbols
+from .services.china_benchmark_registry import supported_sector_benchmarks, unsupported_sector_benchmarks
 from .services.symbol_enrichment import enrich_symbols_metadata
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
@@ -829,6 +830,8 @@ def symbols_page(request):
             "symbols": symbols,
             "manual_form": manual_form,
             "csi300_symbol_count": csi300_symbol_count,
+            "csi300_benchmark_supported_count": len(supported_sector_benchmarks()),
+            "csi300_benchmark_unsupported_sectors": [item.canonical_sector for item in unsupported_sector_benchmarks()],
         },
     )
 
@@ -1029,6 +1032,44 @@ def symbols_csi300_eodhd_metadata(request):
 
     action_label = "Application" if apply_mode else "Analyse"
     messages.success(request, f"{action_label} CSI300/EODHD lancée en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
+
+
+@login_required
+@require_POST
+def symbols_csi300_benchmarks(request):
+    mode = (request.POST.get("mode") or "").strip()
+    if mode not in {"dry_run", "apply"}:
+        messages.error(request, "Mode de préparation benchmarks CSI300 invalide.")
+        return redirect("symbols_page")
+
+    apply_mode = mode == "apply"
+    if apply_mode and (request.POST.get("confirm_apply") or "").strip() != "1":
+        messages.error(request, "Confirmation requise avant de préparer les benchmarks CSI300.")
+        return redirect("symbols_page")
+
+    from .tasks import prepare_csi300_benchmarks_job_task
+
+    launch = launch_processing_job(
+        task=prepare_csi300_benchmarks_job_task,
+        job_type=ProcessingJob.JobType.FETCH_BARS,
+        created_by=request.user,
+        message=(
+            "Préparation des benchmarks CSI300 et de leurs OHLC en attente"
+            if apply_mode
+            else "Analyse des benchmarks CSI300 en attente"
+        ),
+        task_kwargs={
+            "apply": apply_mode,
+            "user_id": request.user.id,
+        },
+    )
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de la préparation benchmarks CSI300 impossible: {launch.dispatch_error}")
+        return redirect("symbols_page")
+
+    action_label = "Préparation" if apply_mode else "Analyse"
+    messages.success(request, f"{action_label} benchmarks CSI300 lancée en background (job #{launch.job.id}).")
     return redirect("job_detail", pk=launch.job.id)
 
 
