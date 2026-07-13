@@ -184,6 +184,21 @@ class EODHDClient:
             return []
         raise EODHDError(_unsupported_sp500_payload_message(payload))
 
+    def fetch_symbol_general_metadata(self, provider_symbol: str) -> dict[str, Any]:
+        provider_symbol = str(provider_symbol or "").strip().upper()
+        if not provider_symbol:
+            raise EODHDError("provider_symbol is required.")
+        payload = self._get(
+            f"/fundamentals/{provider_symbol}",
+            {"filter": "General"},
+        )
+        row = normalize_symbol_general_metadata_payload(payload, provider_symbol)
+        if row:
+            return row
+        if payload in (None, "", [], {}):
+            return {}
+        raise EODHDError(_unsupported_symbol_general_payload_message(payload))
+
 
 def _records_from_payload(payload: Any) -> list[Any]:
     if isinstance(payload, list):
@@ -328,6 +343,36 @@ def normalize_sp500_historical_components_payload(payload: Any) -> list[dict[str
     return rows
 
 
+def normalize_symbol_general_metadata_payload(payload: Any, provider_symbol: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        return {}
+    return {
+        "provider_symbol": str(provider_symbol or "").strip().upper(),
+        "code": _metadata_value(payload, "Code"),
+        "name": _metadata_value(payload, "Name"),
+        "type": _metadata_value(payload, "Type"),
+        "exchange": _metadata_value(payload, "Exchange"),
+        "currency": _metadata_value(payload, "CurrencyCode", "CurrencyName"),
+        "country": _metadata_value(payload, "CountryName", "CountryISO"),
+        "sector": _metadata_value(payload, "Sector", "GicSector"),
+        "industry": _metadata_value(payload, "Industry", "GicIndustry"),
+        "gic_sector": _metadata_value(payload, "GicSector"),
+        "gic_group": _metadata_value(payload, "GicGroup"),
+        "gic_industry": _metadata_value(payload, "GicIndustry"),
+        "gic_sub_industry": _metadata_value(payload, "GicSubIndustry"),
+        "is_delisted": payload.get("IsDelisted"),
+        "source_payload": payload,
+    }
+
+
+def _metadata_value(payload: dict[str, Any], *keys: str) -> str:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
 def _unsupported_payload_message(payload: Any) -> str:
     if isinstance(payload, dict):
         sample_keys = list(payload.keys())[:5]
@@ -361,6 +406,19 @@ def sanitize_provider_error_message(error: Exception | str) -> str:
         r"\1***",
         message,
         flags=re.IGNORECASE,
+    )
+
+
+def _unsupported_symbol_general_payload_message(payload: Any) -> str:
+    if isinstance(payload, dict):
+        sample_keys = list(payload.keys())[:5]
+        return (
+            "Unsupported EODHD symbol General payload shape: "
+            f"dict keys={sample_keys}"
+        )
+    return (
+        "Unsupported EODHD symbol General payload shape: "
+        f"type={type(payload).__name__}"
     )
 
 
