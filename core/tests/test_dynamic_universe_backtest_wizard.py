@@ -344,6 +344,25 @@ class DynamicUniverseBacktestWizardTests(TestCase):
         self.assertContains(response, "Je souhaite continuer avec les données disponibles")
 
     @patch("core.views.launch_processing_job")
+    def test_backtest_run_rejects_invalid_capital_without_processing_job(self, launch_mock):
+        bt = self._backtest(scenario=self._scenario(dynamic=False))
+        Backtest.objects.filter(id=bt.id).update(
+            status=Backtest.Status.DONE,
+            capital_total=Decimal("0"),
+            capital_per_ticker=Decimal("0"),
+        )
+
+        response = self.client.post(reverse("backtest_run", args=[bt.pk]), follow=True)
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.DONE)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("capital par action" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
     @patch("core.views.check_dynamic_universe_readiness")
     def test_backtest_run_warning_without_confirmation_is_rejected(self, readiness_mock, launch_mock):
         readiness_mock.return_value = self._warning_report()

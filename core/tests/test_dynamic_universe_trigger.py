@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -730,6 +731,34 @@ class DynamicUniverseTriggerPageTests(TestCase):
         readiness_mock.assert_not_called()
         messages = list(response.context["messages"])
         self.assertTrue(any("ne sont pas supportés pour CSI300" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
+    def test_trigger_backtest_run_rejects_invalid_capital_without_processing_job(self, launch_mock):
+        scenario = Scenario.objects.create(name="Static trigger capital", universe_mode=Scenario.UniverseMode.STATIC_TICKERS)
+        backtest = Backtest.objects.create(
+            name="BT invalid capital",
+            scenario=scenario,
+            status=Backtest.Status.DONE,
+            capital_total=Decimal("50"),
+            capital_per_ticker=Decimal("100"),
+        )
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {
+                "action": "bt_run",
+                "backtest_id": str(backtest.id),
+            },
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_not_called()
+        self.assertEqual(ProcessingJob.objects.count(), 0)
+        backtest.refresh_from_db()
+        self.assertEqual(backtest.status, Backtest.Status.DONE)
+        messages = list(response.context["messages"])
+        self.assertTrue(any("capital total" in str(message) for message in messages))
 
     @patch("core.views.launch_processing_job")
     def test_trigger_prepare_ohlc_rejects_backtest_universe_mismatch(self, launch_mock):

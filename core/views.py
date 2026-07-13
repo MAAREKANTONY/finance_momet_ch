@@ -73,6 +73,7 @@ from .services.symbol_enrichment import enrich_symbols_metadata
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
+from .services.backtesting.capital_validation import validate_backtest_capital_for_object
 from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
 from .services.couloir import is_couloir_line, normalize_couloir_line_config
 from .services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
@@ -155,6 +156,15 @@ def _signal_lines_json_for_form(form) -> str:
         return json.dumps(_clean_signal_lines_json(parsed_value))
     except Exception:
         return raw_value if isinstance(raw_value, str) else json.dumps(parsed_value or [])
+
+
+def _block_invalid_backtest_capital(request: HttpRequest, bt: Backtest) -> bool:
+    errors = validate_backtest_capital_for_object(bt)
+    if not errors:
+        return False
+    for error in errors:
+        messages.error(request, error.message)
+    return True
 
 
 def _configuration_snapshot_context(kind: str, selected_id=None) -> dict:
@@ -2959,6 +2969,9 @@ def backtest_run(request, pk: int):
     if request.method != "POST":
         return redirect("backtest_detail", pk=pk)
 
+    if _block_invalid_backtest_capital(request, bt):
+        return redirect("backtest_detail", pk=pk)
+
     # Refresh universe snapshot from the current scenario before running.
     # This ensures that scenario changes are taken into account when re-running a backtest.
     if bt.status != Backtest.Status.RUNNING:
@@ -3372,6 +3385,13 @@ def backtest_results(request, pk: int):
         explain = None
     explain_blocked_counts = []
     explain_last_blockers = []
+    capital_sizing_blocker_codes = {
+        "ZERO_EFFECTIVE_CAPITAL",
+        "INSUFFICIENT_CASH",
+        "ORDER_QUANTITY_ZERO",
+        "INVALID_EXECUTION_PRICE",
+    }
+    explain_has_capital_sizing_blocker = False
     if explain:
         blocked_counts = explain.get("blocked_counts") or {}
         if isinstance(blocked_counts, dict):
@@ -3391,6 +3411,9 @@ def backtest_results(request, pk: int):
                 or blocker.get("buy_max_threshold")
                 or ""
             )
+            code = str(blocker.get("code") or "")
+            if code in capital_sizing_blocker_codes:
+                explain_has_capital_sizing_blocker = True
             explain_last_blockers.append({
                 **blocker,
                 "display_type": display_type,
@@ -3399,6 +3422,8 @@ def backtest_results(request, pk: int):
                 "display_decision": blocker.get("decision") or "",
                 "display_reason": blocker.get("reason") or "",
             })
+        if not explain_has_capital_sizing_blocker and isinstance(blocked_counts, dict):
+            explain_has_capital_sizing_blocker = any(str(code) in capital_sizing_blocker_codes for code in blocked_counts)
 
     # --- UI-only metrics mapping (NO engine changes, additive only) ---
     # Legacy engine counters:
@@ -3561,6 +3586,7 @@ def backtest_results(request, pk: int):
             "explain": explain,
             "explain_blocked_counts": explain_blocked_counts,
             "explain_last_blockers": explain_last_blockers,
+            "explain_has_capital_sizing_blocker": explain_has_capital_sizing_blocker,
             "portfolio_kpi": port_kpi,
             "portfolio_daily": port_daily_for_ui,
             "portfolio_daily_json": json.dumps(port_daily_for_ui),
@@ -5672,6 +5698,8 @@ def trigger_page(request: HttpRequest):
                     else:
                         from core.tasks import run_backtest_job_task
                         bt = Backtest.objects.get(id=int(backtest_id))
+                        if _block_invalid_backtest_capital(request, bt):
+                            return redirect("trigger_page")
                         launch = launch_processing_job(
                             task=run_backtest_job_task,
                             job_type=ProcessingJob.JobType.RUN_BACKTEST,

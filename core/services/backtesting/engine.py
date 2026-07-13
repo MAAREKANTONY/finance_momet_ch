@@ -3024,10 +3024,34 @@ def run_backtest(
                 # no allocation available (limited CP)
                 _merge_couloir_day_debug(st, couloir_blocked_reason="ALLOCATION")
                 _apply_couloir_day_debug_to_last_row(st, d)
+                _record_explain_blocker(
+                    st,
+                    d,
+                    "INSUFFICIENT_CASH",
+                    "Cash disponible insuffisant pour allouer le capital par action",
+                    {
+                        "type": "ALLOCATION",
+                        "capital_total": str(CP_raw),
+                        "capital_per_ticker": str(CT),
+                        "cash": None if global_cash is None else str(global_cash),
+                    },
+                )
                 continue
 
             close_d = _to_dec(price_by_date[d])
             if close_d is None or close_d <= 0:
+                _record_explain_blocker(
+                    st,
+                    d,
+                    "INVALID_EXECUTION_PRICE",
+                    "Prix d'exécution absent ou invalide",
+                    {
+                        "type": "EXECUTION_PRICE",
+                        "capital_total": str(CP_raw),
+                        "capital_per_ticker": str(CT),
+                        "price": None if close_d is None else str(close_d),
+                    },
+                )
                 continue
 
             cash = st["cash_ticker"]
@@ -3037,6 +3061,36 @@ def run_backtest(
                 st["cash_ticker"] = CT
             shares = int((cash / close_d).to_integral_value(rounding="ROUND_FLOOR"))
             if shares <= 0:
+                if cash <= 0:
+                    _record_explain_blocker(
+                        st,
+                        d,
+                        "ZERO_EFFECTIVE_CAPITAL",
+                        "Capital alloué nul ou négatif",
+                        {
+                            "type": "ALLOCATION",
+                            "capital_total": str(CP_raw),
+                            "capital_per_ticker": str(CT),
+                            "cash": str(cash),
+                            "price": str(close_d),
+                            "quantity": shares,
+                        },
+                    )
+                else:
+                    _record_explain_blocker(
+                        st,
+                        d,
+                        "ORDER_QUANTITY_ZERO",
+                        "Quantité d'achat arrondie à zéro",
+                        {
+                            "type": "SIZING",
+                            "capital_total": str(CP_raw),
+                            "capital_per_ticker": str(CT),
+                            "cash": str(cash),
+                            "price": str(close_d),
+                            "quantity": shares,
+                        },
+                    )
                 continue
 
             st["shares"] = shares
