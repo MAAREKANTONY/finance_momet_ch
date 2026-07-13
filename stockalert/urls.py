@@ -25,6 +25,7 @@ urlpatterns = [
     path("symbols/ensure-benchmark-etfs/", views.symbols_ensure_benchmark_etfs, name="symbols_ensure_benchmark_etfs"),
     path("symbols/sync-benchmark-etfs/", views.symbols_sync_benchmark_etfs, name="symbols_sync_benchmark_etfs"),
     path("symbols/update-missing-metadata/", views.symbols_update_missing_metadata, name="symbols_update_missing_metadata"),
+    path("symbols/csi300-eodhd-metadata/", views.symbols_csi300_eodhd_metadata, name="symbols_csi300_eodhd_metadata"),
     path("symbols/<int:pk>/scenarios/", views.symbol_scenarios_edit, name="symbol_scenarios_edit"),
     path("symbols/<int:pk>/update-metadata/", views.symbol_update_metadata, name="symbol_update_metadata"),
     path("symbols/<int:pk>/toggle/", views.symbol_toggle_active, name="symbol_toggle"),

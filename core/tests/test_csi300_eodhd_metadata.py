@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from io import StringIO
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from django.core.management import call_command
 from django.test import TestCase
@@ -210,12 +210,41 @@ class CSI300EODHDMetadataTests(TestCase):
         self.assertEqual(report.processed, 1)
         self.assertEqual(client.calls, ["000001.SHE"])
 
+    def test_progress_callback_is_called_after_each_symbol(self):
+        self._member("600000", "SHG", "600000.SHG")
+        self._member("000001", "SHE", "000001.SHE")
+        callback = Mock()
+        client = FakeEODHDMetadataClient({
+            "600000.SHG": general_payload(),
+            "000001.SHE": general_payload(exchange="SHE"),
+        })
+
+        report = enrich_csi300_symbols_from_eodhd_metadata(
+            client=client,
+            dry_run=True,
+            progress_callback=callback,
+        )
+
+        self.assertEqual(report.processed, 2)
+        self.assertEqual(callback.call_count, 2)
+        self.assertEqual(callback.call_args.kwargs["processed"], 2)
+        self.assertEqual(callback.call_args.kwargs["total"], 2)
+
+    def test_service_without_progress_callback_remains_functional(self):
+        self._member("600000", "SHG", "600000.SHG")
+        client = FakeEODHDMetadataClient({"600000.SHG": general_payload()})
+
+        report = enrich_csi300_symbols_from_eodhd_metadata(client=client, dry_run=True)
+
+        self.assertEqual(report.processed, 1)
+        self.assertEqual(client.calls, ["600000.SHG"])
+
     def test_summary_is_stable(self):
         report = enrich_csi300_symbols_from_eodhd_metadata(client=FakeEODHDMetadataClient({}), dry_run=True)
 
         self.assertEqual(
             format_csi300_eodhd_metadata_summary(report),
-            "EODHD CSI300 metadata (dry-run) — processed=0, fetched=0, updated=0, unchanged=0, skipped=0, errors=0, missing_sector=0, generic_sector=0, industries_present=0.",
+            "Métadonnées EODHD CSI300 (dry-run) — traités=0, récupérés=0, mis_à_jour=0, inchangés=0, ignorés=0, erreurs=0, secteurs_absents=0, secteurs_génériques=0, industries_présentes=0.",
         )
 
     @patch("core.services.provider_eodhd.requests.get", side_effect=AssertionError("no network in tests"))
@@ -228,7 +257,7 @@ class CSI300EODHDMetadataTests(TestCase):
             call_command("enrich_csi300_symbol_metadata", "--source", "eodhd", "--ticker", "600000", stdout=out)
 
         output = out.getvalue()
-        self.assertIn("EODHD CSI300 metadata (dry-run)", output)
+        self.assertIn("Métadonnées EODHD CSI300 (dry-run)", output)
         self.assertIn("sectors_enriched=1", output)
         self.assertIn("raw_sector Financial Services symbols=1 decision=usable_raw", output)
         self.assertEqual(fake.calls, ["600000.SHG"])
