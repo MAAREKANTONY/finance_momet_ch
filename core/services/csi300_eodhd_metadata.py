@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from django.conf import settings
 from core.models import Symbol, UniverseDefinition, UniverseMembership
@@ -66,6 +66,7 @@ def enrich_csi300_symbols_from_eodhd_metadata(
     dry_run: bool = True,
     client: EODHDClient | None = None,
     request_delay_seconds: float | None = None,
+    progress_callback: Callable[..., None] | None = None,
 ) -> CSI300EODHDMetadataReport:
     candidates = _metadata_candidates(tickers=tickers, limit=limit)
     report = CSI300EODHDMetadataReport(dry_run=bool(dry_run))
@@ -76,10 +77,18 @@ def enrich_csi300_symbols_from_eodhd_metadata(
         else getattr(settings, "EODHD_REQUEST_DELAY_SECONDS", 0)
     )
 
+    total = len(candidates)
     for index, candidate in enumerate(candidates):
         if index > 0 and delay_seconds > 0:
             time.sleep(delay_seconds)
         _process_candidate(candidate, report, client=client, dry_run=bool(dry_run))
+        if progress_callback is not None:
+            progress_callback(
+                report=report,
+                candidate=candidate,
+                processed=report.processed,
+                total=total,
+            )
     return report
 
 
@@ -213,14 +222,14 @@ def _is_generic_sector(value: str) -> bool:
 def format_csi300_eodhd_metadata_summary(report: CSI300EODHDMetadataReport) -> str:
     mode = "dry-run" if report.dry_run else "apply"
     return (
-        f"EODHD CSI300 metadata ({mode}) — "
-        f"processed={report.processed}, "
-        f"fetched={report.fetched}, "
-        f"updated={report.updated}, "
-        f"unchanged={report.unchanged}, "
-        f"skipped={report.skipped}, "
-        f"errors={report.errors}, "
-        f"missing_sector={report.missing_sector}, "
-        f"generic_sector={report.generic_sector}, "
-        f"industries_present={report.industries_present}."
+        f"Métadonnées EODHD CSI300 ({mode}) — "
+        f"traités={report.processed}, "
+        f"récupérés={report.fetched}, "
+        f"mis_à_jour={report.updated}, "
+        f"inchangés={report.unchanged}, "
+        f"ignorés={report.skipped}, "
+        f"erreurs={report.errors}, "
+        f"secteurs_absents={report.missing_sector}, "
+        f"secteurs_génériques={report.generic_sector}, "
+        f"industries_présentes={report.industries_present}."
     )

@@ -18,6 +18,34 @@
   </form>
 </div>
 
+<div class="card">
+  <h3>Métadonnées CSI300 — EODHD</h3>
+  <p class="muted">
+    Enrichissement asynchrone via EODHD Fundamentals General pour les symboles CSI300 mappés
+    {% if csi300_symbol_count %}({{ csi300_symbol_count }} symboles distincts){% endif %}.
+  </p>
+  <p class="muted">
+    Dry-run: aucune donnée modifiée. Apply: jusqu’à environ {{ csi300_symbol_count|default:"948" }} appels EODHD.
+    Les valeurs existantes non vides ne sont pas écrasées et les secteurs génériques sont ignorés.
+  </p>
+  <div class="row" style="gap:10px; align-items:center; flex-wrap:wrap;">
+    <form method="post" action="{% url 'symbols_csi300_eodhd_metadata' %}" style="display:inline;">
+      {% csrf_token %}
+      <input type="hidden" name="mode" value="dry_run">
+      <button class="btn" type="submit">Analyser les métadonnées CSI300</button>
+    </form>
+    <form method="post" action="{% url 'symbols_csi300_eodhd_metadata' %}" style="display:inline;">
+      {% csrf_token %}
+      <input type="hidden" name="mode" value="apply">
+      <label class="muted" style="display:inline-flex; gap:6px; align-items:center;">
+        <input type="checkbox" name="confirm_apply" value="1">
+        Confirmer l'application
+      </label>
+      <button class="btn" type="submit">Appliquer l’enrichissement CSI300</button>
+    </form>
+  </div>
+</div>
+
 <div class="grid2">
   <div class="card">
     <h3>Ajouter via recherche (API)</h3>

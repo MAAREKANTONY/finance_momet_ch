@@ -19,6 +19,11 @@ from .services.calculations_fast import compute_full_for_symbol_scenario
 from .services.market_cap_sync import sync_market_caps_for_symbols
 from .services.game_scenarios.sync import sync_game_engine_scenario
 from .services.benchmark_etf_sync import format_benchmark_sync_summary, sync_benchmark_etfs_for_symbols
+from .services.csi300_eodhd_metadata import (
+    CSI300EODHDMetadataReport,
+    enrich_csi300_symbols_from_eodhd_metadata,
+    format_csi300_eodhd_metadata_summary,
+)
 from .services.dynamic_universe_symbols import (
     UniverseSymbolMappingError,
     ensure_universe_membership_symbols,
@@ -170,6 +175,84 @@ def _dynamic_universe_warmup_start(backtest: Backtest) -> date | None:
     if start_d and warmup_days > 0:
         return start_d - timedelta(days=warmup_days)
     return start_d
+
+
+def _csi300_eodhd_metadata_job_report(report: CSI300EODHDMetadataReport) -> dict:
+    error_details = []
+    for detail in report.per_symbol:
+        error = (detail.get("error") or "").strip()
+        if not error:
+            continue
+        error_details.append(
+            {
+                "symbol": detail.get("symbol", ""),
+                "provider_symbol": detail.get("provider_symbol", ""),
+                "error": _sanitize_provider_error_message(error),
+            }
+        )
+
+    return {
+        "requested": int(report.processed or 0),
+        "fetched": int(report.fetched or 0),
+        "updated": int(report.updated or 0),
+        "unchanged": int(report.unchanged or 0),
+        "errors": int(report.errors or 0),
+        "useful_sectors": int(sum((report.applied_sector_counts or {}).values())),
+        "generic_sectors": int(report.generic_sector or 0),
+        "missing_sectors": int(report.missing_sector or 0),
+        "industries_present": int(report.industries_present or 0),
+        "conflicts": 0,
+        "dry_run": bool(report.dry_run),
+        "field_updates": dict(sorted((report.field_updates or {}).items())),
+        "raw_sector_distribution": dict(sorted((report.raw_sector_counts or {}).items())),
+        "applied_sector_distribution": dict(sorted((report.applied_sector_counts or {}).items())),
+        "error_details": error_details[:25],
+    }
+
+
+def _format_csi300_eodhd_metadata_job_message(report: CSI300EODHDMetadataReport) -> str:
+    payload = _csi300_eodhd_metadata_job_report(report)
+    summary = format_csi300_eodhd_metadata_summary(report)
+    warning = f" Avertissement: erreurs_partielles={report.errors}." if report.errors else ""
+    sector_counts = payload["raw_sector_distribution"]
+    sector_summary = ", ".join(f"{sector}={count}" for sector, count in list(sector_counts.items())[:12])
+    if len(sector_counts) > 12:
+        sector_summary += f", ...(+{len(sector_counts) - 12})"
+    lines = [
+        summary + warning,
+        (
+            "Rapport: "
+            f"requested={payload['requested']} fetched={payload['fetched']} "
+            f"updated={payload['updated']} unchanged={payload['unchanged']} "
+            f"useful_sectors={payload['useful_sectors']} generic_sectors={payload['generic_sectors']} "
+            f"missing_sectors={payload['missing_sectors']} industries_present={payload['industries_present']} "
+            f"errors={payload['errors']} dry_run={payload['dry_run']}"
+        ),
+    ]
+    if sector_summary:
+        lines.append(f"Secteurs bruts: {sector_summary}")
+    if payload["error_details"]:
+        errors = "; ".join(
+            f"{item['symbol']} {item['provider_symbol']}: {item['error']}"
+            for item in payload["error_details"][:10]
+        )
+        lines.append(f"Erreurs: {errors}")
+    lines.append("report_json=" + json.dumps(payload, sort_keys=True, ensure_ascii=False, separators=(",", ":")))
+    return "\n".join(lines)
+
+
+def _format_csi300_eodhd_metadata_progress(report: CSI300EODHDMetadataReport, *, total: int) -> str:
+    total_display = max(0, int(total or 0))
+    return (
+        "Enrichissement métadonnées CSI300/EODHD en cours: "
+        f"traités={report.processed}/{total_display} "
+        f"récupérés={report.fetched} "
+        f"mis_à_jour={report.updated} "
+        f"inchangés={report.unchanged} "
+        f"erreurs={report.errors} "
+        f"secteurs_génériques={report.generic_sector} "
+        f"secteurs_absents={report.missing_sector}"
+    )
 
 
 def _snapshot_from_resolved_universe(resolved_universe) -> list[dict]:
@@ -986,6 +1069,88 @@ def prepare_dynamic_universe_ohlc_job_task(
         job.finished_at = timezone.now()
         _job_save(job, update_fields=["status", "message", "finished_at"])
         return "killed"
+    except TRANSIENT_DB_EXCEPTIONS as e:
+        _retryable_job(self, e)
+    except Exception as e:
+        job.status = ProcessingJob.Status.FAILED
+        job.error = _sanitize_provider_error_message(e)
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
+        raise
+
+
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
+def enrich_csi300_metadata_job_task(
+    self,
+    *,
+    apply: bool = False,
+    tickers=None,
+    limit=None,
+    user_id=None,
+    job_id=None,
+):
+    """Tracked job wrapper around CSI300 EODHD General metadata enrichment."""
+    job = None
+    if job_id:
+        job = ProcessingJob.objects.filter(id=job_id).first()
+        if job:
+            mark_job_running(job, task_request=self.request, message="Enrichissement métadonnées CSI300/EODHD démarré")
+    if job is None:
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.ENRICH_METADATA,
+            status=ProcessingJob.Status.PENDING,
+            created_by_id=user_id,
+            message="Enrichissement métadonnées CSI300/EODHD en attente",
+        )
+        mark_job_running(job, task_request=self.request, message="Enrichissement métadonnées CSI300/EODHD démarré")
+
+    try:
+        dry_run = not bool(apply)
+        pulse = JobCheckpointPulse(
+            job,
+            every_n=25,
+            every_seconds=20,
+            task_request=self.request,
+            base_label="csi300_metadata",
+        )
+        job_checkpoint(job, checkpoint="csi300_metadata:démarrage", task_request=self.request)
+
+        def _progress_callback(*, report, processed: int, total: int, **_kwargs) -> None:
+            processed_count = int(processed or 0)
+            total_count = int(total or 0)
+            force = bool(total_count and processed_count >= total_count)
+            emitted = pulse.hit(
+                checkpoint=f"{processed_count}/{total_count}",
+                force=force,
+            )
+            if emitted:
+                _job_update(job, message=_format_csi300_eodhd_metadata_progress(report, total=total_count))
+
+        report = enrich_csi300_symbols_from_eodhd_metadata(
+            dry_run=dry_run,
+            tickers=tickers,
+            limit=limit,
+            progress_callback=_progress_callback,
+        )
+        job.status = ProcessingJob.Status.DONE
+        job.message = _format_csi300_eodhd_metadata_job_message(report)
+        job.error = ""
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "error", "finished_at"])
+        return job.message
+    except JobCancelled:
+        job.status = ProcessingJob.Status.CANCELLED
+        job.message = (job.message or "") + "\nAnnulé par l'utilisateur."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "annulé"
+    except JobKilled:
+        job.status = ProcessingJob.Status.KILLED
+        job.message = (job.message or "") + "\nArrêt forcé demandé par l'utilisateur."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return "arrêt forcé"
     except TRANSIENT_DB_EXCEPTIONS as e:
         _retryable_job(self, e)
     except Exception as e:

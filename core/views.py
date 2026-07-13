@@ -43,6 +43,7 @@ from .models import (
     ProcessingJob,
     AlertDefinition,
     Universe,
+    UniverseMembership,
     Study,
     GameScenario,
     RunConfigurationSnapshot,
@@ -814,7 +815,22 @@ def data_export_xlsx(request):
 def symbols_page(request):
     symbols = Symbol.objects.all().order_by("-active", "ticker")[:2000]
     manual_form = SymbolManualForm()
-    return render(request, "symbols.html", {"symbols": symbols, "manual_form": manual_form})
+    csi300_symbol_count = (
+        UniverseMembership.objects.filter(universe__code=CSI300_UNIVERSE_CODE, universe__active=True)
+        .exclude(symbol__isnull=True)
+        .values("symbol_id")
+        .distinct()
+        .count()
+    )
+    return render(
+        request,
+        "symbols.html",
+        {
+            "symbols": symbols,
+            "manual_form": manual_form,
+            "csi300_symbol_count": csi300_symbol_count,
+        },
+    )
 
 
 def _flash_symbol_enrichment_messages(request, totals: dict, *, bulk_label: str | None = None) -> None:
@@ -976,6 +992,44 @@ def symbols_update_missing_metadata(request):
     totals = enrich_symbols_metadata(qs, only_missing=True)
     _flash_symbol_enrichment_messages(request, totals, bulk_label="Metadata update")
     return redirect("symbols_page")
+
+
+@login_required
+@require_POST
+def symbols_csi300_eodhd_metadata(request):
+    mode = (request.POST.get("mode") or "").strip()
+    if mode not in {"dry_run", "apply"}:
+        messages.error(request, "Mode d'enrichissement CSI300 invalide.")
+        return redirect("symbols_page")
+
+    apply_mode = mode == "apply"
+    if apply_mode and (request.POST.get("confirm_apply") or "").strip() != "1":
+        messages.error(request, "Confirmation requise avant d'appliquer l'enrichissement CSI300.")
+        return redirect("symbols_page")
+
+    from .tasks import enrich_csi300_metadata_job_task
+
+    launch = launch_processing_job(
+        task=enrich_csi300_metadata_job_task,
+        job_type=ProcessingJob.JobType.ENRICH_METADATA,
+        created_by=request.user,
+        message=(
+            "Application des métadonnées CSI300/EODHD en attente"
+            if apply_mode
+            else "Analyse des métadonnées CSI300/EODHD en attente"
+        ),
+        task_kwargs={
+            "apply": apply_mode,
+            "user_id": request.user.id,
+        },
+    )
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de l'enrichissement CSI300 impossible: {launch.dispatch_error}")
+        return redirect("symbols_page")
+
+    action_label = "Application" if apply_mode else "Analyse"
+    messages.success(request, f"{action_label} CSI300/EODHD lancée en background (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
 
 
 @login_required
