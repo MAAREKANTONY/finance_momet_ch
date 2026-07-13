@@ -248,6 +248,7 @@ def prepare_dynamic_universe_ohlc(
     force_refresh: bool = False,
     max_symbols: int | None = None,
     exclude_tickers: Any | None = None,
+    allow_partial_coverage: bool = False,
     job: Any | None = None,
     client: EODHDClient | None = None,
     progress_callback: Callable[[str], None] | None = None,
@@ -270,6 +271,7 @@ def prepare_dynamic_universe_ohlc(
         start_date=scoped_start,
         end_date=scoped_end,
         warmup_start_date=coverage_start,
+        allow_partial_coverage=bool(allow_partial_coverage),
     )
     symbols = list(resolved_universe.symbols)
     ranges_by_symbol_id = get_required_ohlc_ranges_for_dynamic_universe(

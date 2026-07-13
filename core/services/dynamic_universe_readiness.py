@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from datetime import date, timedelta
 from typing import Any
+import hashlib
+import json
 
 from django.db.models import Q
 
@@ -37,6 +39,15 @@ REPORT_NOT_READY = "NOT_READY"
 SECTOR_ETF_TICKERS = (
     "XLK", "XLF", "XLE", "XLV", "XLY", "XLP", "XLI", "XLB", "XLU", "XLRE", "XLC",
 )
+_COVERAGE_BLOCKING_IMPORT_BATCH_STATUSES = {
+    UniverseCoverageStatus.IMPORTED,
+    UniverseCoverageStatus.FAILED,
+    UniverseCoverageStatus.STALE,
+}
+_COVERAGE_ACCEPTABLE_IMPORT_BATCH_STATUSES = {
+    UniverseCoverageStatus.VALIDATED,
+    UniverseCoverageStatus.PARTIAL,
+}
 
 
 @dataclass(frozen=True)
@@ -147,6 +158,48 @@ FETCH_DAILY_BARS_ACTION = ReadinessAction(
 )
 
 SUPPORTED_READINESS_UNIVERSE_CODES = {SP500_UNIVERSE_CODE, CSI300_UNIVERSE_CODE}
+READINESS_CONFIRMATION_FIELD = "du_readiness_warning_ack"
+READINESS_CONFIRMATION_HASH_FIELD = "du_readiness_warning_hash"
+BACKTEST_READINESS_ACK_SETTINGS_KEY = "dynamic_universe_readiness_ack"
+
+
+def readiness_requires_confirmation(report: ReadinessReport | None) -> bool:
+    return bool(report and report.ready and report.status == REPORT_READY_WITH_WARNINGS)
+
+
+def readiness_confirmation_hash(report: ReadinessReport | None) -> str:
+    if report is None:
+        return ""
+    payload = {
+        "universe": report.universe,
+        "start": report.start.isoformat(),
+        "end": report.end.isoformat(),
+        "status": report.status,
+        "checks": [
+            {
+                "code": check.code,
+                "status": check.status,
+                "details": check.details,
+            }
+            for check in report.checks
+            if check.status in {CHECK_WARNING, CHECK_ERROR}
+        ],
+        "metadata": report.metadata,
+    }
+    raw = json.dumps(payload, sort_keys=True, default=str, separators=(",", ":"))
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def build_readiness_ack_payload(report: ReadinessReport) -> dict[str, Any]:
+    return {
+        "hash": readiness_confirmation_hash(report),
+        "universe": report.universe,
+        "start": report.start.isoformat(),
+        "end": report.end.isoformat(),
+        "status": report.status,
+        "warnings": [check.as_dict() for check in report.checks if check.status == CHECK_WARNING],
+    }
+
 
 
 def _membership_recovery_actions(universe_code: str) -> list[ReadinessAction]:
@@ -232,11 +285,11 @@ def check_dynamic_universe_readiness(
 
     coverage_check = _check_coverage_snapshots(universe_code, universe_obj, coverage_start, end)
     checks.append(coverage_check)
-    coverage_ready = coverage_check.status == CHECK_OK
+    coverage_ready = coverage_check.status in {CHECK_OK, CHECK_WARNING}
 
     mapping_check, mapped_memberships = _check_historical_symbols(universe_code, universe_obj, memberships, coverage_ready)
     checks.append(mapping_check)
-    mappings_ready = mapping_check.status == CHECK_OK
+    mappings_ready = mapping_check.status in {CHECK_OK, CHECK_WARNING}
 
     membership_by_ticker = _membership_by_ticker(mapped_memberships) if memberships and mappings_ready else {}
     symbols = _unique_symbols(mapped_memberships) if mappings_ready else []
@@ -384,20 +437,24 @@ def _check_import_batch(universe_code: str, universe: UniverseDefinition | None,
             period_end__gte=coverage_start,
         ).order_by("-period_start", "-id")
     )
-    validated = [
+    covering = [
         batch
         for batch in batches
-        if batch.status == UniverseCoverageStatus.VALIDATED
+        if batch.status in _COVERAGE_ACCEPTABLE_IMPORT_BATCH_STATUSES
         and batch.period_start <= coverage_start
         and batch.period_end >= end
     ]
-    if validated:
-        batch = validated[0]
+    if covering:
+        batch = covering[0]
         return ReadinessCheck(
             code="import_batch",
-            label="Batch d'import validé",
+            label="Batch d'import disponible",
             status=CHECK_OK,
-            message=f"UniverseImportBatch VALIDATED couvre {coverage_start.isoformat()}..{end.isoformat()}.",
+            message=(
+                f"UniverseImportBatch {batch.status} couvre "
+                f"{coverage_start.isoformat()}..{end.isoformat()}; "
+                "la validation journalière est portée par les coverage snapshots."
+            ),
             details={"batch_id": batch.id, "status": batch.status},
         )
     if batches:
@@ -405,7 +462,7 @@ def _check_import_batch(universe_code: str, universe: UniverseDefinition | None,
             code="import_batch",
             label="Batch d'import validé",
             status=CHECK_ERROR,
-            message="Aucun UniverseImportBatch VALIDATED ne couvre toute la période demandée.",
+            message="Aucun UniverseImportBatch exploitable ne couvre toute la période demandée.",
             details={
                 "batches": [
                     {
@@ -444,15 +501,19 @@ def _check_coverage_snapshots(universe_code: str, universe: UniverseDefinition |
     }
     missing = []
     invalid = []
+    partial = []
     current = coverage_start
+    allow_partial = universe_code == CSI300_UNIVERSE_CODE
     while current <= end:
         snapshot = snapshots.get(current)
         if snapshot is None:
             missing.append(current)
         else:
-            reason = _snapshot_invalid_reason(snapshot)
+            reason = _snapshot_invalid_reason(snapshot, allow_partial=allow_partial)
             if reason:
                 invalid.append((current, snapshot, reason))
+            elif _snapshot_is_partial_warning(snapshot, allow_partial=allow_partial):
+                partial.append((current, snapshot))
         current += timedelta(days=1)
 
     if missing:
@@ -482,29 +543,91 @@ def _check_coverage_snapshots(universe_code: str, universe: UniverseDefinition |
             details={
                 "invalid_count": len(invalid),
                 "invalid_examples": [
-                    {
-                        "date": item_day.isoformat(),
-                        "snapshot_status": item_snapshot.status,
-                        "batch_status": item_snapshot.import_batch.status,
-                        "actual_member_count": item_snapshot.actual_member_count,
-                        "expected_member_count": item_snapshot.expected_member_count,
-                        "mapped_member_count": item_snapshot.mapped_member_count,
-                        "unmapped_member_count": item_snapshot.unmapped_member_count,
-                        "reason": item_reason,
-                    }
+                    _snapshot_example(item_day, item_snapshot, item_reason)
                     for item_day, item_snapshot, item_reason in invalid[:10]
                 ],
             },
             suggested_actions=_membership_recovery_actions(universe_code),
             suggested_commands=_formatted_action_commands(_membership_recovery_actions(universe_code), coverage_start, end),
         )
+    if partial:
+        details = _partial_coverage_warning_details(partial, total_required=(end - coverage_start).days + 1, complete_count=len(snapshots) - len(partial))
+        return ReadinessCheck(
+            code="coverage_snapshots",
+            label="Coverage snapshots",
+            status=CHECK_WARNING,
+            message=(
+                f"La composition historique {universe_code} est incomplète sur {details['partial_snapshot_count']} dates "
+                f"de la période sélectionnée. La couverture minimale observée est de "
+                f"{details['minimum_actual_member_count']} constituants sur {details['expected_member_count']}, "
+                f"soit {details['minimum_coverage_ratio_percent']:.2f} %. "
+                "Le backtest ignorera les constituants ou prix indisponibles."
+            ),
+            details=details,
+        )
     return ReadinessCheck(
         code="coverage_snapshots",
         label="Coverage snapshots",
         status=CHECK_OK,
         message=f"{len(snapshots)} coverage snapshots validés.",
-        details={"validated_snapshots": len(snapshots)},
+        details={
+            "total_snapshots_required": (end - coverage_start).days + 1,
+            "validated_snapshots": len(snapshots),
+            "partial_snapshot_count": 0,
+        },
     )
+
+
+def _snapshot_example(day: date, snapshot: UniverseCoverageSnapshot, reason: str) -> dict[str, Any]:
+    return {
+        "date": day.isoformat(),
+        "snapshot_status": snapshot.status,
+        "batch_status": snapshot.import_batch.status,
+        "actual_member_count": snapshot.actual_member_count,
+        "expected_member_count": snapshot.expected_member_count,
+        "mapped_member_count": snapshot.mapped_member_count,
+        "unmapped_member_count": snapshot.unmapped_member_count,
+        "reason": reason,
+    }
+
+
+def _snapshot_is_partial_warning(snapshot: UniverseCoverageSnapshot, *, allow_partial: bool) -> bool:
+    return bool(
+        allow_partial
+        and snapshot.status == UniverseCoverageStatus.PARTIAL
+        and snapshot.import_batch.status not in _COVERAGE_BLOCKING_IMPORT_BATCH_STATUSES
+    )
+
+
+def _partial_coverage_warning_details(partial: list[tuple[date, UniverseCoverageSnapshot]], *, total_required: int, complete_count: int) -> dict[str, Any]:
+    expected_values = [snapshot.expected_member_count for _, snapshot in partial if snapshot.expected_member_count]
+    expected = max(expected_values) if expected_values else 0
+    min_actual = min((snapshot.actual_member_count for _, snapshot in partial), default=0)
+    max_missing = max((max(0, snapshot.expected_member_count - snapshot.actual_member_count) for _, snapshot in partial), default=0)
+    max_unmapped = max((snapshot.unmapped_member_count for _, snapshot in partial), default=0)
+    total_unmapped = sum(snapshot.unmapped_member_count for _, snapshot in partial)
+    ratios = [
+        snapshot.actual_member_count / snapshot.expected_member_count
+        for _, snapshot in partial
+        if snapshot.expected_member_count
+    ]
+    min_ratio = min(ratios) if ratios else 0
+    return {
+        "requires_confirmation": True,
+        "total_snapshots_required": total_required,
+        "complete_snapshot_count": complete_count,
+        "partial_snapshot_count": len(partial),
+        "first_partial_date": partial[0][0].isoformat(),
+        "last_partial_date": partial[-1][0].isoformat(),
+        "expected_member_count": expected,
+        "minimum_actual_member_count": min_actual,
+        "maximum_missing_member_count": max_missing,
+        "minimum_coverage_ratio": min_ratio,
+        "minimum_coverage_ratio_percent": min_ratio * 100,
+        "maximum_unmapped_member_count": max_unmapped,
+        "total_unmapped_member_count": total_unmapped,
+        "partial_examples": [_snapshot_example(day, snapshot, "partial_coverage") for day, snapshot in partial[:10]],
+    }
 
 
 def _check_historical_symbols(
@@ -556,21 +679,30 @@ def _check_historical_symbols(
             ambiguous.append(_membership_label(membership))
 
     if missing or ambiguous:
+        status = CHECK_WARNING if universe_code == CSI300_UNIVERSE_CODE and mapped else CHECK_ERROR
+        message = f"Mappings symbols incomplets: missing={len(missing)} ambiguous={len(ambiguous)}."
+        if status == CHECK_WARNING:
+            message += f" {len(mapped)} memberships restent exploitables et les autres seront ignorés après confirmation."
         return (
             ReadinessCheck(
                 code="historical_symbols",
                 label="Symbols historiques",
-                status=CHECK_ERROR,
-                message=f"Mappings symbols incomplets: missing={len(missing)} ambiguous={len(ambiguous)}.",
+                status=status,
+                message=message,
                 details={
+                    "requires_confirmation": status == CHECK_WARNING,
                     "mapped": len(mapped),
                     "missing": len(missing),
                     "ambiguous": len(ambiguous),
                     "missing_examples": missing[:10],
                     "ambiguous_examples": ambiguous[:10],
                 },
-                suggested_actions=_symbol_recovery_actions(universe_code),
-                suggested_commands=_formatted_action_commands(_symbol_recovery_actions(universe_code), None, None),
+                suggested_actions=_symbol_recovery_actions(universe_code) if status == CHECK_ERROR else [],
+                suggested_commands=(
+                    _formatted_action_commands(_symbol_recovery_actions(universe_code), None, None)
+                    if status == CHECK_ERROR
+                    else []
+                ),
             ),
             mapped,
         )
@@ -726,11 +858,17 @@ def _check_benchmark_daily_bars(
     )
 
 
-def _snapshot_invalid_reason(snapshot: UniverseCoverageSnapshot) -> str:
+def _snapshot_invalid_reason(snapshot: UniverseCoverageSnapshot, *, allow_partial: bool = False) -> str:
+    if snapshot.import_batch.status in _COVERAGE_BLOCKING_IMPORT_BATCH_STATUSES:
+        return f"batch_status={snapshot.import_batch.status}"
+    if snapshot.status == UniverseCoverageStatus.PARTIAL and allow_partial:
+        if snapshot.actual_member_count <= 0:
+            return "actual_member_count=0"
+        if snapshot.mapped_member_count <= 0:
+            return "mapped_member_count=0"
+        return ""
     if snapshot.status != UniverseCoverageStatus.VALIDATED:
         return f"snapshot_status={snapshot.status}"
-    if snapshot.import_batch.status != UniverseCoverageStatus.VALIDATED:
-        return f"batch_status={snapshot.import_batch.status}"
     if snapshot.actual_member_count < snapshot.expected_member_count:
         return f"actual_member_count={snapshot.actual_member_count} expected_member_count={snapshot.expected_member_count}"
     if snapshot.mapped_member_count < snapshot.actual_member_count:

@@ -126,18 +126,25 @@
           <label>Backtest optionnel<br/>
             <select name="backtest_id">
               <option value="">— Aucun —</option>
-              {% for bt in dynamic_universe_backtests %}<option value="{{ bt.id }}">#{{ bt.id }} — {{ bt.name }}</option>{% endfor %}
+              {% for bt in dynamic_universe_backtests %}<option value="{{ bt.id }}" {% if dynamic_universe_inputs.backtest_id == bt.id|stringformat:'s' %}selected{% endif %}>#{{ bt.id }} — {{ bt.name }}</option>{% endfor %}
             </select>
           </label>
           <label>Scénario optionnel<br/>
             <select name="scenario_id">
               <option value="">— Aucun —</option>
-              {% for s in dynamic_universe_scenarios %}<option value="{{ s.id }}">#{{ s.id }} — {{ s.name }}</option>{% endfor %}
+              {% for s in dynamic_universe_scenarios %}<option value="{{ s.id }}" {% if dynamic_universe_inputs.scenario_id == s.id|stringformat:'s' %}selected{% endif %}>#{{ s.id }} — {{ s.name }}</option>{% endfor %}
             </select>
           </label>
-          <label>Date de début si aucun backtest choisi <input name="du_ohlc_start" placeholder="YYYY-MM-DD"></label>
-          <label>Date de fin si aucun backtest choisi <input name="du_ohlc_end" placeholder="YYYY-MM-DD"></label>
+          <label>Date de début si aucun backtest choisi <input name="du_ohlc_start" placeholder="YYYY-MM-DD" value="{{ dynamic_universe_inputs.start|default:'' }}"></label>
+          <label>Date de fin si aucun backtest choisi <input name="du_ohlc_end" placeholder="YYYY-MM-DD" value="{{ dynamic_universe_inputs.end|default:'' }}"></label>
           <label><input type="checkbox" name="du_ohlc_force_refresh"> Recharger même si des prix existent déjà</label>
+          {% if dynamic_universe_confirmation.requires_confirmation %}
+            <input type="hidden" name="{{ dynamic_universe_confirmation.confirmation_hash_field }}" value="{{ dynamic_universe_confirmation.confirmation_hash }}">
+            <label style="color:#92400e;">
+              <input type="checkbox" name="{{ dynamic_universe_confirmation.confirmation_field }}" value="1">
+              Je souhaite continuer avec les données disponibles malgré ces avertissements.
+            </label>
+          {% endif %}
           <button class="btn danger" type="submit">Télécharger les prix des actions</button>
         </form>
       </div>
