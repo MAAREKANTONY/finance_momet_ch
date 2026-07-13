@@ -10,6 +10,7 @@ from django.db.models import Q
 
 from core.models import (
     Backtest,
+    DailyBar,
     Scenario,
     Symbol,
     UniverseCoverageSnapshot,
@@ -19,6 +20,11 @@ from core.models import (
     UniverseMembership,
 )
 from core.services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
+from core.services.china_benchmark_registry import (
+    CSI300_MARKET_BENCHMARK,
+    csi300_market_benchmark_exchange,
+    csi300_market_benchmark_ticker,
+)
 from core.services.trend_filters import market_benchmark_ticker_for_symbol
 from core.services.universe_resolver import (
     CSI300_UNIVERSE_CODE,
@@ -150,6 +156,11 @@ SYNC_BENCHMARK_ACTION = ReadinessAction(
     code="sync_benchmark_etfs",
     label="Synchroniser les ETFs benchmark requis",
     command="python manage.py sync_benchmark_etfs",
+)
+PREPARE_CSI300_BENCHMARKS_ACTION = ReadinessAction(
+    code="prepare_csi300_benchmarks",
+    label="Préparer les benchmarks CSI300",
+    command="Page Symboles: Benchmarks CSI300 — marché et secteurs.",
 )
 FETCH_DAILY_BARS_ACTION = ReadinessAction(
     code="fetch_daily_bars",
@@ -773,6 +784,15 @@ def _check_gm_market_daily_bars(
     *,
     prerequisites_ready: bool,
 ) -> ReadinessCheck:
+    if universe_code == CSI300_UNIVERSE_CODE:
+        if not prerequisites_ready:
+            return _skipped_check(
+                "gm_market_daily_bars",
+                "DailyBars GM_market",
+                "Impossible de vérifier GM_market tant que les symbols historiques ne sont pas résolus.",
+                actions=[PREPARE_CSI300_BENCHMARKS_ACTION],
+            )
+        return _check_csi300_market_benchmark_daily_bars(coverage_start=coverage_start, end=end)
     if universe_code != SP500_UNIVERSE_CODE:
         return ReadinessCheck(
             code="gm_market_daily_bars",
@@ -799,13 +819,107 @@ def _check_gm_market_daily_bars(
     )
 
 
+def _check_csi300_market_benchmark_daily_bars(*, coverage_start: date, end: date) -> ReadinessCheck:
+    ticker = csi300_market_benchmark_ticker()
+    exchange = csi300_market_benchmark_exchange()
+    provider_symbol = CSI300_MARKET_BENCHMARK.provider_symbol or f"{ticker}.{exchange}"
+    symbol = Symbol.objects.filter(ticker=ticker, exchange=exchange).first()
+    details = {
+        "required_tickers": [ticker],
+        "required_provider_symbols": [provider_symbol],
+        "benchmark_name": CSI300_MARKET_BENCHMARK.name,
+        "benchmark_exchange": exchange,
+        "coverage_start": coverage_start.isoformat(),
+        "coverage_end": end.isoformat(),
+        "missing_symbols": [],
+        "missing_ohlc": [],
+    }
+    if symbol is None:
+        details["missing_symbols"] = [provider_symbol]
+        return ReadinessCheck(
+            code="gm_market_daily_bars",
+            label="DailyBars GM_market",
+            status=CHECK_ERROR,
+            message=f"Benchmark marché CSI300 absent: {provider_symbol}.",
+            details=details,
+            suggested_actions=[PREPARE_CSI300_BENCHMARKS_ACTION],
+            suggested_commands=[PREPARE_CSI300_BENCHMARKS_ACTION.command],
+        )
+
+    bars = DailyBar.objects.filter(symbol=symbol, date__gte=coverage_start, date__lte=end)
+    first_bar = bars.order_by("date").values_list("date", flat=True).first()
+    last_bar = bars.order_by("-date").values_list("date", flat=True).first()
+    bar_count = bars.count()
+    details.update({
+        "symbol_id": symbol.id,
+        "available_bars": bar_count,
+        "first_available_date": first_bar.isoformat() if first_bar else None,
+        "last_available_date": last_bar.isoformat() if last_bar else None,
+    })
+    if bar_count == 0:
+        details["missing_ohlc"] = [provider_symbol]
+        return ReadinessCheck(
+            code="gm_market_daily_bars",
+            label="DailyBars GM_market",
+            status=CHECK_ERROR,
+            message=f"Benchmark marché CSI300 sans OHLC exploitable: {provider_symbol}.",
+            details=details,
+            suggested_actions=[PREPARE_CSI300_BENCHMARKS_ACTION],
+            suggested_commands=[PREPARE_CSI300_BENCHMARKS_ACTION.command],
+        )
+
+    missing_ohlc = get_missing_ohlc_symbols_for_dynamic_universe(
+        symbols=[symbol],
+        start_date=coverage_start,
+        end_date=end,
+    )
+    if missing_ohlc:
+        calendar_days_required = (end - coverage_start).days + 1
+        missing_calendar_upper_bound = max(0, calendar_days_required - bar_count)
+        details.update({
+            "missing_ohlc": [provider_symbol],
+            "calendar_days_required": calendar_days_required,
+            "missing_calendar_days_upper_bound": missing_calendar_upper_bound,
+            "missing_calendar_ratio_upper_bound_percent": (
+                (missing_calendar_upper_bound / calendar_days_required) * 100
+                if calendar_days_required > 0
+                else 0
+            ),
+            "requires_confirmation": True,
+        })
+        return ReadinessCheck(
+            code="gm_market_daily_bars",
+            label="DailyBars GM_market",
+            status=CHECK_WARNING,
+            message=(
+                f"Benchmark marché CSI300 partiel pour {provider_symbol}: "
+                f"disponible {details['first_available_date']}..{details['last_available_date']}, "
+                f"période requise {coverage_start.isoformat()}..{end.isoformat()}, "
+                f"dates manquantes borne haute={missing_calendar_upper_bound}."
+            ),
+            details=details,
+        )
+
+    return ReadinessCheck(
+        code="gm_market_daily_bars",
+        label="DailyBars GM_market",
+        status=CHECK_OK,
+        message=f"Benchmark marché CSI300 prêt: {CSI300_MARKET_BENCHMARK.name} / {provider_symbol}.",
+        details=details,
+    )
+
+
 def _check_gm_sector_daily_bars(universe_code: str, coverage_start: date, end: date) -> ReadinessCheck:
     if universe_code != SP500_UNIVERSE_CODE:
         return ReadinessCheck(
             code="gm_sector_daily_bars",
             label="DailyBars GM_sector",
             status=CHECK_ERROR,
-            message=f"GM sectoriel non supporté pour {universe_code} V1 : les benchmarks sectoriels actuels sont US.",
+            message=(
+                f"GM sectoriel non supporté pour {universe_code} V1 : "
+                "les benchmarks sectoriels chinois ne sont pas encore activés, "
+                "Industrials et Utilities restent non couverts, et aucun fallback marché n'est appliqué."
+            ),
         )
     return _check_benchmark_daily_bars(
         code="gm_sector_daily_bars",

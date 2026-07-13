@@ -5382,8 +5382,10 @@ def trigger_page(request: HttpRequest):
                     }
                     try:
                         inputs["universe"] = _parse_trigger_dynamic_universe_code(inputs["universe"])
-                        if inputs["universe"] == CSI300_UNIVERSE_CODE and (inputs["require_gm_market"] or inputs["require_gm_sector"]):
-                            raise ValueError("Les filtres GM marché/secteur ne sont pas supportés pour CSI300 en Phase 1.")
+                        if inputs["universe"] == CSI300_UNIVERSE_CODE and inputs["require_gm_sector"]:
+                            raise ValueError(
+                                "GM secteur CSI300 n'est pas encore supporté: Industrials et Utilities restent non couverts."
+                            )
                         readiness_start = _parse_trigger_date(inputs["start"], field_name="Start")
                         readiness_end = _parse_trigger_date(inputs["end"], field_name="End")
                         report = check_dynamic_universe_readiness(

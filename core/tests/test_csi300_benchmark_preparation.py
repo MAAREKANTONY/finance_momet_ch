@@ -515,23 +515,25 @@ class CSI300BenchmarkJobTaskTests(TestCase):
 
 
 class CSI300BenchmarkIsolationTests(TestCase):
-    def test_trend_filters_do_not_auto_enable_csi300_benchmarks(self):
+    def test_trend_filters_enable_only_csi300_market_benchmark(self):
         symbol = Symbol.objects.create(ticker="600000", exchange="SHG", country="China", sector="Financial Services")
 
         self.assertIsNone(market_benchmark_ticker_for_symbol(symbol))
-        self.assertNotIn(sector_benchmark_ticker_for_symbol(symbol), {"000300.SHG", "159931.SHE"})
+        self.assertEqual(market_benchmark_ticker_for_symbol(symbol, universe_code="CSI300"), "000300")
+        self.assertIsNone(sector_benchmark_ticker_for_symbol(symbol))
+        self.assertIsNone(sector_benchmark_ticker_for_symbol(symbol, universe_code="CSI300"))
 
-    def test_csi300_readiness_gm_block_remains(self):
+    def test_csi300_readiness_gm_sector_block_remains(self):
         report = check_dynamic_universe_readiness(
             universe="CSI300",
             start=date(2021, 8, 20),
             end=date(2021, 8, 31),
-            require_gm_market=True,
+            require_gm_sector=True,
         )
 
-        check = next(item for item in report.checks if item.code == "gm_market_daily_bars")
+        check = next(item for item in report.checks if item.code == "gm_sector_daily_bars")
         self.assertEqual(check.status, CHECK_ERROR)
-        self.assertIn("GM market non supporté pour CSI300 V1", check.message)
+        self.assertIn("GM sectoriel non supporté pour CSI300 V1", check.message)
 
     def test_backtest_engine_does_not_call_csi300_benchmark_preparation(self):
         from core.services.backtesting import engine

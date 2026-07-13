@@ -1492,6 +1492,28 @@ class BacktestResultsRenderTests(TestCase):
             results=results or self._minimal_results(),
         )
 
+    def _csi300_universe_meta(self):
+        return {
+            "mode": Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            "universe_code": "CSI300",
+            "coverage_start": "2024-01-01",
+            "coverage_end": "2024-01-31",
+            "superset_count": 300,
+            "ticker_count": 300,
+            "source": "manual_csv",
+            "market_benchmark": {
+                "name": "CSI 300",
+                "ticker": "000300",
+                "exchange": "SHG",
+                "provider_symbol": "000300.SHG",
+                "label": "CSI 300 / 000300.SHG",
+            },
+            "sector_benchmark_status": (
+                "GM secteur CSI300 non supporté dans cette phase; aucun fallback vers 510300 "
+                "ou vers le marché n'est appliqué."
+            ),
+        }
+
     def _create_validated_sp500_membership(self, symbol=None, *, valid_from=None, valid_to=None):
         symbol = symbol or self.symbol
         start = valid_from or date(2024, 1, 1)
@@ -1588,6 +1610,20 @@ class BacktestResultsRenderTests(TestCase):
         self.assertNotIn("Superset de tickers du backtest", body)
         self.assertNotIn("metadata d’univers", body)
 
+    def test_backtest_detail_displays_csi300_effective_market_benchmark(self):
+        self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        bt = self._create_done_backtest(results=self._minimal_results(universe_meta=self._csi300_universe_meta()))
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Benchmark marché effectif", body)
+        self.assertIn("CSI 300 / 000300.SHG", body)
+        self.assertIn("GM secteur CSI300 non supporté dans cette phase", body)
+        self.assertIn("aucun fallback vers 510300", body)
+
     def test_backtest_results_displays_dynamic_universe_metadata(self):
         self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
         self.scenario.save(update_fields=["universe_mode"])
@@ -1619,15 +1655,7 @@ class BacktestResultsRenderTests(TestCase):
     def test_backtest_results_displays_csi300_without_sp500_wording(self):
         self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
         self.scenario.save(update_fields=["universe_mode"])
-        bt = self._create_done_backtest(results=self._minimal_results(universe_meta={
-            "mode": Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
-            "universe_code": "CSI300",
-            "coverage_start": "2024-01-01",
-            "coverage_end": "2024-01-31",
-            "superset_count": 300,
-            "ticker_count": 300,
-            "source": "manual_csv",
-        }))
+        bt = self._create_done_backtest(results=self._minimal_results(universe_meta=self._csi300_universe_meta()))
 
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
 
@@ -1635,6 +1663,10 @@ class BacktestResultsRenderTests(TestCase):
         body = response.content.decode()
         self.assertIn("CSI 300 historique dynamique — via CSV", body)
         self.assertIn("CSI300", body)
+        self.assertIn("Benchmark marché effectif", body)
+        self.assertIn("CSI 300 / 000300.SHG", body)
+        self.assertIn("GM secteur CSI300 non supporté dans cette phase", body)
+        self.assertIn("aucun fallback vers 510300", body)
         self.assertIn("Période couverte par l’historique importé", body)
         self.assertNotIn("S&P500 historique", body)
         self.assertNotIn("S&amp;P 500 historique", body)

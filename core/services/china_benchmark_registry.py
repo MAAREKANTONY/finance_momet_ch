@@ -100,6 +100,22 @@ def canonical_sector_for_raw(raw_sector: str | None) -> str:
     return RAW_SECTOR_TO_CANONICAL.get(str(raw_sector or "").strip(), "")
 
 
+def provider_symbol_parts(provider_symbol: str | None) -> tuple[str, str]:
+    raw = str(provider_symbol or "").strip()
+    if "." not in raw:
+        return raw, ""
+    ticker, exchange = raw.rsplit(".", 1)
+    return ticker.strip(), exchange.strip()
+
+
+def csi300_market_benchmark_ticker() -> str:
+    return provider_symbol_parts(CSI300_MARKET_BENCHMARK.provider_symbol)[0]
+
+
+def csi300_market_benchmark_exchange() -> str:
+    return provider_symbol_parts(CSI300_MARKET_BENCHMARK.provider_symbol)[1]
+
+
 def supported_sector_benchmarks() -> list[ChinaBenchmarkDefinition]:
     return [
         definition

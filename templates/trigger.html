@@ -37,7 +37,7 @@
         <li>Lancer le backtest avec le mode “CSI 300 historique dynamique — via CSV”.</li>
       </ol>
       <p class="muted">Aucun constituant CSI300 n'est récupéré depuis EODHD. Aucune composition actuelle n'est utilisée comme fallback. EODHD sert uniquement à récupérer les prix des tickers issus du CSV importé.</p>
-      <p class="muted">Note CSI300 : les filtres GM_market et GM_sector restent non supportés en V1 tant que les benchmarks marché/secteur Chine ne sont pas configurés. Les benchmarks US type SPY/ETF sectoriels ne sont pas utilisés pour CSI300.</p>
+      <p class="muted">Note CSI300 : GM_market est supporté avec le benchmark CSI 300 / 000300.SHG lorsque ses prix locaux sont prêts. GM_sector reste non supporté dans cette phase : Industrials et Utilities ne sont pas couverts, aucun fallback vers le marché n'est appliqué, et les benchmarks US type SPY/ETF sectoriels ne sont pas utilisés pour CSI300.</p>
     </div>
 
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:12px; margin-top:12px;">
