@@ -152,6 +152,37 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             flat = self._sheet_flat_rows(workbook, "Settings")
             self.assertTrue(any("Devise effective | CNY" in row for row in flat))
 
+    def test_backtest_exports_include_csi300_supported_history_with_historical_fallback(self):
+        bt = self._make_backtest_stub()
+        bt.results["meta"]["universe"] = {
+            "mode": "CSI300_HISTORICAL_DYNAMIC",
+            "universe_code": "CSI300",
+            "coverage_start": "2023-01-03",
+            "coverage_end": "2026-06-30",
+            "superset_count": 600,
+            "source": "manual_csv",
+        }
+
+        full, _ = _build_backtest_workbook_full(bt)
+        from core.views import _build_backtest_workbook_compact
+        compact, _ = _build_backtest_workbook_compact(bt, charts="0")
+
+        for workbook in (full, compact):
+            flat = self._sheet_flat_rows(workbook, "Settings")
+            self.assertTrue(any("Historique supporté depuis | 2023-01-03" in row for row in flat))
+
+    def test_static_and_sp500_exports_do_not_include_csi300_supported_history(self):
+        bt = self._make_backtest_stub()
+        bt.results["meta"]["universe"] = {
+            "mode": "SP500_HISTORICAL_DYNAMIC",
+            "universe_code": "SP500",
+        }
+
+        full, _ = _build_backtest_workbook_full(bt)
+        flat = self._sheet_flat_rows(full, "Settings")
+
+        self.assertFalse(any("Historique supporté depuis" in row for row in flat))
+
     def test_backtest_exports_derive_historical_finite_net_pnl_and_keep_cny(self):
         bt = self._make_backtest_stub()
         bt.scenario.universe_mode = "CSI300_HISTORICAL_DYNAMIC"

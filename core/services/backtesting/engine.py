@@ -49,6 +49,7 @@ from core.services.china_benchmark_registry import (
     csi300_market_benchmark_ticker,
 )
 from core.services.backtest_currency import effective_currency_for_new_result
+from tools.csi300_policy import CSI300_SUPPORTED_HISTORY_START_ISO
 from core.services.market_cap import preload_market_cap_series
 from core.services.couloir import (
     COULOIR_SIGNAL_CODE,
@@ -2083,6 +2084,7 @@ def run_backtest(
             "source": metadata.get("source"),
         }
         if str(universe_code_value or "").strip().upper() == "CSI300":
+            meta["supported_history_start"] = CSI300_SUPPORTED_HISTORY_START_ISO
             provider_symbol = CSI300_MARKET_BENCHMARK.provider_symbol or (
                 f"{csi300_market_benchmark_ticker()}.{csi300_market_benchmark_exchange()}"
             )

@@ -34,6 +34,7 @@ from core.services.metrics_depth import check_metrics_depth
 from core.services.provider_eodhd import EODHDError
 from core.services.universe_resolver import UniverseResolver
 from core.tasks import DYNAMIC_UNIVERSE_USER_ERROR, compute_metrics_job_task, run_backtest_task
+from tools.csi300_policy import CSI300_SUPPORTED_HISTORY_MESSAGE
 
 
 class DynamicUniverseBacktestIntegrationTests(TestCase):
@@ -313,7 +314,40 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         self.assertEqual(bt.status, Backtest.Status.DONE)
         self.assertEqual({row["ticker"] for row in bt.universe_snapshot}, {"KEEP", "NEW", "OLD"})
         self.assertEqual(bt.results["meta"]["universe"]["universe_code"], "CSI300")
+        self.assertEqual(bt.results["meta"]["universe"]["supported_history_start"], "2023-01-03")
         self.assertEqual(bt.results["meta"]["effective_currency"], "CNY")
+
+    def test_csi300_task_blocks_unsupported_start_before_resolution_and_preserves_results(self):
+        self.scenario = Scenario.objects.create(
+            name="Dynamic CSI300 unsupported history",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+        bt = Backtest.objects.create(
+            name="CSI300 pre-cutoff",
+            scenario=self.scenario,
+            start_date=date(2023, 1, 2),
+            end_date=date(2023, 1, 3),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            results={"legacy": True},
+        )
+
+        with patch("core.tasks._resolve_dynamic_universe_for_backtest") as resolver_mock:
+            with patch("core.tasks.determine_backtest_result_mode") as preflight_mock:
+                with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock:
+                    with patch("core.services.backtesting.engine.run_backtest") as engine_mock:
+                        with self.assertRaisesMessage(ValueError, CSI300_SUPPORTED_HISTORY_MESSAGE):
+                            run_backtest_task(bt.id)
+
+        resolver_mock.assert_not_called()
+        preflight_mock.assert_not_called()
+        prep_mock.assert_not_called()
+        engine_mock.assert_not_called()
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.FAILED)
+        self.assertEqual(bt.error_message, CSI300_SUPPORTED_HISTORY_MESSAGE)
+        self.assertEqual(bt.results, {"legacy": True})
 
     def test_static_rerun_does_not_copy_effective_currency_from_previous_results(self):
         self.scenario = self._scenario(dynamic=False)

@@ -29,6 +29,7 @@ from tools.convert_unliftedq_csi300_to_stockalert_csv import (
     publish_success,
     write_stockalert_csv,
 )
+from tools.csi300_policy import CSI300_SUPPORTED_HISTORY_START_ISO
 
 
 class CSI300UnliftedqConverterTests(SimpleTestCase):
@@ -38,7 +39,7 @@ class CSI300UnliftedqConverterTests(SimpleTestCase):
             {
                 "symbol": f"SH{600000 + index:06d}",
                 "name": f"公司{index}",
-                "opt-in": "2020-01-02",
+                "opt-in": CSI300_SUPPORTED_HISTORY_START_ISO,
                 "opt-out": "",
             }
             for index in range(count)
@@ -170,34 +171,83 @@ class CSI300UnliftedqConverterTests(SimpleTestCase):
         output, report = convert_history_rows(history, latest_rows=latest, strict=True)
 
         self.assertTrue(report.ok)
-        self.assertEqual(output[0]["start_date"], "2020-01-02")
+        self.assertEqual(output[0]["start_date"], CSI300_SUPPORTED_HISTORY_START_ISO)
         self.assertEqual(len(report.rows_without_opt_in), 1)
         self.assertEqual(len(report.repaired_rows), 1)
         self.assertEqual(report.repaired_rows[0]["provenance"], "latest/csi300.csv opt-in")
         self.assertIn("missing_opt_in_repaired", {warning["code"] for warning in report.warnings})
 
-    def test_four_real_missing_opt_in_rows_are_explicit_blocking_errors(self):
+    def test_four_real_missing_opt_in_rows_are_explicitly_outside_supported_history(self):
         rows = [
             {"symbol": "SH600312", "name": "平高电气", "opt-in": "", "opt-out": "2012-01-01"},
             {"symbol": "SH600501", "name": "航天晨光", "opt-in": "", "opt-out": "2008-06-14"},
             {"symbol": "SH600549", "name": "厦门钨业", "opt-in": "", "opt-out": "2019-06-17"},
             {"symbol": "SH600786", "name": "东方锅炉", "opt-in": "", "opt-out": "2008-06-14"},
         ]
-        latest = [{"symbol": "SH600549", "name": "厦门钨业", "opt-in": "2026-06-12"}]
-
-        output, report = convert_history_rows(rows, latest_rows=latest)
+        output, report = convert_history_rows(rows)
 
         self.assertEqual(output, [])
-        self.assertFalse(report.ok)
+        self.assertTrue(report.ok)
         self.assertEqual(len(report.rows_without_opt_in), 4)
-        self.assertEqual(len(report.unconvertible_rows), 4)
+        self.assertEqual(report.unconvertible_rows, [])
         self.assertEqual(report.repaired_rows, [])
         self.assertEqual(report.ignored_rows, [])
         self.assertEqual(
-            {entry["provider_symbol"] for entry in report.unconvertible_rows},
+            {entry["provider_symbol"] for entry in report.outside_supported_history},
             {"600312.SHG", "600501.SHG", "600549.SHG", "600786.SHG"},
         )
-        self.assertEqual(sum(error["code"] == "missing_opt_in" for error in report.errors), 4)
+        self.assertEqual(report.outside_supported_history_count, 4)
+        self.assertNotIn("missing_opt_in", {error["code"] for error in report.errors})
+
+    def test_interval_ending_before_cutoff_is_excluded_and_reported(self):
+        output, report = convert_history_rows([
+            {"symbol": "SH600001", "name": "旧成员", "opt-in": "2020-01-01", "opt-out": "2023-01-03"},
+        ])
+
+        self.assertEqual(output, [])
+        self.assertTrue(report.ok)
+        self.assertEqual(report.outside_supported_history_count, 1)
+        self.assertEqual(report.outside_supported_history[0]["inclusive_end_date"], "2023-01-02")
+
+    def test_interval_crossing_cutoff_is_clipped(self):
+        output, report = convert_history_rows([
+            {"symbol": "SH600002", "name": "跨界成员", "opt-in": "2020-01-01", "opt-out": "2024-01-01"},
+        ])
+
+        self.assertTrue(report.ok)
+        self.assertEqual(output[0]["start_date"], CSI300_SUPPORTED_HISTORY_START_ISO)
+        self.assertEqual(output[0]["end_date"], "2023-12-31")
+        self.assertEqual(report.clipped_to_supported_start_count, 1)
+        self.assertEqual(report.clipped_to_supported_start[0]["source_start_date"], "2020-01-01")
+
+    def test_interval_starting_at_cutoff_is_unchanged(self):
+        output, report = convert_history_rows([
+            {"symbol": "SH600003", "name": "边界成员", "opt-in": CSI300_SUPPORTED_HISTORY_START_ISO, "opt-out": ""},
+        ])
+
+        self.assertTrue(report.ok)
+        self.assertEqual(output[0]["start_date"], CSI300_SUPPORTED_HISTORY_START_ISO)
+        self.assertEqual(report.clipped_to_supported_start_count, 0)
+
+    def test_missing_opt_in_touching_supported_history_is_blocking(self):
+        output, report = convert_history_rows([
+            {"symbol": "SH600004", "name": "未知成员", "opt-in": "", "opt-out": "2024-01-01"},
+        ])
+
+        self.assertEqual(output, [])
+        self.assertFalse(report.ok)
+        self.assertEqual(len(report.unconvertible_rows), 1)
+        self.assertIn("missing_opt_in", {error["code"] for error in report.errors})
+
+    def test_no_published_membership_precedes_supported_cutoff(self):
+        output, report = convert_history_rows([
+            {"symbol": "SH600005", "name": "开放成员", "opt-in": "2020-01-01", "opt-out": ""},
+            {"symbol": "SH600006", "name": "新成员", "opt-in": "2024-01-01", "opt-out": ""},
+        ])
+
+        self.assertTrue(report.ok)
+        self.assertTrue(all(row["start_date"] >= CSI300_SUPPORTED_HISTORY_START_ISO for row in output))
+        self.assertTrue(all(not row["end_date"] or row["end_date"] >= CSI300_SUPPORTED_HISTORY_START_ISO for row in output))
 
     def test_numeric_company_name_is_preserved_and_warned(self):
         output, report = convert_history_rows([
@@ -216,9 +266,9 @@ class CSI300UnliftedqConverterTests(SimpleTestCase):
 
     def test_duplicate_and_overlapping_intervals_are_blocking(self):
         rows = [
-            {"symbol": "SH600519", "name": "茅台", "opt-in": "2020-01-01", "opt-out": "2021-01-01"},
-            {"symbol": "SH600519", "name": "茅台", "opt-in": "2020-01-01", "opt-out": "2021-01-01"},
-            {"symbol": "SH600519", "name": "茅台", "opt-in": "2020-06-01", "opt-out": ""},
+            {"symbol": "SH600519", "name": "茅台", "opt-in": "2023-01-03", "opt-out": "2024-01-01"},
+            {"symbol": "SH600519", "name": "茅台", "opt-in": "2023-01-03", "opt-out": "2024-01-01"},
+            {"symbol": "SH600519", "name": "茅台", "opt-in": "2023-06-01", "opt-out": ""},
         ]
 
         _output, report = convert_history_rows(rows)
@@ -314,13 +364,44 @@ class CSI300UnliftedqConverterTests(SimpleTestCase):
         self.assertEqual((first_exit, second_exit), (0, 0))
         self.assertEqual(first_payload, second_payload)
 
+    def test_generation_succeeds_with_four_historical_missing_opt_in_rows(self):
+        active = self._active_history()
+        historical_missing = [
+            {"symbol": "SH600312", "name": "平高电气", "opt-in": "", "opt-out": "2012-01-01"},
+            {"symbol": "SH600501", "name": "航天晨光", "opt-in": "", "opt-out": "2008-06-14"},
+            {"symbol": "SH600549", "name": "厦门钨业", "opt-in": "", "opt-out": "2019-06-17"},
+            {"symbol": "SH600786", "name": "东方锅炉", "opt-in": "", "opt-out": "2008-06-14"},
+        ]
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            checksums = self._write_source_tree(
+                root,
+                history=historical_missing + active,
+                latest=self._latest_from_history(active),
+            )
+            output = root / "out.csv"
+            report_path = root / "report.json"
+            with patch.dict(converter.EXPECTED_SOURCE_SHA256, checksums, clear=True):
+                exit_code = main([
+                    "--input-dir", str(root),
+                    "--output", str(output),
+                    "--report", str(report_path),
+                    "--strict",
+                ])
+            payload = json.loads(report_path.read_text(encoding="utf-8"))
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(payload["status"], "valid")
+        self.assertEqual(payload["outside_supported_history_count"], 4)
+        self.assertEqual(payload["memberships_published"], 300)
+
     def test_invalid_conversion_preserves_old_final_and_cleans_temporary_files(self):
         history = self._active_history()
         history.insert(0, {
             "symbol": "SH600000",
             "name": "ancien intervalle sans entrée",
             "opt-in": "",
-            "opt-out": "2019-01-01",
+            "opt-out": "2024-01-01",
         })
         latest = self._latest_from_history(self._active_history())
         with tempfile.TemporaryDirectory() as tmp:
@@ -395,6 +476,11 @@ class CSI300UnliftedqConverterTests(SimpleTestCase):
         self.assertEqual(payload["source_tag"], SOURCE_TAG)
         self.assertEqual(payload["source_commit"], SOURCE_COMMIT)
         self.assertEqual(payload["source_license"], SOURCE_LICENSE)
+        self.assertEqual(payload["supported_history_start"], CSI300_SUPPORTED_HISTORY_START_ISO)
+        self.assertEqual(payload["memberships_source_total"], 300)
+        self.assertEqual(payload["memberships_published"], 300)
+        self.assertEqual(payload["distinct_tickers_published"], 300)
+        self.assertEqual(payload["min_published_start_date"], CSI300_SUPPORTED_HISTORY_START_ISO)
         self.assertTrue(payload["attribution_required"])
         self.assertIn("Commercial redistribution", payload["attribution"])
         self.assertEqual(payload["pinned_urls"], PINNED_SOURCE_URLS)

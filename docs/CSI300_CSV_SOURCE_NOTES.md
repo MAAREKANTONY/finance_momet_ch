@@ -1,5 +1,18 @@
 # CSI300 CSV Source Notes
 
+## Fenêtre historique V1 supportée
+
+La V1 des Backtests CSI300 supporte une date de début à partir du **3 janvier 2023 inclus**. Cette borne correspond au début de la couverture OHLC locale exploitable pour les actions CSI300 : le produit ne revendique donc aucune profondeur historique supérieure aux prix réellement validés.
+
+Le convertisseur conserve une approche point-in-time sans biais de survivants sur cette période supportée :
+
+- les memberships entièrement terminés avant le 3 janvier 2023 sont exclus explicitement et déclarés dans le rapport ;
+- les intervalles commencés avant cette date mais encore actifs au cutoff sont clippés au 3 janvier 2023 ;
+- un intervalle incomplet qui touche la période supportée reste une erreur bloquante ;
+- aucune garantie de composition ou de couverture OHLC n’est fournie avant le 3 janvier 2023.
+
+Cette limite ne pourra être étendue que lorsque les memberships historiques et les OHLC correspondants auront été validés ensemble.
+
 ## Sources
 
 Primary source: [`unliftedq/index-constitution`](https://github.com/unliftedq/index-constitution) on GitHub, tag `v0.6.2`, pinned to commit `16d9d69fc0bf7f0f5e9aace868e16e26f2ecb5c2`. The converter downloads only raw URLs containing that full commit and verifies these SHA-256 checksums before parsing:

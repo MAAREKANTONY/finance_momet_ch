@@ -2145,6 +2145,7 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
         csi300_market_benchmark_ticker,
     )
     from .services.dynamic_universe_readiness import gm_requirements_from_signal_lines
+    from tools.csi300_policy import validate_csi300_supported_history_start
     """Run a backtest end-to-end (Feature 3).
 
     Steps:
@@ -2159,6 +2160,10 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
 
     Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.RUNNING, error_message="")
     try:
+        validate_csi300_supported_history_start(
+            start_date=bt.start_date,
+            universe_mode=getattr(getattr(bt, "scenario", None), "universe_mode", ""),
+        )
         resolved_universe = _resolve_dynamic_universe_for_backtest(bt)
         validate_resolved_universe_currency(resolved_universe)
         require_gm_market, _require_gm_sector = gm_requirements_from_signal_lines(bt.signal_lines)

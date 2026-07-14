@@ -37,6 +37,12 @@ from core.services.universe_resolver import (
     SP500_UNIVERSE_CODE,
     universe_code_for_historical_dynamic_mode,
 )
+from tools.csi300_policy import (
+    CSI300_SUPPORTED_HISTORY_MESSAGE,
+    CSI300_SUPPORTED_HISTORY_START_ISO,
+    CSI300SupportedHistoryError,
+    validate_csi300_supported_history_start,
+)
 
 
 CHECK_OK = "OK"
@@ -280,6 +286,27 @@ def check_dynamic_universe_readiness(
         require_gm_market = bool(require_gm_market or inferred_market)
         require_gm_sector = bool(require_gm_sector or inferred_sector)
 
+    supported_history_check = None
+    if universe_code == CSI300_UNIVERSE_CODE:
+        try:
+            validate_csi300_supported_history_start(start_date=start, universe_code=universe_code)
+        except CSI300SupportedHistoryError:
+            supported_history_check = ReadinessCheck(
+                code="supported_history_start",
+                label="Fenêtre historique CSI300",
+                status=CHECK_ERROR,
+                message=CSI300_SUPPORTED_HISTORY_MESSAGE,
+                details={"supported_history_start": CSI300_SUPPORTED_HISTORY_START_ISO},
+            )
+        else:
+            supported_history_check = ReadinessCheck(
+                code="supported_history_start",
+                label="Fenêtre historique CSI300",
+                status=CHECK_OK,
+                message=f"Date de début compatible avec la fenêtre CSI300 supportée depuis le {CSI300_SUPPORTED_HISTORY_START_ISO}.",
+                details={"supported_history_start": CSI300_SUPPORTED_HISTORY_START_ISO},
+            )
+
     coverage_start = start - timedelta(days=max(0, int(warmup_days or 0)))
     metadata = {
         "coverage_start": coverage_start.isoformat(),
@@ -292,8 +319,19 @@ def check_dynamic_universe_readiness(
     }
     if universe_code == CSI300_UNIVERSE_CODE:
         metadata["effective_currency"] = CSI300_EFFECTIVE_CURRENCY
+        metadata["supported_history_start"] = CSI300_SUPPORTED_HISTORY_START_ISO
 
-    checks: list[ReadinessCheck] = []
+    checks: list[ReadinessCheck] = [supported_history_check] if supported_history_check else []
+    if supported_history_check and supported_history_check.status == CHECK_ERROR:
+        return ReadinessReport(
+            universe=universe_code,
+            start=start,
+            end=end,
+            ready=False,
+            status=REPORT_NOT_READY,
+            checks=checks,
+            metadata=metadata,
+        )
     universe_obj = UniverseDefinition.objects.filter(code=universe_code).first()
     checks.append(_check_universe_definition(universe_code, universe_obj))
 

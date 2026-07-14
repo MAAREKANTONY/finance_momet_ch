@@ -487,6 +487,32 @@ class SymbolPickerFormTests(TestCase):
 
         self.assertEqual(backtest.settings["effective_currency"], "CNY")
 
+    def test_backtest_form_rejects_csi300_start_before_supported_history(self):
+        scenario = Scenario.objects.create(
+            name="CSI300 unsupported history",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+        form = BacktestForm(data=self._backtest_form_payload(scenario, start_date="2023-01-02"))
+
+        self.assertFalse(form.is_valid())
+        self.assertIn("start_date", form.errors)
+        self.assertIn("3 janvier 2023", str(form.errors["start_date"]))
+
+    def test_backtest_form_accepts_csi300_start_at_supported_history(self):
+        scenario = Scenario.objects.create(
+            name="CSI300 supported history boundary",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+        form = BacktestForm(data=self._backtest_form_payload(
+            scenario,
+            start_date="2023-01-03",
+            end_date="2023-01-04",
+        ))
+
+        self.assertTrue(form.is_valid(), form.errors)
+
     def test_backtest_form_does_not_invent_currency_for_static_universe(self):
         scenario = Scenario.objects.create(
             name="Static currency neutral",
