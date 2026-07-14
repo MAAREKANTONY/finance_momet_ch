@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from django.core.management import call_command
 from django.core.management.base import CommandError
+from django.db import connection
 from django.test import TestCase
 
 from core.models import (
@@ -27,6 +28,7 @@ from core.services.universe_resolver import UniverseCoverageError, UniverseResol
 
 
 CSV_HEADER = "universe_code,ticker,exchange,provider_symbol,valid_from,valid_to,company_name,source\n"
+PINNED_CSI300_SOURCE = "unliftedq_index_constitution:16d9d69fc0bf7f0f5e9aace868e16e26f2ecb5c2"
 
 
 class DynamicUniverseImportTests(TestCase):
@@ -47,9 +49,14 @@ class DynamicUniverseImportTests(TestCase):
         handle.close()
         return handle.name
 
-    def _single_member_csv(self, provider_symbol: str = "AAPL.US", valid_to: str = "") -> str:
+    def _single_member_csv(
+        self,
+        provider_symbol: str = "AAPL.US",
+        valid_to: str = "",
+        source: str = "manual_csv",
+    ) -> str:
         return self._csv_file(
-            f"SP500,AAPL,NASDAQ,{provider_symbol},2020-01-01,{valid_to},Apple Inc.,manual_csv\n"
+            f"SP500,AAPL,NASDAQ,{provider_symbol},2020-01-01,{valid_to},Apple Inc.,{source}\n"
         )
 
     def _resolve(self, start: date = date(2020, 1, 1), end: date = date(2020, 1, 3)):
@@ -305,6 +312,207 @@ class DynamicUniverseImportTests(TestCase):
             "CSI300,600519,XSHG,XSHG,Kweichow Moutai,2020-01-01,,0.052,,manual_csv,CN,CNY,Consumer Defensive,Beverages\n"
             "CSI300,000001,XSHE,XSHE,Ping An Bank,2020-01-01,2023-06-30,0.014,,manual_csv,CN,CNY,Financials,Banks\n",
         )
+
+    def _pinned_csi300_csv(self) -> str:
+        return self._raw_csv_file(
+            "universe_code,symbol,exchange,mic,name,start_date,end_date,weight,provider_symbol,source,country,currency,sector,industry\n",
+            f"CSI300,000001,SHE,XSHE,Ping An Bank,2023-01-03,,,000001.SHE,{PINNED_CSI300_SOURCE},CN,CNY,,\n",
+        )
+
+    def test_membership_source_capacity_accepts_pinned_csi300_provenance(self):
+        field = UniverseMembership._meta.get_field("source")
+
+        self.assertEqual(field.max_length, 128)
+        self.assertEqual(len(PINNED_CSI300_SOURCE), 69)
+        self.assertEqual(field.clean(PINNED_CSI300_SOURCE, UniverseMembership()), PINNED_CSI300_SOURCE)
+
+    def test_postgresql_membership_source_column_is_varchar_128(self):
+        if connection.vendor != "postgresql":
+            self.skipTest("PostgreSQL-specific schema assertion")
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT character_maximum_length
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'core_universemembership'
+                  AND column_name = 'source'
+                """
+            )
+            row = cursor.fetchone()
+
+        self.assertEqual(row, (128,))
+
+    def test_exact_dry_run_accepts_pinned_csi300_provenance_without_writes(self):
+        Symbol.objects.create(ticker="000001", exchange="SHE", name="Ping An Bank", active=True)
+
+        result = import_universe_memberships_from_csv(
+            self._pinned_csi300_csv(),
+            universe_code="CSI300",
+            universe_name="CSI 300",
+            coverage_start=date(2023, 1, 3),
+            coverage_end=date(2023, 1, 3),
+            expected_member_count=1,
+            dry_run=True,
+            replace_existing=True,
+        )
+
+        self.assertNotEqual(result.status, UniverseCoverageStatus.FAILED)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.memberships_to_create, 1)
+        self.assertEqual(result.expected_final_memberships, 1)
+        self.assertEqual(UniverseDefinition.objects.count(), 0)
+        self.assertEqual(UniverseMembership.objects.count(), 0)
+        self.assertEqual(UniverseImportBatch.objects.count(), 0)
+        self.assertEqual(UniverseCoverageSnapshot.objects.count(), 0)
+
+    def test_apply_accepts_and_preserves_pinned_csi300_provenance(self):
+        Symbol.objects.create(ticker="000001", exchange="SHE", name="Ping An Bank", active=True)
+
+        result = import_universe_memberships_from_csv(
+            self._pinned_csi300_csv(),
+            universe_code="CSI300",
+            universe_name="CSI 300",
+            coverage_start=date(2023, 1, 3),
+            coverage_end=date(2023, 1, 3),
+            expected_member_count=1,
+            dry_run=False,
+            replace_existing=True,
+        )
+
+        self.assertEqual(result.memberships_created, 1)
+        membership = UniverseMembership.objects.get(ticker="000001", exchange="SHE")
+        self.assertEqual(membership.source, PINNED_CSI300_SOURCE)
+        self.assertEqual(membership.source_payload["source"], PINNED_CSI300_SOURCE)
+        self.assertEqual(membership.source_payload["row"]["source"], PINNED_CSI300_SOURCE)
+
+    def test_too_long_membership_source_fails_historical_dry_run_and_apply_before_writes(self):
+        field = UniverseMembership._meta.get_field("source")
+        too_long = "s" * (field.max_length + 1)
+        csv_path = self._single_member_csv(source=too_long)
+
+        dry_run = import_universe_memberships_from_csv(
+            csv_path,
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 1),
+            expected_member_count=1,
+            dry_run=True,
+        )
+
+        self.assertEqual(dry_run.status, UniverseCoverageStatus.FAILED)
+        self.assertIn("UniverseMembership.source", " ".join(dry_run.errors))
+        self.assertIn("CSV row 2", " ".join(dry_run.errors))
+        self.assertIn(str(field.max_length), " ".join(dry_run.errors))
+        with self.assertRaisesRegex(UniverseImportError, "Import preflight failed.*UniverseMembership.source"):
+            import_universe_memberships_from_csv(
+                csv_path,
+                coverage_start=date(2020, 1, 1),
+                coverage_end=date(2020, 1, 1),
+                expected_member_count=1,
+                dry_run=False,
+            )
+        self.assertEqual(UniverseDefinition.objects.count(), 0)
+        self.assertEqual(UniverseMembership.objects.count(), 0)
+        self.assertEqual(UniverseImportBatch.objects.count(), 0)
+        self.assertEqual(UniverseCoverageSnapshot.objects.count(), 0)
+
+    def test_too_long_membership_source_refuses_update_before_exact_deletion(self):
+        self._seed_exact_initial_state()
+        universe = UniverseDefinition.objects.get(code="SP500")
+        memberships_before = list(universe.memberships.order_by("id").values())
+        snapshots_before = list(universe.coverage_snapshots.order_by("id").values())
+        batches_before = list(UniverseImportBatch.objects.order_by("id").values())
+        field = UniverseMembership._meta.get_field("source")
+        too_long = "s" * (field.max_length + 1)
+        csv_path = self._csv_file(
+            f"SP500,AAPL,NASDAQ,AAPL.US,2020-01-01,,Apple Inc.,{too_long}\n"
+        )
+
+        with self.assertRaisesRegex(UniverseImportError, "Import preflight failed.*UniverseMembership.source"):
+            import_universe_memberships_from_csv(
+                csv_path,
+                coverage_start=date(2020, 1, 1),
+                coverage_end=date(2020, 1, 1),
+                expected_member_count=1,
+                dry_run=False,
+                replace_existing=True,
+            )
+
+        self.assertEqual(list(universe.memberships.order_by("id").values()), memberships_before)
+        self.assertEqual(list(universe.coverage_snapshots.order_by("id").values()), snapshots_before)
+        self.assertEqual(list(UniverseImportBatch.objects.order_by("id").values()), batches_before)
+
+    def test_preflight_validates_universe_definition_and_batch_limits_from_models(self):
+        name_field = UniverseDefinition._meta.get_field("name")
+        reference_field = UniverseImportBatch._meta.get_field("source_reference")
+        csv_path = self._single_member_csv()
+
+        invalid_name = import_universe_memberships_from_csv(
+            csv_path,
+            universe_name="n" * (name_field.max_length + 1),
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 1),
+            expected_member_count=1,
+            dry_run=True,
+        )
+        invalid_reference = import_universe_memberships_from_csv(
+            csv_path,
+            source_reference="r" * (reference_field.max_length + 1),
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 1),
+            expected_member_count=1,
+            dry_run=True,
+        )
+
+        self.assertEqual(invalid_name.status, UniverseCoverageStatus.FAILED)
+        self.assertIn("UniverseDefinition.name", " ".join(invalid_name.errors))
+        self.assertEqual(invalid_reference.status, UniverseCoverageStatus.FAILED)
+        self.assertIn("UniverseImportBatch.source_reference", " ".join(invalid_reference.errors))
+        self.assertEqual(UniverseDefinition.objects.count(), 0)
+        self.assertEqual(UniverseImportBatch.objects.count(), 0)
+
+    def test_cli_reports_preflight_failure_and_apply_raises_controlled_error(self):
+        field = UniverseMembership._meta.get_field("source")
+        csv_path = self._single_member_csv(source="s" * (field.max_length + 1))
+        out = StringIO()
+
+        call_command(
+            "import_universe_memberships",
+            "--csv",
+            csv_path,
+            "--universe-code",
+            "SP500",
+            "--coverage-start",
+            "2020-01-01",
+            "--coverage-end",
+            "2020-01-01",
+            "--expected-member-count",
+            "1",
+            "--dry-run",
+            stdout=out,
+        )
+
+        self.assertIn("status=FAILED", out.getvalue())
+        self.assertIn("UniverseMembership.source", out.getvalue())
+        self.assertIn("CSV row 2", out.getvalue())
+        with self.assertRaisesRegex(CommandError, "Import preflight failed.*UniverseMembership.source"):
+            call_command(
+                "import_universe_memberships",
+                "--csv",
+                csv_path,
+                "--universe-code",
+                "SP500",
+                "--coverage-start",
+                "2020-01-01",
+                "--coverage-end",
+                "2020-01-01",
+                "--expected-member-count",
+                "1",
+                "--apply",
+            )
+        self.assertEqual(UniverseMembership.objects.count(), 0)
+        self.assertEqual(UniverseImportBatch.objects.count(), 0)
+        self.assertEqual(UniverseCoverageSnapshot.objects.count(), 0)
 
     def _exact_initial_csv(self) -> str:
         return self._csv_file(
