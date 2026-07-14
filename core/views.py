@@ -76,6 +76,11 @@ from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
 from .services.backtesting.capital_validation import validate_backtest_capital_for_object
+from .services.backtest_currency import (
+    EFFECTIVE_CURRENCY_SETTINGS_KEY,
+    effective_currency_for_backtest_display,
+    effective_currency_for_universe_mode,
+)
 from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
 from .services.couloir import is_couloir_line, normalize_couloir_line_config
 from .services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
@@ -96,7 +101,7 @@ from .services.dynamic_universe_readiness import (
     check_dynamic_universe_readiness,
     readiness_confirmation_hash,
     readiness_requires_confirmation,
-    _gm_requirements_from_signal_lines,
+    gm_requirements_from_signal_lines,
 )
 from .services.universe_import import UniverseImportError, import_universe_memberships_from_csv
 from .templatetags.backtest_extras import (
@@ -205,6 +210,8 @@ DU_CHECK_LABELS = {
     "import_batch": "Import de composition validé",
     "coverage_snapshots": "Couverture de la période",
     "historical_symbols": "Actions historiques",
+    "member_currencies": "Devise des actions",
+    "market_benchmark_currency": "Devise du benchmark marché",
     "member_daily_bars": "Prix des actions",
     "gm_market_daily_bars": "Prix du filtre marché",
     "gm_sector_daily_bars": "Prix du filtre secteur",
@@ -266,6 +273,8 @@ def _du_check_message(check) -> str:
         if status == "SKIPPED":
             return "Les actions historiques seront vérifiées après préparation de la composition."
         return "Certaines actions historiques doivent être créées dans l'application."
+    if code in {"member_currencies", "market_benchmark_currency"}:
+        return getattr(check, "message", "")
     if code == "member_daily_bars":
         if status == "OK":
             total = details.get("expected_symbols")
@@ -325,6 +334,9 @@ def _readiness_confirmation_context(report) -> dict:
 
 def _store_backtest_readiness_ack(bt: Backtest, report) -> None:
     settings_payload = dict(bt.settings or {}) if isinstance(bt.settings, dict) else {}
+    effective_currency = effective_currency_for_universe_mode(bt.scenario.universe_mode)
+    if effective_currency:
+        settings_payload[EFFECTIVE_CURRENCY_SETTINGS_KEY] = effective_currency
     if readiness_requires_confirmation(report):
         ack = build_readiness_ack_payload(report)
         ack["allow_partial_coverage"] = _readiness_has_partial_coverage_warning(report)
@@ -508,7 +520,7 @@ def _dynamic_universe_readiness_panel(bt: Backtest) -> dict:
         panel["message"] = "Renseignez une date de début et une date de fin pour vérifier la readiness."
         return panel
 
-    require_gm_market, require_gm_sector = _gm_requirements_from_signal_lines(bt.signal_lines)
+    require_gm_market, require_gm_sector = gm_requirements_from_signal_lines(bt.signal_lines)
     try:
         panel["report"] = check_dynamic_universe_readiness(
             universe=universe_code,
@@ -2887,6 +2899,11 @@ def backtest_create(request):
     signal_lines_json = _signal_lines_json_for_form(form)
     context = {
         "form": form,
+        "csi300_scenario_ids": list(
+            Scenario.objects.filter(
+                universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
+            ).values_list("id", flat=True)
+        ),
         "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES),
         "signal_lines_json": signal_lines_json,
         **_configuration_snapshot_context(RunConfigurationSnapshot.Kind.BACKTEST, request.GET.get("snapshot_id")),
@@ -2940,6 +2957,11 @@ def backtest_update(request, pk: int):
             "bt": bt,
             "signal_choices_json": json.dumps(TRADING_SIGNAL_CHOICES),
             "signal_lines_json": signal_lines_json,
+            "csi300_scenario_ids": list(
+                Scenario.objects.filter(
+                    universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
+                ).values_list("id", flat=True)
+            ),
             **_configuration_snapshot_context(RunConfigurationSnapshot.Kind.BACKTEST, request.GET.get("snapshot_id")),
         },
     )
@@ -2988,6 +3010,7 @@ def backtest_detail(request, pk: int):
             "dynamic_universe_readiness": _dynamic_universe_readiness_panel(bt),
             "is_couloir_mode": bool(couloir_effective_summary),
             "couloir_effective_summary": couloir_effective_summary,
+            "effective_currency": effective_currency_for_backtest_display(bt),
         },
     )
 
@@ -3076,7 +3099,7 @@ def backtest_run(request, pk: int):
     if is_historical_dynamic_universe_mode(mode):
         universe_code = universe_code_for_historical_dynamic_mode(mode) or ""
         try:
-            require_gm_market, require_gm_sector = _gm_requirements_from_signal_lines(bt.signal_lines)
+            require_gm_market, require_gm_sector = gm_requirements_from_signal_lines(bt.signal_lines)
             readiness_report = check_dynamic_universe_readiness(
                 universe=universe_code,
                 start=bt.start_date,
@@ -3669,6 +3692,7 @@ def backtest_results(request, pk: int):
         {
             "bt": bt,
             "results": results,
+            "effective_currency": effective_currency_for_backtest_display(bt),
             "ticker": ticker,
             "line_index": line_index,
             "line": line,
@@ -3825,6 +3849,7 @@ def _build_backtest_workbook_full(bt):
     ws["B1"].font = Font(bold=True)
 
     meta = results.get("meta") or {}
+    effective_currency = effective_currency_for_backtest_display(bt)
     settings_rows = [
         ("Backtest ID", bt.id),
         ("Nom", bt.name),
@@ -3854,6 +3879,8 @@ def _build_backtest_workbook_full(bt):
         ("Nombre d'avertissements", meta.get("warning_count", 0)),
         ("Avertissements", json.dumps(meta.get("warnings") or [], ensure_ascii=False)),
     ]
+    if effective_currency:
+        settings_rows.insert(6, ("Devise effective", effective_currency))
     for k, v in settings_rows:
         append_excel_row(ws, [k, v])
     _append_backtest_universe_settings_rows(ws, meta)
@@ -4208,6 +4235,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
     ws["A1"].font = Font(bold=True)
     ws["B1"].font = Font(bold=True)
     meta = results.get("meta") or {}
+    effective_currency = effective_currency_for_backtest_display(bt)
     rows = [
         ("Backtest ID", bt.id),
         ("Nom", bt.name),
@@ -4237,6 +4265,8 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
         ("Nombre d'avertissements", meta.get("warning_count", 0)),
         ("Avertissements", json.dumps(meta.get("warnings") or [], ensure_ascii=False)),
     ]
+    if effective_currency:
+        rows.insert(6, ("Devise effective", effective_currency))
     for k, v in rows:
         append_excel_row(ws, [k, v])
     _append_backtest_universe_settings_rows(ws, meta)

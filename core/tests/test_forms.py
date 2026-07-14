@@ -474,6 +474,32 @@ class SymbolPickerFormTests(TestCase):
 
         self.assertTrue(form.is_valid(), form.errors)
 
+    def test_backtest_form_persists_cny_for_dynamic_csi300(self):
+        scenario = Scenario.objects.create(
+            name="CSI300 native CNY",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+        form = BacktestForm(data=self._backtest_form_payload(scenario))
+
+        self.assertTrue(form.is_valid(), form.errors)
+        backtest = form.save()
+
+        self.assertEqual(backtest.settings["effective_currency"], "CNY")
+
+    def test_backtest_form_does_not_invent_currency_for_static_universe(self):
+        scenario = Scenario.objects.create(
+            name="Static currency neutral",
+            universe_mode=Scenario.UniverseMode.STATIC_TICKERS,
+            active=True,
+        )
+        form = BacktestForm(data=self._backtest_form_payload(scenario))
+
+        self.assertTrue(form.is_valid(), form.errors)
+        backtest = form.save()
+
+        self.assertNotIn("effective_currency", backtest.settings)
+
     def test_backtest_form_rejects_zero_capital_per_ticker(self):
         scenario = Scenario.objects.create(name="Capital CT zero", active=True)
         form = BacktestForm(data=self._backtest_form_payload(scenario, capital_total="0", capital_per_ticker="0"))

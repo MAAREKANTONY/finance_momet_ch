@@ -20,6 +20,7 @@ import gzip
 import json
 
 from core.backtest_debug import build_backtest_debug_workbook
+from core.models import Backtest
 from core.views import _build_backtest_workbook_full
 
 
@@ -137,6 +138,49 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertTrue(any("Univers période historique fin | 2020-12-31" in row for row in flat))
         self.assertTrue(any("Univers actions analysées | 503" in row for row in flat))
         self.assertTrue(any("Univers source des données | manual_csv" in row for row in flat))
+
+    def test_backtest_exports_include_csi300_effective_currency(self):
+        bt = self._make_backtest_stub()
+        bt.scenario.universe_mode = "CSI300_HISTORICAL_DYNAMIC"
+        bt.results["meta"]["effective_currency"] = "CNY"
+
+        full, _ = _build_backtest_workbook_full(bt)
+        from core.views import _build_backtest_workbook_compact
+        compact, _ = _build_backtest_workbook_compact(bt, charts="0")
+
+        for workbook in (full, compact):
+            flat = self._sheet_flat_rows(workbook, "Settings")
+            self.assertTrue(any("Devise effective | CNY" in row for row in flat))
+
+    def test_old_static_backtest_exports_ignore_mutable_csi300_scenario_and_settings(self):
+        bt = self._make_backtest_stub()
+        bt.scenario.universe_mode = "CSI300_HISTORICAL_DYNAMIC"
+        bt.settings = {"effective_currency": "CNY"}
+
+        full, _ = _build_backtest_workbook_full(bt)
+        from core.views import _build_backtest_workbook_compact
+        compact, _ = _build_backtest_workbook_compact(bt, charts="0")
+
+        for workbook in (full, compact):
+            flat = self._sheet_flat_rows(workbook, "Settings")
+            self.assertFalse(any("Devise effective" in row for row in flat))
+
+    def test_done_backtest_with_empty_results_does_not_export_settings_currency(self):
+        bt = self._make_backtest_stub()
+        bt.status = Backtest.Status.DONE
+        bt.results = {}
+        bt.settings = {"effective_currency": "CNY"}
+        original_results = dict(bt.results)
+        original_settings = dict(bt.settings)
+
+        from core.views import _build_backtest_workbook_compact
+
+        with self.assertRaisesMessage(ValueError, "Aucun résultat à exporter"):
+            _build_backtest_workbook_full(bt)
+        with self.assertRaisesMessage(ValueError, "Aucun résultat à exporter"):
+            _build_backtest_workbook_compact(bt, charts="0")
+        self.assertEqual(bt.results, original_results)
+        self.assertEqual(bt.settings, original_settings)
 
     def test_build_backtest_workbook_full_uses_bounded_return_wording_for_global_momentum(self):
         bt = self._make_backtest_stub()

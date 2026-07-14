@@ -22,9 +22,10 @@ from core.models import (
     UniverseImportBatch,
     UniverseMembership,
 )
+from core.services.backtest_currency import ResolvedCurrencyValidationError
 from core.services.dynamic_universe_readiness import ReadinessAction, ReadinessCheck, ReadinessReport, readiness_confirmation_hash
 from core.services.dynamic_universe_symbols import UniverseSymbolMappingError, UniverseSymbolMappingReport
-from core.tasks import map_universe_membership_symbols_job_task
+from core.tasks import map_universe_membership_symbols_job_task, run_backtest_job_task
 
 
 class DynamicUniverseTriggerPageTests(TestCase):
@@ -780,6 +781,139 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertEqual(backtest.status, Backtest.Status.DONE)
         messages = list(response.context["messages"])
         self.assertTrue(any("capital total" in str(message) for message in messages))
+
+    @patch("core.views.launch_processing_job")
+    def test_trigger_backtest_run_uses_common_currency_validating_task(self, launch_mock):
+        scenario = Scenario.objects.create(
+            name="CSI300 Trigger guarded",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+        )
+        backtest = Backtest.objects.create(
+            name="BT CSI300 Trigger guarded",
+            scenario=scenario,
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+        )
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_BACKTEST,
+            status=ProcessingJob.Status.PENDING,
+            backtest=backtest,
+            scenario=scenario,
+        )
+        launch_mock.return_value = JobLaunchOutcome(job=job, dispatch_error=None)
+
+        response = self.client.post(
+            reverse("trigger_page"),
+            {"action": "bt_run", "backtest_id": str(backtest.id)},
+            follow=True,
+        )
+
+        self.assertEqual(response.status_code, 200)
+        launch_mock.assert_called_once()
+        self.assertIs(launch_mock.call_args.kwargs["task"], run_backtest_job_task)
+
+    def test_trigger_common_task_blocks_usd_csi300_market_benchmark(self):
+        start = date(2022, 1, 1)
+        end = date(2022, 1, 3)
+        scenario = Scenario.objects.create(
+            name="CSI300 Trigger GM market guarded",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+        )
+        member = Symbol.objects.create(
+            ticker="600519",
+            exchange="SHG",
+            currency="CNY",
+            active=True,
+        )
+        benchmark = Symbol.objects.create(
+            ticker="000300",
+            exchange="SHG",
+            currency="USD",
+            active=True,
+        )
+        universe = UniverseDefinition.objects.create(
+            code="CSI300",
+            name="CSI 300",
+            source="manual_csv",
+            active=True,
+        )
+        UniverseMembership.objects.create(
+            universe=universe,
+            symbol=member,
+            ticker=member.ticker,
+            exchange=member.exchange,
+            provider_symbol="600519.SHG",
+            valid_from=start,
+            valid_to=None,
+            source="manual_csv",
+        )
+        batch = UniverseImportBatch.objects.create(
+            universe=universe,
+            provider="manual_csv",
+            source_name="manual_csv",
+            period_start=start,
+            period_end=end,
+            expected_member_count=1,
+            imported_member_count=1,
+            mapped_member_count=1,
+            unmapped_member_count=0,
+            status=UniverseCoverageStatus.VALIDATED,
+        )
+        for offset in range(3):
+            UniverseCoverageSnapshot.objects.create(
+                universe=universe,
+                import_batch=batch,
+                coverage_date=date.fromordinal(start.toordinal() + offset),
+                expected_member_count=1,
+                actual_member_count=1,
+                mapped_member_count=1,
+                unmapped_member_count=0,
+                status=UniverseCoverageStatus.VALIDATED,
+            )
+        previous_results = {"meta": {"effective_currency": "CNY"}, "legacy": True}
+        backtest = Backtest.objects.create(
+            name="BT CSI300 Trigger GM market guarded",
+            scenario=scenario,
+            start_date=start,
+            end_date=end,
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            signal_lines=[
+                {"buy": ["A1"], "sell": ["B1"], "buy_market_gm_market": "GM_POS"}
+            ],
+            results=previous_results,
+        )
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.RUN_BACKTEST,
+            status=ProcessingJob.Status.PENDING,
+            backtest=backtest,
+            scenario=scenario,
+            created_by=self.user,
+        )
+
+        with patch("core.tasks.determine_backtest_result_mode") as preflight_mock:
+            with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock:
+                with patch("core.services.backtesting.engine.run_backtest") as engine_mock:
+                    with self.assertRaisesMessage(ResolvedCurrencyValidationError, "000300.SHG"):
+                        run_backtest_job_task.run(
+                            backtest_id=backtest.id,
+                            user_id=self.user.id,
+                            job_id=job.id,
+                        )
+
+        preflight_mock.assert_not_called()
+        prep_mock.assert_not_called()
+        engine_mock.assert_not_called()
+        backtest.refresh_from_db()
+        job.refresh_from_db()
+        self.assertEqual(backtest.status, Backtest.Status.FAILED)
+        self.assertEqual(job.status, ProcessingJob.Status.FAILED)
+        self.assertIn("000300.SHG", backtest.error_message)
+        self.assertIn("devise attendue CNY", backtest.error_message)
+        self.assertIn("devise trouvée USD", backtest.error_message)
+        self.assertIn("000300.SHG", job.error)
+        self.assertEqual(backtest.results, previous_results)
+        self.assertEqual(benchmark.currency, "USD")
 
     @patch("core.views.launch_processing_job")
     def test_trigger_prepare_ohlc_rejects_backtest_universe_mismatch(self, launch_mock):

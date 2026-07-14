@@ -48,6 +48,7 @@ from core.services.china_benchmark_registry import (
     csi300_market_benchmark_exchange,
     csi300_market_benchmark_ticker,
 )
+from core.services.backtest_currency import effective_currency_for_new_result
 from core.services.market_cap import preload_market_cap_series
 from core.services.couloir import (
     COULOIR_SIGNAL_CODE,
@@ -3462,6 +3463,9 @@ def run_backtest(
     universe_meta = _resolved_universe_meta()
     if universe_meta is not None:
         results["meta"]["universe"] = universe_meta
+    effective_currency = effective_currency_for_new_result(universe_meta)
+    if effective_currency:
+        results["meta"]["effective_currency"] = effective_currency
 
     # Organize by ticker
     for ticker in data_by_ticker.keys():

@@ -2133,8 +2133,18 @@ def run_game_scenario_job_task(self, *, game_id: int, force_fetch: bool = False,
         raise
 def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=None):
     # Lazy imports to avoid circular imports
+    from .services.backtest_currency import (
+        effective_currency_for_universe_mode,
+        validate_csi300_market_benchmark_currency,
+        validate_resolved_universe_currency,
+    )
     from .services.backtesting.prep import prepare_backtest_data
     from .services.backtesting.engine import run_backtest as engine_run_backtest
+    from .services.china_benchmark_registry import (
+        csi300_market_benchmark_exchange,
+        csi300_market_benchmark_ticker,
+    )
+    from .services.dynamic_universe_readiness import gm_requirements_from_signal_lines
     """Run a backtest end-to-end (Feature 3).
 
     Steps:
@@ -2150,6 +2160,17 @@ def run_backtest_task(backtest_id: int, job_id: int | None = None, task_request=
     Backtest.objects.filter(id=bt.id).update(status=Backtest.Status.RUNNING, error_message="")
     try:
         resolved_universe = _resolve_dynamic_universe_for_backtest(bt)
+        validate_resolved_universe_currency(resolved_universe)
+        require_gm_market, _require_gm_sector = gm_requirements_from_signal_lines(bt.signal_lines)
+        if (
+            require_gm_market
+            and effective_currency_for_universe_mode(getattr(resolved_universe, "mode", ""))
+        ):
+            benchmark_symbol = Symbol.objects.filter(
+                ticker=csi300_market_benchmark_ticker(),
+                exchange=csi300_market_benchmark_exchange(),
+            ).first()
+            validate_csi300_market_benchmark_currency(benchmark_symbol)
         preflight = determine_backtest_result_mode(bt)
         preflight_msg = (
             "Backtest preflight: "

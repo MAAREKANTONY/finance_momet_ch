@@ -7,7 +7,8 @@
     Scénario: <b>{{ bt.scenario.name }}</b> • Période: <b>{{ results.meta.start_date }}</b> → <b>{{ results.meta.end_date }}</b>
     <br/>
     Éligibilité: <b>{% if bt.include_all_tickers %}tous les tickers du scénario (ignore ratio_p ≥ X){% else %}ratio_p ≥ X{% endif %}</b>
-    <br/>Capital: CP <b>{{ bt.capital_total|num:2 }}{% if bt.capital_total == 0 %} (illimité){% endif %}</b> • CT <b>{{ bt.capital_per_ticker|num:2 }}</b> • Mode <b>{{ bt.get_capital_mode_display }}</b>
+    <br/>Capital: CP <b>{{ bt.capital_total|num:2 }}{% if effective_currency %} {{ effective_currency }}{% endif %}{% if bt.capital_total == 0 %} (illimité){% endif %}</b> • CT <b>{{ bt.capital_per_ticker|num:2 }}{% if effective_currency %} {{ effective_currency }}{% endif %}</b> • Mode <b>{{ bt.get_capital_mode_display }}</b>
+    {% if effective_currency %}<br/>Devise effective : <b>{{ effective_currency }}</b> — aucune conversion FX.{% endif %}
     {% if is_couloir_mode and couloir_effective_summary %}
       {% with couloir_config_summary=couloir_effective_summary.couloir %}
       <br/>Stratégie : <b>Couloir</b>
@@ -216,9 +217,9 @@
 <div class="acc-body">
 <table>
     <tr>
-      <th>Capital total</th><td>{{ portfolio_kpi.capital_total }}</td>
-      <th>Investi (fin)</th><td>{{ portfolio_kpi.invested_end }}</td>
-      <th>Equity (fin)</th><td>{{ portfolio_kpi.equity_end }}</td>
+      <th>Capital total{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.capital_total }}</td>
+      <th>Investi (fin){% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.invested_end }}</td>
+      <th>Equity (fin){% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.equity_end }}</td>
     </tr>
     <tr>
       <th>BT — Retour portefeuille / investi final</th><td>{{ portfolio_kpi.BT|pct:3 }}</td>
@@ -255,7 +256,7 @@
     <canvas id="realizedGainsChart" height="100"></canvas>
     <div class="muted" style="margin-top:8px;">Cette courbe cumule uniquement les gains/pertes réalisés lors des ventes clôturées. Les positions encore ouvertes et les gains latents ne sont pas inclus.</div>
     {% if not realized_gains_has_sales %}
-      <div class="muted" style="margin-top:6px;">Aucune vente clôturée : la courbe reste à 0 €.</div>
+      <div class="muted" style="margin-top:6px;">Aucune vente clôturée : la courbe reste à 0{% if effective_currency %} {{ effective_currency }}{% else %} €{% endif %}.</div>
     {% endif %}
   </div>
   <div style="margin-top:18px;">
@@ -277,7 +278,7 @@
   <canvas id="realizedGainsChart" height="100"></canvas>
   <div class="muted" style="margin-top:8px;">Cette courbe cumule uniquement les gains/pertes réalisés lors des ventes clôturées. Les positions encore ouvertes et les gains latents ne sont pas inclus.</div>
   {% if not realized_gains_has_sales %}
-    <div class="muted" style="margin-top:6px;">Aucune vente clôturée : la courbe reste à 0 €.</div>
+    <div class="muted" style="margin-top:6px;">Aucune vente clôturée : la courbe reste à 0{% if effective_currency %} {{ effective_currency }}{% else %} €{% endif %}.</div>
   {% endif %}
 </div>
 </details>
@@ -307,8 +308,8 @@
           <th>Conditions de vente</th>
           <th>BT</th>
           <th>BMD</th>
-          <th>P&amp;L</th>
-          <th>Trade moyen</th>
+          <th>P&amp;L{% if effective_currency %} ({{ effective_currency }}){% endif %}</th>
+          <th>Trade moyen{% if effective_currency %} ({{ effective_currency }}){% endif %}</th>
           <th>Profit factor</th>
           <th>Win rate</th>
           <th>Ratio_in_position</th>
@@ -352,14 +353,14 @@
 <div class="acc-body">
   <table>
     <tr>
-      <th>P&amp;L total</th><td>{{ portfolio_kpi.TOTAL_PNL_AMOUNT|num:2 }}</td>
+      <th>P&amp;L total{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.TOTAL_PNL_AMOUNT|num:2 }}</td>
       <th>Performance totale / capital</th><td>{{ portfolio_kpi.TOTAL_RETURN_ON_CAPITAL|pct:3 }}</td>
-      <th>Equity finale</th><td>{{ portfolio_kpi.FINAL_EQUITY|num:2 }}</td>
+      <th>Equity finale{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.FINAL_EQUITY|num:2 }}</td>
     </tr>
     <tr>
-      <th>Total gains</th><td>{{ portfolio_kpi.TOTAL_GAIN_AMOUNT|num:2 }}</td>
-      <th>Total pertes</th><td>{{ portfolio_kpi.TOTAL_LOSS_AMOUNT|num:2 }}</td>
-      <th>Trade moyen</th><td>{{ portfolio_kpi.AVG_TRADE_AMOUNT|num:2 }}</td>
+      <th>Total gains{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.TOTAL_GAIN_AMOUNT|num:2 }}</td>
+      <th>Total pertes{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.TOTAL_LOSS_AMOUNT|num:2 }}</td>
+      <th>Trade moyen{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.AVG_TRADE_AMOUNT|num:2 }}</td>
     </tr>
     <tr>
       <th>Trades totaux</th><td>{{ portfolio_kpi.TOTAL_TRADES }}</td>
@@ -368,12 +369,12 @@
     </tr>
     <tr>
       <th>Profit factor</th><td>{{ portfolio_kpi.PROFIT_FACTOR_AMOUNT|num:3 }}</td>
-      <th>Max drawdown montant</th><td>{{ portfolio_kpi.max_drawdown_amount|num:2 }}</td>
-      <th>Capital total</th><td>{{ bt.capital_total|num:2 }}</td>
+      <th>Max drawdown montant{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.max_drawdown_amount|num:2 }}</td>
+      <th>Capital total{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ bt.capital_total|num:2 }}</td>
     </tr>
     <tr>
-      <th>Max gain</th><td>{{ portfolio_kpi.MAX_GAIN_AMOUNT|num:2 }}</td>
-      <th>Max perte</th><td>{{ portfolio_kpi.MAX_LOSS_AMOUNT|num:2 }}</td>
+      <th>Max gain{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.MAX_GAIN_AMOUNT|num:2 }}</td>
+      <th>Max perte{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ portfolio_kpi.MAX_LOSS_AMOUNT|num:2 }}</td>
       <th></th><td></td>
     </tr>
   </table>
@@ -513,13 +514,13 @@
       <th>BT</th><td>{{ final.BT|pct:3 }}</td>
     </tr>
     <tr>
-      <th>P&amp;L</th><td>{{ final.PNL_AMOUNT|num:2 }}</td>
-      <th>Equity finale</th><td>{{ final.FINAL_EQUITY|num:2 }}</td>
-      <th>Trade moyen</th><td>{{ final.AVG_TRADE_AMOUNT|num:2 }}</td>
+      <th>P&amp;L{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ final.PNL_AMOUNT|num:2 }}</td>
+      <th>Equity finale{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ final.FINAL_EQUITY|num:2 }}</td>
+      <th>Trade moyen{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ final.AVG_TRADE_AMOUNT|num:2 }}</td>
     </tr>
     <tr>
-      <th>Total gains</th><td>{{ final.TOTAL_GAIN_AMOUNT|num:2 }}</td>
-      <th>Total pertes</th><td>{{ final.TOTAL_LOSS_AMOUNT|num:2 }}</td>
+      <th>Total gains{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ final.TOTAL_GAIN_AMOUNT|num:2 }}</td>
+      <th>Total pertes{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ final.TOTAL_LOSS_AMOUNT|num:2 }}</td>
       <th>Profit factor</th><td>{{ final.PROFIT_FACTOR_AMOUNT|num:3 }}</td>
     </tr>
     <tr>
@@ -528,8 +529,8 @@
       <th>Win rate</th><td>{{ final.WIN_RATE_AMOUNT|num:2 }}%</td>
     </tr>
     <tr>
-      <th>Max gain</th><td>{{ final.MAX_GAIN_AMOUNT|num:2 }}</td>
-      <th>Max perte</th><td>{{ final.MAX_LOSS_AMOUNT|num:2 }}</td>
+      <th>Max gain{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ final.MAX_GAIN_AMOUNT|num:2 }}</td>
+      <th>Max perte{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><td>{{ final.MAX_LOSS_AMOUNT|num:2 }}</td>
       <th></th><td></td>
     </tr>
     <tr>
@@ -762,11 +763,11 @@
       <thead>
         <tr>
           <th>Date</th>
-          <th>Close</th>
+          <th>Close{% if effective_currency %} ({{ effective_currency }}){% endif %}</th>
           <th>Ratio_p (%)</th>
           <th>Action</th>
           <th>G</th>
-          <th>P&amp;L montant</th>
+          <th>P&amp;L montant{% if effective_currency %} ({{ effective_currency }}){% endif %}</th>
           <th>N</th>
           <th>S_G_N</th>
           <th>BT</th>
@@ -775,7 +776,7 @@
           <th>BMJ</th>
           <th>BMD</th>
           <th>TRADABLE_DAYS_IN_POSITION_CLOSED</th>
-          <th>Cash</th>
+          <th>Cash{% if effective_currency %} ({{ effective_currency }}){% endif %}</th>
           <th>Shares</th>
         </tr>
       </thead>
@@ -1011,7 +1012,7 @@
         responsive: true,
         spanGaps: true,
         scales: {
-          y: { type: "linear", position: "left", title: { display: true, text: "Equity" } },
+          y: { type: "linear", position: "left", title: { display: true, text: "Equity{% if effective_currency %} ({{ effective_currency|escapejs }}){% endif %}" } },
           y1: { type: "linear", position: "right", title: { display: true, text: "Drawdown (%)" }, grid: { drawOnChartArea: false } },
         }
       }
@@ -1029,7 +1030,7 @@
       options: {
         responsive: true,
         spanGaps: true,
-        scales: { y: { type: "linear", title: { display: true, text: "Gain / Perte" } } }
+        scales: { y: { type: "linear", title: { display: true, text: "{% if effective_currency %}P&L global ({{ effective_currency|escapejs }}){% else %}Gain / Perte{% endif %}" } } }
       }
     });
   }
@@ -1048,7 +1049,7 @@
       options: {
         responsive: true,
         spanGaps: true,
-        scales: { y: { type: "linear", title: { display: true, text: "Montant (€)" } } }
+        scales: { y: { type: "linear", title: { display: true, text: "Montant ({% if effective_currency %}{{ effective_currency|escapejs }}{% else %}€{% endif %})" } } }
       }
     });
   }

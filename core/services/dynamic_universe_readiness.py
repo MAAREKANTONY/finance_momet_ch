@@ -20,6 +20,11 @@ from core.models import (
     UniverseMembership,
 )
 from core.services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
+from core.services.backtest_currency import (
+    CSI300_EFFECTIVE_CURRENCY,
+    csi300_market_benchmark_currency_validation,
+    resolved_currency_validation,
+)
 from core.services.china_benchmark_registry import (
     CSI300_MARKET_BENCHMARK,
     csi300_market_benchmark_exchange,
@@ -271,7 +276,7 @@ def check_dynamic_universe_readiness(
         )
         if scenario_universe_code:
             universe_code = scenario_universe_code
-        inferred_market, inferred_sector = _gm_requirements_from_signal_lines(getattr(scenario, "signal_lines", None))
+        inferred_market, inferred_sector = gm_requirements_from_signal_lines(getattr(scenario, "signal_lines", None))
         require_gm_market = bool(require_gm_market or inferred_market)
         require_gm_sector = bool(require_gm_sector or inferred_sector)
 
@@ -285,6 +290,8 @@ def check_dynamic_universe_readiness(
         "require_gm_market": bool(require_gm_market),
         "require_gm_sector": bool(require_gm_sector),
     }
+    if universe_code == CSI300_UNIVERSE_CODE:
+        metadata["effective_currency"] = CSI300_EFFECTIVE_CURRENCY
 
     checks: list[ReadinessCheck] = []
     universe_obj = UniverseDefinition.objects.filter(code=universe_code).first()
@@ -304,6 +311,15 @@ def check_dynamic_universe_readiness(
 
     membership_by_ticker = _membership_by_ticker(mapped_memberships) if memberships and mappings_ready else {}
     symbols = _unique_symbols(mapped_memberships) if mappings_ready else []
+    if universe_code == CSI300_UNIVERSE_CODE:
+        checks.append(
+            _check_csi300_member_currencies(
+                symbols,
+                prerequisites_ready=bool(memberships and coverage_ready and mappings_ready),
+            )
+        )
+        if require_gm_market:
+            checks.append(_check_csi300_market_benchmark_currency())
     checks.append(
         _check_member_daily_bars(
             universe_code=universe_code,
@@ -776,6 +792,92 @@ def _check_member_daily_bars(
     )
 
 
+def _check_csi300_member_currencies(
+    symbols: list[Symbol],
+    *,
+    prerequisites_ready: bool,
+) -> ReadinessCheck:
+    if not prerequisites_ready:
+        return _skipped_check(
+            "member_currencies",
+            "Devises des actions",
+            "Impossible de vérifier les devises tant que les actions historiques ne sont pas résolues.",
+        )
+
+    validation = resolved_currency_validation(
+        Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+        symbols,
+    )
+    if validation is not None and not validation.valid:
+        return ReadinessCheck(
+            code="member_currencies",
+            label="Devises des actions",
+            status=CHECK_ERROR,
+            message=validation.error_message(),
+            details={
+                "expected_currency": validation.expected_currency,
+                "symbol_count": validation.symbol_count,
+                "invalid_symbol_count": validation.invalid_symbol_count,
+                "missing_currency_count": validation.missing_currency_count,
+                "actual_currencies": list(validation.actual_currencies),
+                "invalid_examples": list(validation.invalid_examples),
+            },
+        )
+
+    symbol_count = validation.symbol_count if validation is not None else len(symbols)
+    return ReadinessCheck(
+        code="member_currencies",
+        label="Devises des actions",
+        status=CHECK_OK,
+        message=f"Les {symbol_count} actions historiques utilisent {CSI300_EFFECTIVE_CURRENCY}.",
+        details={
+            "expected_currency": CSI300_EFFECTIVE_CURRENCY,
+            "symbol_count": symbol_count,
+            "invalid_symbol_count": 0,
+            "missing_currency_count": 0,
+            "actual_currencies": [CSI300_EFFECTIVE_CURRENCY],
+            "invalid_examples": [],
+        },
+    )
+
+
+def _check_csi300_market_benchmark_currency() -> ReadinessCheck:
+    ticker = csi300_market_benchmark_ticker()
+    exchange = csi300_market_benchmark_exchange()
+    provider_symbol = CSI300_MARKET_BENCHMARK.provider_symbol or f"{ticker}.{exchange}"
+    symbol = Symbol.objects.filter(ticker=ticker, exchange=exchange).first()
+    if symbol is None:
+        return _skipped_check(
+            "market_benchmark_currency",
+            "Devise du benchmark marché",
+            f"Benchmark {provider_symbol} absent : devise non vérifiable. Le contrôle de présence/OHLC existant reste inchangé.",
+        )
+
+    validation = csi300_market_benchmark_currency_validation(symbol)
+    details = {
+        "benchmark": validation.provider_symbol,
+        "symbol_id": validation.symbol_id,
+        "expected_currency": validation.expected_currency,
+        "actual_currency": validation.actual_currency or "(absente)",
+    }
+    if not validation.valid:
+        return ReadinessCheck(
+            code="market_benchmark_currency",
+            label="Devise du benchmark marché",
+            status=CHECK_ERROR,
+            message=validation.error_message(),
+            details=details,
+        )
+
+    return ReadinessCheck(
+        code="market_benchmark_currency",
+        label="Devise du benchmark marché",
+        status=CHECK_OK,
+        message=f"Le benchmark {provider_symbol} utilise {CSI300_EFFECTIVE_CURRENCY}.",
+        details=details,
+    )
+
+
 def _check_gm_market_daily_bars(
     universe_code: str,
     symbols: list[Symbol],
@@ -1043,7 +1145,7 @@ def _unique_symbols(mapped_memberships: list[_MappedMembership]) -> list[Symbol]
     return sorted(symbols_by_id.values(), key=lambda symbol: (symbol.ticker, symbol.exchange, symbol.id))
 
 
-def _gm_requirements_from_signal_lines(signal_lines: Any) -> tuple[bool, bool]:
+def gm_requirements_from_signal_lines(signal_lines: Any) -> tuple[bool, bool]:
     require_market = False
     require_sector = False
     if not isinstance(signal_lines, list):
