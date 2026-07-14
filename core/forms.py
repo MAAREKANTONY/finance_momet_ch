@@ -75,6 +75,10 @@ from .services.backtest_currency import (
     EFFECTIVE_CURRENCY_SETTINGS_KEY,
     effective_currency_for_universe_mode,
 )
+from tools.csi300_policy import (
+    CSI300SupportedHistoryError,
+    validate_csi300_supported_history_start,
+)
 from .trading_model_config import (
     TRADING_MODEL_AUTO_SELL_VALUES,
     TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL,
@@ -1122,6 +1126,14 @@ class BacktestForm(forms.ModelForm):
             cleaned.get("capital_per_ticker"),
         ):
             self.add_error(error.field, error.message)
+        scenario = cleaned.get("scenario")
+        try:
+            validate_csi300_supported_history_start(
+                start_date=cleaned.get("start_date"),
+                universe_mode=getattr(scenario, "universe_mode", ""),
+            )
+        except CSI300SupportedHistoryError as exc:
+            self.add_error("start_date", str(exc))
         min_price = cleaned.get("min_price")
         max_price = cleaned.get("max_price")
         if min_price is not None and max_price is not None and min_price > max_price:

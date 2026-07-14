@@ -81,6 +81,11 @@ from .services.backtest_currency import (
     effective_currency_for_backtest_display,
     effective_currency_for_universe_mode,
 )
+from .services.backtest_history import (
+    supported_history_start_for_backtest_display,
+    supported_history_start_label,
+    supported_history_start_for_universe_meta,
+)
 from .services.backtesting.diagnostic import build_backtest_ticker_diagnostic_on_demand, build_diagnostic_chart_payload
 from .services.couloir import is_couloir_line, normalize_couloir_line_config
 from .services.backtesting.ohlc_readiness import get_missing_ohlc_symbols_for_dynamic_universe
@@ -205,6 +210,7 @@ DU_STATUS_LABELS = {
 }
 
 DU_CHECK_LABELS = {
+    "supported_history_start": "Fenêtre historique CSI300",
     "universe_definition": "Référentiel de base",
     "memberships": "Composition historique",
     "import_batch": "Import de composition validé",
@@ -3011,6 +3017,10 @@ def backtest_detail(request, pk: int):
             "is_couloir_mode": bool(couloir_effective_summary),
             "couloir_effective_summary": couloir_effective_summary,
             "effective_currency": effective_currency_for_backtest_display(bt),
+            "supported_history_start": supported_history_start_for_backtest_display(bt),
+            "supported_history_start_label": supported_history_start_label(
+                supported_history_start_for_backtest_display(bt)
+            ),
         },
     )
 
@@ -3721,6 +3731,10 @@ def backtest_results(request, pk: int):
             "bt": bt,
             "results": results,
             "effective_currency": effective_currency_for_backtest_display(bt),
+            "supported_history_start": supported_history_start_for_backtest_display(bt),
+            "supported_history_start_label": supported_history_start_label(
+                supported_history_start_for_backtest_display(bt)
+            ),
             "ticker": ticker,
             "line_index": line_index,
             "line": line,
@@ -3821,6 +3835,9 @@ def _append_backtest_universe_settings_rows(ws, meta: dict) -> None:
         ("Univers actions analysées", universe_meta.get("superset_count") or universe_meta.get("ticker_count")),
         ("Univers source des données", universe_meta.get("source")),
     ]
+    supported_history_start = supported_history_start_for_universe_meta(universe_meta)
+    if supported_history_start:
+        rows.append(("Historique supporté depuis", supported_history_start))
     for key, value in rows:
         if value not in (None, ""):
             append_excel_row(ws, [key, value])

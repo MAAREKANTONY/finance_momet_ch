@@ -1628,6 +1628,21 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("aucun fallback vers 510300", body)
         self.assertIn("Devise effective", body)
         self.assertIn("CNY", body)
+        self.assertIn("Historique CSI300 supporté depuis le 3 janvier 2023.", body)
+
+    def test_backtest_detail_prefers_persisted_csi300_supported_history_start(self):
+        self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        universe_meta = self._csi300_universe_meta()
+        universe_meta["supported_history_start"] = "2023-02-01"
+        bt = self._create_done_backtest(results=self._minimal_results(universe_meta=universe_meta))
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        body = response.content.decode()
+        self.assertIn("Historique CSI300 supporté depuis le 2023-02-01.", body)
+        self.assertNotIn("Historique CSI300 supporté depuis le 3 janvier 2023.", body)
 
     def test_backtest_results_displays_dynamic_universe_metadata(self):
         self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
@@ -1660,6 +1675,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn('text: "Gain / Perte"', body)
         self.assertNotIn("Equity (CNY)", body)
         self.assertNotIn("P&L global (CNY)", body)
+        self.assertNotIn("Historique CSI300 supporté", body)
         self.assertNotIn("Tickers dans le superset", body)
         self.assertNotIn("metadata d’univers", body)
 
@@ -1689,6 +1705,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("P&L global (CNY)", body)
         self.assertNotIn("Montant (€)", body)
         self.assertIn("Max drawdown montant (CNY)", body)
+        self.assertIn("Historique CSI300 supporté depuis le 3 janvier 2023.", body)
         self.assertNotIn("S&P500 historique", body)
         self.assertNotIn("S&amp;P 500 historique", body)
 

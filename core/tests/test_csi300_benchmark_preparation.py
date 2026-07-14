@@ -526,8 +526,8 @@ class CSI300BenchmarkIsolationTests(TestCase):
     def test_csi300_readiness_gm_sector_block_remains(self):
         report = check_dynamic_universe_readiness(
             universe="CSI300",
-            start=date(2021, 8, 20),
-            end=date(2021, 8, 31),
+            start=date(2024, 8, 20),
+            end=date(2024, 8, 31),
             require_gm_sector=True,
         )
 

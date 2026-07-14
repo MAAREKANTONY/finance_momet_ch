@@ -24,6 +24,11 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Iterable
 
+try:
+    from .csi300_policy import CSI300_SUPPORTED_HISTORY_START, CSI300_SUPPORTED_HISTORY_START_ISO
+except ImportError:  # Direct execution: python tools/convert_unliftedq_csi300_to_stockalert_csv.py
+    from csi300_policy import CSI300_SUPPORTED_HISTORY_START, CSI300_SUPPORTED_HISTORY_START_ISO
+
 STOCKALERT_COLUMNS = [
     "universe_code",
     "symbol",
@@ -74,7 +79,12 @@ DEFAULT_LATEST_URL = PINNED_SOURCE_URLS["latest"]
 DEFAULT_EVENT_URL = PINNED_SOURCE_URLS["event"]
 DEFAULT_OUTPUT = "data/generated/csi300_stockalert_memberships.csv"
 DEFAULT_SOURCE = "unliftedq_index_constitution"
-MANDATORY_CONTROL_DATES = {"2026-06-11", "2026-06-12", "2026-06-13"}
+MANDATORY_CONTROL_DATES = {
+    CSI300_SUPPORTED_HISTORY_START_ISO,
+    "2026-06-11",
+    "2026-06-12",
+    "2026-06-13",
+}
 
 SHANGHAI_SUFFIXES = {"SS", "SH", "SHG", "SSE", "XSHG"}
 SHENZHEN_SUFFIXES = {"SZ", "SHE", "SZSE", "XSHE"}
@@ -110,6 +120,16 @@ class ConversionReport:
     requested: dict[str, str] = field(default_factory=dict)
     downloaded: dict[str, bool] = field(default_factory=dict)
     rows_read: int = 0
+    supported_history_start: str = CSI300_SUPPORTED_HISTORY_START_ISO
+    memberships_source_total: int = 0
+    memberships_published: int = 0
+    distinct_tickers_published: int = 0
+    min_published_start_date: str = ""
+    max_published_end_date: str = ""
+    outside_supported_history_count: int = 0
+    outside_supported_history: list[dict[str, str]] = field(default_factory=list)
+    clipped_to_supported_start_count: int = 0
+    clipped_to_supported_start: list[dict[str, str]] = field(default_factory=list)
     memberships_produced: int = 0
     memberships_written: int = 0
     distinct_tickers: int = 0
@@ -359,6 +379,7 @@ def convert_history_rows(
     latest_dates, event_dates = _entry_date_indexes(latest_rows, event_rows)
     report.event_rows_read = len(event_rows)
     report.latest_rows_read = len(latest_rows)
+    report.memberships_source_total = len(history_rows)
 
     for row_index, row in enumerate(history_rows, start=2):
         report.rows_read += 1
@@ -378,6 +399,16 @@ def convert_history_rows(
             report.unmappable_tickers.append(raw_symbol or f"row {row_index}")
             continue
 
+        end_date = source_opt_out - timedelta(days=1) if source_opt_out else None
+        if start_date is not None and end_date is not None and end_date < start_date:
+            message = (
+                f"row {row_index} {raw_symbol}: inclusive end_date {end_date.isoformat()} "
+                f"is before start_date {start_date.isoformat()}"
+            )
+            report.invalid_dates.append(message)
+            _add_error(report, "invalid_membership_interval", message, row=row_index, symbol=raw_symbol)
+            continue
+
         if start_date is None:
             missing = {
                 "row": str(row_index),
@@ -387,6 +418,19 @@ def convert_history_rows(
                 "opt_out": end_raw,
             }
             report.rows_without_opt_in.append(missing)
+            if end_date is not None and end_date < CSI300_SUPPORTED_HISTORY_START:
+                outside = {
+                    "row": str(row_index),
+                    "symbol": raw_symbol,
+                    "provider_symbol": canonical.provider_symbol,
+                    "name": name,
+                    "source_opt_in": start_raw,
+                    "source_opt_out": end_raw,
+                    "inclusive_end_date": end_date.isoformat(),
+                    "reason": "interval ends before CSI300_SUPPORTED_HISTORY_START",
+                }
+                report.outside_supported_history.append(outside)
+                continue
             start_date, provenance = _repair_missing_start(
                 canonical,
                 source_opt_out,
@@ -412,18 +456,35 @@ def convert_history_rows(
                 )
                 continue
 
-        end_date = source_opt_out - timedelta(days=1) if source_opt_out else None
+        if end_date is not None and end_date < CSI300_SUPPORTED_HISTORY_START:
+            report.outside_supported_history.append({
+                "row": str(row_index),
+                "symbol": raw_symbol,
+                "provider_symbol": canonical.provider_symbol,
+                "name": name,
+                "source_opt_in": start_raw,
+                "source_opt_out": end_raw,
+                "inclusive_end_date": end_date.isoformat(),
+                "reason": "interval ends before CSI300_SUPPORTED_HISTORY_START",
+            })
+            continue
+
+        source_start_date = start_date
+        if start_date < CSI300_SUPPORTED_HISTORY_START:
+            start_date = CSI300_SUPPORTED_HISTORY_START
+            report.clipped_to_supported_start.append({
+                "row": str(row_index),
+                "symbol": raw_symbol,
+                "provider_symbol": canonical.provider_symbol,
+                "name": name,
+                "source_start_date": source_start_date.isoformat(),
+                "published_start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat() if end_date else "",
+            })
+
         if source_opt_out:
             source_dates.add(source_opt_out)
         source_dates.add(start_date)
-        if end_date is not None and end_date < start_date:
-            message = (
-                f"row {row_index} {raw_symbol}: inclusive end_date {end_date.isoformat()} "
-                f"is before start_date {start_date.isoformat()}"
-            )
-            report.invalid_dates.append(message)
-            _add_error(report, "invalid_membership_interval", message, row=row_index, symbol=raw_symbol)
-            continue
 
         for warning in canonical.warnings:
             _add_warning(report, "inferred_exchange", warning, row=row_index, symbol=raw_symbol)
@@ -474,14 +535,33 @@ def convert_history_rows(
         output_rows.append(out)
 
     report.memberships_produced = len(output_rows)
+    report.memberships_published = len(output_rows)
     report.distinct_tickers = len({(row["symbol"], row["exchange"]) for row in output_rows})
+    report.distinct_tickers_published = report.distinct_tickers
+    report.outside_supported_history_count = len(report.outside_supported_history)
+    report.clipped_to_supported_start_count = len(report.clipped_to_supported_start)
     report.exchange_distribution = dict(Counter(row["exchange"] for row in output_rows))
     starts = [row["start_date"] for row in output_rows]
     ends = [row["end_date"] for row in output_rows if row["end_date"]]
     report.min_start_date = min(starts) if starts else ""
     report.max_start_date = max(starts) if starts else ""
     report.max_end_date = max(ends) if ends else ""
+    report.min_published_start_date = report.min_start_date
+    report.max_published_end_date = report.max_end_date
     report.latest_active_members = sum(1 for row in output_rows if not row["end_date"])
+
+    unsupported_rows = [
+        row for row in output_rows
+        if row["start_date"] < CSI300_SUPPORTED_HISTORY_START_ISO
+        or (row.get("end_date") and row["end_date"] < CSI300_SUPPORTED_HISTORY_START_ISO)
+    ]
+    if unsupported_rows:
+        _add_error(
+            report,
+            "published_outside_supported_history",
+            "Published memberships must not precede CSI300_SUPPORTED_HISTORY_START.",
+            count=len(unsupported_rows),
+        )
 
     for key, items in periods.items():
         previous_start: date | None = None
@@ -902,6 +982,9 @@ def print_summary(report: ConversionReport, *, output: str, report_path: str = "
         print(f"report={report_path}")
     print(f"source_commit={report.source_commit}")
     print(f"rows_read={report.rows_read}")
+    print(f"supported_history_start={report.supported_history_start}")
+    print(f"outside_supported_history_count={report.outside_supported_history_count}")
+    print(f"clipped_to_supported_start_count={report.clipped_to_supported_start_count}")
     print(f"memberships_produced={report.memberships_produced}")
     print(f"memberships_written={report.memberships_written}")
     print(f"distinct_tickers={report.distinct_tickers}")

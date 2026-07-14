@@ -139,6 +139,7 @@ class DynamicUniverseBacktestWizardTests(TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertContains(response, "Devise effective : CNY")
         self.assertContains(response, "Capital, cash et résultats exprimés en CNY. Aucune conversion FX.")
+        self.assertContains(response, "Historique supporté à partir du 3 janvier 2023.")
         scenario_ids = self._csi300_scenario_ids_from_response(response)
         self.assertIn(csi300.id, scenario_ids)
         self.assertNotIn(static.id, scenario_ids)
@@ -360,7 +361,7 @@ class DynamicUniverseBacktestWizardTests(TestCase):
         for technical in ("Coverage snapshots", "DailyBars", "Symbols", "GM_market non demandé", "GM_sector non demandé", "python manage.py"):
             self.assertNotIn(technical, body)
 
-    def _warning_report(self, *, start=date(2018, 1, 1), end=date(2018, 1, 2)) -> ReadinessReport:
+    def _warning_report(self, *, start=date(2024, 1, 1), end=date(2024, 1, 2)) -> ReadinessReport:
         return ReadinessReport(
             universe="CSI300",
             start=start,
@@ -383,7 +384,7 @@ class DynamicUniverseBacktestWizardTests(TestCase):
             ],
         )
 
-    def _csi300_backtest(self, *, start=date(2018, 1, 1), end=date(2018, 1, 2)) -> Backtest:
+    def _csi300_backtest(self, *, start=date(2024, 1, 1), end=date(2024, 1, 2)) -> Backtest:
         scenario = Scenario.objects.create(
             name="CSI300 Scenario",
             universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,

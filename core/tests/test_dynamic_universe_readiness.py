@@ -34,8 +34,8 @@ from core.services.dynamic_universe_readiness import (
 
 
 class DynamicUniverseReadinessTestCase(TestCase):
-    start = date(2022, 1, 1)
-    end = date(2022, 1, 3)
+    start = date(2024, 1, 1)
+    end = date(2024, 1, 3)
 
     def _symbol(
         self,
@@ -182,7 +182,50 @@ class DynamicUniverseReadinessTestCase(TestCase):
 
         check = self._check(report, "coverage_snapshots")
         self.assertEqual(check.status, CHECK_ERROR)
-        self.assertIn("missing coverage snapshot for 2022-01-01", check.message)
+        self.assertIn("missing coverage snapshot for 2024-01-01", check.message)
+
+    def test_csi300_start_before_supported_history_is_blocking_without_data_queries(self):
+        with self.assertNumQueries(0):
+            report = check_dynamic_universe_readiness(
+                universe="CSI300",
+                start=date(2023, 1, 2),
+                end=date(2023, 1, 3),
+            )
+
+        self.assertFalse(report.ready)
+        self.assertEqual(report.status, REPORT_NOT_READY)
+        check = self._check(report, "supported_history_start")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertIn("3 janvier 2023", check.message)
+
+    def test_csi300_start_at_supported_history_is_not_blocked_by_policy(self):
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=date(2023, 1, 3),
+            end=date(2023, 1, 3),
+        )
+
+        self.assertEqual(self._check(report, "supported_history_start").status, CHECK_OK)
+        self.assertEqual(self._check(report, "universe_definition").status, CHECK_ERROR)
+
+    def test_csi300_later_start_is_not_blocked_by_policy(self):
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=date(2025, 1, 1),
+            end=date(2025, 1, 2),
+        )
+
+        self.assertEqual(self._check(report, "supported_history_start").status, CHECK_OK)
+
+    def test_sp500_before_csi300_cutoff_is_unchanged(self):
+        report = check_dynamic_universe_readiness(
+            universe="SP500",
+            start=date(2022, 1, 1),
+            end=date(2022, 1, 2),
+        )
+
+        self.assertFalse(any(check.code == "supported_history_start" for check in report.checks))
+        self.assertEqual(self._check(report, "universe_definition").status, CHECK_ERROR)
 
     def test_csi300_valid_snapshots_in_partial_batch_pass_coverage_readiness(self):
         universe = self._csi300()

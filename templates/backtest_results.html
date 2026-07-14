@@ -64,6 +64,7 @@
 {% with universe_meta=results.meta.universe %}
 <div class="card">
   <h3 style="margin-top:0;">Univers du backtest</h3>
+  {% if supported_history_start %}<div class="muted" style="margin-bottom:8px;">Historique CSI300 supporté depuis le {{ supported_history_start_label }}.</div>{% endif %}
   {% if bt.scenario.universe_mode != "STATIC_TICKERS" %}
     {% if universe_meta %}
       <table>
