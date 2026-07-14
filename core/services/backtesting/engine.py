@@ -2607,7 +2607,10 @@ def run_backtest(
             capital_total = CP_raw
 
         equity = global_cash_val + cash_allocated + positions_value + bank_total
-        pnl_global = equity - invested
+        # Finite-capital backtests have a stable portfolio baseline: the initial
+        # capital. Unallocated global cash is part of equity, not profit.
+        # Unlimited-capital backtests keep their historical dynamic baseline.
+        pnl_global = equity - (invested if CP_infinite else CP_raw)
         portfolio_return_global = None
         if capital_total and capital_total != 0:
             portfolio_return_global = (equity - capital_total) / capital_total

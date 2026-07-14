@@ -1692,6 +1692,57 @@ class BacktestResultsRenderTests(TestCase):
         self.assertNotIn("S&P500 historique", body)
         self.assertNotIn("S&amp;P 500 historique", body)
 
+    def test_backtest_results_derives_historical_finite_pnl_without_mutating_results(self):
+        self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        results = self._minimal_results(universe_meta=self._csi300_universe_meta())
+        results["meta"].update({
+            "CP": "1000",
+            "CP_infinite": False,
+            "effective_currency": "CNY",
+        })
+        results["portfolio"]["daily"] = [
+            {
+                "date": "2024-01-02",
+                "global_cash": "1000",
+                "cash_allocated": "0",
+                "positions_value": "0",
+                "equity": "1000",
+                "invested": "0",
+                "pnl_global": "1000",
+                "portfolio_return_global": "0",
+                "drawdown": "0",
+            },
+            {
+                "date": "2024-01-03",
+                "global_cash": "900",
+                "cash_allocated": "150",
+                "positions_value": "0",
+                "equity": "1050",
+                "invested": "100",
+                "pnl_global": "950",
+                "portfolio_return_global": "0.05",
+                "drawdown": "0",
+            },
+        ]
+        bt = self._create_done_backtest(results=results)
+
+        response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        portfolio_daily = response.context["portfolio_daily"]
+        self.assertEqual([row["equity"] for row in portfolio_daily], ["1000", "1050"])
+        self.assertEqual([row["pnl_global"] for row in portfolio_daily], ["0", "50"])
+        body = response.content.decode()
+        self.assertIn('const pEquity = portRows.map(r => toNumber(r.equity));', body)
+        self.assertIn('const pnl = portRows.map(r => toNumber(r.pnl_global));', body)
+        self.assertIn("Equity (CNY)", body)
+        self.assertIn("P&L global (CNY)", body)
+
+        bt.refresh_from_db()
+        stored_daily = bt.results["portfolio"]["daily"]
+        self.assertEqual([row["pnl_global"] for row in stored_daily], ["1000", "950"])
+
     def test_empty_results_use_settings_currency_only_while_pending_or_running(self):
         for status in (Backtest.Status.PENDING, Backtest.Status.RUNNING):
             with self.subTest(status=status):

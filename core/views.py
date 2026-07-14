@@ -3208,6 +3208,34 @@ def _build_realized_gains_cumulative_series(results: dict, *, initial_date=None)
     return series
 
 
+def _portfolio_daily_with_net_pnl(results: dict) -> list[dict]:
+    """Return portfolio rows with deterministic net P&L for finite capital.
+
+    Older finite-capital results stored ``equity - invested`` in ``pnl_global``.
+    Their persisted ``meta.CP`` lets display and exports recover the intended
+    net P&L without mutating historical payloads. Unlimited-capital results keep
+    their historical dynamic-capital semantics.
+    """
+    results = results if isinstance(results, dict) else {}
+    rows = ((results.get("portfolio") or {}).get("daily") or [])
+    meta = results.get("meta") or {}
+    capital_initial = _to_dec(meta.get("CP"))
+    if meta.get("CP_infinite") is True or capital_initial is None or capital_initial <= 0:
+        return rows
+
+    normalized = []
+    for row in rows:
+        if not isinstance(row, dict):
+            normalized.append(row)
+            continue
+        output = dict(row)
+        equity = _to_dec(row.get("equity"))
+        if equity is not None:
+            output["pnl_global"] = str(equity - capital_initial)
+        normalized.append(output)
+    return normalized
+
+
 def _is_executed_trade_action(action) -> bool:
     action_text = str(action or "").upper().strip()
     if not action_text:
@@ -3558,7 +3586,7 @@ def backtest_results(request, pk: int):
     # Portfolio synthesis (Feature 8)
     portfolio = results.get("portfolio") or {}
     port_kpi = dict(portfolio.get("kpi") or {})
-    port_daily = portfolio.get("daily") or []
+    port_daily = _portfolio_daily_with_net_pnl(results)
 
     try:
         persisted_kpi = getattr(bt, "portfolio_kpi", None)
@@ -3955,7 +3983,7 @@ def _build_backtest_workbook_full(bt):
     # --- Portfolio (Feature 8) ---
     portfolio = results.get("portfolio") or {}
     port_kpi = portfolio.get("kpi") or {}
-    port_daily = portfolio.get("daily") or []
+    port_daily = _portfolio_daily_with_net_pnl(results)
 
     ws_p = wb.create_sheet("Portfolio")
     append_excel_row(ws_p, ["Clé", "Valeur"])
@@ -4379,7 +4407,7 @@ def _build_backtest_workbook_compact(bt, *, charts: str = "1", chart_mode: str =
     # -------- Portfolio (compact) – Feature 8 --------
     portfolio = results.get("portfolio") or {}
     port_kpi = portfolio.get("kpi") or {}
-    port_daily = portfolio.get("daily") or []
+    port_daily = _portfolio_daily_with_net_pnl(results)
 
     ws_p = wb.create_sheet("Portfolio")
     append_excel_row(ws_p, ["Clé", "Valeur"])
