@@ -152,6 +152,74 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
             flat = self._sheet_flat_rows(workbook, "Settings")
             self.assertTrue(any("Devise effective | CNY" in row for row in flat))
 
+    def test_backtest_exports_derive_historical_finite_net_pnl_and_keep_cny(self):
+        bt = self._make_backtest_stub()
+        bt.scenario.universe_mode = "CSI300_HISTORICAL_DYNAMIC"
+        bt.results["meta"].update({
+            "CP": "1000",
+            "CP_infinite": False,
+            "effective_currency": "CNY",
+        })
+        bt.results["portfolio"]["daily"] = [
+            {
+                "date": "2024-01-02",
+                "equity": "1000",
+                "invested": "0",
+                "global_cash": "1000",
+                "cash_allocated": "0",
+                "positions_value": "0",
+                "pnl_global": "1000",
+                "portfolio_return_global": "0",
+                "drawdown": "0",
+            },
+            {
+                "date": "2024-01-03",
+                "equity": "1050",
+                "invested": "100",
+                "global_cash": "900",
+                "cash_allocated": "150",
+                "positions_value": "0",
+                "pnl_global": "950",
+                "portfolio_return_global": "0.05",
+                "drawdown": "0",
+            },
+        ]
+
+        full, _ = _build_backtest_workbook_full(bt)
+        from core.views import _build_backtest_workbook_compact
+        compact, _ = _build_backtest_workbook_compact(bt, charts="0")
+
+        for workbook in (full, compact):
+            portfolio_rows = list(workbook["Portfolio_Daily"].iter_rows(values_only=True))
+            self.assertEqual([row[1] for row in portfolio_rows[1:]], [1000.0, 1050.0])
+            self.assertEqual([row[6] for row in portfolio_rows[1:]], [0.0, 50.0])
+            flat = self._sheet_flat_rows(workbook, "Settings")
+            self.assertTrue(any("Devise effective | CNY" in row for row in flat))
+        self.assertEqual(
+            [row["pnl_global"] for row in bt.results["portfolio"]["daily"]],
+            ["1000", "950"],
+        )
+
+    def test_backtest_exports_keep_unlimited_capital_pnl_semantics(self):
+        bt = self._make_backtest_stub()
+        bt.results["meta"].update({"CP": "0", "CP_infinite": True})
+        bt.results["portfolio"]["daily"] = [{
+            "date": "2024-01-02",
+            "equity": "125",
+            "invested": "100",
+            "global_cash": "0",
+            "cash_allocated": "125",
+            "positions_value": "0",
+            "pnl_global": "25",
+            "portfolio_return_global": "0.25",
+            "drawdown": "0",
+        }]
+
+        full, _ = _build_backtest_workbook_full(bt)
+
+        portfolio_rows = list(full["Portfolio_Daily"].iter_rows(values_only=True))
+        self.assertEqual(portfolio_rows[1][6], 25.0)
+
     def test_old_static_backtest_exports_ignore_mutable_csi300_scenario_and_settings(self):
         bt = self._make_backtest_stub()
         bt.scenario.universe_mode = "CSI300_HISTORICAL_DYNAMIC"

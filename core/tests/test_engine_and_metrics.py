@@ -331,6 +331,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         result = run_backtest(bt).results
         final = result["tickers"][self.symbol.ticker]["lines"][0]["final"]
         portfolio = result["portfolio"]["kpi"]
+        portfolio_daily = result["portfolio"]["daily"]
 
         self.assertEqual(Decimal(final["PNL_AMOUNT"]), Decimal("50"))
         self.assertEqual(Decimal(final["TOTAL_GAIN_AMOUNT"]), Decimal("50"))
@@ -353,6 +354,12 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(Decimal(portfolio["MAX_GAIN_AMOUNT"]), Decimal("50"))
         self.assertIsNone(portfolio["MAX_LOSS_AMOUNT"])
         self.assertEqual(Decimal(portfolio["max_drawdown_amount"]), Decimal("0"))
+        self.assertEqual(Decimal(portfolio_daily[-1]["equity"]), Decimal("1050"))
+        self.assertEqual(Decimal(portfolio_daily[-1]["pnl_global"]), Decimal("50"))
+        self.assertEqual(
+            Decimal(portfolio_daily[-1]["pnl_global"]),
+            Decimal(portfolio["TOTAL_PNL_AMOUNT"]),
+        )
 
     def test_backtest_golden_line_kpis_single_profitable_trade(self):
         start = date(2024, 1, 1)
@@ -438,6 +445,7 @@ class EngineAndMetricsRegressionTests(TestCase):
         result = run_backtest(bt).results
         final = result["tickers"][self.symbol.ticker]["lines"][0]["final"]
         portfolio = result["portfolio"]["kpi"]
+        portfolio_daily = result["portfolio"]["daily"]
 
         self.assertEqual(Decimal(final["BT"]), Decimal("0"))
         self.assertEqual(final["TRADABLE_DAYS"], 3)
@@ -454,6 +462,69 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(Decimal(portfolio["TOTAL_PNL_AMOUNT"]), Decimal("0"))
         self.assertIsNone(portfolio["BT"])
         self.assertIsNone(portfolio["BMJ"])
+        self.assertTrue(portfolio_daily)
+        for row in portfolio_daily:
+            self.assertEqual(Decimal(row["equity"]), Decimal("1000"))
+            self.assertEqual(Decimal(row["pnl_global"]), Decimal("0"))
+            self.assertEqual(Decimal(row["drawdown"]), Decimal("0"))
+        self.assertEqual(
+            Decimal(portfolio_daily[-1]["pnl_global"]),
+            Decimal(portfolio["TOTAL_PNL_AMOUNT"]),
+        )
+
+        large_result = run_backtest(bt, large_result_mode=True).results
+        self.assertTrue(large_result["meta"]["detailed_daily_rows_omitted"])
+        self.assertTrue(large_result["portfolio"]["daily"])
+        self.assertTrue(
+            all(Decimal(row["pnl_global"]) == Decimal("0") for row in large_result["portfolio"]["daily"])
+        )
+
+    def test_backtest_portfolio_daily_pnl_includes_unrealized_gain_without_realized_gain(self):
+        start = date(2024, 2, 5)
+        self._create_bars_for_symbol(self.symbol, ["10", "12", "15"], start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(
+                symbol=self.symbol,
+                scenario=self.scenario,
+                date=start + timedelta(days=i),
+                P=Decimal(value),
+                ratio_P=Decimal("1"),
+            )
+            for i, value in enumerate(["10", "12", "15"])
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+        bt = Backtest.objects.create(
+            name="Portfolio latent PnL",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=False,
+        )
+
+        result = run_backtest(bt).results
+        portfolio = result["portfolio"]["kpi"]
+        portfolio_daily = result["portfolio"]["daily"]
+
+        self.assertEqual(
+            [Decimal(row["pnl_global"]) for row in portfolio_daily],
+            [Decimal("0"), Decimal("20"), Decimal("50")],
+        )
+        for row in portfolio_daily:
+            self.assertEqual(
+                Decimal(row["pnl_global"]),
+                Decimal(row["equity"]) - Decimal("1000"),
+            )
+        self.assertEqual(Decimal(portfolio["TOTAL_GAIN_AMOUNT"]), Decimal("0"))
+        self.assertEqual(Decimal(portfolio["TOTAL_LOSS_AMOUNT"]), Decimal("0"))
+        self.assertEqual(Decimal(portfolio["TOTAL_PNL_AMOUNT"]), Decimal("0"))
+        self.assertEqual(Decimal(portfolio_daily[-1]["equity"]), Decimal("1050"))
 
     def test_backtest_portfolio_bt_uses_equity_and_invested_for_single_closed_trade(self):
         start = date(2024, 2, 10)
@@ -598,6 +669,11 @@ class EngineAndMetricsRegressionTests(TestCase):
         expected_bt = (Decimal(portfolio["equity_end"]) - Decimal(portfolio["invested_end"])) / Decimal(portfolio["invested_end"])
         self.assertEqual(Decimal(portfolio["BT"]), expected_bt)
         self.assertEqual(Decimal(portfolio["BMJ"]), expected_bt / Decimal(portfolio["NB_DAYS"]))
+        for row in result["portfolio"]["daily"]:
+            self.assertEqual(
+                Decimal(row["pnl_global"]),
+                Decimal(row["equity"]) - Decimal(row["invested"]),
+            )
 
     def test_buy_candidate_with_zero_effective_capital_records_blocker(self):
         start = date(2024, 3, 14)
@@ -973,6 +1049,12 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(portfolio["TOTAL_TRADES"], 1)
         self.assertEqual(portfolio["LOSS_TRADES"], 1)
         self.assertEqual(Decimal(portfolio["TOTAL_LOSS_AMOUNT"]), Decimal("-20"))
+        self.assertEqual(Decimal(result["portfolio"]["daily"][-1]["equity"]), Decimal("980"))
+        self.assertEqual(Decimal(result["portfolio"]["daily"][-1]["pnl_global"]), Decimal("-20"))
+        self.assertEqual(
+            Decimal(result["portfolio"]["daily"][-1]["pnl_global"]),
+            Decimal(portfolio["TOTAL_PNL_AMOUNT"]),
+        )
 
     def test_run_backtest_kpi_only_counts_forced_sell_as_completed_trade(self):
         start = date(2024, 4, 1)
@@ -3771,6 +3853,10 @@ class BacktestLargeResultModeTests(TestCase):
         self.assertEqual(int(ticker_lines["final"]["N"]), 1)
         self.assertEqual(Decimal(ticker_lines["final"]["PNL_AMOUNT"]), Decimal("20"))
         self.assertEqual(bt.results["portfolio"]["daily"][-1]["date"], str(start + timedelta(days=4)))
+        self.assertEqual(
+            Decimal(bt.results["portfolio"]["daily"][-1]["pnl_global"]),
+            Decimal(bt.results["portfolio"]["kpi"]["TOTAL_PNL_AMOUNT"]),
+        )
 
     @override_settings(BACKTEST_DETAILED_DAILY_ROWS_MAX=1000000)
     def test_small_backtest_keeps_detailed_rows(self):
