@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from io import StringIO
 from pathlib import Path
 import tempfile
@@ -11,6 +12,7 @@ from django.core.management.base import CommandError
 from django.test import TestCase
 
 from core.models import (
+    DailyBar,
     Scenario,
     Symbol,
     UniverseCoverageSnapshot,
@@ -35,6 +37,7 @@ class DynamicUniverseImportTests(TestCase):
         self.moutai = Symbol.objects.create(ticker="600519", exchange="XSHG", name="Kweichow Moutai", active=True)
         self.pingan = Symbol.objects.create(ticker="000001", exchange="XSHE", name="Ping An Bank", active=True)
         self.pudong = Symbol.objects.create(ticker="600000", exchange="XSHG", name="SPD Bank", active=True)
+        self.keep = Symbol.objects.create(ticker="KEEP", exchange="NYSE", name="Keep Corp", active=True)
 
     def _csv_file(self, body: str) -> str:
         handle = tempfile.NamedTemporaryFile("w", suffix=".csv", delete=False, encoding="utf-8")
@@ -303,6 +306,41 @@ class DynamicUniverseImportTests(TestCase):
             "CSI300,000001,XSHE,XSHE,Ping An Bank,2020-01-01,2023-06-30,0.014,,manual_csv,CN,CNY,Financials,Banks\n",
         )
 
+    def _exact_initial_csv(self) -> str:
+        return self._csv_file(
+            "SP500,AAPL,NASDAQ,AAPL.US,2020-01-01,,Apple Inc.,manual_csv\n"
+            "SP500,OLD,NYSE,OLD.US,2020-01-01,,Old Corp,manual_csv\n"
+            "SP500,KEEP,NYSE,KEEP.US,2020-01-01,,Keep Corp,manual_csv\n"
+        )
+
+    def _exact_target_csv(self) -> str:
+        return self._csv_file(
+            "SP500,AAPL,NASDAQ,AAPL2.US,2020-01-01,2020-01-02,Apple Inc.,manual_csv\n"
+            "SP500,NEW,NYSE,NEW.US,2020-01-01,,New Corp,manual_csv\n"
+            "SP500,KEEP,NYSE,KEEP.US,2020-01-01,,Keep Corp,manual_csv\n"
+        )
+
+    def _seed_exact_initial_state(self):
+        return import_universe_memberships_from_csv(
+            self._exact_initial_csv(),
+            universe_name="S&P 500 initial",
+            coverage_start=date(2019, 12, 31),
+            coverage_end=date(2020, 1, 3),
+            expected_member_count=1,
+            dry_run=False,
+        )
+
+    def _apply_exact_target(self, csv_path: str | None = None):
+        return import_universe_memberships_from_csv(
+            csv_path or self._exact_target_csv(),
+            universe_name="S&P 500 exact",
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 2),
+            expected_member_count=3,
+            dry_run=False,
+            replace_existing=True,
+        )
+
     def test_generic_csv_accepts_csi300_modern_format_in_dry_run(self):
         csv_path = self._modern_csi300_csv()
 
@@ -505,6 +543,544 @@ class DynamicUniverseImportTests(TestCase):
         self.assertEqual(UniverseDefinition.objects.count(), 0)
         self.assertEqual(UniverseMembership.objects.count(), 0)
         self.assertEqual(UniverseImportBatch.objects.count(), 0)
+
+    def test_historical_mode_without_flag_never_deletes_memberships_or_old_snapshots(self):
+        self._seed_exact_initial_state()
+
+        result = import_universe_memberships_from_csv(
+            self._exact_target_csv(),
+            universe_name="S&P 500 exact",
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 2),
+            expected_member_count=3,
+            dry_run=False,
+        )
+
+        universe = UniverseDefinition.objects.get(code="SP500")
+        self.assertFalse(result.replace_existing)
+        self.assertEqual(result.memberships_deleted, 0)
+        self.assertEqual(result.expected_final_memberships, 4)
+        self.assertTrue(universe.memberships.filter(ticker="OLD").exists())
+        self.assertTrue(universe.coverage_snapshots.filter(coverage_date=date(2019, 12, 31)).exists())
+        self.assertTrue(universe.coverage_snapshots.filter(coverage_date=date(2020, 1, 3)).exists())
+
+    def test_exact_dry_run_reports_full_plan_without_writes(self):
+        initial = self._seed_exact_initial_state()
+        universe = UniverseDefinition.objects.get(code="SP500")
+        memberships_before = list(universe.memberships.order_by("id").values())
+        snapshots_before = list(universe.coverage_snapshots.order_by("coverage_date").values())
+        batches_before = UniverseImportBatch.objects.count()
+
+        result = import_universe_memberships_from_csv(
+            self._exact_target_csv(),
+            universe_name="S&P 500 exact",
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 2),
+            expected_member_count=3,
+            dry_run=True,
+            replace_existing=True,
+        )
+
+        self.assertTrue(result.dry_run)
+        self.assertTrue(result.replace_existing)
+        self.assertEqual(result.rows_read, 3)
+        self.assertEqual(result.rows_valid, 3)
+        self.assertEqual(result.distinct_tickers, 3)
+        self.assertEqual(result.active_members, 3)
+        self.assertEqual(result.mapped_member_count, 3)
+        self.assertEqual(result.unmapped_member_count, 0)
+        self.assertEqual(result.memberships_to_create, 1)
+        self.assertEqual(result.memberships_to_update, 1)
+        self.assertEqual(result.memberships_unchanged, 1)
+        self.assertEqual(result.memberships_to_delete, 1)
+        self.assertEqual(result.memberships_created, 0)
+        self.assertEqual(result.memberships_deleted, 0)
+        self.assertEqual(result.snapshots_to_delete, 4)
+        self.assertEqual(result.snapshots_to_rebuild, 2)
+        self.assertEqual(result.expected_final_memberships, 3)
+        self.assertEqual(result.conflicts, 0)
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.batch_id, None)
+        self.assertEqual(initial.batch_id, UniverseImportBatch.objects.get().id)
+        self.assertEqual(UniverseImportBatch.objects.count(), batches_before)
+        self.assertEqual(list(universe.memberships.order_by("id").values()), memberships_before)
+        self.assertEqual(list(universe.coverage_snapshots.order_by("coverage_date").values()), snapshots_before)
+        universe.refresh_from_db()
+        self.assertEqual(universe.name, "S&P 500 initial")
+
+    def test_exact_dry_run_and_apply_share_variable_daily_coverage_counts(self):
+        csv_path = self._csv_file(
+            "SP500,AAPL,NASDAQ,AAPL.US,2020-01-01,,Apple Inc.,manual_csv\n"
+            "SP500,NEW,NYSE,NEW.US,2020-01-02,,New Corp,manual_csv\n"
+        )
+        kwargs = {
+            "coverage_start": date(2020, 1, 1),
+            "coverage_end": date(2020, 1, 2),
+            "expected_member_count": 1,
+            "replace_existing": True,
+        }
+
+        dry_run = import_universe_memberships_from_csv(csv_path, dry_run=True, **kwargs)
+        applied = import_universe_memberships_from_csv(csv_path, dry_run=False, **kwargs)
+
+        expected_counts = (2, 2, 0)
+        self.assertEqual(
+            (dry_run.imported_member_count, dry_run.mapped_member_count, dry_run.unmapped_member_count),
+            expected_counts,
+        )
+        self.assertEqual(
+            (applied.imported_member_count, applied.mapped_member_count, applied.unmapped_member_count),
+            expected_counts,
+        )
+        self.assertEqual(
+            list(
+                UniverseCoverageSnapshot.objects.order_by("coverage_date").values_list(
+                    "coverage_date",
+                    "actual_member_count",
+                )
+            ),
+            [(date(2020, 1, 1), 1), (date(2020, 1, 2), 2)],
+        )
+
+    def test_exact_apply_makes_memberships_and_snapshots_equal_to_target(self):
+        self._seed_exact_initial_state()
+
+        result = self._apply_exact_target()
+
+        universe = UniverseDefinition.objects.get(code="SP500")
+        keys = set(universe.memberships.values_list("ticker", "exchange", "valid_from"))
+        self.assertEqual(
+            keys,
+            {
+                ("AAPL", "NASDAQ", date(2020, 1, 1)),
+                ("NEW", "NYSE", date(2020, 1, 1)),
+                ("KEEP", "NYSE", date(2020, 1, 1)),
+            },
+        )
+        self.assertEqual(result.memberships_created, 1)
+        self.assertEqual(result.memberships_updated, 1)
+        self.assertEqual(result.memberships_unchanged, 1)
+        self.assertEqual(result.memberships_deleted, 1)
+        self.assertEqual(result.expected_final_memberships, 3)
+        aapl = universe.memberships.get(ticker="AAPL")
+        self.assertEqual(aapl.provider_symbol, "AAPL2.US")
+        self.assertEqual(aapl.valid_to, date(2020, 1, 2))
+        snapshots = list(universe.coverage_snapshots.order_by("coverage_date"))
+        self.assertEqual([item.coverage_date for item in snapshots], [date(2020, 1, 1), date(2020, 1, 2)])
+        self.assertEqual({item.import_batch_id for item in snapshots}, {result.batch_id})
+        self.assertEqual({item.actual_member_count for item in snapshots}, {3})
+        self.assertEqual(result.snapshots_deleted, 4)
+        self.assertEqual(result.snapshots_created, 2)
+
+    def test_exact_apply_preserves_other_universe_symbols_and_daily_bars(self):
+        self._seed_exact_initial_state()
+        other = UniverseDefinition.objects.create(code="OTHER", name="Other", source="fixture")
+        other_membership = UniverseMembership.objects.create(
+            universe=other,
+            symbol=self.pudong,
+            ticker=self.pudong.ticker,
+            exchange=self.pudong.exchange,
+            valid_from=date(2018, 1, 1),
+            source="fixture",
+        )
+        other_batch = UniverseImportBatch.objects.create(
+            universe=other,
+            period_start=date(2018, 1, 1),
+            period_end=date(2018, 1, 1),
+            expected_member_count=1,
+            imported_member_count=1,
+            mapped_member_count=1,
+            status=UniverseCoverageStatus.VALIDATED,
+        )
+        other_snapshot = UniverseCoverageSnapshot.objects.create(
+            universe=other,
+            import_batch=other_batch,
+            coverage_date=date(2018, 1, 1),
+            expected_member_count=1,
+            actual_member_count=1,
+            mapped_member_count=1,
+            status=UniverseCoverageStatus.VALIDATED,
+        )
+        bar = DailyBar.objects.create(
+            symbol=self.aapl,
+            date=date(2020, 1, 1),
+            open=Decimal("10"),
+            high=Decimal("11"),
+            low=Decimal("9"),
+            close=Decimal("10.5"),
+            volume=100,
+        )
+        symbols_before = list(Symbol.objects.order_by("id").values())
+        bars_before = list(DailyBar.objects.order_by("id").values())
+        other_membership_before = UniverseMembership.objects.filter(id=other_membership.id).values().get()
+        other_snapshot_before = UniverseCoverageSnapshot.objects.filter(id=other_snapshot.id).values().get()
+
+        self._apply_exact_target()
+
+        self.assertEqual(list(Symbol.objects.order_by("id").values()), symbols_before)
+        self.assertEqual(list(DailyBar.objects.order_by("id").values()), bars_before)
+        self.assertTrue(DailyBar.objects.filter(id=bar.id).exists())
+        self.assertEqual(UniverseMembership.objects.filter(id=other_membership.id).values().get(), other_membership_before)
+        self.assertEqual(UniverseCoverageSnapshot.objects.filter(id=other_snapshot.id).values().get(), other_snapshot_before)
+
+    def test_symbol_refresh_keeps_exact_replacement_coverage_authoritative(self):
+        initial = self._seed_exact_initial_state()
+        other = UniverseDefinition.objects.create(code="OTHER", name="Other", source="fixture")
+        other_membership = UniverseMembership.objects.create(
+            universe=other,
+            symbol=self.pudong,
+            ticker=self.pudong.ticker,
+            exchange=self.pudong.exchange,
+            valid_from=date(2018, 1, 1),
+            source="fixture",
+        )
+        other_batch = UniverseImportBatch.objects.create(
+            universe=other,
+            period_start=date(2018, 1, 1),
+            period_end=date(2018, 1, 1),
+            expected_member_count=1,
+            imported_member_count=1,
+            mapped_member_count=1,
+            status=UniverseCoverageStatus.VALIDATED,
+        )
+        other_snapshot = UniverseCoverageSnapshot.objects.create(
+            universe=other,
+            import_batch=other_batch,
+            coverage_date=date(2018, 1, 1),
+            expected_member_count=1,
+            actual_member_count=1,
+            mapped_member_count=1,
+            status=UniverseCoverageStatus.VALIDATED,
+        )
+        other_membership_before = UniverseMembership.objects.filter(id=other_membership.id).values().get()
+        other_snapshot_before = UniverseCoverageSnapshot.objects.filter(id=other_snapshot.id).values().get()
+
+        exact = self._apply_exact_target()
+        universe = UniverseDefinition.objects.get(code="SP500")
+        self.assertTrue(UniverseImportBatch.objects.filter(id=initial.batch_id).exists())
+        self.assertEqual(
+            set(universe.coverage_snapshots.values_list("coverage_date", flat=True)),
+            {date(2020, 1, 1), date(2020, 1, 2)},
+        )
+
+        report = ensure_universe_membership_symbols("SP500")
+
+        self.assertEqual(report.coverage_batches_updated, 1)
+        self.assertEqual(report.coverage_snapshots_updated, 2)
+        self.assertEqual(
+            set(universe.coverage_snapshots.values_list("coverage_date", flat=True)),
+            {date(2020, 1, 1), date(2020, 1, 2)},
+        )
+        self.assertEqual(set(universe.coverage_snapshots.values_list("import_batch_id", flat=True)), {exact.batch_id})
+        self.assertEqual(set(universe.coverage_snapshots.values_list("actual_member_count", flat=True)), {3})
+        self.assertEqual(set(universe.coverage_snapshots.values_list("mapped_member_count", flat=True)), {3})
+        self.assertTrue(UniverseImportBatch.objects.filter(id=initial.batch_id).exists())
+        self.assertEqual(UniverseMembership.objects.filter(id=other_membership.id).values().get(), other_membership_before)
+        self.assertEqual(UniverseCoverageSnapshot.objects.filter(id=other_snapshot.id).values().get(), other_snapshot_before)
+
+    def test_exact_apply_rolls_back_everything_when_upsert_fails_after_deletion(self):
+        self._seed_exact_initial_state()
+        universe = UniverseDefinition.objects.get(code="SP500")
+        universe_before = UniverseDefinition.objects.filter(id=universe.id).values().get()
+        memberships_before = list(universe.memberships.order_by("id").values())
+        snapshots_before = list(universe.coverage_snapshots.order_by("coverage_date").values())
+        batches_before = list(UniverseImportBatch.objects.order_by("id").values())
+
+        with patch("core.services.universe_import._upsert_memberships", side_effect=RuntimeError("forced failure")):
+            with self.assertRaisesRegex(RuntimeError, "forced failure"):
+                self._apply_exact_target()
+
+        self.assertEqual(UniverseDefinition.objects.filter(id=universe.id).values().get(), universe_before)
+        self.assertEqual(list(universe.memberships.order_by("id").values()), memberships_before)
+        self.assertEqual(list(universe.coverage_snapshots.order_by("coverage_date").values()), snapshots_before)
+        self.assertEqual(list(UniverseImportBatch.objects.order_by("id").values()), batches_before)
+
+    def test_exact_apply_is_business_idempotent_with_a_new_audit_batch(self):
+        self._seed_exact_initial_state()
+        first = self._apply_exact_target()
+        universe = UniverseDefinition.objects.get(code="SP500")
+        memberships_after_first = list(
+            universe.memberships.order_by("ticker").values(
+                "ticker", "exchange", "symbol_id", "provider_symbol", "valid_from", "valid_to", "source", "source_payload"
+            )
+        )
+        snapshots_after_first = list(
+            universe.coverage_snapshots.order_by("coverage_date").values(
+                "coverage_date",
+                "expected_member_count",
+                "actual_member_count",
+                "mapped_member_count",
+                "unmapped_member_count",
+                "status",
+                "metadata",
+            )
+        )
+        batch_count = UniverseImportBatch.objects.count()
+
+        second = self._apply_exact_target()
+
+        self.assertEqual(second.memberships_created, 0)
+        self.assertEqual(second.memberships_updated, 0)
+        self.assertEqual(second.memberships_deleted, 0)
+        self.assertEqual(second.memberships_unchanged, 3)
+        self.assertNotEqual(second.batch_id, first.batch_id)
+        self.assertEqual(UniverseImportBatch.objects.count(), batch_count + 1)
+        self.assertEqual(
+            list(
+                universe.memberships.order_by("ticker").values(
+                    "ticker", "exchange", "symbol_id", "provider_symbol", "valid_from", "valid_to", "source", "source_payload"
+                )
+            ),
+            memberships_after_first,
+        )
+        self.assertEqual(
+            list(
+                universe.coverage_snapshots.order_by("coverage_date").values(
+                    "coverage_date",
+                    "expected_member_count",
+                    "actual_member_count",
+                    "mapped_member_count",
+                    "unmapped_member_count",
+                    "status",
+                    "metadata",
+                )
+            ),
+            snapshots_after_first,
+        )
+
+    def test_exact_apply_refuses_empty_target_without_deleting(self):
+        self._seed_exact_initial_state()
+        empty_csv = self._csv_file("")
+        counts_before = (
+            UniverseMembership.objects.count(),
+            UniverseCoverageSnapshot.objects.count(),
+            UniverseImportBatch.objects.count(),
+        )
+
+        with self.assertRaisesRegex(UniverseImportError, "no membership rows"):
+            import_universe_memberships_from_csv(
+                empty_csv,
+                coverage_start=date(2020, 1, 1),
+                coverage_end=date(2020, 1, 2),
+                expected_member_count=1,
+                dry_run=False,
+                replace_existing=True,
+            )
+
+        self.assertEqual(
+            (
+                UniverseMembership.objects.count(),
+                UniverseCoverageSnapshot.objects.count(),
+                UniverseImportBatch.objects.count(),
+            ),
+            counts_before,
+        )
+
+    def test_exact_apply_rejects_csv_error_without_writes(self):
+        self._seed_exact_initial_state()
+        invalid_csv = self._csv_file(
+            "SP500,AAPL,NASDAQ,AAPL.US,not-a-date,,Apple Inc.,manual_csv\n"
+        )
+        memberships_before = list(UniverseMembership.objects.order_by("id").values())
+        snapshots_before = list(UniverseCoverageSnapshot.objects.order_by("id").values())
+        batches_before = UniverseImportBatch.objects.count()
+
+        with self.assertRaisesRegex(UniverseImportError, "valid_from must be YYYY-MM-DD"):
+            import_universe_memberships_from_csv(invalid_csv, dry_run=False, replace_existing=True)
+
+        self.assertEqual(list(UniverseMembership.objects.order_by("id").values()), memberships_before)
+        self.assertEqual(list(UniverseCoverageSnapshot.objects.order_by("id").values()), snapshots_before)
+        self.assertEqual(UniverseImportBatch.objects.count(), batches_before)
+
+    def test_exact_apply_rejects_active_unmapped_members_without_deleting(self):
+        self._seed_exact_initial_state()
+        unmapped_csv = self._csv_file(
+            "SP500,MISSING,NYSE,MISSING.US,2020-01-01,,Missing Corp,manual_csv\n"
+        )
+        memberships_before = list(UniverseMembership.objects.order_by("id").values())
+        snapshots_before = list(UniverseCoverageSnapshot.objects.order_by("id").values())
+
+        with self.assertRaisesRegex(UniverseImportError, "unmapped or ambiguous.*overlapping coverage"):
+            import_universe_memberships_from_csv(
+                unmapped_csv,
+                coverage_start=date(2020, 1, 1),
+                coverage_end=date(2020, 1, 2),
+                expected_member_count=1,
+                dry_run=False,
+                replace_existing=True,
+            )
+
+        self.assertEqual(list(UniverseMembership.objects.order_by("id").values()), memberships_before)
+        self.assertEqual(list(UniverseCoverageSnapshot.objects.order_by("id").values()), snapshots_before)
+
+    def test_exact_rejects_unmapped_membership_that_overlaps_coverage_then_exits_early(self):
+        self._seed_exact_initial_state()
+        unmapped_csv = self._csv_file(
+            "SP500,MISSING,NYSE,MISSING.US,2020-01-02,2020-01-05,Missing Corp,manual_csv\n"
+        )
+        memberships_before = list(UniverseMembership.objects.order_by("id").values())
+        snapshots_before = list(UniverseCoverageSnapshot.objects.order_by("id").values())
+        batches_before = list(UniverseImportBatch.objects.order_by("id").values())
+        kwargs = {
+            "coverage_start": date(2020, 1, 1),
+            "coverage_end": date(2020, 1, 10),
+            "expected_member_count": 1,
+            "replace_existing": True,
+        }
+
+        dry_run = import_universe_memberships_from_csv(unmapped_csv, dry_run=True, **kwargs)
+
+        self.assertEqual(dry_run.status, UniverseCoverageStatus.FAILED)
+        self.assertIn("unmapped or ambiguous membership row(s) overlapping coverage", " ".join(dry_run.errors))
+        with self.assertRaisesRegex(UniverseImportError, "unmapped or ambiguous.*overlapping coverage"):
+            import_universe_memberships_from_csv(unmapped_csv, dry_run=False, **kwargs)
+        self.assertEqual(list(UniverseMembership.objects.order_by("id").values()), memberships_before)
+        self.assertEqual(list(UniverseCoverageSnapshot.objects.order_by("id").values()), snapshots_before)
+        self.assertEqual(list(UniverseImportBatch.objects.order_by("id").values()), batches_before)
+
+    def test_exact_does_not_treat_unmapped_membership_outside_coverage_as_overlapping(self):
+        self._seed_exact_initial_state()
+        csv_path = self._csv_file(
+            "SP500,AAPL,NASDAQ,AAPL.US,2020-01-01,,Apple Inc.,manual_csv\n"
+            "SP500,MISSING,NYSE,MISSING.US,2020-01-11,2020-01-12,Missing Corp,manual_csv\n"
+        )
+        kwargs = {
+            "coverage_start": date(2020, 1, 1),
+            "coverage_end": date(2020, 1, 10),
+            "expected_member_count": 1,
+            "replace_existing": True,
+        }
+
+        dry_run = import_universe_memberships_from_csv(csv_path, dry_run=True, **kwargs)
+        applied = import_universe_memberships_from_csv(csv_path, dry_run=False, **kwargs)
+
+        self.assertEqual(dry_run.errors, [])
+        self.assertNotEqual(dry_run.status, UniverseCoverageStatus.FAILED)
+        self.assertEqual(applied.status, UniverseCoverageStatus.PARTIAL)
+        missing = UniverseMembership.objects.get(ticker="MISSING")
+        self.assertIsNone(missing.symbol_id)
+        self.assertEqual(
+            set(UniverseCoverageSnapshot.objects.values_list("coverage_date", flat=True)),
+            {date(2020, 1, day) for day in range(1, 11)},
+        )
+
+    def test_exact_dry_run_reports_duplicate_business_key_conflict(self):
+        self._seed_exact_initial_state()
+        duplicate_csv = self._csv_file(
+            "SP500,AAPL,NASDAQ,AAPL.US,2020-01-01,,Apple Inc.,manual_csv\n"
+            "SP500,AAPL,NASDAQ,AAPL2.US,2020-01-01,,Apple Inc.,manual_csv\n"
+        )
+        memberships_before = list(UniverseMembership.objects.order_by("id").values())
+
+        result = import_universe_memberships_from_csv(
+            duplicate_csv,
+            coverage_start=date(2020, 1, 1),
+            coverage_end=date(2020, 1, 1),
+            expected_member_count=1,
+            dry_run=True,
+            replace_existing=True,
+        )
+
+        self.assertEqual(result.conflicts, 1)
+        self.assertEqual(result.status, UniverseCoverageStatus.FAILED)
+        self.assertIn("duplicate membership business key", " ".join(result.errors))
+        self.assertEqual(list(UniverseMembership.objects.order_by("id").values()), memberships_before)
+
+    def test_generic_cli_supports_exact_dry_run_and_apply_with_counters(self):
+        self._seed_exact_initial_state()
+        csv_path = self._exact_target_csv()
+        out = StringIO()
+
+        call_command(
+            "import_universe_memberships",
+            "--csv",
+            csv_path,
+            "--universe-code",
+            "SP500",
+            "--coverage-start",
+            "2020-01-01",
+            "--coverage-end",
+            "2020-01-02",
+            "--expected-member-count",
+            "3",
+            "--dry-run",
+            "--replace-existing",
+            stdout=out,
+        )
+        dry_output = out.getvalue()
+        self.assertIn("mode=dry-run", dry_output)
+        self.assertIn("replace_existing=true", dry_output)
+        self.assertIn("to_create=1", dry_output)
+        self.assertIn("to_update=1", dry_output)
+        self.assertIn("unchanged=1", dry_output)
+        self.assertIn("to_delete=1", dry_output)
+        self.assertIn("snapshots_to_delete=4", dry_output)
+        self.assertEqual(UniverseMembership.objects.count(), 3)
+
+        out = StringIO()
+        call_command(
+            "import_universe_memberships",
+            "--csv",
+            csv_path,
+            "--universe-code",
+            "SP500",
+            "--coverage-start",
+            "2020-01-01",
+            "--coverage-end",
+            "2020-01-02",
+            "--expected-member-count",
+            "3",
+            "--apply",
+            "--replace-existing",
+            stdout=out,
+        )
+        apply_output = out.getvalue()
+        self.assertIn("mode=apply", apply_output)
+        self.assertIn("deleted=1", apply_output)
+        self.assertIn("snapshots_created=2", apply_output)
+        self.assertEqual(UniverseMembership.objects.count(), 3)
+
+    def test_exact_apply_simulates_csi300_2023_cutover(self):
+        old_csv = self._csv_file(
+            "CSI300,OLD,NYSE,OLD.US,2010-01-01,2012-12-31,Old Corp,manual_csv\n"
+            "CSI300,600519,XSHG,600519.SHG,2019-01-01,,Kweichow Moutai,manual_csv\n"
+        )
+        import_universe_memberships_from_csv(
+            old_csv,
+            universe_code="CSI300",
+            universe_name="CSI 300",
+            coverage_start=date(2010, 1, 1),
+            coverage_end=date(2010, 1, 2),
+            expected_member_count=1,
+            dry_run=False,
+        )
+        target_csv = self._csv_file(
+            "CSI300,600519,XSHG,600519.SHG,2023-01-03,,Kweichow Moutai,manual_csv\n"
+            "CSI300,000001,XSHE,000001.SHE,2023-01-03,,Ping An Bank,manual_csv\n"
+            "CSI300,600000,XSHG,600000.SHG,2023-01-04,,SPD Bank,manual_csv\n"
+        )
+
+        result = import_universe_memberships_from_csv(
+            target_csv,
+            universe_code="CSI300",
+            universe_name="CSI 300",
+            coverage_start=date(2023, 1, 3),
+            coverage_end=date(2023, 1, 4),
+            expected_member_count=2,
+            dry_run=False,
+            replace_existing=True,
+        )
+
+        universe = UniverseDefinition.objects.get(code="CSI300")
+        self.assertEqual(result.memberships_deleted, 2)
+        self.assertEqual(result.memberships_created, 3)
+        self.assertEqual(result.expected_final_memberships, 3)
+        self.assertEqual(universe.memberships.count(), 3)
+        self.assertFalse(universe.memberships.filter(valid_from__lt=date(2023, 1, 3)).exists())
+        self.assertEqual(
+            set(universe.coverage_snapshots.values_list("coverage_date", flat=True)),
+            {date(2023, 1, 3), date(2023, 1, 4)},
+        )
 
     @patch("requests.get")
     def test_generic_csv_import_does_not_call_provider(self, requests_get_mock):

@@ -82,6 +82,19 @@ class UniverseImportResult:
     valid_to_max: date | None = None
     open_memberships: int = 0
     universe_name: str = ""
+    active_members: int = 0
+    memberships_to_create: int = 0
+    memberships_to_update: int = 0
+    memberships_to_delete: int = 0
+    memberships_deleted: int = 0
+    memberships_unchanged: int = 0
+    expected_final_memberships: int = 0
+    replace_existing: bool = False
+    snapshots_to_delete: int = 0
+    snapshots_to_rebuild: int = 0
+    snapshots_deleted: int = 0
+    snapshots_created: int = 0
+    conflicts: int = 0
 
 
 def import_universe_memberships_from_csv(
@@ -95,6 +108,7 @@ def import_universe_memberships_from_csv(
     source_reference: str = "",
     expected_member_count: int = 500,
     dry_run: bool = True,
+    replace_existing: bool = False,
 ) -> UniverseImportResult:
     requested_code = _normalize_code(universe_code)
     if not requested_code:
@@ -127,6 +141,8 @@ def import_universe_memberships_from_csv(
         valid_to_max=max((row.valid_to for row in rows if row.valid_to is not None), default=None),
         open_memberships=sum(1 for row in rows if row.valid_to is None),
         universe_name=(str(universe_name or "").strip() or _default_universe_name(requested_code)),
+        active_members=_count_active_rows(rows, period_end),
+        replace_existing=bool(replace_existing),
     )
 
     if not rows:
@@ -149,29 +165,71 @@ def import_universe_memberships_from_csv(
             mapping_errors[row.row_number] = error
             result.warnings.append(f"row {row.row_number}: {error}")
 
-    if dry_run:
-        result.imported_member_count = _count_active_rows(rows, period_start)
-        result.mapped_member_count = _count_active_rows(
-            [row for row in rows if mapped_by_row.get(row.row_number) is not None],
-            period_start,
+    target_rows_by_key, duplicate_keys = _target_rows_by_key(rows)
+    result.conflicts = len(duplicate_keys) if replace_existing else 0
+    overlapping_mapping_errors = {
+        row_number: error
+        for row_number, error in mapping_errors.items()
+        if _row_overlaps_coverage(
+            _row_by_number(rows, row_number),
+            coverage_start=period_start,
+            coverage_end=period_end,
         )
-        result.unmapped_member_count = max(result.imported_member_count - result.mapped_member_count, 0)
-        if period_start and period_end:
-            result.coverage_days = _count_calendar_days(period_start, period_end)
-            status, _summary = _preview_coverage_status(
-                rows=rows,
-                symbols_by_row=mapped_by_row,
-                coverage_start=period_start,
-                coverage_end=period_end,
-                expected_member_count=expected_member_count,
-                has_mapping_errors=bool(mapping_errors),
+    }
+    replacement_errors = []
+    if replace_existing and duplicate_keys:
+        replacement_errors.append(
+            f"CSV contains {len(duplicate_keys)} duplicate membership business key(s)."
+        )
+    if replace_existing and overlapping_mapping_errors:
+        replacement_errors.append(
+            f"CSV contains {len(overlapping_mapping_errors)} unmapped or ambiguous membership row(s) "
+            "overlapping coverage."
+        )
+    result.errors.extend(replacement_errors)
+
+    active_summary = None
+    if period_start and period_end:
+        active_summary = _imported_rows_coverage_summary(
+            rows=rows,
+            symbols_by_row=mapped_by_row,
+            coverage_start=period_start,
+            coverage_end=period_end,
+            expected_member_count=expected_member_count,
+            force_partial=bool(mapping_errors),
+        )
+
+    if dry_run:
+        if active_summary is not None:
+            _populate_coverage_result(result, active_summary)
+        if not replace_existing:
+            result.imported_member_count = _count_active_rows(rows, period_start)
+            result.mapped_member_count = _count_active_rows(
+                [row for row in rows if mapped_by_row.get(row.row_number) is not None],
+                period_start,
             )
-            result.status = status
-        else:
+            result.unmapped_member_count = max(result.imported_member_count - result.mapped_member_count, 0)
+        if active_summary is None:
             result.status = UniverseCoverageStatus.PARTIAL if mapping_errors else UniverseCoverageStatus.IMPORTED
+        if replace_existing:
+            plan = _exact_membership_plan(universe, target_rows_by_key, mapped_by_row, mapping_errors)
+            _populate_exact_plan_result(result, plan)
+            result.snapshots_to_delete = (
+                UniverseCoverageSnapshot.objects.filter(universe=universe).count() if universe is not None else 0
+            )
+            result.snapshots_to_rebuild = result.coverage_days
+            if replacement_errors:
+                result.status = UniverseCoverageStatus.FAILED
+        elif universe is not None:
+            result.expected_final_memberships = universe.memberships.count()
         return result
 
+    if replacement_errors:
+        raise UniverseImportError(f"Exact replacement refused: {' '.join(replacement_errors)}")
+
     with transaction.atomic():
+        if replace_existing:
+            universe = UniverseDefinition.objects.select_for_update().filter(code=requested_code).first()
         if universe is None:
             universe = UniverseDefinition.objects.create(
                 code=requested_code,
@@ -194,23 +252,22 @@ def import_universe_memberships_from_csv(
             if changed_fields:
                 universe.save(update_fields=[*changed_fields, "updated_at"])
 
-        created, updated = _upsert_memberships(universe, rows, mapped_by_row, mapping_errors)
+        exact_plan = None
+        if replace_existing:
+            exact_plan = _exact_membership_plan(universe, target_rows_by_key, mapped_by_row, mapping_errors)
+            _populate_exact_plan_result(result, exact_plan)
+            if exact_plan["delete_ids"]:
+                UniverseMembership.objects.filter(id__in=exact_plan["delete_ids"]).delete()
+                result.memberships_deleted = len(exact_plan["delete_ids"])
+
+        created, updated, unchanged = _upsert_memberships(universe, rows, mapped_by_row, mapping_errors)
         result.memberships_created = created
         result.memberships_updated = updated
+        result.memberships_unchanged = unchanged
+        if not replace_existing:
+            result.expected_final_memberships = universe.memberships.count()
 
-        active_summary = _imported_rows_coverage_summary(
-            rows=rows,
-            symbols_by_row=mapped_by_row,
-            coverage_start=period_start,
-            coverage_end=period_end,
-            expected_member_count=expected_member_count,
-            force_partial=bool(mapping_errors),
-        )
-        result.imported_member_count = active_summary["max_actual"]
-        result.mapped_member_count = active_summary["max_mapped"]
-        result.unmapped_member_count = active_summary["max_unmapped"]
-        result.coverage_days = len(active_summary["snapshots"])
-        result.status = active_summary["batch_status"]
+        _populate_coverage_result(result, active_summary)
 
         batch = UniverseImportBatch.objects.create(
             universe=universe,
@@ -236,28 +293,51 @@ def import_universe_memberships_from_csv(
                 "open_memberships": result.open_memberships,
                 "memberships_created": created,
                 "memberships_updated": updated,
+                "memberships_deleted": result.memberships_deleted,
+                "memberships_unchanged": result.memberships_unchanged,
+                "expected_final_memberships": result.expected_final_memberships,
+                "replace_existing": result.replace_existing,
                 "mapping_errors": mapping_errors,
             },
         )
         result.batch_id = batch.id
 
-        for item in active_summary["snapshots"]:
-            snapshot_status = item["status"]
-            if batch.status != UniverseCoverageStatus.VALIDATED:
-                snapshot_status = UniverseCoverageStatus.PARTIAL
-            UniverseCoverageSnapshot.objects.update_or_create(
-                universe=universe,
-                coverage_date=item["date"],
-                defaults={
-                    "import_batch": batch,
-                    "expected_member_count": expected_member_count,
-                    "actual_member_count": item["actual"],
-                    "mapped_member_count": item["mapped"],
-                    "unmapped_member_count": item["unmapped"],
-                    "status": snapshot_status,
-                    "metadata": {"source_name": source_name, "source_reference": source_reference},
-                },
-            )
+        if replace_existing:
+            result.snapshots_to_delete = UniverseCoverageSnapshot.objects.filter(universe=universe).count()
+            result.snapshots_to_rebuild = len(active_summary["snapshots"])
+            UniverseCoverageSnapshot.objects.filter(universe=universe).delete()
+            result.snapshots_deleted = result.snapshots_to_delete
+            snapshots = [
+                _coverage_snapshot_from_summary(
+                    universe=universe,
+                    batch=batch,
+                    item=item,
+                    expected_member_count=expected_member_count,
+                    source_name=source_name,
+                    source_reference=source_reference,
+                )
+                for item in active_summary["snapshots"]
+            ]
+            UniverseCoverageSnapshot.objects.bulk_create(snapshots)
+            result.snapshots_created = len(snapshots)
+        else:
+            for item in active_summary["snapshots"]:
+                snapshot_status = item["status"]
+                if batch.status != UniverseCoverageStatus.VALIDATED:
+                    snapshot_status = UniverseCoverageStatus.PARTIAL
+                UniverseCoverageSnapshot.objects.update_or_create(
+                    universe=universe,
+                    coverage_date=item["date"],
+                    defaults={
+                        "import_batch": batch,
+                        "expected_member_count": expected_member_count,
+                        "actual_member_count": item["actual"],
+                        "mapped_member_count": item["mapped"],
+                        "unmapped_member_count": item["unmapped"],
+                        "status": snapshot_status,
+                        "metadata": {"source_name": source_name, "source_reference": source_reference},
+                    },
+                )
 
     return result
 
@@ -333,25 +413,12 @@ def _upsert_memberships(
     rows: list[ParsedMembershipRow],
     mapped_by_row: dict[int, Symbol | None],
     mapping_errors: dict[int, str],
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     created = 0
     updated = 0
+    unchanged = 0
     for row in rows:
-        source_payload = {
-            "company_name": row.company_name,
-            "mic": row.mic,
-            "source": row.source,
-            "extras": {key: row.raw.get(key, "") for key in OPTIONAL_SOURCE_PAYLOAD_COLUMNS if row.raw.get(key, "")},
-            "row": row.raw,
-            "mapping_error": mapping_errors.get(row.row_number, ""),
-        }
-        defaults = {
-            "symbol": mapped_by_row.get(row.row_number),
-            "provider_symbol": row.provider_symbol,
-            "valid_to": row.valid_to,
-            "source": row.source,
-            "source_payload": source_payload,
-        }
+        defaults = _membership_defaults(row, mapped_by_row, mapping_errors)
         membership, was_created = UniverseMembership.objects.get_or_create(
             universe=universe,
             ticker=row.ticker,
@@ -370,7 +437,141 @@ def _upsert_memberships(
         if changed_fields:
             membership.save(update_fields=[*changed_fields, "updated_at"])
             updated += 1
-    return created, updated
+        else:
+            unchanged += 1
+    return created, updated, unchanged
+
+
+def _membership_defaults(
+    row: ParsedMembershipRow,
+    mapped_by_row: dict[int, Symbol | None],
+    mapping_errors: dict[int, str],
+) -> dict[str, Any]:
+    source_payload = {
+        "company_name": row.company_name,
+        "mic": row.mic,
+        "source": row.source,
+        "extras": {key: row.raw.get(key, "") for key in OPTIONAL_SOURCE_PAYLOAD_COLUMNS if row.raw.get(key, "")},
+        "row": row.raw,
+        "mapping_error": mapping_errors.get(row.row_number, ""),
+    }
+    return {
+        "symbol": mapped_by_row.get(row.row_number),
+        "provider_symbol": row.provider_symbol,
+        "valid_to": row.valid_to,
+        "source": row.source,
+        "source_payload": source_payload,
+    }
+
+
+def _membership_key(row: ParsedMembershipRow) -> tuple[str, str, date]:
+    return row.ticker, row.exchange, row.valid_from
+
+
+def _target_rows_by_key(
+    rows: list[ParsedMembershipRow],
+) -> tuple[dict[tuple[str, str, date], ParsedMembershipRow], set[tuple[str, str, date]]]:
+    target_rows = {}
+    duplicate_keys = set()
+    for row in rows:
+        key = _membership_key(row)
+        if key in target_rows:
+            duplicate_keys.add(key)
+        target_rows[key] = row
+    return target_rows, duplicate_keys
+
+
+def _exact_membership_plan(
+    universe: UniverseDefinition | None,
+    target_rows_by_key: dict[tuple[str, str, date], ParsedMembershipRow],
+    mapped_by_row: dict[int, Symbol | None],
+    mapping_errors: dict[int, str],
+) -> dict[str, Any]:
+    existing_memberships = list(universe.memberships.all()) if universe is not None else []
+    existing_by_key = {
+        (membership.ticker, membership.exchange, membership.valid_from): membership
+        for membership in existing_memberships
+    }
+    target_keys = set(target_rows_by_key)
+    existing_keys = set(existing_by_key)
+    to_create = target_keys - existing_keys
+    to_delete = existing_keys - target_keys
+    to_update = set()
+    unchanged = set()
+    for key in target_keys & existing_keys:
+        row = target_rows_by_key[key]
+        defaults = _membership_defaults(row, mapped_by_row, mapping_errors)
+        membership = existing_by_key[key]
+        if _membership_has_changes(membership, defaults):
+            to_update.add(key)
+        else:
+            unchanged.add(key)
+    return {
+        "to_create": to_create,
+        "to_update": to_update,
+        "unchanged": unchanged,
+        "delete_ids": [existing_by_key[key].id for key in to_delete],
+        "expected_final_memberships": len(target_keys),
+    }
+
+
+def _membership_has_changes(membership: UniverseMembership, defaults: dict[str, Any]) -> bool:
+    for field, value in defaults.items():
+        if field == "symbol":
+            expected_symbol_id = value.id if value is not None else None
+            if membership.symbol_id != expected_symbol_id:
+                return True
+        elif getattr(membership, field) != value:
+            return True
+    return False
+
+
+def _populate_exact_plan_result(result: UniverseImportResult, plan: dict[str, Any]) -> None:
+    result.memberships_to_create = len(plan["to_create"])
+    result.memberships_to_update = len(plan["to_update"])
+    result.memberships_to_delete = len(plan["delete_ids"])
+    result.memberships_unchanged = len(plan["unchanged"])
+    result.expected_final_memberships = plan["expected_final_memberships"]
+
+
+def _row_by_number(rows: list[ParsedMembershipRow], row_number: int) -> ParsedMembershipRow:
+    return next(row for row in rows if row.row_number == row_number)
+
+
+def _row_overlaps_coverage(
+    row: ParsedMembershipRow,
+    *,
+    coverage_start: date | None,
+    coverage_end: date | None,
+) -> bool:
+    if coverage_start is None or coverage_end is None:
+        return False
+    return row.valid_from <= coverage_end and (row.valid_to is None or row.valid_to >= coverage_start)
+
+
+def _coverage_snapshot_from_summary(
+    *,
+    universe: UniverseDefinition,
+    batch: UniverseImportBatch,
+    item: dict[str, Any],
+    expected_member_count: int,
+    source_name: str,
+    source_reference: str,
+) -> UniverseCoverageSnapshot:
+    snapshot_status = item["status"]
+    if batch.status != UniverseCoverageStatus.VALIDATED:
+        snapshot_status = UniverseCoverageStatus.PARTIAL
+    return UniverseCoverageSnapshot(
+        universe=universe,
+        coverage_date=item["date"],
+        import_batch=batch,
+        expected_member_count=expected_member_count,
+        actual_member_count=item["actual"],
+        mapped_member_count=item["mapped"],
+        unmapped_member_count=item["unmapped"],
+        status=snapshot_status,
+        metadata={"source_name": source_name, "source_reference": source_reference},
+    )
 
 
 def _imported_rows_coverage_summary(
@@ -421,29 +622,12 @@ def _imported_rows_coverage_summary(
     }
 
 
-def _preview_coverage_status(
-    rows: list[ParsedMembershipRow],
-    symbols_by_row: dict[int, Symbol | None],
-    coverage_start: date,
-    coverage_end: date,
-    expected_member_count: int,
-    has_mapping_errors: bool,
-) -> tuple[str, dict[str, int]]:
-    status = UniverseCoverageStatus.VALIDATED
-    max_actual = max_mapped = max_unmapped = 0
-    current = coverage_start
-    while current <= coverage_end:
-        active = [row for row in rows if row.valid_from <= current and (row.valid_to is None or current <= row.valid_to)]
-        actual = len(active)
-        mapped = sum(1 for row in active if symbols_by_row.get(row.row_number) is not None)
-        unmapped = actual - mapped
-        max_actual = max(max_actual, actual)
-        max_mapped = max(max_mapped, mapped)
-        max_unmapped = max(max_unmapped, unmapped)
-        if actual < expected_member_count or mapped < actual or unmapped != 0 or has_mapping_errors:
-            status = UniverseCoverageStatus.PARTIAL
-        current += timedelta(days=1)
-    return status, {"actual": max_actual, "mapped": max_mapped, "unmapped": max_unmapped}
+def _populate_coverage_result(result: UniverseImportResult, active_summary: dict[str, Any]) -> None:
+    result.imported_member_count = active_summary["max_actual"]
+    result.mapped_member_count = active_summary["max_mapped"]
+    result.unmapped_member_count = active_summary["max_unmapped"]
+    result.coverage_days = len(active_summary["snapshots"])
+    result.status = active_summary["batch_status"]
 
 
 def _normalize_code(value: str) -> str:
@@ -494,7 +678,3 @@ def _count_active_rows(rows: list[ParsedMembershipRow], as_of: date | None) -> i
     if as_of is None:
         return len(rows)
     return sum(1 for row in rows if row.valid_from <= as_of and (row.valid_to is None or as_of <= row.valid_to))
-
-
-def _count_calendar_days(start: date, end: date) -> int:
-    return (end - start).days + 1

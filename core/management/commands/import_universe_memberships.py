@@ -30,12 +30,28 @@ def write_import_summary(command: BaseCommand, result) -> None:
         f"valid_from_min={result.valid_from_min or ''} "
         f"valid_to_max={result.valid_to_max or ''} "
         f"open_memberships={result.open_memberships} "
+        f"active_members={result.active_members} "
+        f"replace_existing={str(result.replace_existing).lower()} "
+        f"to_create={result.memberships_to_create} "
+        f"to_update={result.memberships_to_update} "
+        f"unchanged={result.memberships_unchanged} "
+        f"to_delete={result.memberships_to_delete} "
         f"created={result.memberships_created} "
         f"updated={result.memberships_updated} "
+        f"deleted={result.memberships_deleted} "
         f"imported={result.imported_member_count} "
         f"mapped={result.mapped_member_count} "
         f"unmapped={result.unmapped_member_count} "
+        f"expected_final_memberships={result.expected_final_memberships} "
+        f"snapshots_to_delete={result.snapshots_to_delete} "
+        f"snapshots_to_rebuild={result.snapshots_to_rebuild} "
+        f"snapshots_deleted={result.snapshots_deleted} "
+        f"snapshots_created={result.snapshots_created} "
         f"coverage_days={result.coverage_days} "
+        f"coverage_start={result.period_start or ''} "
+        f"coverage_end={result.period_end or ''} "
+        f"conflicts={result.conflicts} "
+        f"errors={len(result.errors)} "
         f"status={result.status} "
         f"batch_id={result.batch_id or ''}"
     )
@@ -60,6 +76,11 @@ class Command(BaseCommand):
         parser.add_argument("--source-reference", default="", help="Optional source reference stored on the import batch.")
         parser.add_argument("--dry-run", action="store_true", help="Validate without writing. This is the default.")
         parser.add_argument("--apply", action="store_true", help="Persist memberships, batch, and coverage snapshots.")
+        parser.add_argument(
+            "--replace-existing",
+            action="store_true",
+            help="Synchronize the selected universe exactly, deleting memberships and rebuilding snapshots absent from the CSV.",
+        )
 
     def handle(self, *args, **options):
         if options["dry_run"] and options["apply"]:
@@ -77,6 +98,7 @@ class Command(BaseCommand):
                 source_reference=options["source_reference"],
                 expected_member_count=options["expected_member_count"],
                 dry_run=not bool(options["apply"]),
+                replace_existing=bool(options["replace_existing"]),
             )
         except ValueError as exc:
             raise CommandError(str(exc)) from exc
