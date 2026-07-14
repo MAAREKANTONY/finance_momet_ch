@@ -325,7 +325,7 @@ class UniverseMembership(models.Model):
     provider_symbol = models.CharField(max_length=128, blank=True, default="")
     valid_from = models.DateField()
     valid_to = models.DateField(null=True, blank=True)
-    source = models.CharField(max_length=64, blank=True, default="")
+    source = models.CharField(max_length=128, blank=True, default="")
     source_payload = models.JSONField(default=dict, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

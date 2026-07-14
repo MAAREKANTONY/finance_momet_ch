@@ -6,6 +6,7 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
+from django.core.exceptions import ValidationError
 from django.db import transaction
 from django.utils import timezone
 
@@ -165,6 +166,25 @@ def import_universe_memberships_from_csv(
             mapping_errors[row.row_number] = error
             result.warnings.append(f"row {row.row_number}: {error}")
 
+    preflight_errors = _persistence_preflight_errors(
+        universe=universe,
+        requested_code=requested_code,
+        requested_name=str(universe_name or "").strip(),
+        result=result,
+        rows=rows,
+        mapped_by_row=mapped_by_row,
+        mapping_errors=mapping_errors,
+        provider=provider,
+        source_name=source_name,
+        source_reference=source_reference,
+    )
+    if preflight_errors:
+        result.status = UniverseCoverageStatus.FAILED
+        result.errors.extend(preflight_errors)
+        if dry_run:
+            return result
+        raise UniverseImportError(f"Import preflight failed: {' '.join(preflight_errors)}")
+
     target_rows_by_key, duplicate_keys = _target_rows_by_key(rows)
     result.conflicts = len(duplicate_keys) if replace_existing else 0
     overlapping_mapping_errors = {
@@ -282,23 +302,7 @@ def import_universe_memberships_from_csv(
             unmapped_member_count=result.unmapped_member_count,
             status=result.status,
             validated_at=timezone.now() if result.status == UniverseCoverageStatus.VALIDATED else None,
-            metadata={
-                "rows_read": result.rows_read,
-                "rows_valid": result.rows_valid,
-                "rows_rejected": result.rows_rejected,
-                "distinct_tickers": result.distinct_tickers,
-                "exchanges": result.exchanges,
-                "valid_from_min": result.valid_from_min.isoformat() if result.valid_from_min else None,
-                "valid_to_max": result.valid_to_max.isoformat() if result.valid_to_max else None,
-                "open_memberships": result.open_memberships,
-                "memberships_created": created,
-                "memberships_updated": updated,
-                "memberships_deleted": result.memberships_deleted,
-                "memberships_unchanged": result.memberships_unchanged,
-                "expected_final_memberships": result.expected_final_memberships,
-                "replace_existing": result.replace_existing,
-                "mapping_errors": mapping_errors,
-            },
+            metadata=_batch_metadata(result, mapping_errors, created=created, updated=updated),
         )
         result.batch_id = batch.id
 
@@ -335,7 +339,7 @@ def import_universe_memberships_from_csv(
                         "mapped_member_count": item["mapped"],
                         "unmapped_member_count": item["unmapped"],
                         "status": snapshot_status,
-                        "metadata": {"source_name": source_name, "source_reference": source_reference},
+                        "metadata": _snapshot_metadata(source_name, source_reference),
                     },
                 )
 
@@ -464,6 +468,151 @@ def _membership_defaults(
     }
 
 
+def _persistence_preflight_errors(
+    *,
+    universe: UniverseDefinition | None,
+    requested_code: str,
+    requested_name: str,
+    result: UniverseImportResult,
+    rows: list[ParsedMembershipRow],
+    mapped_by_row: dict[int, Symbol | None],
+    mapping_errors: dict[int, str],
+    provider: str,
+    source_name: str,
+    source_reference: str,
+) -> list[str]:
+    issues: list[tuple[str, str, str, int | None]] = []
+    definition_name = requested_name or (universe.name if universe is not None else result.universe_name)
+    definition_source = (
+        universe.source
+        if universe is not None and universe.source
+        else source_name or provider
+    )
+    _collect_model_field_issues(
+        UniverseDefinition,
+        entity="UniverseDefinition",
+        values={
+            "code": requested_code,
+            "name": definition_name,
+            "source": definition_source,
+        },
+        issues=issues,
+    )
+
+    for row in rows:
+        defaults = _membership_defaults(row, mapped_by_row, mapping_errors)
+        _collect_model_field_issues(
+            UniverseMembership,
+            entity="UniverseMembership",
+            row_number=row.row_number,
+            values={
+                "ticker": row.ticker,
+                "exchange": row.exchange,
+                "provider_symbol": row.provider_symbol,
+                "source": row.source,
+                "source_payload": defaults["source_payload"],
+            },
+            issues=issues,
+        )
+
+    _collect_model_field_issues(
+        UniverseImportBatch,
+        entity="UniverseImportBatch",
+        values={
+            "provider": provider,
+            "source_name": source_name,
+            "source_reference": source_reference,
+            "metadata": _batch_metadata(
+                result,
+                mapping_errors,
+                created=result.memberships_to_create,
+                updated=result.memberships_to_update,
+            ),
+        },
+        issues=issues,
+    )
+    _collect_model_field_issues(
+        UniverseCoverageSnapshot,
+        entity="UniverseCoverageSnapshot",
+        values={"metadata": _snapshot_metadata(source_name, source_reference)},
+        issues=issues,
+    )
+    return _format_model_field_issues(issues)
+
+
+def _collect_model_field_issues(
+    model,
+    *,
+    entity: str,
+    values: dict[str, Any],
+    issues: list[tuple[str, str, str, int | None]],
+    row_number: int | None = None,
+) -> None:
+    instance = model()
+    for field_name, value in values.items():
+        model_field = model._meta.get_field(field_name)
+        try:
+            model_field.clean(value, instance)
+        except ValidationError as exc:
+            issues.extend(
+                (entity, field_name, message, row_number)
+                for message in exc.messages
+            )
+
+
+def _format_model_field_issues(
+    issues: list[tuple[str, str, str, int | None]],
+) -> list[str]:
+    grouped: dict[tuple[str, str, str], list[int]] = {}
+    for entity, field_name, message, row_number in issues:
+        key = entity, field_name, message
+        rows = grouped.setdefault(key, [])
+        if row_number is not None:
+            rows.append(row_number)
+
+    errors = []
+    for (entity, field_name, message), rows in grouped.items():
+        context = f"{entity}.{field_name}"
+        if rows:
+            distinct_rows = sorted(set(rows))
+            shown = ", ".join(str(row) for row in distinct_rows[:3])
+            remaining = len(distinct_rows) - 3
+            suffix = f" and {remaining} more" if remaining > 0 else ""
+            context += f" (CSV row{'s' if len(distinct_rows) > 1 else ''} {shown}{suffix})"
+        errors.append(f"{context}: {message}")
+    return errors
+
+
+def _batch_metadata(
+    result: UniverseImportResult,
+    mapping_errors: dict[int, str],
+    *,
+    created: int,
+    updated: int,
+) -> dict[str, Any]:
+    return {
+        "rows_read": result.rows_read,
+        "rows_valid": result.rows_valid,
+        "rows_rejected": result.rows_rejected,
+        "distinct_tickers": result.distinct_tickers,
+        "exchanges": result.exchanges,
+        "valid_from_min": result.valid_from_min.isoformat() if result.valid_from_min else None,
+        "valid_to_max": result.valid_to_max.isoformat() if result.valid_to_max else None,
+        "open_memberships": result.open_memberships,
+        "memberships_created": created,
+        "memberships_updated": updated,
+        "memberships_deleted": result.memberships_deleted,
+        "memberships_unchanged": result.memberships_unchanged,
+        "expected_final_memberships": result.expected_final_memberships,
+        "replace_existing": result.replace_existing,
+        "mapping_errors": mapping_errors,
+    }
+
+
+def _snapshot_metadata(source_name: str, source_reference: str) -> dict[str, Any]:
+    return {"source_name": source_name, "source_reference": source_reference}
+
+
 def _membership_key(row: ParsedMembershipRow) -> tuple[str, str, date]:
     return row.ticker, row.exchange, row.valid_from
 
@@ -570,7 +719,7 @@ def _coverage_snapshot_from_summary(
         mapped_member_count=item["mapped"],
         unmapped_member_count=item["unmapped"],
         status=snapshot_status,
-        metadata={"source_name": source_name, "source_reference": source_reference},
+        metadata=_snapshot_metadata(source_name, source_reference),
     )
 
 
