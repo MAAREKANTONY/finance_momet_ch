@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import re
 from datetime import date
 from decimal import Decimal
 from unittest.mock import patch
@@ -87,6 +89,14 @@ class DynamicUniverseBacktestWizardTests(TestCase):
             ],
         )
 
+    def _csi300_scenario_ids_from_response(self, response) -> list[int]:
+        match = re.search(
+            r'<script id="csi300-scenario-ids" type="application/json">(.*?)</script>',
+            response.content.decode(),
+        )
+        self.assertIsNotNone(match)
+        return json.loads(match.group(1))
+
     @patch("core.views.check_dynamic_universe_readiness")
     def test_wizard_absent_for_static_tickers(self, readiness_mock):
         bt = self._backtest(scenario=self._scenario(dynamic=False))
@@ -111,6 +121,55 @@ class DynamicUniverseBacktestWizardTests(TestCase):
         self.assertIn("Données à compléter", body)
         self.assertIn("Trigger", body)
         readiness_mock.assert_called_once()
+
+    def test_backtest_create_exposes_native_cny_notice_for_csi300_selection(self):
+        csi300 = Scenario.objects.create(
+            name="Scenario CSI300 CNY",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+        )
+        static = Scenario.objects.create(
+            name="Scenario statique",
+            universe_mode=Scenario.UniverseMode.STATIC_TICKERS,
+            active=True,
+        )
+
+        response = self.client.get(reverse("backtest_create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Devise effective : CNY")
+        self.assertContains(response, "Capital, cash et résultats exprimés en CNY. Aucune conversion FX.")
+        scenario_ids = self._csi300_scenario_ids_from_response(response)
+        self.assertIn(csi300.id, scenario_ids)
+        self.assertNotIn(static.id, scenario_ids)
+
+    def test_backtest_create_exposes_empty_csi300_mapping_when_no_csi300_scenario_exists(self):
+        Scenario.objects.create(
+            name="Scenario statique seul",
+            universe_mode=Scenario.UniverseMode.STATIC_TICKERS,
+            active=True,
+        )
+
+        response = self.client.get(reverse("backtest_create"))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(self._csi300_scenario_ids_from_response(response), [])
+
+    def test_backtest_edit_exposes_only_csi300_scenario_ids(self):
+        csi300 = Scenario.objects.create(
+            name="Scenario CSI300 édition",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=False,
+        )
+        static = self._scenario(dynamic=False)
+        bt = self._backtest(scenario=static)
+
+        response = self.client.get(reverse("backtest_update", args=[bt.id]))
+
+        self.assertEqual(response.status_code, 200)
+        scenario_ids = self._csi300_scenario_ids_from_response(response)
+        self.assertIn(csi300.id, scenario_ids)
+        self.assertNotIn(static.id, scenario_ids)
 
     @patch("core.views.check_dynamic_universe_readiness")
     def test_wizard_missing_dates_shows_clean_message(self, readiness_mock):

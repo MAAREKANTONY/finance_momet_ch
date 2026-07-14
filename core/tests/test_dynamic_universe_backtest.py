@@ -25,6 +25,11 @@ from core.models import (
 )
 from core.services.backtesting.engine import run_backtest, run_backtest_kpi_only
 from core.services.backtesting.prep import _missing_bar_coverage_symbols, _static_ohlc_coverage_diagnostic, prepare_backtest_data
+from core.services.backtest_currency import (
+    ResolvedCurrencyValidationError,
+    validate_csi300_market_benchmark_currency,
+)
+from core.services.dynamic_universe_readiness import gm_requirements_from_signal_lines
 from core.services.metrics_depth import check_metrics_depth
 from core.services.provider_eodhd import EODHDError
 from core.services.universe_resolver import UniverseResolver
@@ -162,6 +167,7 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         return universe
 
     def _validated_csi300_universe(self):
+        Symbol.objects.filter(id__in=[self.old.id, self.new.id, self.keep.id]).update(currency="CNY")
         universe = UniverseDefinition.objects.create(
             code="CSI300",
             name="CSI 300",
@@ -307,6 +313,204 @@ class DynamicUniverseBacktestIntegrationTests(TestCase):
         self.assertEqual(bt.status, Backtest.Status.DONE)
         self.assertEqual({row["ticker"] for row in bt.universe_snapshot}, {"KEEP", "NEW", "OLD"})
         self.assertEqual(bt.results["meta"]["universe"]["universe_code"], "CSI300")
+        self.assertEqual(bt.results["meta"]["effective_currency"], "CNY")
+
+    def test_static_rerun_does_not_copy_effective_currency_from_previous_results(self):
+        self.scenario = self._scenario(dynamic=False)
+        self._market_data()
+        Alert.objects.create(symbol=self.old, scenario=self.scenario, date=self.start, alerts="A1")
+        bt = self._backtest(self.scenario, close_positions_at_end=True)
+        bt.results = {"meta": {"effective_currency": "CNY"}, "legacy": True}
+        bt.settings = {"effective_currency": "CNY"}
+        bt.save(update_fields=["results", "settings", "updated_at"])
+
+        with patch("core.services.backtesting.prep.prepare_backtest_data", return_value=self._fake_prep()):
+            run_backtest_task(bt.id)
+
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.DONE)
+        self.assertNotIn("effective_currency", bt.results["meta"])
+
+    def test_csi300_rerun_replaces_old_static_results_with_cny(self):
+        self.scenario = Scenario.objects.create(
+            name="Dynamic CSI300 rerun",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+            nglobal=2,
+        )
+        self._validated_csi300_universe()
+        self._market_data()
+        Alert.objects.create(symbol=self.keep, scenario=self.scenario, date=self.start, alerts="A1")
+        bt = self._backtest(self.scenario, close_positions_at_end=True)
+        bt.results = {"meta": {}, "legacy_static": True}
+        bt.save(update_fields=["results", "updated_at"])
+
+        with patch("core.services.backtesting.prep.prepare_backtest_data", return_value=self._fake_prep()):
+            run_backtest_task(bt.id)
+
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.DONE)
+        self.assertEqual(bt.results["meta"]["effective_currency"], "CNY")
+
+    def _assert_invalid_csi300_currency_blocks_task(self, currency: str):
+        self.scenario = Scenario.objects.create(
+            name=f"Dynamic CSI300 invalid {currency or 'missing'}",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+            nglobal=2,
+        )
+        self._validated_csi300_universe()
+        Symbol.objects.filter(id=self.keep.id).update(currency=currency)
+        bt = self._backtest(self.scenario)
+        previous_results = {"meta": {"effective_currency": "CNY"}, "legacy": True}
+        bt.results = previous_results
+        bt.save(update_fields=["results", "updated_at"])
+
+        with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock:
+            with patch("core.services.backtesting.engine.run_backtest") as engine_mock:
+                with self.assertRaisesMessage(ResolvedCurrencyValidationError, "Devise CSI300 invalide"):
+                    run_backtest_task(bt.id)
+
+        prep_mock.assert_not_called()
+        engine_mock.assert_not_called()
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.FAILED)
+        self.assertIn("devise attendue CNY", bt.error_message)
+        self.assertIn("KEEP:NASDAQ", bt.error_message)
+        self.assertEqual(bt.results, previous_results)
+
+    def test_csi300_task_blocks_member_without_currency_before_engine(self):
+        self._assert_invalid_csi300_currency_blocks_task("")
+
+    def test_csi300_task_blocks_usd_member_before_engine(self):
+        self._assert_invalid_csi300_currency_blocks_task("USD")
+
+    def _csi300_backtest_with_market_conditions(self, signal_line: dict, *, benchmark_currency: str):
+        self.scenario = Scenario.objects.create(
+            name="Dynamic CSI300 benchmark currency",
+            universe_mode=Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC,
+            active=True,
+            nglobal=2,
+        )
+        self._validated_csi300_universe()
+        benchmark = Symbol.objects.create(
+            ticker="000300",
+            exchange="SHG",
+            currency=benchmark_currency,
+            active=True,
+        )
+        bt = self._backtest(self.scenario)
+        bt.signal_lines = [signal_line]
+        previous_results = {"meta": {"effective_currency": "CNY"}, "legacy": True}
+        bt.results = previous_results
+        bt.save(update_fields=["signal_lines", "results", "updated_at"])
+        return bt, benchmark, previous_results
+
+    def _assert_invalid_csi300_benchmark_blocks_task(self, signal_line: dict):
+        require_gm_market, _require_gm_sector = gm_requirements_from_signal_lines([signal_line])
+        self.assertTrue(require_gm_market)
+        bt, _benchmark, previous_results = self._csi300_backtest_with_market_conditions(
+            signal_line,
+            benchmark_currency="USD",
+        )
+
+        with patch("core.tasks.determine_backtest_result_mode") as preflight_mock:
+            with patch("core.services.backtesting.prep.prepare_backtest_data") as prep_mock:
+                with patch("core.services.backtesting.engine.run_backtest") as engine_mock:
+                    with self.assertRaisesMessage(ResolvedCurrencyValidationError, "000300.SHG"):
+                        run_backtest_task(bt.id)
+
+        preflight_mock.assert_not_called()
+        prep_mock.assert_not_called()
+        engine_mock.assert_not_called()
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.FAILED)
+        self.assertIn("000300.SHG", bt.error_message)
+        self.assertIn("devise attendue CNY", bt.error_message)
+        self.assertIn("devise trouvée USD", bt.error_message)
+        self.assertEqual(bt.results, previous_results)
+
+    def test_csi300_task_blocks_usd_market_benchmark_for_classic_gm(self):
+        self._assert_invalid_csi300_benchmark_blocks_task(
+            {"buy": ["A1"], "sell": ["B1"], "buy_market_gm_market": "GM_POS"}
+        )
+
+    def test_csi300_task_accepts_cny_market_benchmark_for_classic_gm(self):
+        signal_line = {"buy": ["A1"], "sell": ["B1"], "buy_market_gm_market": "GM_POS"}
+        bt, benchmark, _previous_results = self._csi300_backtest_with_market_conditions(
+            signal_line,
+            benchmark_currency="CNY",
+        )
+        preflight = {
+            "symbols_count": 3,
+            "signal_line_count": 1,
+            "date_count": 4,
+            "estimated_daily_rows": 12,
+            "detailed_daily_rows_max": 500000,
+            "large_result_mode": False,
+        }
+        engine_result = SimpleNamespace(results={"meta": {}, "portfolio": {}})
+
+        with patch(
+            "core.services.backtest_currency.validate_csi300_market_benchmark_currency",
+            wraps=validate_csi300_market_benchmark_currency,
+        ) as benchmark_validation_mock:
+            with patch("core.tasks.determine_backtest_result_mode", return_value=preflight):
+                with patch("core.services.backtesting.prep.prepare_backtest_data", return_value=self._fake_prep()):
+                    with patch("core.services.backtesting.engine.run_backtest", return_value=engine_result) as engine_mock:
+                        run_backtest_task(bt.id)
+
+        benchmark_validation_mock.assert_called_once_with(benchmark)
+        engine_mock.assert_called_once()
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.DONE)
+
+    def test_csi300_task_blocks_usd_market_benchmark_for_gm_push_buy(self):
+        self._assert_invalid_csi300_benchmark_blocks_task(
+            {
+                "buy": ["A1"],
+                "sell": ["B1"],
+                "gm_push_buy_conditions": {"market": {"mode": "POS", "threshold": "0.2"}},
+            }
+        )
+
+    def test_csi300_task_blocks_usd_market_benchmark_for_gm_push_sell(self):
+        self._assert_invalid_csi300_benchmark_blocks_task(
+            {
+                "buy": ["A1"],
+                "sell": ["B1"],
+                "gm_push_sell_market_exit_conditions": {
+                    "market": {"mode": "NEG", "threshold": "0.2"}
+                },
+            }
+        )
+
+    def test_csi300_task_does_not_validate_unused_usd_market_benchmark(self):
+        signal_line = {"buy": ["A1"], "sell": ["B1"]}
+        bt, _benchmark, _previous_results = self._csi300_backtest_with_market_conditions(
+            signal_line,
+            benchmark_currency="USD",
+        )
+        preflight = {
+            "symbols_count": 3,
+            "signal_line_count": 1,
+            "date_count": 4,
+            "estimated_daily_rows": 12,
+            "detailed_daily_rows_max": 500000,
+            "large_result_mode": False,
+        }
+        engine_result = SimpleNamespace(results={"meta": {}, "portfolio": {}})
+
+        with patch("core.services.backtest_currency.validate_csi300_market_benchmark_currency") as benchmark_validation_mock:
+            with patch("core.tasks.determine_backtest_result_mode", return_value=preflight):
+                with patch("core.services.backtesting.prep.prepare_backtest_data", return_value=self._fake_prep()):
+                    with patch("core.services.backtesting.engine.run_backtest", return_value=engine_result) as engine_mock:
+                        run_backtest_task(bt.id)
+
+        benchmark_validation_mock.assert_not_called()
+        engine_mock.assert_called_once()
+        bt.refresh_from_db()
+        self.assertEqual(bt.status, Backtest.Status.DONE)
 
     def test_dynamic_backtest_missing_coverage_fails_without_provider_sync(self):
         self.scenario = self._scenario(dynamic=True)

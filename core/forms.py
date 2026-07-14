@@ -71,6 +71,10 @@ from .services.trend_filters import (
     normalize_trend_filter_operator,
 )
 from .services.backtesting.capital_validation import validate_backtest_capital
+from .services.backtest_currency import (
+    EFFECTIVE_CURRENCY_SETTINGS_KEY,
+    effective_currency_for_universe_mode,
+)
 from .trading_model_config import (
     TRADING_MODEL_AUTO_SELL_VALUES,
     TRADING_MODEL_PROGRESSIVE_EXPLICIT_SELL,
@@ -1185,6 +1189,11 @@ class BacktestForm(forms.ModelForm):
                     settings.pop(TREND_FILTER_GM_SECTOR_KEY, None)
                 else:
                     settings[TREND_FILTER_GM_SECTOR_KEY] = trend_filter_gm_sector
+        effective_currency = effective_currency_for_universe_mode(obj.scenario.universe_mode)
+        if effective_currency:
+            settings[EFFECTIVE_CURRENCY_SETTINGS_KEY] = effective_currency
+        else:
+            settings.pop(EFFECTIVE_CURRENCY_SETTINGS_KEY, None)
         obj.settings = settings
         if commit:
             obj.save()

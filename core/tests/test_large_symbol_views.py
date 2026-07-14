@@ -9,6 +9,7 @@ from django.urls import reverse
 import json
 
 from core.models import Alert, Backtest, BacktestPortfolioKPI, DailyBar, DailyMetric, GameScenario, HistoricalMarketCap, ProcessingJob, Scenario, Study, Symbol, Universe, UniverseCoverageSnapshot, UniverseCoverageStatus, UniverseDefinition, UniverseImportBatch, UniverseMembership
+from core.services.backtest_currency import effective_currency_for_backtest_display
 from core.views import _build_realized_gains_cumulative_series
 
 
@@ -1614,6 +1615,8 @@ class BacktestResultsRenderTests(TestCase):
         self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
         self.scenario.save(update_fields=["universe_mode"])
         bt = self._create_done_backtest(results=self._minimal_results(universe_meta=self._csi300_universe_meta()))
+        bt.settings = {"effective_currency": "CNY"}
+        bt.save(update_fields=["settings", "updated_at"])
 
         response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
 
@@ -1623,6 +1626,8 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("CSI 300 / 000300.SHG", body)
         self.assertIn("GM secteur CSI300 non supporté dans cette phase", body)
         self.assertIn("aucun fallback vers 510300", body)
+        self.assertIn("Devise effective", body)
+        self.assertIn("CNY", body)
 
     def test_backtest_results_displays_dynamic_universe_metadata(self):
         self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC
@@ -1649,13 +1654,22 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("Période couverte par l’historique importé", body)
         self.assertIn("Actions analysées sur la période", body)
         self.assertIn("manual_csv", body)
+        self.assertNotIn("Devise effective", body)
+        self.assertIn("Montant (€)", body)
+        self.assertIn('text: "Equity"', body)
+        self.assertIn('text: "Gain / Perte"', body)
+        self.assertNotIn("Equity (CNY)", body)
+        self.assertNotIn("P&L global (CNY)", body)
         self.assertNotIn("Tickers dans le superset", body)
         self.assertNotIn("metadata d’univers", body)
 
     def test_backtest_results_displays_csi300_without_sp500_wording(self):
         self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
         self.scenario.save(update_fields=["universe_mode"])
-        bt = self._create_done_backtest(results=self._minimal_results(universe_meta=self._csi300_universe_meta()))
+        results = self._minimal_results(universe_meta=self._csi300_universe_meta())
+        results["meta"]["effective_currency"] = "CNY"
+        results["portfolio"]["kpi"] = {"max_drawdown_amount": "12.50"}
+        bt = self._create_done_backtest(results=results)
 
         response = self.client.get(reverse("backtest_results", args=[bt.pk]))
 
@@ -1668,8 +1682,129 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("GM secteur CSI300 non supporté dans cette phase", body)
         self.assertIn("aucun fallback vers 510300", body)
         self.assertIn("Période couverte par l’historique importé", body)
+        self.assertIn("Devise effective", body)
+        self.assertIn("CNY", body)
+        self.assertIn("Montant (CNY)", body)
+        self.assertIn("Equity (CNY)", body)
+        self.assertIn("P&L global (CNY)", body)
+        self.assertNotIn("Montant (€)", body)
+        self.assertIn("Max drawdown montant (CNY)", body)
         self.assertNotIn("S&P500 historique", body)
         self.assertNotIn("S&amp;P 500 historique", body)
+
+    def test_empty_results_use_settings_currency_only_while_pending_or_running(self):
+        for status in (Backtest.Status.PENDING, Backtest.Status.RUNNING):
+            with self.subTest(status=status):
+                backtest = SimpleNamespace(
+                    status=status,
+                    results={},
+                    settings={"effective_currency": " cny "},
+                )
+                self.assertEqual(effective_currency_for_backtest_display(backtest), "CNY")
+
+        for status in (Backtest.Status.DONE, Backtest.Status.FAILED):
+            with self.subTest(status=status):
+                backtest = SimpleNamespace(
+                    status=status,
+                    results={},
+                    settings={"effective_currency": "CNY"},
+                )
+                self.assertEqual(effective_currency_for_backtest_display(backtest), "")
+
+        for invalid_currency in ({"code": "CNY"}, 156, "USD", "arbitrary"):
+            with self.subTest(invalid_currency=invalid_currency):
+                backtest = SimpleNamespace(
+                    status=Backtest.Status.PENDING,
+                    results={},
+                    settings={"effective_currency": invalid_currency},
+                )
+                self.assertEqual(effective_currency_for_backtest_display(backtest), "")
+
+    def test_terminal_empty_results_do_not_display_settings_currency_or_mutate_backtest(self):
+        for status in (Backtest.Status.DONE, Backtest.Status.FAILED):
+            with self.subTest(status=status):
+                backtest = Backtest.objects.create(
+                    name=f"BT empty results {status}",
+                    scenario=self.scenario,
+                    capital_total="1000",
+                    capital_per_ticker="100",
+                    status=status,
+                    results={},
+                    settings={"effective_currency": "CNY"},
+                )
+                original_updated_at = backtest.updated_at
+
+                detail_response = self.client.get(reverse("backtest_detail", args=[backtest.pk]))
+                self.assertEqual(detail_response.status_code, 200)
+                self.assertNotContains(detail_response, "Devise effective")
+
+                if status == Backtest.Status.DONE:
+                    results_response = self.client.get(
+                        reverse("backtest_results", args=[backtest.pk]),
+                        follow=True,
+                    )
+                    self.assertEqual(results_response.status_code, 200)
+                    self.assertNotContains(results_response, "Devise effective")
+
+                backtest.refresh_from_db()
+                self.assertEqual(backtest.status, status)
+                self.assertEqual(backtest.results, {})
+                self.assertEqual(backtest.settings, {"effective_currency": "CNY"})
+                self.assertEqual(backtest.updated_at, original_updated_at)
+
+    def test_old_csi300_backtest_currency_fallback_is_read_only(self):
+        self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        bt = self._create_done_backtest(
+            results=self._minimal_results(universe_meta=self._csi300_universe_meta())
+        )
+        self.scenario.universe_mode = Scenario.UniverseMode.STATIC_TICKERS
+        self.scenario.save(update_fields=["universe_mode"])
+        original_settings = dict(bt.settings)
+        original_updated_at = bt.updated_at
+
+        response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, "Devise effective")
+        self.assertContains(response, "CNY")
+        bt.refresh_from_db()
+        self.assertEqual(bt.settings, original_settings)
+        self.assertEqual(bt.updated_at, original_updated_at)
+
+    def test_old_static_backtest_stays_currency_neutral_after_scenario_changes_to_csi300(self):
+        bt = self._create_done_backtest(results=self._minimal_results())
+        self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        original_settings = dict(bt.settings)
+        original_updated_at = bt.updated_at
+
+        detail_response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+        results_response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertEqual(results_response.status_code, 200)
+        self.assertNotContains(detail_response, "Devise effective")
+        self.assertNotContains(results_response, "Devise effective")
+        bt.refresh_from_db()
+        self.assertEqual(bt.settings, original_settings)
+        self.assertEqual(bt.updated_at, original_updated_at)
+
+    def test_invalid_persisted_effective_currency_values_are_not_displayed(self):
+        for invalid_currency in ({"code": "CNY"}, 156, "USD"):
+            with self.subTest(invalid_currency=invalid_currency):
+                results = self._minimal_results()
+                results["meta"]["effective_currency"] = invalid_currency
+                bt = self._create_done_backtest(
+                    results=results,
+                    scenario=self.scenario,
+                )
+
+                detail_response = self.client.get(reverse("backtest_detail", args=[bt.pk]))
+                results_response = self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+                self.assertNotContains(detail_response, "Devise effective")
+                self.assertNotContains(results_response, "Devise effective")
 
     def test_backtest_detail_warns_when_dynamic_universe_metadata_missing(self):
         self.scenario.universe_mode = Scenario.UniverseMode.SP500_HISTORICAL_DYNAMIC

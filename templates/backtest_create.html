@@ -36,6 +36,7 @@
         <div class="muted">Le scénario = le modèle d’indicateurs. Il définit comment P, les pentes et GM current sont calculés avant l’application des règles de trading.</div>
         {% if form.scenario.errors %}<div class="error">{{ form.scenario.errors }}</div>{% endif %}
       </div>
+      {% include "partials/backtest_currency_notice.html" %}
 
       <div class="field" style="margin-top:12px; display:flex; gap:12px; flex-wrap:wrap;">
         <div>

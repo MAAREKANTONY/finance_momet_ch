@@ -29,6 +29,7 @@ from core.services.dynamic_universe_readiness import (
     REPORT_NOT_READY,
     REPORT_READY_WITH_WARNINGS,
     check_dynamic_universe_readiness,
+    gm_requirements_from_signal_lines,
 )
 
 
@@ -36,8 +37,23 @@ class DynamicUniverseReadinessTestCase(TestCase):
     start = date(2022, 1, 1)
     end = date(2022, 1, 3)
 
-    def _symbol(self, ticker: str, *, exchange: str = "NYSE", sector: str = "Technology") -> Symbol:
-        return Symbol.objects.create(ticker=ticker, exchange=exchange, sector=sector, active=True)
+    def _symbol(
+        self,
+        ticker: str,
+        *,
+        exchange: str = "NYSE",
+        sector: str = "Technology",
+        currency: str | None = None,
+    ) -> Symbol:
+        if currency is None:
+            currency = "CNY" if exchange in {"SHG", "SHE"} else "USD"
+        return Symbol.objects.create(
+            ticker=ticker,
+            exchange=exchange,
+            sector=sector,
+            currency=currency,
+            active=True,
+        )
 
     def _sp500(self, *, active: bool = True) -> UniverseDefinition:
         return UniverseDefinition.objects.create(code="SP500", name="S&P 500", active=active, source="test")
@@ -349,6 +365,175 @@ class DynamicUniverseReadinessTestCase(TestCase):
         self.assertIn("tickers issus du CSV importé", commands)
         self.assertNotIn("sync_sp500_historical_memberships", commands)
         self.assertNotIn("bootstrap_sp500_symbols_from_eodhd", commands)
+
+    def test_csi300_member_currencies_are_ready_when_all_symbols_are_cny(self):
+        self._ready_csi300_member()
+
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        check = self._check(report, "member_currencies")
+        self.assertEqual(check.status, CHECK_OK)
+        self.assertEqual(check.details["expected_currency"], "CNY")
+        self.assertEqual(check.details["invalid_symbol_count"], 0)
+        self.assertTrue(report.ready)
+
+    def test_csi300_member_without_currency_blocks_readiness_with_ticker(self):
+        universe = self._csi300()
+        symbol = self._symbol("600519", exchange="SHG", currency="")
+        self._membership(universe, symbol)
+        self._coverage(universe)
+        self._bar_edges(symbol)
+
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        check = self._check(report, "member_currencies")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertFalse(report.ready)
+        self.assertIn("600519", check.message)
+        self.assertIn("CNY", check.message)
+        self.assertEqual(check.details["missing_currency_count"], 1)
+
+    def test_csi300_member_with_usd_blocks_readiness_and_names_expected_currency(self):
+        universe = self._csi300()
+        symbol = self._symbol("600519", exchange="SHG", currency="USD")
+        self._membership(universe, symbol)
+        self._coverage(universe)
+        self._bar_edges(symbol)
+
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=self.end)
+
+        check = self._check(report, "member_currencies")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertIn("devise attendue CNY", check.message)
+        self.assertIn("USD", check.message)
+
+    def test_csi300_market_benchmark_currency_is_ready_in_cny(self):
+        self._ready_csi300_member()
+        benchmark = self._symbol("000300", exchange="SHG", currency="CNY")
+        self._bar_edges(benchmark)
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_market=True,
+        )
+
+        check = self._check(report, "market_benchmark_currency")
+        self.assertEqual(check.status, CHECK_OK)
+        self.assertEqual(check.details["actual_currency"], "CNY")
+        self.assertTrue(report.ready)
+
+    def test_csi300_market_benchmark_wrong_currency_blocks_readiness(self):
+        self._ready_csi300_member()
+        benchmark = self._symbol("000300", exchange="SHG", currency="USD")
+        self._bar_edges(benchmark)
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_market=True,
+        )
+
+        check = self._check(report, "market_benchmark_currency")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertFalse(report.ready)
+        self.assertIn("000300.SHG", check.message)
+        self.assertIn("devise attendue CNY", check.message)
+        self.assertIn("USD", check.message)
+
+    def test_csi300_unused_market_benchmark_wrong_currency_does_not_block_readiness(self):
+        self._ready_csi300_member()
+        benchmark = self._symbol("000300", exchange="SHG", currency="USD")
+        self._bar_edges(benchmark)
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_market=False,
+        )
+
+        self.assertTrue(report.ready)
+        self.assertNotIn("market_benchmark_currency", {check.code for check in report.checks})
+
+    def test_csi300_gm_push_market_wrong_benchmark_currency_blocks_readiness(self):
+        self._ready_csi300_member()
+        benchmark = self._symbol("000300", exchange="SHG", currency="USD")
+        self._bar_edges(benchmark)
+        require_market, require_sector = gm_requirements_from_signal_lines([
+            {
+                "buy": ["A1"],
+                "sell": ["B1"],
+                "gm_push_buy_conditions": {
+                    "market": {"mode": "POS", "threshold": "0.2"},
+                },
+            }
+        ])
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_market=require_market,
+            require_gm_sector=require_sector,
+        )
+
+        self.assertTrue(require_market)
+        self.assertFalse(require_sector)
+        self.assertEqual(self._check(report, "market_benchmark_currency").status, CHECK_ERROR)
+        self.assertFalse(report.ready)
+
+    def test_csi300_gm_push_sell_market_wrong_benchmark_currency_blocks_readiness(self):
+        self._ready_csi300_member()
+        benchmark = self._symbol("000300", exchange="SHG", currency="USD")
+        self._bar_edges(benchmark)
+        require_market, require_sector = gm_requirements_from_signal_lines([
+            {
+                "buy": ["A1"],
+                "sell": ["B1"],
+                "gm_push_sell_market_exit_conditions": {
+                    "market": {"mode": "NEG", "threshold": "0.2"},
+                },
+            }
+        ])
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_market=require_market,
+            require_gm_sector=require_sector,
+        )
+
+        self.assertTrue(require_market)
+        self.assertFalse(require_sector)
+        self.assertEqual(self._check(report, "market_benchmark_currency").status, CHECK_ERROR)
+        self.assertFalse(report.ready)
+
+    def test_csi300_partial_ohlc_remains_a_non_blocking_warning(self):
+        longer_end = self.start + timedelta(days=10)
+        universe = self._csi300()
+        symbol = self._symbol("600519", exchange="SHG", currency="CNY")
+        self._membership(universe, symbol)
+        self._coverage(universe, end=longer_end)
+        DailyBar.objects.create(
+            symbol=symbol,
+            date=self.start,
+            open=Decimal("10"),
+            high=Decimal("10"),
+            low=Decimal("10"),
+            close=Decimal("10"),
+            volume=1000,
+            source="test",
+        )
+
+        report = check_dynamic_universe_readiness(universe="CSI300", start=self.start, end=longer_end)
+
+        self.assertEqual(self._check(report, "member_daily_bars").status, CHECK_WARNING)
+        self.assertTrue(report.ready)
+        self.assertEqual(report.status, REPORT_READY_WITH_WARNINGS)
 
     def test_csi300_mapping_refreshes_readiness_to_missing_dailybars_warning(self):
         universe = self._csi300()

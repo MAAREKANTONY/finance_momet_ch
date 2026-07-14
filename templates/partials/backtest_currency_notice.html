@@ -1,0 +1,18 @@
+{{ csi300_scenario_ids|json_script:"csi300-scenario-ids" }}
+<div id="csi300-currency-notice" class="card" style="display:none; margin-top:10px; border-left:4px solid #2563eb;">
+  <strong>Devise effective : CNY</strong>
+  <div class="muted" style="margin-top:4px;">Capital, cash et résultats exprimés en CNY. Aucune conversion FX.</div>
+</div>
+<script>
+(function() {
+  const scenario = document.getElementById("id_scenario");
+  const notice = document.getElementById("csi300-currency-notice");
+  const data = document.getElementById("csi300-scenario-ids");
+  if (!scenario || !notice || !data) return;
+  let ids = [];
+  try { ids = JSON.parse(data.textContent || "[]").map(String); } catch (e) { ids = []; }
+  const update = () => { notice.style.display = ids.includes(String(scenario.value || "")) ? "block" : "none"; };
+  scenario.addEventListener("change", update);
+  update();
+})();
+</script>
