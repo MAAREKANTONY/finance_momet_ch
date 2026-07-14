@@ -2,13 +2,38 @@
 
 ## Sources
 
-Primary source: `unliftedq/index-constitution` on GitHub. The CSI300 files currently used by the converter are:
+Primary source: [`unliftedq/index-constitution`](https://github.com/unliftedq/index-constitution) on GitHub, tag `v0.6.2`, pinned to commit `16d9d69fc0bf7f0f5e9aace868e16e26f2ecb5c2`. The converter downloads only raw URLs containing that full commit and verifies these SHA-256 checksums before parsing:
+
+- `history/csi300.csv`: `6a6bca260f4752cbe555337369915794c752ecc0f70ee9b0d1bac6f83e7df1b8`
+- `latest/csi300.csv`: `5f2e086ab3a0db35f807af34c38571d555aabc69612fa11c28d7c47498224aaf`
+- `event/cn.csv`: `060c54ee81403369a8522fc573de9243212975bcf58ea1be3aa3ecff6f4cd174`
+
+The checksum is calculated on decoded UTF-8 content after removal of an optional UTF-8 BOM; the report also records the raw downloaded hash. The CSI300 files used by the converter are:
 
 - `history/csi300.csv`: historical membership spans with `symbol,name,opt-in,opt-out`.
 - `latest/csi300.csv`: current active constituents with `symbol,name,opt-in`.
 - `event/cn.csv`: audit trail for China ticker/name/delisting events.
 
 Secondary control source: `yfiua/index-constituents` / `https://yfiua.github.io/index-constituents/`. CSI300 history there starts at 2023/07, so it is useful for recent snapshot overlap checks only, not as the long historical source.
+
+### Date semantics and source anomalies
+
+In the pinned source, `opt-in` is inclusive and `opt-out` is exclusive. StockAlert membership dates are both inclusive, so conversion applies:
+
+```text
+start_date = opt-in
+end_date = opt-out - 1 day
+```
+
+For example, a member with `opt-out=2026-06-12` is active through June 11 and inactive on June 12; an entrant with `opt-in=2026-06-12` is active on June 12. This prevents outgoing and incoming batches from overlapping on rebalance day.
+
+The pinned history contains four intervals without `opt-in`: `SH600312`, `SH600501`, `SH600549`, and `SH600786`. Neither `latest/csi300.csv` nor `event/cn.csv` supplies a deterministic entry date for those historical intervals. The converter reports four blocking `missing_opt_in` errors and publishes no CSV; it never invents or silently drops their dates. A later active interval for the same symbol, such as `SH600549` from 2026-06-12, is not evidence for the start of an older closed interval.
+
+`SH601006` has the numeric source name `000780`. The membership dates remain usable, the value is preserved verbatim, and the report emits `suspicious_company_name`; name correction belongs to a separate bilingual-data review.
+
+### Attribution and rights
+
+The converter and its report attribute `unliftedq/index-constitution`, distributed under the MIT license. That repository license does not by itself establish commercial redistribution rights for the underlying CSI constituent data. Any commercial redistribution requires a separate rights review.
 
 ## Limits
 
@@ -35,8 +60,8 @@ universe_code,symbol,exchange,mic,name,start_date,end_date,weight,provider_symbo
 
 ## Recommended Process
 
-1. Generate the CSV and report, preferably into `/tmp` or `data/generated/` which is ignored by Git.
-2. Read the report: row counts, latest active members, exchange distribution, overlaps, duplicates, and yfiua overlap when provided.
+1. Generate the CSV and report, preferably into `/tmp` or `data/generated/` which is ignored by Git. Writes use same-directory temporary files, `fsync`, and atomic replacement only after all blocking checks pass.
+2. Read the report: it must have `status=valid`, matching checksums, exactly 300 latest members, matching latest/history active sets, no overlaps or duplicates, and no unconvertible rows. A failure report may be published, but no new CSV is published and any existing CSV is preserved.
 3. Import via Trigger UI staff-only in dry-run mode, or CLI dry-run:
 
 ```bash
