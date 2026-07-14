@@ -359,7 +359,15 @@ def _refresh_universe_coverage(universe: UniverseDefinition) -> dict[str, int]:
     batches_updated = 0
     snapshots_updated = 0
     memberships = UniverseMembership.objects.filter(universe=universe)
-    for batch in UniverseImportBatch.objects.filter(universe=universe).order_by("id"):
+    authoritative_batch_ids = UniverseCoverageSnapshot.objects.filter(universe=universe).values_list(
+        "import_batch_id",
+        flat=True,
+    ).distinct()
+    batches = UniverseImportBatch.objects.filter(
+        universe=universe,
+        id__in=authoritative_batch_ids,
+    ).order_by("id")
+    for batch in batches:
         batch_summary = _refresh_batch_coverage(batch, memberships)
         snapshots_updated += batch_summary["snapshots_updated"]
         batches_updated += 1

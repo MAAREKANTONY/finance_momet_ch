@@ -167,41 +167,49 @@ def import_universe_memberships_from_csv(
 
     target_rows_by_key, duplicate_keys = _target_rows_by_key(rows)
     result.conflicts = len(duplicate_keys) if replace_existing else 0
-    active_mapping_errors = {
+    overlapping_mapping_errors = {
         row_number: error
         for row_number, error in mapping_errors.items()
-        if _row_is_active(_row_by_number(rows, row_number), period_end)
+        if _row_overlaps_coverage(
+            _row_by_number(rows, row_number),
+            coverage_start=period_start,
+            coverage_end=period_end,
+        )
     }
     replacement_errors = []
     if replace_existing and duplicate_keys:
         replacement_errors.append(
             f"CSV contains {len(duplicate_keys)} duplicate membership business key(s)."
         )
-    if replace_existing and active_mapping_errors:
+    if replace_existing and overlapping_mapping_errors:
         replacement_errors.append(
-            f"CSV contains {len(active_mapping_errors)} active unmapped or ambiguous membership row(s)."
+            f"CSV contains {len(overlapping_mapping_errors)} unmapped or ambiguous membership row(s) "
+            "overlapping coverage."
         )
     result.errors.extend(replacement_errors)
 
-    if dry_run:
-        result.imported_member_count = _count_active_rows(rows, period_start)
-        result.mapped_member_count = _count_active_rows(
-            [row for row in rows if mapped_by_row.get(row.row_number) is not None],
-            period_start,
+    active_summary = None
+    if period_start and period_end:
+        active_summary = _imported_rows_coverage_summary(
+            rows=rows,
+            symbols_by_row=mapped_by_row,
+            coverage_start=period_start,
+            coverage_end=period_end,
+            expected_member_count=expected_member_count,
+            force_partial=bool(mapping_errors),
         )
-        result.unmapped_member_count = max(result.imported_member_count - result.mapped_member_count, 0)
-        if period_start and period_end:
-            result.coverage_days = _count_calendar_days(period_start, period_end)
-            status, _summary = _preview_coverage_status(
-                rows=rows,
-                symbols_by_row=mapped_by_row,
-                coverage_start=period_start,
-                coverage_end=period_end,
-                expected_member_count=expected_member_count,
-                has_mapping_errors=bool(mapping_errors),
+
+    if dry_run:
+        if active_summary is not None:
+            _populate_coverage_result(result, active_summary)
+        if not replace_existing:
+            result.imported_member_count = _count_active_rows(rows, period_start)
+            result.mapped_member_count = _count_active_rows(
+                [row for row in rows if mapped_by_row.get(row.row_number) is not None],
+                period_start,
             )
-            result.status = status
-        else:
+            result.unmapped_member_count = max(result.imported_member_count - result.mapped_member_count, 0)
+        if active_summary is None:
             result.status = UniverseCoverageStatus.PARTIAL if mapping_errors else UniverseCoverageStatus.IMPORTED
         if replace_existing:
             plan = _exact_membership_plan(universe, target_rows_by_key, mapped_by_row, mapping_errors)
@@ -259,19 +267,7 @@ def import_universe_memberships_from_csv(
         if not replace_existing:
             result.expected_final_memberships = universe.memberships.count()
 
-        active_summary = _imported_rows_coverage_summary(
-            rows=rows,
-            symbols_by_row=mapped_by_row,
-            coverage_start=period_start,
-            coverage_end=period_end,
-            expected_member_count=expected_member_count,
-            force_partial=bool(mapping_errors),
-        )
-        result.imported_member_count = active_summary["max_actual"]
-        result.mapped_member_count = active_summary["max_mapped"]
-        result.unmapped_member_count = active_summary["max_unmapped"]
-        result.coverage_days = len(active_summary["snapshots"])
-        result.status = active_summary["batch_status"]
+        _populate_coverage_result(result, active_summary)
 
         batch = UniverseImportBatch.objects.create(
             universe=universe,
@@ -542,10 +538,15 @@ def _row_by_number(rows: list[ParsedMembershipRow], row_number: int) -> ParsedMe
     return next(row for row in rows if row.row_number == row_number)
 
 
-def _row_is_active(row: ParsedMembershipRow, as_of: date | None) -> bool:
-    if as_of is None:
-        return row.valid_to is None
-    return row.valid_from <= as_of and (row.valid_to is None or as_of <= row.valid_to)
+def _row_overlaps_coverage(
+    row: ParsedMembershipRow,
+    *,
+    coverage_start: date | None,
+    coverage_end: date | None,
+) -> bool:
+    if coverage_start is None or coverage_end is None:
+        return False
+    return row.valid_from <= coverage_end and (row.valid_to is None or row.valid_to >= coverage_start)
 
 
 def _coverage_snapshot_from_summary(
@@ -621,29 +622,12 @@ def _imported_rows_coverage_summary(
     }
 
 
-def _preview_coverage_status(
-    rows: list[ParsedMembershipRow],
-    symbols_by_row: dict[int, Symbol | None],
-    coverage_start: date,
-    coverage_end: date,
-    expected_member_count: int,
-    has_mapping_errors: bool,
-) -> tuple[str, dict[str, int]]:
-    status = UniverseCoverageStatus.VALIDATED
-    max_actual = max_mapped = max_unmapped = 0
-    current = coverage_start
-    while current <= coverage_end:
-        active = [row for row in rows if row.valid_from <= current and (row.valid_to is None or current <= row.valid_to)]
-        actual = len(active)
-        mapped = sum(1 for row in active if symbols_by_row.get(row.row_number) is not None)
-        unmapped = actual - mapped
-        max_actual = max(max_actual, actual)
-        max_mapped = max(max_mapped, mapped)
-        max_unmapped = max(max_unmapped, unmapped)
-        if actual < expected_member_count or mapped < actual or unmapped != 0 or has_mapping_errors:
-            status = UniverseCoverageStatus.PARTIAL
-        current += timedelta(days=1)
-    return status, {"actual": max_actual, "mapped": max_mapped, "unmapped": max_unmapped}
+def _populate_coverage_result(result: UniverseImportResult, active_summary: dict[str, Any]) -> None:
+    result.imported_member_count = active_summary["max_actual"]
+    result.mapped_member_count = active_summary["max_mapped"]
+    result.unmapped_member_count = active_summary["max_unmapped"]
+    result.coverage_days = len(active_summary["snapshots"])
+    result.status = active_summary["batch_status"]
 
 
 def _normalize_code(value: str) -> str:
@@ -694,7 +678,3 @@ def _count_active_rows(rows: list[ParsedMembershipRow], as_of: date | None) -> i
     if as_of is None:
         return len(rows)
     return sum(1 for row in rows if row.valid_from <= as_of and (row.valid_to is None or as_of <= row.valid_to))
-
-
-def _count_calendar_days(start: date, end: date) -> int:
-    return (end - start).days + 1
