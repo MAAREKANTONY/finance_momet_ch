@@ -31,9 +31,9 @@ def _text_summary(value, *, label: str, preview_chars: int = 160) -> str:
 
 @admin.register(Symbol)
 class SymbolAdmin(admin.ModelAdmin):
-    list_display = ("ticker", "exchange", "name", "sector", "instrument_type", "active")
+    list_display = ("ticker", "exchange", "name", "name_en", "sector", "instrument_type", "active")
     list_filter = ("active", "exchange", "instrument_type", "sector")
-    search_fields = ("ticker", "name", "exchange", "sector")
+    search_fields = ("ticker", "name", "name_en", "exchange", "sector")
 
 @admin.register(Scenario)
 class ScenarioAdmin(admin.ModelAdmin):

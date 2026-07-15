@@ -17,7 +17,7 @@ from core.services.universe_resolver import CSI300_UNIVERSE_CODE
 
 GENERIC_METADATA_VALUES = {"", "-", "N/A", "NA", "NONE", "NULL", "UNKNOWN", "UNSPECIFIED"}
 GENERIC_SECTOR_VALUES = {*GENERIC_METADATA_VALUES, "OTHER"}
-APPLICABLE_FIELDS = ("name", "country", "currency", "sector")
+APPLICABLE_FIELDS = ("country", "currency", "sector")
 
 
 @dataclass(frozen=True)
@@ -39,6 +39,14 @@ class CSI300EODHDMetadataReport:
     missing_sector: int = 0
     generic_sector: int = 0
     industries_present: int = 0
+    english_names_present: int = 0
+    english_names_useful: int = 0
+    english_names_missing: int = 0
+    english_names_to_create: int = 0
+    english_names_created: int = 0
+    english_names_unchanged: int = 0
+    english_names_preserved: int = 0
+    english_names_rejected: int = 0
     field_updates: dict[str, int] = field(default_factory=dict)
     raw_sector_counts: dict[str, int] = field(default_factory=dict)
     applied_sector_counts: dict[str, int] = field(default_factory=dict)
@@ -48,8 +56,10 @@ class CSI300EODHDMetadataReport:
 def normalize_eodhd_general_for_symbol(payload: dict[str, Any] | None) -> dict[str, str]:
     payload = payload if isinstance(payload, dict) else {}
     sector = _clean_value(payload.get("sector"))
+    name = _normalize_english_name(payload.get("name"))
     return {
-        "name": _clean_value(payload.get("name")),
+        "name": name,
+        "name_en": name,
         "country": _clean_value(payload.get("country")),
         "currency": _clean_value(payload.get("currency")),
         "exchange": _clean_value(payload.get("exchange")),
@@ -153,6 +163,8 @@ def _process_candidate(
         "sector": "",
         "raw_sector": "",
         "industry_present": False,
+        "english_name_candidate": "",
+        "english_name_status": "",
         "dry_run": bool(dry_run),
     }
     report.processed += 1
@@ -167,6 +179,7 @@ def _process_candidate(
         return
 
     metadata = normalize_eodhd_general_for_symbol(payload)
+    detail["english_name_candidate"] = metadata["name_en"]
     detail["sector"] = metadata["sector"]
     detail["raw_sector"] = metadata["raw_sector"]
     detail["industry_present"] = bool(metadata["industry"])
@@ -180,6 +193,7 @@ def _process_candidate(
         report.missing_sector += 1
 
     updates = _symbol_updates(symbol, metadata)
+    updates.update(_english_name_updates(symbol, metadata, report=report, detail=detail, dry_run=dry_run))
     if not updates:
         report.unchanged += 1
         report.per_symbol.append(detail)
@@ -211,8 +225,66 @@ def _symbol_updates(symbol: Symbol, metadata: dict[str, str]) -> dict[str, str]:
     return updates
 
 
+def _english_name_updates(
+    symbol: Symbol,
+    metadata: dict[str, str],
+    *,
+    report: CSI300EODHDMetadataReport,
+    detail: dict[str, Any],
+    dry_run: bool,
+) -> dict[str, str]:
+    candidate = _normalize_english_name(metadata.get("name_en"))
+    current = _normalize_english_name(symbol.name_en)
+    if not candidate:
+        detail["english_name_status"] = "missing"
+        if current:
+            report.english_names_preserved += 1
+        else:
+            report.english_names_missing += 1
+        return {}
+
+    report.english_names_present += 1
+    if not _is_useful_english_name(candidate, ticker=symbol.ticker):
+        report.english_names_rejected += 1
+        detail["english_name_status"] = "rejected"
+        if current:
+            report.english_names_preserved += 1
+        else:
+            report.english_names_missing += 1
+        return {}
+
+    report.english_names_useful += 1
+    if not current:
+        report.english_names_to_create += 1
+        detail["english_name_status"] = "to_create" if dry_run else "created"
+        if not dry_run:
+            report.english_names_created += 1
+        return {"name_en": candidate}
+    if current == candidate:
+        report.english_names_unchanged += 1
+        detail["english_name_status"] = "unchanged"
+        return {}
+
+    report.english_names_preserved += 1
+    detail["english_name_status"] = "preserved"
+    return {}
+
+
 def _clean_value(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _normalize_english_name(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
+def _is_useful_english_name(value: str, *, ticker: str) -> bool:
+    normalized = _normalize_english_name(value)
+    if normalized.upper() in GENERIC_METADATA_VALUES:
+        return False
+    if normalized.replace(" ", "").isdigit():
+        return False
+    return normalized.upper() != _clean_value(ticker).upper()
 
 
 def _is_generic_sector(value: str) -> bool:
@@ -232,4 +304,12 @@ def format_csi300_eodhd_metadata_summary(report: CSI300EODHDMetadataReport) -> s
         f"secteurs_absents={report.missing_sector}, "
         f"secteurs_génériques={report.generic_sector}, "
         f"industries_présentes={report.industries_present}."
+        f" Noms anglais: trouvés={report.english_names_present}, "
+        f"utiles={report.english_names_useful}, "
+        f"à_créer={report.english_names_to_create}, "
+        f"créés={report.english_names_created}, "
+        f"inchangés={report.english_names_unchanged}, "
+        f"préservés={report.english_names_preserved}, "
+        f"absents={report.english_names_missing}, "
+        f"rejetés={report.english_names_rejected}."
     )

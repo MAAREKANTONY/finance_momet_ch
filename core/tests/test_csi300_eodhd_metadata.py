@@ -1,14 +1,24 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from io import StringIO
 from pathlib import Path
 from unittest.mock import Mock, patch
 
 from django.core.management import call_command
+from django.db import connection
 from django.test import TestCase
 
-from core.models import Symbol, UniverseDefinition, UniverseMembership
+from core.models import (
+    DailyBar,
+    Symbol,
+    UniverseCoverageSnapshot,
+    UniverseCoverageStatus,
+    UniverseDefinition,
+    UniverseImportBatch,
+    UniverseMembership,
+)
 from core.services.csi300_eodhd_metadata import (
     enrich_csi300_symbols_from_eodhd_metadata,
     format_csi300_eodhd_metadata_summary,
@@ -53,8 +63,14 @@ class CSI300EODHDMetadataTests(TestCase):
     def setUp(self):
         self.csi300 = UniverseDefinition.objects.create(code="CSI300", name="CSI 300", active=True, source="manual_csv")
 
-    def _member(self, ticker, exchange, provider_symbol=None, *, name=""):
-        symbol = Symbol.objects.create(ticker=ticker, exchange=exchange, name=name, active=True)
+    def _member(self, ticker, exchange, provider_symbol=None, *, name="", name_en=""):
+        symbol = Symbol.objects.create(
+            ticker=ticker,
+            exchange=exchange,
+            name=name,
+            name_en=name_en,
+            active=True,
+        )
         UniverseMembership.objects.create(
             universe=self.csi300,
             symbol=symbol,
@@ -67,6 +83,32 @@ class CSI300EODHDMetadataTests(TestCase):
         )
         return symbol
 
+    def test_symbol_name_en_field_matches_local_name_capacity(self):
+        name_field = Symbol._meta.get_field("name")
+        name_en_field = Symbol._meta.get_field("name_en")
+
+        self.assertEqual(name_en_field.max_length, name_field.max_length)
+        self.assertTrue(name_en_field.blank)
+        self.assertEqual(name_en_field.default, "")
+
+    def test_postgresql_name_en_schema_matches_model(self):
+        if connection.vendor != "postgresql":
+            self.skipTest("PostgreSQL only")
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                """
+                SELECT data_type, character_maximum_length
+                FROM information_schema.columns
+                WHERE table_schema = current_schema()
+                  AND table_name = 'core_symbol'
+                  AND column_name = 'name_en'
+                """
+            )
+            row = cursor.fetchone()
+
+        self.assertEqual(row, ("character varying", Symbol._meta.get_field("name_en").max_length))
+
     def test_payload_shanghai_with_sector_updates_symbol(self):
         symbol = self._member("600000", "SHG", "600000.SHG")
         client = FakeEODHDMetadataClient({"600000.SHG": general_payload(exchange="SHG")})
@@ -74,10 +116,12 @@ class CSI300EODHDMetadataTests(TestCase):
         report = enrich_csi300_symbols_from_eodhd_metadata(client=client, dry_run=False)
 
         symbol.refresh_from_db()
-        self.assertEqual(symbol.name, "China Corp")
+        self.assertEqual(symbol.name, "")
+        self.assertEqual(symbol.name_en, "China Corp")
         self.assertEqual(symbol.country, "China")
         self.assertEqual(symbol.currency, "CNY")
         self.assertEqual(symbol.sector, "Financial Services")
+        self.assertEqual(report.english_names_created, 1)
         self.assertEqual(report.field_updates["sector"], 1)
         self.assertEqual(client.calls, ["600000.SHG"])
 
@@ -132,13 +176,172 @@ class CSI300EODHDMetadataTests(TestCase):
 
         symbol.refresh_from_db()
         self.assertEqual(symbol.name, "")
+        self.assertEqual(symbol.name_en, "")
         self.assertEqual(symbol.country, "")
         self.assertEqual(symbol.currency, "")
         self.assertEqual(symbol.sector, "Consumer Cyclical")
+        self.assertEqual(report.english_names_missing, 1)
         self.assertEqual(report.field_updates, {"sector": 1})
 
+    def test_english_name_is_normalized_and_numeric_ticker_or_generic_values_are_rejected(self):
+        normalized = normalize_eodhd_general_for_symbol(general_payload(name="  China   Railway\tGroup  "))
+        self.assertEqual(normalized["name_en"], "China Railway Group")
+
+        numeric = self._member("601006", "SHG", "601006.SHG", name="000780")
+        ticker_only = self._member("600002", "SHG", "600002.SHG")
+        generic = self._member("000003", "SHE", "000003.SHE")
+        client = FakeEODHDMetadataClient(
+            {
+                "601006.SHG": general_payload(name="000780"),
+                "600002.SHG": general_payload(name="600002"),
+                "000003.SHE": general_payload(name="Unknown", exchange="SHE"),
+            }
+        )
+
+        report = enrich_csi300_symbols_from_eodhd_metadata(client=client, dry_run=False)
+
+        numeric.refresh_from_db()
+        ticker_only.refresh_from_db()
+        generic.refresh_from_db()
+        self.assertEqual(numeric.name, "000780")
+        self.assertEqual(numeric.name_en, "")
+        self.assertEqual(ticker_only.name_en, "")
+        self.assertEqual(generic.name_en, "")
+        self.assertEqual(report.english_names_present, 3)
+        self.assertEqual(report.english_names_useful, 0)
+        self.assertEqual(report.english_names_rejected, 3)
+        self.assertEqual(report.english_names_missing, 3)
+
+    def test_existing_english_name_is_preserved_when_provider_name_is_missing(self):
+        symbol = self._member(
+            "600000",
+            "SHG",
+            "600000.SHG",
+            name="浦发银行",
+            name_en="Shanghai Pudong Development Bank",
+        )
+        client = FakeEODHDMetadataClient({"600000.SHG": general_payload(name="")})
+
+        report = enrich_csi300_symbols_from_eodhd_metadata(client=client, dry_run=False)
+
+        symbol.refresh_from_db()
+        self.assertEqual(symbol.name_en, "Shanghai Pudong Development Bank")
+        self.assertEqual(report.english_names_preserved, 1)
+        self.assertEqual(report.english_names_missing, 0)
+
+    def test_realistic_shanghai_and_shenzhen_names_fill_name_en_only(self):
+        shanghai = self._member("601006", "SHG", "601006.SHG", name="000780")
+        shenzhen = self._member("000001", "SHE", "000001.SHE", name="平安银行")
+        client = FakeEODHDMetadataClient(
+            {
+                "601006.SHG": general_payload(name="Daqin Railway Co., Ltd."),
+                "000001.SHE": general_payload(name="Ping An Bank Co., Ltd.", exchange="SHE"),
+            }
+        )
+
+        report = enrich_csi300_symbols_from_eodhd_metadata(client=client, dry_run=False)
+
+        shanghai.refresh_from_db()
+        shenzhen.refresh_from_db()
+        self.assertEqual(shanghai.name, "000780")
+        self.assertEqual(shanghai.name_en, "Daqin Railway Co., Ltd.")
+        self.assertEqual(shenzhen.name, "平安银行")
+        self.assertEqual(shenzhen.name_en, "Ping An Bank Co., Ltd.")
+        self.assertEqual(report.english_names_created, 2)
+
+    def test_apply_changes_no_membership_snapshot_or_daily_bar(self):
+        symbol = self._member("600000", "SHG", "600000.SHG", name="Local")
+        membership = UniverseMembership.objects.get(universe=self.csi300, symbol=symbol)
+        batch = UniverseImportBatch.objects.create(
+            universe=self.csi300,
+            provider="fixture",
+            source_name="fixture",
+            period_start=date(2020, 1, 1),
+            period_end=date(2020, 1, 1),
+            expected_member_count=1,
+            imported_member_count=1,
+            mapped_member_count=1,
+            status=UniverseCoverageStatus.VALIDATED,
+        )
+        snapshot = UniverseCoverageSnapshot.objects.create(
+            universe=self.csi300,
+            import_batch=batch,
+            coverage_date=date(2020, 1, 1),
+            expected_member_count=1,
+            actual_member_count=1,
+            mapped_member_count=1,
+            status=UniverseCoverageStatus.VALIDATED,
+        )
+        bar = DailyBar.objects.create(
+            symbol=symbol,
+            date=date(2020, 1, 1),
+            open=Decimal("10"),
+            high=Decimal("11"),
+            low=Decimal("9"),
+            close=Decimal("10.5"),
+            volume=100,
+        )
+        membership_before = (
+            membership.ticker,
+            membership.exchange,
+            membership.provider_symbol,
+            membership.valid_from,
+            membership.valid_to,
+            membership.source,
+        )
+        snapshot_before = (
+            snapshot.import_batch_id,
+            snapshot.coverage_date,
+            snapshot.expected_member_count,
+            snapshot.actual_member_count,
+            snapshot.mapped_member_count,
+            snapshot.unmapped_member_count,
+            snapshot.status,
+        )
+        bar_before = (bar.open, bar.high, bar.low, bar.close, bar.volume, bar.source)
+        client = FakeEODHDMetadataClient({"600000.SHG": general_payload(name="English Name")})
+
+        enrich_csi300_symbols_from_eodhd_metadata(client=client, dry_run=False)
+
+        membership.refresh_from_db()
+        snapshot.refresh_from_db()
+        bar.refresh_from_db()
+        symbol.refresh_from_db()
+        self.assertEqual(symbol.name, "Local")
+        self.assertEqual(symbol.name_en, "English Name")
+        self.assertEqual(
+            (
+                membership.ticker,
+                membership.exchange,
+                membership.provider_symbol,
+                membership.valid_from,
+                membership.valid_to,
+                membership.source,
+            ),
+            membership_before,
+        )
+        self.assertEqual(
+            (
+                snapshot.import_batch_id,
+                snapshot.coverage_date,
+                snapshot.expected_member_count,
+                snapshot.actual_member_count,
+                snapshot.mapped_member_count,
+                snapshot.unmapped_member_count,
+                snapshot.status,
+            ),
+            snapshot_before,
+        )
+        self.assertEqual((bar.open, bar.high, bar.low, bar.close, bar.volume, bar.source), bar_before)
+
     def test_existing_values_are_not_overwritten(self):
-        symbol = self._member("000001", "SHE", "000001.SHE", name="Local Name")
+        symbol = self._member(
+            "000001",
+            "SHE",
+            "000001.SHE",
+            name="Local Name",
+            name_en="Manual English Name",
+        )
         symbol.country = "CN"
         symbol.currency = "CNY"
         symbol.sector = "Financials"
@@ -149,7 +352,9 @@ class CSI300EODHDMetadataTests(TestCase):
 
         symbol.refresh_from_db()
         self.assertEqual(symbol.name, "Local Name")
+        self.assertEqual(symbol.name_en, "Manual English Name")
         self.assertEqual(symbol.sector, "Financials")
+        self.assertEqual(report.english_names_preserved, 1)
         self.assertEqual(report.updated, 0)
         self.assertEqual(report.unchanged, 1)
 
@@ -162,9 +367,12 @@ class CSI300EODHDMetadataTests(TestCase):
 
         symbol.refresh_from_db()
         self.assertEqual(symbol.sector, "Financial Services")
+        self.assertEqual(symbol.name_en, "China Corp")
         self.assertEqual(first.updated, 1)
+        self.assertEqual(first.english_names_created, 1)
         self.assertEqual(second.updated, 0)
         self.assertEqual(second.unchanged, 1)
+        self.assertEqual(second.english_names_unchanged, 1)
 
     def test_dry_run_reports_without_writing(self):
         symbol = self._member("600000", "SHG", "600000.SHG")
@@ -174,7 +382,15 @@ class CSI300EODHDMetadataTests(TestCase):
 
         symbol.refresh_from_db()
         self.assertEqual(symbol.sector, "")
+        self.assertEqual(symbol.name_en, "")
         self.assertEqual(report.updated, 1)
+        self.assertEqual(report.english_names_present, 1)
+        self.assertEqual(report.english_names_useful, 1)
+        self.assertEqual(report.english_names_to_create, 1)
+        self.assertEqual(report.english_names_created, 0)
+        self.assertEqual(report.english_names_missing, 0)
+        self.assertEqual(report.per_symbol[0]["english_name_candidate"], "China Corp")
+        self.assertEqual(report.per_symbol[0]["english_name_status"], "to_create")
         self.assertTrue(report.dry_run)
 
     def test_provider_error_is_partial_and_sanitized(self):
@@ -190,6 +406,8 @@ class CSI300EODHDMetadataTests(TestCase):
         good.refresh_from_db()
         bad.refresh_from_db()
         self.assertEqual(good.sector, "Financial Services")
+        self.assertEqual(good.name_en, "China Corp")
+        self.assertEqual(bad.name_en, "")
         self.assertEqual(bad.sector, "")
         self.assertEqual(report.updated, 1)
         self.assertEqual(report.errors, 1)
@@ -244,7 +462,7 @@ class CSI300EODHDMetadataTests(TestCase):
 
         self.assertEqual(
             format_csi300_eodhd_metadata_summary(report),
-            "Métadonnées EODHD CSI300 (dry-run) — traités=0, récupérés=0, mis_à_jour=0, inchangés=0, ignorés=0, erreurs=0, secteurs_absents=0, secteurs_génériques=0, industries_présentes=0.",
+            "Métadonnées EODHD CSI300 (dry-run) — traités=0, récupérés=0, mis_à_jour=0, inchangés=0, ignorés=0, erreurs=0, secteurs_absents=0, secteurs_génériques=0, industries_présentes=0. Noms anglais: trouvés=0, utiles=0, à_créer=0, créés=0, inchangés=0, préservés=0, absents=0, rejetés=0.",
         )
 
     @patch("core.services.provider_eodhd.requests.get", side_effect=AssertionError("no network in tests"))
@@ -258,6 +476,8 @@ class CSI300EODHDMetadataTests(TestCase):
 
         output = out.getvalue()
         self.assertIn("Métadonnées EODHD CSI300 (dry-run)", output)
+        self.assertIn("english_names_to_create=1", output)
+        self.assertIn("name_en_candidate=China Corp", output)
         self.assertIn("sectors_enriched=1", output)
         self.assertIn("raw_sector Financial Services symbols=1 decision=usable_raw", output)
         self.assertEqual(fake.calls, ["600000.SHG"])
@@ -271,6 +491,8 @@ class CSI300EODHDMetadataTests(TestCase):
             call_command("enrich_csi300_symbol_metadata", "--source", "eodhd", "--ticker", "600000", "--apply", stdout=StringIO())
 
         symbol.refresh_from_db()
+        self.assertEqual(symbol.name, "")
+        self.assertEqual(symbol.name_en, "China Corp")
         self.assertEqual(symbol.sector, "Financial Services")
 
     def test_sp500_is_not_modified_by_csi300_eodhd_command(self):
@@ -293,6 +515,7 @@ class CSI300EODHDMetadataTests(TestCase):
 
         aapl.refresh_from_db()
         self.assertEqual(aapl.name, "")
+        self.assertEqual(aapl.name_en, "")
         self.assertEqual(aapl.sector, "")
         self.assertEqual(fake.calls, ["600000.SHG"])
 

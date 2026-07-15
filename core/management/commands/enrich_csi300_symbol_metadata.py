@@ -98,7 +98,15 @@ class Command(BaseCommand):
         self.stdout.write(
             "coverage "
             f"tickers_analyzed={result.processed} "
-            f"names_enriched={result.field_updates.get('name', 0)} "
+            f"names_enriched={result.field_updates.get('name_en', 0)} "
+            f"english_names_present={result.english_names_present} "
+            f"english_names_useful={result.english_names_useful} "
+            f"english_names_to_create={result.english_names_to_create} "
+            f"english_names_created={result.english_names_created} "
+            f"english_names_unchanged={result.english_names_unchanged} "
+            f"english_names_preserved={result.english_names_preserved} "
+            f"english_names_missing={result.english_names_missing} "
+            f"english_names_rejected={result.english_names_rejected} "
             f"countries_enriched={result.field_updates.get('country', 0)} "
             f"currencies_enriched={result.field_updates.get('currency', 0)} "
             f"sectors_enriched={result.field_updates.get('sector', 0)} "
@@ -118,7 +126,11 @@ class Command(BaseCommand):
             if detail.get("error"):
                 self.stdout.write(self.style.WARNING(f"{detail['symbol']}: {detail['error']}"))
             elif detail.get("updated_fields"):
-                self.stdout.write(f"{detail['symbol']}: fields={','.join(detail['updated_fields'])} provider_symbol={detail['provider_symbol']}")
+                self.stdout.write(
+                    f"{detail['symbol']}: fields={','.join(detail['updated_fields'])} "
+                    f"provider_symbol={detail['provider_symbol']} "
+                    f"name_en_candidate={detail.get('english_name_candidate', '')}"
+                )
 
 
 def _parse_tickers(values) -> list[str]:
