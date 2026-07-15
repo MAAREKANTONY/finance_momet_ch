@@ -8,7 +8,7 @@ import hashlib
 from datetime import timedelta
 from django.db.models import Max, Q
 
-from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, AlertDefinition, GameScenario
+from .models import Symbol, Scenario, DailyBar, DailyMetric, Alert, EmailRecipient, EmailSettings, AlertDefinition, GameScenario, UniverseDefinition, UniverseCoverageSnapshot
 from .models import Backtest
 from .models import ProcessingJob
 from .exports import build_scenario_workbook_write_only
@@ -29,6 +29,12 @@ from .services.csi300_benchmark_preparation import (
     format_csi300_benchmark_report_summary,
     prepare_csi300_benchmarks,
 )
+from .services.china_benchmark_registry import expected_primary_benchmarks, provider_symbol_parts
+from .services.csi300_csv_generation import (
+    CSI300CSVGenerationError,
+    generate_csi300_historical_csv,
+)
+from .services.csi300_daily_refresh import refresh_csi300_daily_data
 from .services.dynamic_universe_symbols import (
     UniverseSymbolMappingError,
     ensure_universe_membership_symbols,
@@ -49,6 +55,7 @@ from pathlib import Path
 
 import time
 import logging
+import uuid
 
 
 TRANSIENT_DB_EXCEPTIONS = (OperationalError, InterfaceError)
@@ -59,6 +66,46 @@ DYNAMIC_UNIVERSE_USER_ERROR = (
     "Certains symboles ne sont pas disponibles, les memberships CSV sont absents, "
     "ou la couverture n’est pas validée."
 )
+
+
+def _acquire_csi300_operation_lock(name: str, *, timeout: int = 6 * 60 * 60):
+    """Return a Redis lock when available; DB job exclusivity remains the fallback."""
+    try:
+        import redis
+
+        lock = redis.Redis.from_url(settings.CELERY_BROKER_URL).lock(
+            f"lock:csi300:{name}",
+            timeout=timeout,
+            thread_local=False,
+        )
+        if not lock.acquire(blocking=False, token=uuid.uuid4().hex):
+            return False, lock
+        return True, lock
+    except Exception:
+        return True, None
+
+
+def _release_csi300_operation_lock(lock) -> None:
+    if lock is None:
+        return
+    try:
+        lock.release()
+    except Exception:
+        pass
+
+
+def _without_csi300_eodhd_scope(symbols, universe):
+    if universe is None:
+        return symbols
+    benchmark_filter = Q(pk__in=[])
+    for definition in expected_primary_benchmarks():
+        ticker, exchange = provider_symbol_parts(definition.provider_symbol)
+        benchmark_filter |= Q(ticker=ticker, exchange=exchange)
+    return (
+        symbols.exclude(universe_memberships__universe=universe)
+        .exclude(benchmark_filter)
+        .distinct()
+    )
 
 
 def _sanitize_provider_error_message(error) -> str:
@@ -1162,6 +1209,127 @@ def prepare_dynamic_universe_ohlc_job_task(
         raise
 
 
+def _structured_job_message(summary: str, payload: dict) -> str:
+    return f"{summary}\nreport_json={json.dumps(payload, ensure_ascii=False, sort_keys=True)}"
+
+
+@shared_task(bind=True)
+def generate_csi300_historical_csv_job_task(self, *, user_id=None, job_id=None):
+    """Generate and validate the pinned CSI300 CSV without importing it."""
+    job = ProcessingJob.objects.filter(id=job_id).first() if job_id else None
+    if job is None:
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.GENERATE_CSI300_CSV,
+            status=ProcessingJob.Status.PENDING,
+            created_by_id=user_id,
+            message="Génération du CSV historique CSI300 en attente",
+        )
+    mark_job_running(job, task_request=self.request, message="Téléchargement et validation de la source CSI300 pinnée")
+    acquired, lock = _acquire_csi300_operation_lock("csv_generation")
+    if not acquired:
+        job.status = ProcessingJob.Status.DONE
+        job.message = _structured_job_message(
+            "Génération ignorée : une génération CSI300 est déjà en cours.",
+            {"operational_status": "RUNNING", "skipped": True},
+        )
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return job.message
+    try:
+        result = generate_csi300_historical_csv(job_id=job.id)
+        payload = result.as_dict()
+        payload["operational_status"] = result.status
+        job.status = ProcessingJob.Status.DONE
+        job.output_file = result.csv_path
+        job.output_name = "csi300_stockalert_memberships.csv"
+        job.message = _structured_job_message(
+            "Le CSV a été généré et validé. Aucune donnée n’a été importée.",
+            payload,
+        )
+        job.error = ""
+        job.finished_at = timezone.now()
+        _job_save(
+            job,
+            update_fields=["status", "output_file", "output_name", "message", "error", "finished_at"],
+        )
+        return job.message
+    except CSI300CSVGenerationError as exc:
+        job.status = ProcessingJob.Status.FAILED
+        job.error = str(exc)
+        job.message = "Échec de la génération du CSV CSI300. Le dernier CSV valide reste inchangé."
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "error", "message", "finished_at"])
+        sync_related_state_for_terminal_job(job)
+        raise
+    finally:
+        _release_csi300_operation_lock(lock)
+
+
+def _execute_csi300_daily_refresh_job(job: ProcessingJob, *, task_request=None) -> dict:
+    mark_job_running(job, task_request=task_request, message="Rafraîchissement quotidien des données Chine démarré")
+    acquired, lock = _acquire_csi300_operation_lock("daily_refresh")
+    if not acquired:
+        payload = {"operational_status": "RUNNING", "skipped": True}
+        job.status = ProcessingJob.Status.DONE
+        job.message = _structured_job_message(
+            "Rafraîchissement ignoré : une opération CSI300 équivalente est déjà en cours.",
+            payload,
+        )
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "finished_at"])
+        return payload
+    try:
+        pulse = JobCheckpointPulse(
+            job,
+            every_n=1,
+            every_seconds=15,
+            task_request=task_request,
+            base_label="csi300_daily_refresh",
+        )
+        report = refresh_csi300_daily_data(
+            progress_callback=lambda checkpoint: pulse.hit(checkpoint=checkpoint, force=True),
+        )
+        payload = report.as_dict()
+        payload["operational_status"] = "DONE_WITH_WARNING" if report.warnings else "DONE"
+        job.status = ProcessingJob.Status.DONE
+        job.message = _structured_job_message(
+            (
+                "Rafraîchissement Chine terminé"
+                f" : actions={report.actions_expected}, benchmarks={report.benchmarks_expected}, "
+                f"insertions={report.inserted_bars}, mises_à_jour={report.updated_bars}, "
+                f"warnings={len(report.warnings)}. Aucun changement de composition."
+            ),
+            payload,
+        )
+        job.error = ""
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "message", "error", "finished_at"])
+        return payload
+    except Exception as exc:
+        job.status = ProcessingJob.Status.FAILED
+        job.error = _sanitize_provider_error_message(exc)
+        job.finished_at = timezone.now()
+        _job_save(job, update_fields=["status", "error", "finished_at"])
+        sync_related_state_for_terminal_job(job)
+        raise
+    finally:
+        _release_csi300_operation_lock(lock)
+
+
+@shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
+def refresh_csi300_daily_data_job_task(self, *, user_id=None, job_id=None):
+    """Manual tracked entry point; the daily orchestration uses the same executor."""
+    job = ProcessingJob.objects.filter(id=job_id).first() if job_id else None
+    if job is None:
+        job = ProcessingJob.objects.create(
+            job_type=ProcessingJob.JobType.REFRESH_CSI300_DATA,
+            status=ProcessingJob.Status.PENDING,
+            created_by_id=user_id,
+            message="Rafraîchissement quotidien des données Chine en attente",
+        )
+    return _execute_csi300_daily_refresh_job(job, task_request=self.request)
+
+
 @shared_task(bind=True, autoretry_for=TRANSIENT_DB_EXCEPTIONS, retry_backoff=True, retry_jitter=True, retry_kwargs={"max_retries": int(getattr(settings, "JOB_TASK_MAX_RETRIES", 5))})
 def enrich_csi300_metadata_job_task(
     self,
@@ -1899,9 +2067,33 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
 
     mark_job_running(job, task_request=self.request, message="Daily system refresh (scheduled)")
 
+    csi300_refresh_summary = ""
     try:
+        # The existing daily Beat pipeline remains the single scheduled heavy task.
+        # When an authoritative CSI300 coverage exists, run the same tracked refresh
+        # executor as the manual staff action before the legacy global pipeline.
+        csi300_universe = UniverseDefinition.objects.filter(code="CSI300", active=True).first()
+        if csi300_universe and UniverseCoverageSnapshot.objects.filter(universe=csi300_universe).exists():
+            csi300_job = ProcessingJob.objects.create(
+                job_type=ProcessingJob.JobType.REFRESH_CSI300_DATA,
+                status=ProcessingJob.Status.PENDING,
+                message="Rafraîchissement quotidien CSI300 lancé par Celery Beat",
+            )
+            try:
+                csi300_payload = _execute_csi300_daily_refresh_job(csi300_job, task_request=self.request)
+                csi300_refresh_summary = (
+                    f" csi300_status={csi300_payload.get('operational_status')}"
+                    f" csi300_action_errors={csi300_payload.get('actions_errors', 0)}"
+                    f" csi300_benchmark_errors={csi300_payload.get('benchmark_errors', 0)}"
+                )
+            except Exception as exc:
+                csi300_refresh_summary = f" csi300_status=FAILED csi300_error={_sanitize_provider_error_message(exc)}"
+
         # 1) Fetch bars for ALL active symbols
         symbols = Symbol.objects.filter(active=True).order_by("ticker")
+        # China actions and their explicit benchmarks are refreshed through
+        # EODHD above. Keep them out of the legacy Twelve Data pass.
+        symbols = _without_csi300_eodhd_scope(symbols, csi300_universe)
 
         # Outputsize heuristic: max(scenarios history_years, games study_days)
         max_years = Scenario.objects.filter(active=True).order_by("-history_years").values_list("history_years", flat=True).first() or 2
@@ -1915,6 +2107,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
             benchmark_totals = sync_benchmark_etfs_for_symbols(symbols, skip_ohlc=False)
             _append_job_message(job, format_benchmark_sync_summary(benchmark_totals, label="benchmark_sync"))
             symbols = Symbol.objects.filter(active=True).order_by("ticker")
+            symbols = _without_csi300_eodhd_scope(symbols, csi300_universe)
 
         job.message = f"Step 1/4: Fetch OHLC (delta) outputsize={outputsize}"
         job.save(update_fields=["message"])
@@ -2048,7 +2241,7 @@ def daily_system_refresh_job_task(self, *, user_id=None, job_id=None):
             f"market_caps_existing={market_cap_stats.get('existing')} "
             f"market_caps_skipped={market_cap_stats.get('skipped')} "
             f"market_caps_errors={market_cap_stats.get('errors')} "
-            f"scenarios={done_sc} games={done_g}"
+            f"scenarios={done_sc} games={done_g}{csi300_refresh_summary}"
         )
         job.save(update_fields=["status", "finished_at", "message"])
         return job.message

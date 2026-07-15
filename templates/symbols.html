@@ -18,6 +18,118 @@
   </form>
 </div>
 
+{% if request.user.is_staff and csi300_operations %}
+<div class="card">
+  <h3>Opérations CSI300</h3>
+  <p>
+    <span class="pill">{{ csi300_operations.status }}</span>
+    Référentiel : {{ csi300_operations.referential.memberships }} memberships,
+    {{ csi300_operations.referential.historical_tickers }} tickers historiques,
+    {{ csi300_operations.referential.count }} snapshots,
+    batch exact #{{ csi300_operations.referential.current_batch_id|default:"—" }}.
+  </p>
+  <div class="grid2">
+    <div>
+      <h4>Génération de la composition historique</h4>
+      <p class="muted">
+        Source pinnée : unliftedq/index-constitution, tag v0.6.2,<br>
+        SHA <code>16d9d69fc0bf7f0f5e9aace868e16e26f2ecb5c2</code>, cutoff 2023-01-03.
+      </p>
+      {% if csi300_operations.generation %}
+        <p>
+          Dernière génération valide : {{ csi300_operations.generation.generated_at }} —
+          {{ csi300_operations.generation.memberships }} memberships,
+          {{ csi300_operations.generation.distinct_tickers }} tickers,
+          couverture {{ csi300_operations.generation.coverage_start }} → {{ csi300_operations.generation.coverage_end }}.
+        </p>
+        <p>
+          <a href="{% url 'symbols_csi300_generation_download' 'csv' %}">Télécharger le CSV valide</a>
+          · <a href="{% url 'symbols_csi300_generation_download' 'report' %}">Télécharger le rapport JSON</a>
+        </p>
+        {% for warning in csi300_operations.generation.warnings %}
+          <div class="flash warning">Génération : {{ warning.message|default:warning.code }}</div>
+        {% endfor %}
+        <p class="muted">Le CSV a été généré et validé. Aucune donnée n’a été importée.</p>
+      {% else %}
+        <p class="muted">Aucun fichier historique valide publié.</p>
+      {% endif %}
+      <form method="post" action="{% url 'symbols_csi300_generate_csv' %}">
+        {% csrf_token %}
+        <button class="btn" type="submit" {% if csi300_operations.jobs.active %}disabled{% endif %}>Générer le CSV historique CSI300</button>
+      </form>
+      <p class="muted">
+        Génération et import sont strictement séparés.
+        <a href="{% url 'symbols_import' %}">Ouvrir l’interface d’import séparée</a> après vérification du rapport.
+      </p>
+    </div>
+    <div>
+      <h4>Rafraîchissement des données Chine</h4>
+      <p class="muted">
+        Rafraîchit les actions du dernier snapshot autoritatif, le benchmark marché 000300.SHG
+        et les {{ csi300_benchmark_supported_count }} benchmarks sectoriels supportés. Aucun changement de composition.
+      </p>
+      <form method="post" action="{% url 'symbols_csi300_refresh_china' %}">
+        {% csrf_token %}
+        <button class="btn" type="submit" {% if csi300_operations.jobs.active %}disabled{% endif %}>Rafraîchir les données Chine</button>
+      </form>
+      <p>
+        Dernier refresh :
+        {% if csi300_operations.jobs.last_refresh %}
+          job #{{ csi300_operations.jobs.last_refresh.id }} — {{ csi300_operations.jobs.last_refresh.operational_status }}
+        {% else %}aucun{% endif %}.
+        Jobs actifs : {{ csi300_operations.jobs.active }}.
+      </p>
+    </div>
+  </div>
+
+  <h4>État opérationnel</h4>
+  <table>
+    <tbody>
+      <tr>
+        <th>Référentiel</th>
+        <td>
+          {{ csi300_operations.referential.status }} — couverture
+          {{ csi300_operations.referential.coverage_start|default:"—" }} →
+          {{ csi300_operations.referential.coverage_end|default:"—" }},
+          jours manquants={{ csi300_operations.referential.missing_days }},
+          incohérences={{ csi300_operations.referential.counter_mismatches|default:0 }}
+        </td>
+      </tr>
+      <tr>
+        <th>Métadonnées</th>
+        <td>
+          name_en présents={{ csi300_operations.metadata.name_en_present }}, absents={{ csi300_operations.metadata.name_en_missing }} ;
+          secteurs utiles={{ csi300_operations.metadata.sectors_useful }}, génériques={{ csi300_operations.metadata.sectors_generic }}, absents={{ csi300_operations.metadata.sectors_missing }}
+        </td>
+      </tr>
+      <tr>
+        <th>OHLC</th>
+        <td>
+          actions attendues={{ csi300_operations.ohlc.symbols_expected }}, avec barres={{ csi300_operations.ohlc.symbols_with_bars }}, sans barres={{ csi300_operations.ohlc.symbols_without_bars }},
+          dernière date={{ csi300_operations.ohlc.last_date|default:"—" }} ;
+          marché 000300.SHG={% if csi300_operations.ohlc.market_benchmark_available %}disponible{% else %}absent{% endif %} ;
+          secteurs disponibles={{ csi300_operations.ohlc.sector_benchmarks_available }}/{{ csi300_benchmark_supported_count }}
+        </td>
+      </tr>
+      <tr>
+        <th>Jobs</th>
+        <td>
+          dernière génération={% if csi300_operations.jobs.last_generation %}#{{ csi300_operations.jobs.last_generation.id }} {{ csi300_operations.jobs.last_generation.operational_status }}{% else %}aucune{% endif %} ;
+          dernier succès={% if csi300_operations.jobs.last_success %}#{{ csi300_operations.jobs.last_success.id }}{% else %}aucun{% endif %} ;
+          dernier échec={% if csi300_operations.jobs.last_failure %}#{{ csi300_operations.jobs.last_failure.id }}{% else %}aucun{% endif %}
+        </td>
+      </tr>
+    </tbody>
+  </table>
+  {% for warning in csi300_operations.warnings %}<div class="flash warning">{{ warning }}</div>{% endfor %}
+  {% if csi300_operations.jobs.last_refresh %}
+    {% for warning in csi300_operations.jobs.last_refresh.warnings %}<div class="flash warning">Refresh : {{ warning }}</div>{% endfor %}
+  {% endif %}
+  {% if csi300_operations.jobs.last_failure %}<div class="flash error">Dernier échec : {{ csi300_operations.jobs.last_failure.error }}</div>{% endif %}
+  {% for issue in csi300_operations.referential.issues %}<div class="flash error">{{ issue }}</div>{% endfor %}
+</div>
+{% endif %}
+
 <div class="card">
   <h3>Benchmarks CSI300 — marché et secteurs</h3>
   <p class="muted">

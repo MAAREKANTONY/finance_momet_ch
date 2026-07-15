@@ -27,6 +27,13 @@ urlpatterns = [
     path("symbols/update-missing-metadata/", views.symbols_update_missing_metadata, name="symbols_update_missing_metadata"),
     path("symbols/csi300-eodhd-metadata/", views.symbols_csi300_eodhd_metadata, name="symbols_csi300_eodhd_metadata"),
     path("symbols/csi300-benchmarks/", views.symbols_csi300_benchmarks, name="symbols_csi300_benchmarks"),
+    path("symbols/csi300-generate-csv/", views.symbols_csi300_generate_csv, name="symbols_csi300_generate_csv"),
+    path("symbols/csi300-refresh-china/", views.symbols_csi300_refresh_china, name="symbols_csi300_refresh_china"),
+    path(
+        "symbols/csi300-generation/<str:artifact>/",
+        views.symbols_csi300_generation_download,
+        name="symbols_csi300_generation_download",
+    ),
     path("symbols/<int:pk>/scenarios/", views.symbol_scenarios_edit, name="symbol_scenarios_edit"),
     path("symbols/<int:pk>/update-metadata/", views.symbol_update_metadata, name="symbol_update_metadata"),
     path("symbols/<int:pk>/toggle/", views.symbol_toggle_active, name="symbol_toggle"),
