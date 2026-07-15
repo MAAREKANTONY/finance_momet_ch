@@ -98,3 +98,9 @@ python manage.py import_universe_memberships --csv /tmp/csi300_stockalert_member
 5. Lire les warnings de couverture dans le tableau de bord ; quelques OHLC absents donnent `READY_WITH_WARNINGS`, tandis qu’une incohérence memberships/snapshots donne `NOT_READY`.
 
 La génération de composition et l’import sont deux opérations distinctes. Un CSV invalide ne remplace jamais la dernière génération validée.
+
+En production, créer avant le déploiement le répertoire persistant
+`/opt/stockalert/shared/csi300_artifacts` (ou définir
+`CSI300_ARTIFACTS_HOST_PATH`) avec des droits d’écriture pour `web` et
+`celery`. Il est monté dans les deux services sous `/data/exports/csi300` ;
+les autres données continuent d’utiliser le montage `/data` existant.

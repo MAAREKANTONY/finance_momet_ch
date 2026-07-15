@@ -44,6 +44,7 @@ services:
         condition: service_started
     volumes:
       - ./data:/data
+      - csi300_artifacts:/data/exports/csi300
     command: /app/docker/entrypoint.web.sh
 
   celery:
@@ -56,6 +57,7 @@ services:
         condition: service_started
     volumes:
       - ./data:/data
+      - csi300_artifacts:/data/exports/csi300
     command: celery -A stockalert worker -l info
 
   celery-beat:
@@ -72,3 +74,4 @@ services:
 
 volumes:
   postgres_data:
+  csi300_artifacts:
