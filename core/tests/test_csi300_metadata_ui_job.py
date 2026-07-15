@@ -35,19 +35,26 @@ def _fake_report(*, dry_run: bool = True, errors: int = 0) -> CSI300EODHDMetadat
         missing_sector=0,
         generic_sector=1,
         industries_present=2,
+        english_names_present=2,
+        english_names_useful=2,
+        english_names_to_create=1,
+        english_names_created=0 if dry_run else 1,
+        english_names_unchanged=1,
     )
-    report.field_updates = {"sector": 1}
+    report.field_updates = {"name_en": 1, "sector": 1}
     report.raw_sector_counts = {"Financial Services": 1, "Other": 1}
     report.applied_sector_counts = {"Financial Services": 1}
     report.per_symbol = [
         {
             "symbol": "600000:SHG",
             "provider_symbol": "600000.SHG",
-            "updated_fields": ["sector"],
+            "updated_fields": ["name_en", "sector"],
             "error": "",
             "raw_sector": "Financial Services",
             "sector": "Financial Services",
             "industry_present": True,
+            "english_name_candidate": "China Corp",
+            "english_name_status": "to_create" if dry_run else "created",
         }
     ]
     if errors:
@@ -159,12 +166,19 @@ class CSI300MetadataUIViewTests(TestCase):
         )
 
     def test_dry_run_view_does_not_modify_symbols(self):
-        symbol = Symbol.objects.create(ticker="600000", exchange="SHG", name="Before", sector="")
+        symbol = Symbol.objects.create(
+            ticker="600000",
+            exchange="SHG",
+            name="Before",
+            name_en="Existing English",
+            sector="",
+        )
 
         self._post_with_real_launch({"mode": "dry_run"})
 
         symbol.refresh_from_db()
         self.assertEqual(symbol.name, "Before")
+        self.assertEqual(symbol.name_en, "Existing English")
         self.assertEqual(symbol.sector, "")
 
     def test_apply_without_backend_confirmation_creates_no_job(self):
@@ -288,6 +302,10 @@ class CSI300MetadataJobTaskTests(TestCase):
         self.assertIn("useful_sectors", payload)
         self.assertIn("generic_sectors", payload)
         self.assertIn("missing_sectors", payload)
+        self.assertEqual(payload["english_names_present"], 2)
+        self.assertEqual(payload["english_names_to_create"], 1)
+        self.assertEqual(payload["english_names_unchanged"], 1)
+        self.assertEqual(payload["field_updates"]["name_en"], 1)
 
     @patch("core.tasks.enrich_csi300_symbols_from_eodhd_metadata")
     def test_partial_provider_errors_are_done_with_warning(self, service_mock):

@@ -206,6 +206,14 @@ def _csi300_eodhd_metadata_job_report(report: CSI300EODHDMetadataReport) -> dict
         "generic_sectors": int(report.generic_sector or 0),
         "missing_sectors": int(report.missing_sector or 0),
         "industries_present": int(report.industries_present or 0),
+        "english_names_present": int(report.english_names_present or 0),
+        "english_names_useful": int(report.english_names_useful or 0),
+        "english_names_missing": int(report.english_names_missing or 0),
+        "english_names_to_create": int(report.english_names_to_create or 0),
+        "english_names_created": int(report.english_names_created or 0),
+        "english_names_unchanged": int(report.english_names_unchanged or 0),
+        "english_names_preserved": int(report.english_names_preserved or 0),
+        "english_names_rejected": int(report.english_names_rejected or 0),
         "conflicts": 0,
         "dry_run": bool(report.dry_run),
         "field_updates": dict(sorted((report.field_updates or {}).items())),
@@ -231,6 +239,14 @@ def _format_csi300_eodhd_metadata_job_message(report: CSI300EODHDMetadataReport)
             f"updated={payload['updated']} unchanged={payload['unchanged']} "
             f"useful_sectors={payload['useful_sectors']} generic_sectors={payload['generic_sectors']} "
             f"missing_sectors={payload['missing_sectors']} industries_present={payload['industries_present']} "
+            f"english_names_present={payload['english_names_present']} "
+            f"english_names_useful={payload['english_names_useful']} "
+            f"english_names_to_create={payload['english_names_to_create']} "
+            f"english_names_created={payload['english_names_created']} "
+            f"english_names_unchanged={payload['english_names_unchanged']} "
+            f"english_names_preserved={payload['english_names_preserved']} "
+            f"english_names_missing={payload['english_names_missing']} "
+            f"english_names_rejected={payload['english_names_rejected']} "
             f"errors={payload['errors']} dry_run={payload['dry_run']}"
         ),
     ]
@@ -256,7 +272,10 @@ def _format_csi300_eodhd_metadata_progress(report: CSI300EODHDMetadataReport, *,
         f"inchangés={report.unchanged} "
         f"erreurs={report.errors} "
         f"secteurs_génériques={report.generic_sector} "
-        f"secteurs_absents={report.missing_sector}"
+        f"secteurs_absents={report.missing_sector} "
+        f"noms_anglais_à_créer={report.english_names_to_create} "
+        f"noms_anglais_absents={report.english_names_missing} "
+        f"noms_anglais_rejetés={report.english_names_rejected}"
     )
 
 

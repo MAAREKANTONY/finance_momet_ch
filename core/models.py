@@ -11,6 +11,7 @@ class Symbol(models.Model):
     ticker = models.CharField(max_length=64)
     exchange = models.CharField(max_length=64, blank=True, default="")
     name = models.CharField(max_length=200, blank=True, default="")
+    name_en = models.CharField(max_length=200, blank=True, default="")
     instrument_type = models.CharField(max_length=64, blank=True, default="")
     country = models.CharField(max_length=64, blank=True, default="")
     currency = models.CharField(max_length=16, blank=True, default="")

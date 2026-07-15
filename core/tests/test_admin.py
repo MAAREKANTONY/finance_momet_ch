@@ -3,7 +3,15 @@ from django.contrib.admin.sites import AdminSite
 from django.contrib.auth import get_user_model
 from django.test import RequestFactory, TestCase
 
-from core.models import Backtest, ProcessingJob, Scenario
+from core.models import Backtest, ProcessingJob, Scenario, Symbol
+
+
+class SymbolAdminTests(TestCase):
+    def test_english_name_is_visible_and_searchable(self):
+        model_admin = admin.site._registry[Symbol]
+
+        self.assertIn("name_en", model_admin.list_display)
+        self.assertIn("name_en", model_admin.search_fields)
 
 
 class BacktestAdminTests(TestCase):
