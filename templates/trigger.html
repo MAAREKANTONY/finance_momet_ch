@@ -37,7 +37,7 @@
         <li>Lancer le backtest avec le mode “CSI 300 historique dynamique — via CSV”.</li>
       </ol>
       <p class="muted">Aucun constituant CSI300 n'est récupéré depuis EODHD. Aucune composition actuelle n'est utilisée comme fallback. EODHD sert uniquement à récupérer les prix des tickers issus du CSV importé.</p>
-      <p class="muted">Note CSI300 : GM_market est supporté avec le benchmark CSI 300 / 000300.SHG lorsque ses prix locaux sont prêts. GM_sector reste non supporté dans cette phase : Industrials et Utilities ne sont pas couverts, aucun fallback vers le marché n'est appliqué, et les benchmarks US type SPY/ETF sectoriels ne sont pas utilisés pour CSI300.</p>
+      <p class="muted">Note CSI300 : GM marché utilise exclusivement CSI 300 / 000300.SHG. GM secteur utilise les neuf benchmarks chinois supportés avec une couverture partielle explicite : les BUY dépendant du secteur sont bloqués pour les tickers non couverts, sans fallback vers le marché, SPY, les ETF XL* ou 510300.SHG.</p>
     </div>
 
     <div style="display:grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap:12px; margin-top:12px;">
@@ -79,8 +79,8 @@
               {% endfor %}
             </select>
           </label>
-          <label data-du-universe-card="SP500" style="{% if selected_dynamic_universe != 'SP500' %}display:none; {% endif %}"><input type="checkbox" name="du_require_gm_market" {% if dynamic_universe_inputs.require_gm_market %}checked{% endif %}> Inclure le filtre marché GM</label>
-          <label data-du-universe-card="SP500" style="{% if selected_dynamic_universe != 'SP500' %}display:none; {% endif %}"><input type="checkbox" name="du_require_gm_sector" {% if dynamic_universe_inputs.require_gm_sector %}checked{% endif %}> Inclure le filtre secteur GM</label>
+          <label data-du-universe-card="SP500 CSI300"><input type="checkbox" name="du_require_gm_market" {% if dynamic_universe_inputs.require_gm_market %}checked{% endif %}> Inclure le filtre marché GM</label>
+          <label data-du-universe-card="SP500 CSI300"><input type="checkbox" name="du_require_gm_sector" {% if dynamic_universe_inputs.require_gm_sector %}checked{% endif %}> Inclure le filtre secteur GM</label>
           <button class="btn" type="submit">Vérifier</button>
         </form>
       </div>

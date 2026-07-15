@@ -48,6 +48,13 @@ from core.services.china_benchmark_registry import (
     csi300_market_benchmark_exchange,
     csi300_market_benchmark_ticker,
 )
+from core.services.csi300_sector_gm import (
+    SECTOR_REASON_BENCHMARK_MISSING,
+    SECTOR_REASON_BENCHMARK_OHLC_MISSING,
+    build_csi300_sector_gm_coverage,
+    csi300_benchmark_exchange_for_ticker,
+    resolve_csi300_sector_benchmark,
+)
 from core.services.backtest_currency import effective_currency_for_new_result
 from tools.csi300_policy import CSI300_SUPPORTED_HISTORY_START_ISO
 from core.services.market_cap import preload_market_cap_series
@@ -441,6 +448,24 @@ def _signal_lines_have_gm_push_conditions(signal_lines: list[dict[str, Any]] | N
         or _gm_push_conditions_has_active((line or {}).get("gm_push_sell_market_exit_conditions"))
         for line in (signal_lines or [])
     )
+
+
+def _signal_lines_sector_gm_operators(signal_lines: list[dict[str, Any]] | None) -> list[str]:
+    operators: set[str] = set()
+    for line in signal_lines or []:
+        for config_key in (
+            "gm_buy_conditions",
+            "gm_sell_market_exit_conditions",
+            "gm_push_buy_conditions",
+            "gm_push_sell_market_exit_conditions",
+        ):
+            config = line.get(config_key) if isinstance(line, dict) else None
+            if not isinstance(config, dict):
+                continue
+            sector_entry = config.get("sector") if isinstance(config.get("sector"), dict) else {}
+            if _normalize_gm_condition_mode(sector_entry.get("mode")) != "IGNORE":
+                operators.add(_normalize_logic(config.get("operator"), "AND"))
+    return sorted(operators)
 
 
 def _legacy_filter_to_gm_condition(filter_code: Any) -> dict[str, Any]:
@@ -1088,7 +1113,16 @@ def _universe_code_for_backtest(backtest: Backtest, resolved_universe=None) -> s
     return None
 
 
-def _should_replace_benchmark_symbol(existing: Symbol | None, candidate: Symbol) -> bool:
+def _should_replace_benchmark_symbol(
+    existing: Symbol | None,
+    candidate: Symbol,
+    *,
+    universe_code: str | None = None,
+) -> bool:
+    if str(universe_code or "").strip().upper() == "CSI300":
+        expected_exchange = csi300_benchmark_exchange_for_ticker(candidate.ticker)
+        if expected_exchange:
+            return str(candidate.exchange or "").strip().upper() == expected_exchange
     if existing is None:
         return True
     if str(candidate.ticker).upper() == csi300_market_benchmark_ticker().upper():
@@ -1096,13 +1130,17 @@ def _should_replace_benchmark_symbol(existing: Symbol | None, candidate: Symbol)
     return False
 
 
-def _load_benchmark_symbols_by_ticker(benchmark_tickers: list[str]) -> dict[str, Symbol]:
+def _load_benchmark_symbols_by_ticker(
+    benchmark_tickers: list[str],
+    *,
+    universe_code: str | None = None,
+) -> dict[str, Symbol]:
     symbols_by_ticker: dict[str, Symbol] = {}
     if not benchmark_tickers:
         return symbols_by_ticker
     for benchmark_symbol in Symbol.objects.filter(ticker__in=benchmark_tickers).order_by("ticker", "id"):
         existing = symbols_by_ticker.get(benchmark_symbol.ticker)
-        if _should_replace_benchmark_symbol(existing, benchmark_symbol):
+        if _should_replace_benchmark_symbol(existing, benchmark_symbol, universe_code=universe_code):
             symbols_by_ticker[benchmark_symbol.ticker] = benchmark_symbol
     return symbols_by_ticker
 
@@ -1289,7 +1327,15 @@ def _gm_buy_decision_reason(family_payload: dict[str, Any]) -> str:
             return "GM dans le tunnel d'achat"
         return "GM au-dessus du seuil d'activation"
     if family_payload.get("value") in (None, ""):
-        return "GM indisponible"
+        unavailable_reason = str(family_payload.get("unavailable_reason") or "")
+        return {
+            "SECTOR_MISSING": "GM secteur indisponible : secteur absent",
+            "SECTOR_GENERIC": "GM secteur indisponible : secteur générique",
+            "SECTOR_UNSUPPORTED": "GM secteur indisponible : secteur non supporté",
+            SECTOR_REASON_BENCHMARK_MISSING: "GM secteur indisponible : benchmark absent",
+            SECTOR_REASON_BENCHMARK_OHLC_MISSING: "GM secteur indisponible : OHLC benchmark absentes",
+            "BENCHMARK_OHLC_UNAVAILABLE_AS_OF": "GM secteur indisponible à cette date",
+        }.get(unavailable_reason, "GM indisponible")
     mode = _normalize_gm_condition_mode(family_payload.get("mode"))
     if bool(family_payload.get("explicit_threshold")):
         if mode == "POS":
@@ -1312,6 +1358,11 @@ def _compact_gm_buy_debug(evaluation: dict[str, Any], state_row: dict[str, Any] 
             "threshold": payload.get("threshold"),
             "buy_max_threshold": payload.get("buy_max_threshold"),
             "explicit_threshold": bool(payload.get("explicit_threshold")),
+            "benchmark_ticker": payload.get("benchmark_ticker"),
+            "expected_benchmark": payload.get("expected_benchmark"),
+            "sector": payload.get("sector"),
+            "canonical_sector": payload.get("canonical_sector"),
+            "unavailable_reason": payload.get("unavailable_reason"),
             "blocked_by_buy_max_threshold": bool(payload.get("blocked_by_buy_max_threshold")),
             "decision": "passed" if payload.get("passed") else "blocked",
             "reason": _gm_buy_decision_reason(payload),
@@ -1502,6 +1553,24 @@ def _evaluate_gm_conditions(
             benchmark_cache_by_ticker=benchmark_cache_by_ticker,
             universe_code=universe_code,
         )
+        unavailable_reason = ""
+        sector = ""
+        canonical_sector = ""
+        expected_benchmark = ""
+        if family == "sector" and str(universe_code or "").strip().upper() == "CSI300":
+            resolution = resolve_csi300_sector_benchmark(symbol)
+            sector = resolution.raw_sector
+            canonical_sector = resolution.canonical_sector
+            expected_benchmark = resolution.provider_symbol
+            if actual_value is None:
+                if resolution.reason:
+                    unavailable_reason = resolution.reason
+                elif benchmark_ticker not in (benchmark_cache_by_ticker or {}):
+                    unavailable_reason = SECTOR_REASON_BENCHMARK_MISSING
+                elif not ((benchmark_cache_by_ticker or {}).get(benchmark_ticker) or {}).get("dates"):
+                    unavailable_reason = SECTOR_REASON_BENCHMARK_OHLC_MISSING
+                else:
+                    unavailable_reason = "BENCHMARK_OHLC_UNAVAILABLE_AS_OF"
         if family == "current" and not bool(entry.get("explicit_threshold")) and gm_current_regime:
             passed = _gm_filter_match(gm_current_regime, f"GM_{mode}")
         else:
@@ -1530,6 +1599,10 @@ def _evaluate_gm_conditions(
             "explicit_threshold": bool(entry.get("explicit_threshold")),
             "value": None if actual_value is None else str(actual_value),
             "benchmark_ticker": benchmark_ticker,
+            "expected_benchmark": expected_benchmark,
+            "sector": sector,
+            "canonical_sector": canonical_sector,
+            "unavailable_reason": unavailable_reason,
             "passed_before_buy_max_threshold": bool(passed_before_buy_max_threshold),
             "blocked_by_buy_max_threshold": bool(blocked_by_buy_max_threshold),
             "passed": bool(passed),
@@ -1954,11 +2027,14 @@ def run_backtest(
         for scope, payload in (gm_debug.get("families") or {}).items():
             if not isinstance(payload, dict) or payload.get("decision") != "blocked":
                 continue
-            code = "GM_XXXX_BUY_MAX" if payload.get("blocked_by_buy_max_threshold") else "GM_XXXX_THRESHOLD"
+            if scope == "sector" and payload.get("unavailable_reason"):
+                code = "GM_SECTOR_UNAVAILABLE"
+            else:
+                code = "GM_XXXX_BUY_MAX" if payload.get("blocked_by_buy_max_threshold") else "GM_XXXX_THRESHOLD"
             _record_explain_blocker(
                 st,
                 as_of,
-                f"{code}_{str(scope).upper()}",
+                code if code == "GM_SECTOR_UNAVAILABLE" else f"{code}_{str(scope).upper()}",
                 payload.get("reason") or "GM_XXXX bloque l'achat",
                 {**payload, "scope": scope},
             )
@@ -2095,10 +2171,30 @@ def run_backtest(
                 "provider_symbol": provider_symbol,
                 "label": f"CSI 300 / {provider_symbol}",
             }
-            meta["sector_benchmark_status"] = (
-                "GM secteur CSI300 non supporté dans cette phase; aucun fallback vers 510300 "
-                "ou vers le marché n'est appliqué."
-            )
+            sector_operators = _signal_lines_sector_gm_operators(signal_lines)
+            if sector_operators:
+                active_by_date = getattr(resolved_universe, "active_by_date", {}) or {}
+                sector_coverage = build_csi300_sector_gm_coverage(
+                    symbols=list(sym_by_ticker.values()),
+                    coverage_start=backtest.start_date,
+                    coverage_end=backtest.end_date,
+                    active_members_expected=max((len(items) for items in active_by_date.values()), default=0),
+                )
+                settings_payload = backtest.settings if isinstance(backtest.settings, dict) else {}
+                sector_coverage.update({
+                    "active": True,
+                    "operators": sector_operators,
+                    "partial_coverage_confirmed": bool(
+                        settings_payload.get("dynamic_universe_readiness_ack")
+                    ),
+                })
+                meta["sector_gm"] = sector_coverage
+                meta["sector_benchmark_status"] = (
+                    f"{sector_coverage['status']} — "
+                    f"{sector_coverage['members_with_usable_sector_gm']}/"
+                    f"{sector_coverage['symbols_considered']} tickers historiques couverts; "
+                    "aucun fallback."
+                )
         return meta
 
     def _state_copy_for_buy_probe(st: dict[str, Any]) -> dict[str, Any]:
@@ -2267,7 +2363,10 @@ def run_backtest(
         if (needs_gm_conditions or needs_gm_push_conditions)
         else set()
     )
-    benchmark_symbols_by_ticker = _load_benchmark_symbols_by_ticker(benchmark_tickers)
+    benchmark_symbols_by_ticker = _load_benchmark_symbols_by_ticker(
+        benchmark_tickers,
+        universe_code=universe_code,
+    )
     benchmark_price_cache = (
         preload_benchmark_price_cache(
             symbols=list(benchmark_symbols_by_ticker.values()),
@@ -2278,6 +2377,8 @@ def run_backtest(
         if benchmark_tickers
         else {}
     )
+    for benchmark_ticker in benchmark_symbols_by_ticker:
+        benchmark_price_cache.setdefault(benchmark_ticker, {"dates": [], "values": []})
     for ticker in tickers:
         if ticker in sym_by_ticker and ticker not in data_by_ticker:
             logs.append(f"No DailyBar data for {ticker} in range; skipped.")
@@ -3904,7 +4005,10 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         if (needs_gm_conditions or needs_gm_push_conditions)
         else set()
     )
-    benchmark_symbols_by_ticker = _load_benchmark_symbols_by_ticker(benchmark_tickers)
+    benchmark_symbols_by_ticker = _load_benchmark_symbols_by_ticker(
+        benchmark_tickers,
+        universe_code=universe_code,
+    )
     benchmark_price_cache = (
         preload_benchmark_price_cache(
             symbols=list(benchmark_symbols_by_ticker.values()),
@@ -3915,6 +4019,8 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
         if benchmark_tickers
         else {}
     )
+    for benchmark_ticker in benchmark_symbols_by_ticker:
+        benchmark_price_cache.setdefault(benchmark_ticker, {"dates": [], "values": []})
 
     if not data_by_ticker:
         return {}

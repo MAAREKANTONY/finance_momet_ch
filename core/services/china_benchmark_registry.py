@@ -97,7 +97,11 @@ CSI300_SECTOR_BENCHMARKS = {
 
 
 def canonical_sector_for_raw(raw_sector: str | None) -> str:
-    return RAW_SECTOR_TO_CANONICAL.get(str(raw_sector or "").strip(), "")
+    normalized = str(raw_sector or "").strip()
+    return RAW_SECTOR_TO_CANONICAL.get(
+        normalized,
+        normalized if normalized in CSI300_SECTOR_BENCHMARKS else "",
+    )
 
 
 def provider_symbol_parts(provider_symbol: str | None) -> tuple[str, str]:

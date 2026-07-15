@@ -1510,9 +1510,18 @@ class BacktestResultsRenderTests(TestCase):
                 "label": "CSI 300 / 000300.SHG",
             },
             "sector_benchmark_status": (
-                "GM secteur CSI300 non supporté dans cette phase; aucun fallback vers 510300 "
-                "ou vers le marché n'est appliqué."
+                "READY_WITH_WARNINGS — 297/385 tickers historiques couverts; aucun fallback."
             ),
+            "sector_gm": {
+                "active": True,
+                "status": "READY_WITH_WARNINGS",
+                "operators": ["AND"],
+                "members_with_usable_sector_gm": 297,
+                "symbols_considered": 385,
+                "members_without_usable_sector_gm": 88,
+                "benchmarks_used": ["159928.SHE", "159939.SHE"],
+                "partial_coverage_confirmed": True,
+            },
         }
 
     def _create_validated_sp500_membership(self, symbol=None, *, valid_from=None, valid_to=None):
@@ -1624,8 +1633,10 @@ class BacktestResultsRenderTests(TestCase):
         body = response.content.decode()
         self.assertIn("Benchmark marché effectif", body)
         self.assertIn("CSI 300 / 000300.SHG", body)
-        self.assertIn("GM secteur CSI300 non supporté dans cette phase", body)
-        self.assertIn("aucun fallback vers 510300", body)
+        self.assertIn("297/385 tickers historiques couverts", body)
+        self.assertIn("GM secteur", body)
+        self.assertIn("couverture 297/385", body)
+        self.assertIn("aucun fallback", body)
         self.assertIn("Devise effective", body)
         self.assertIn("CNY", body)
         self.assertIn("Historique CSI300 supporté depuis le 3 janvier 2023.", body)
@@ -1695,8 +1706,8 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("CSI300", body)
         self.assertIn("Benchmark marché effectif", body)
         self.assertIn("CSI 300 / 000300.SHG", body)
-        self.assertIn("GM secteur CSI300 non supporté dans cette phase", body)
-        self.assertIn("aucun fallback vers 510300", body)
+        self.assertIn("297/385 tickers historiques couverts", body)
+        self.assertIn("aucun fallback", body)
         self.assertIn("Période couverte par l’historique importé", body)
         self.assertIn("Devise effective", body)
         self.assertIn("CNY", body)

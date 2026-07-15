@@ -92,8 +92,8 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertIn("Parcours S&amp;P500 historique", body)
         self.assertIn("Parcours CSI300 historique via CSV", body)
         self.assertIn("Créer / mapper les actions depuis les memberships CSV", body)
-        self.assertIn("GM_market est supporté avec le benchmark CSI 300 / 000300.SHG", body)
-        self.assertIn("GM_sector reste non supporté", body)
+        self.assertIn("GM marché utilise exclusivement CSI 300 / 000300.SHG", body)
+        self.assertIn("neuf benchmarks chinois supportés", body)
         self.assertIn("Vérifier si l’univers est prêt", body)
         self.assertIn('id="du-universe-selector"', body)
         self.assertIn('value="SP500"', body)
@@ -738,7 +738,8 @@ class DynamicUniverseTriggerPageTests(TestCase):
         self.assertFalse(readiness_mock.call_args.kwargs["require_gm_sector"])
 
     @patch("core.views.check_dynamic_universe_readiness")
-    def test_trigger_readiness_rejects_csi300_gm_sector(self, readiness_mock):
+    def test_trigger_readiness_allows_csi300_gm_sector(self, readiness_mock):
+        readiness_mock.return_value = self._report(ready=True)
         response = self.client.post(
             reverse("trigger_page"),
             {
@@ -751,9 +752,8 @@ class DynamicUniverseTriggerPageTests(TestCase):
         )
 
         self.assertEqual(response.status_code, 200)
-        readiness_mock.assert_not_called()
-        messages = list(response.context["messages"])
-        self.assertTrue(any("GM secteur CSI300 n'est pas encore supporté" in str(message) for message in messages))
+        readiness_mock.assert_called_once()
+        self.assertTrue(readiness_mock.call_args.kwargs["require_gm_sector"])
 
     @patch("core.views.launch_processing_job")
     def test_trigger_backtest_run_rejects_invalid_capital_without_processing_job(self, launch_mock):
