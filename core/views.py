@@ -11,7 +11,8 @@ from django.core.management import call_command
 from django.core.management.base import CommandError
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
-from django.http import HttpRequest, JsonResponse, HttpResponse, FileResponse
+from django.contrib.admin.views.decorators import staff_member_required
+from django.http import HttpRequest, JsonResponse, HttpResponse, FileResponse, Http404
 from django.shortcuts import render, redirect, get_object_or_404
 from django.urls import reverse
 from django.db.models import Max, Q
@@ -71,6 +72,8 @@ from .backtest_row_projection import augment_tradable_projection_row
 from .services.provider_twelvedata import TwelveDataClient
 from .services.benchmark_etf_sync import format_benchmark_sync_summary, sync_benchmark_etfs_for_symbols
 from .services.china_benchmark_registry import supported_sector_benchmarks, unsupported_sector_benchmarks
+from .services.csi300_csv_generation import csi300_generation_artifact
+from .services.csi300_operations_status import build_csi300_operations_status
 from .services.symbol_enrichment import enrich_symbols_metadata
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
@@ -841,6 +844,7 @@ def symbols_page(request):
         .distinct()
         .count()
     )
+    csi300_operations = build_csi300_operations_status() if request.user.is_staff else None
     return render(
         request,
         "symbols.html",
@@ -850,6 +854,7 @@ def symbols_page(request):
             "csi300_symbol_count": csi300_symbol_count,
             "csi300_benchmark_supported_count": len(supported_sector_benchmarks()),
             "csi300_benchmark_unsupported_sectors": [item.canonical_sector for item in unsupported_sector_benchmarks()],
+            "csi300_operations": csi300_operations,
         },
     )
 
@@ -1089,6 +1094,67 @@ def symbols_csi300_benchmarks(request):
     action_label = "Préparation" if apply_mode else "Analyse"
     messages.success(request, f"{action_label} benchmarks CSI300 lancée en background (job #{launch.job.id}).")
     return redirect("job_detail", pk=launch.job.id)
+
+
+@staff_member_required
+@require_POST
+def symbols_csi300_generate_csv(request):
+    active_job = find_active_processing_job(job_type=ProcessingJob.JobType.GENERATE_CSI300_CSV)
+    if active_job is not None:
+        messages.warning(request, f"Une génération CSI300 est déjà active (job #{active_job.id}).")
+        return redirect("job_detail", pk=active_job.id)
+
+    from .tasks import generate_csi300_historical_csv_job_task
+
+    launch = launch_processing_job(
+        task=generate_csi300_historical_csv_job_task,
+        job_type=ProcessingJob.JobType.GENERATE_CSI300_CSV,
+        created_by=request.user,
+        message="Génération du CSV historique CSI300 en attente — aucun import automatique",
+        task_kwargs={"user_id": request.user.id},
+    )
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement de la génération CSI300 impossible : {launch.dispatch_error}")
+        return redirect("symbols_page")
+    messages.success(
+        request,
+        f"Génération du CSV CSI300 lancée (job #{launch.job.id}). L’import restera une action séparée.",
+    )
+    return redirect("job_detail", pk=launch.job.id)
+
+
+@staff_member_required
+@require_POST
+def symbols_csi300_refresh_china(request):
+    active_job = find_active_processing_job(job_type=ProcessingJob.JobType.REFRESH_CSI300_DATA)
+    if active_job is not None:
+        messages.warning(request, f"Un rafraîchissement Chine est déjà actif (job #{active_job.id}).")
+        return redirect("job_detail", pk=active_job.id)
+
+    from .tasks import refresh_csi300_daily_data_job_task
+
+    launch = launch_processing_job(
+        task=refresh_csi300_daily_data_job_task,
+        job_type=ProcessingJob.JobType.REFRESH_CSI300_DATA,
+        created_by=request.user,
+        message="Rafraîchissement des actions et benchmarks Chine en attente — composition inchangée",
+        task_kwargs={"user_id": request.user.id},
+    )
+    if launch.dispatch_error:
+        messages.error(request, f"Lancement du rafraîchissement Chine impossible : {launch.dispatch_error}")
+        return redirect("symbols_page")
+    messages.success(request, f"Rafraîchissement des données Chine lancé (job #{launch.job.id}).")
+    return redirect("job_detail", pk=launch.job.id)
+
+
+@staff_member_required
+@require_GET
+def symbols_csi300_generation_download(request, artifact: str):
+    resolved = csi300_generation_artifact(artifact)
+    if resolved is None:
+        raise Http404("Artefact CSI300 valide introuvable.")
+    path, filename = resolved
+    return FileResponse(path.open("rb"), as_attachment=True, filename=filename)
 
 
 @login_required

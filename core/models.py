@@ -1142,6 +1142,8 @@ class ProcessingJob(models.Model):
         COMPUTE_METRICS = "COMPUTE_METRICS", "Compute Metrics"
         SYNC_MARKET_CAPS = "SYNC_MARKET_CAPS", "Sync Market Caps"
         ENRICH_METADATA = "ENRICH_METADATA", "Enrichissement des métadonnées"
+        GENERATE_CSI300_CSV = "GENERATE_CSI300_CSV", "Génération du CSV CSI300"
+        REFRESH_CSI300_DATA = "REFRESH_CSI300_DATA", "Rafraîchissement des données CSI300"
         RUN_BACKTEST = "RUN_BACKTEST", "Run Backtest"
         RUN_GAME = "RUN_GAME", "Run Game Scenario"
         SEND_EMAILS = "SEND_EMAILS", "Send Emails"

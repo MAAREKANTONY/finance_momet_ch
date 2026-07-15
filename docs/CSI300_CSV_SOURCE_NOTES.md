@@ -88,3 +88,13 @@ python manage.py import_universe_memberships --csv /tmp/csi300_stockalert_member
 ```
 
 5. Run CSI300 readiness checks before any backtest.
+
+## Procédure staff dans l’application
+
+1. Dans l’écran **Tickers**, lancer **Générer le CSV historique CSI300**.
+2. Vérifier le statut, les compteurs, les warnings et le rapport JSON avant de télécharger le CSV valide.
+3. Si une synchronisation des memberships est nécessaire, ouvrir séparément l’interface d’import : la génération ne déclenche jamais d’import.
+4. Utiliser **Rafraîchir les données Chine** pour les OHLC des actions, `000300.SHG` et les neuf benchmarks sectoriels supportés.
+5. Lire les warnings de couverture dans le tableau de bord ; quelques OHLC absents donnent `READY_WITH_WARNINGS`, tandis qu’une incohérence memberships/snapshots donne `NOT_READY`.
+
+La génération de composition et l’import sont deux opérations distinctes. Un CSV invalide ne remplace jamais la dernière génération validée.
