@@ -6,6 +6,12 @@ from django.db import models, transaction
 from django.db.models import Q
 from django.conf import settings as django_settings
 
+from .services.symbol_presentation import (
+    symbol_display_code,
+    symbol_display_label,
+    symbol_display_name,
+)
+
 
 class Symbol(models.Model):
     ticker = models.CharField(max_length=64)
@@ -24,6 +30,23 @@ class Symbol(models.Model):
 
     def __str__(self) -> str:
         return f"{self.ticker}{(':'+self.exchange) if self.exchange else ''}"
+
+    @property
+    def display_name(self) -> str:
+        return symbol_display_name(ticker=self.ticker, name=self.name, name_en=self.name_en)
+
+    @property
+    def display_code(self) -> str:
+        return symbol_display_code(ticker=self.ticker, exchange=self.exchange)
+
+    @property
+    def display_label(self) -> str:
+        return symbol_display_label(
+            ticker=self.ticker,
+            exchange=self.exchange,
+            name=self.name,
+            name_en=self.name_en,
+        )
 
 
 class Scenario(models.Model):

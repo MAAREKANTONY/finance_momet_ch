@@ -16,7 +16,7 @@
         <input type="text" name="ticker" list="tickersList" placeholder="TSLA / Technology" value="{{ selected_ticker }}">
         <datalist id="tickersList">
           {% for s in symbols %}
-            <option value="{{ s.ticker }}" label="{{ s.ticker }}{% if s.exchange %} — {{ s.exchange }}{% endif %}{% if s.sector %} — {{ s.sector }}{% endif %}"></option>
+            <option value="{{ s.ticker }}" label="{{ s.display_label }}{% if s.sector %} — {{ s.sector }}{% endif %}"></option>
           {% endfor %}
         </datalist>
       </div>
@@ -110,9 +110,7 @@
       <tr>
         <td>{{ a.date }}</td>
         <td>
-          <strong>{{ a.symbol.ticker }}</strong>
-          {% if a.symbol.exchange %}<span class="pill">{{ a.symbol.exchange }}</span>{% endif %}
-          {% if a.symbol.name %}<div class="muted">{{ a.symbol.name }}</div>{% endif %}
+          <strong>{{ a.symbol.display_label }}</strong>
         </td>
         <td>{{ a.scenario.name }}</td>
         <td>{{ a.alerts }}</td>

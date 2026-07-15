@@ -145,7 +145,7 @@
   <tbody>
     {% for r in rows %}
       <tr>
-        <td>{{ r.ticker }}</td>
+        <td>{{ r.display_label }}</td>
         <td>{% if r.bmd is not None %}{{ r.bmd|pct:2 }}{% else %}-{% endif %}</td>
         <td>{% if r.avg_slope is not None %}{{ r.avg_slope|floatformat:6 }}{% else %}-{% endif %}</td>
         <td>{{ r.TRADABLE_DAYS|default:"-" }}</td>
