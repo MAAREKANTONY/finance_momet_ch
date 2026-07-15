@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 from celery import current_app
 from django.contrib import messages
 from django.contrib.auth.decorators import login_required
@@ -15,6 +13,7 @@ from .job_broker import broker_queue_snapshot, purge_broker_queue
 from .job_recovery import recover_jobs
 from .job_status_sync import sync_related_state_for_terminal_job
 from .models import ProcessingJob
+from .path_safety import resolve_existing_file_within
 
 _ALLOWED_JOB_STATUSES = {
     ProcessingJob.Status.PENDING,
@@ -178,19 +177,9 @@ def job_download(request: HttpRequest, pk: int) -> HttpResponse:
     if not p:
         raise Http404("No file")
 
-    path = Path(p)
-    try:
-        path_resolved = path.resolve()
-        exports_root = Path("/data/exports").resolve()
-        if not str(path_resolved).startswith(str(exports_root)):
-            raise Http404("Invalid path")
-    except Exception as exc:
-        if isinstance(exc, Http404):
-            raise
+    path_resolved = resolve_existing_file_within(p, "/data/exports")
+    if path_resolved is None:
         raise Http404("Invalid path")
-
-    if not path_resolved.exists():
-        raise Http404("Missing file")
 
     filename = job.output_name or path_resolved.name
     return FileResponse(open(path_resolved, "rb"), as_attachment=True, filename=filename)

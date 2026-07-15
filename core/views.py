@@ -121,6 +121,7 @@ from .templatetags.backtest_extras import (
 )
 from .excel_utils import append_excel_row
 from .job_launch import dispatch_task_after_commit, find_active_processing_job, launch_processing_job
+from .path_safety import resolve_existing_file_within
 from .services.run_configuration_snapshots import (
     capture_backtest_configuration,
     capture_game_configuration,
@@ -564,6 +565,10 @@ def dashboard(request):
 def alerts_table(request):
     date_str = (request.GET.get("date") or "").strip()
     scenario_id = (request.GET.get("scenario") or "").strip()
+    try:
+        scenario_id = int(scenario_id) if scenario_id else ""
+    except (TypeError, ValueError):
+        scenario_id = ""
     ticker = (request.GET.get("ticker") or "").strip()
     alert_codes = request.GET.getlist("alert")
 
@@ -598,7 +603,7 @@ def alerts_table(request):
         "scenarios": scenarios,
         "symbols": symbols,
         "selected_date": date_str,
-        "selected_scenario": int(scenario_id) if scenario_id else "",
+        "selected_scenario": scenario_id,
         "selected_ticker": ticker,
         "selected_alerts": alert_codes,
         "all_alert_codes": all_alert_codes,
@@ -1939,7 +1944,12 @@ def study_apply_universe(request, pk: int):
     if not universe_id:
         messages.error(request, "Universe manquant.")
         return redirect("study_edit", pk=pk)
-    universe = get_object_or_404(Universe, pk=int(universe_id))
+    try:
+        universe_pk = int(universe_id)
+    except (TypeError, ValueError):
+        messages.error(request, "Universe invalide.")
+        return redirect("study_edit", pk=pk)
+    universe = get_object_or_404(Universe, pk=universe_pk)
     _apply_universe_to_scenario(scenario, universe, mode=mode)
     purge_scenario_derived_data(scenario, reset_backtests=True)
     messages.success(request, f"Univers '{universe.name}' appliqué ({mode}). Données calculées invalidées et nettoyées (safe).")
@@ -2121,6 +2131,8 @@ def scenario_duplicate(request, pk: int):
     return render(request, "scenario_form.html", context)
 
 
+@login_required
+@require_POST
 def scenario_delete(request, pk: int):
     scenario = get_object_or_404(Scenario, pk=pk)
     try:
@@ -2830,9 +2842,6 @@ def job_detail(request, pk: int):
 @login_required
 def job_download(request, pk: int):
     """Download an artifact produced by a ProcessingJob (e.g. async XLSX export)."""
-    from django.http import FileResponse, Http404
-    from pathlib import Path
-
     job = get_object_or_404(ProcessingJob.objects.select_related("created_by"), pk=pk)
     if job.created_by and job.created_by != request.user and not request.user.is_staff:
         raise Http404("Not allowed")
@@ -2841,17 +2850,10 @@ def job_download(request, pk: int):
     if not p:
         raise Http404("No file")
 
-    path = Path(p)
     # Safety: only allow files under /data/exports
-    try:
-        path_resolved = path.resolve()
-        if not str(path_resolved).startswith(str(Path("/data/exports").resolve())):
-            raise Http404("Invalid path")
-    except Exception:
+    path_resolved = resolve_existing_file_within(p, "/data/exports")
+    if path_resolved is None:
         raise Http404("Invalid path")
-
-    if not path_resolved.exists():
-        raise Http404("Missing file")
 
     filename = (job.output_name or path_resolved.name)
     return FileResponse(open(path_resolved, "rb"), as_attachment=True, filename=filename)
@@ -5066,6 +5068,7 @@ def symbol_search(request: HttpRequest) -> JsonResponse:
     return JsonResponse(data, safe=False)
 
 # --- Game Scenarios (Scénario de Jeu) ---
+@login_required
 def game_scenarios_page(request: HttpRequest):
     # Keep the list page light: today_results may contain a full daily snapshot.
     qs = GameScenario.objects.defer(
