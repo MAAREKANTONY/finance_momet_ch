@@ -70,12 +70,12 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     if max_p_window and max_p_window > 0:
         prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:max_p_window])
         prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
-        p_series = prior_Ps + [D(P)]
-        if len(p_series) >= 2:
+        slope_p_series = prior_Ps + [D(P)]
+        if len(slope_p_series) >= 2:
             vals = []
-            for i in range(1, len(p_series)):
-                p0 = D(p_series[i - 1])
-                p1 = D(p_series[i])
+            for i in range(1, len(slope_p_series)):
+                p0 = D(slope_p_series[i - 1])
+                p1 = D(slope_p_series[i])
                 if p0 in (None, 0) or p1 is None:
                     continue
                 vals.append((p1 - p0) / p0)
@@ -88,12 +88,12 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
     if n2 and n2 > 0:
         prior_Ps_desc = list(prior_metrics.values_list("P", flat=True)[:n2])
         prior_Ps = list(reversed([D(x) for x in prior_Ps_desc if D(x) is not None]))
-        p_series = prior_Ps + [D(P)]
-        if len(p_series) >= (n2 + 1) and M1 is not None and T is not None:
+        kf_p_series = prior_Ps + [D(P)]
+        if len(kf_p_series) >= (n2 + 1) and M1 is not None and T is not None:
             vals_n2 = []
-            for i in range(1, len(p_series[-(n2 + 1):])):
-                p0 = D(p_series[-(n2 + 1):][i - 1])
-                p1 = D(p_series[-(n2 + 1):][i])
+            for i in range(1, len(kf_p_series[-(n2 + 1):])):
+                p0 = D(kf_p_series[-(n2 + 1):][i - 1])
+                p1 = D(kf_p_series[-(n2 + 1):][i])
                 if p0 in (None, 0) or p1 is None:
                     vals_n2 = []
                     break
@@ -103,14 +103,14 @@ def compute_for_symbol_scenario(symbol, scenario, trading_date):
                 Kf = M1 - (T * p_sum)
 
     if npente and npente > 0:
-        base_p = D(p_series[-(npente + 1)]) if len(p_series) >= (npente + 1) else None
-        cur_p = D(p_series[-1]) if p_series else None
+        base_p = D(slope_p_series[-(npente + 1)]) if len(slope_p_series) >= (npente + 1) else None
+        cur_p = D(slope_p_series[-1]) if slope_p_series else None
         if base_p not in (None, 0) and cur_p is not None:
             slope_vrai = (cur_p - base_p) / base_p
 
     if npente_basse and npente_basse > 0:
-        base_p_basse = D(p_series[-(npente_basse + 1)]) if len(p_series) >= (npente_basse + 1) else None
-        cur_p_basse = D(p_series[-1]) if p_series else None
+        base_p_basse = D(slope_p_series[-(npente_basse + 1)]) if len(slope_p_series) >= (npente_basse + 1) else None
+        cur_p_basse = D(slope_p_series[-1]) if slope_p_series else None
         if base_p_basse not in (None, 0) and cur_p_basse is not None:
             slope_vrai_basse = (cur_p_basse - base_p_basse) / base_p_basse
 

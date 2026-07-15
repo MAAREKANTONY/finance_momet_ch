@@ -102,6 +102,77 @@ class EngineAndMetricsRegressionTests(TestCase):
         DailyBar.objects.bulk_create(bars)
         return [b.date for b in bars]
 
+    def _create_storage_mode_parity_backtest(self, *, close_positions_at_end: bool) -> Backtest:
+        start = date(2025, 1, 6)
+        prices = ["10", "11", "12"]
+        self._create_bars_for_symbol(self.symbol, prices, start=start)
+        DailyMetric.objects.bulk_create([
+            DailyMetric(
+                symbol=self.symbol,
+                scenario=self.scenario,
+                date=start + timedelta(days=offset),
+                P=Decimal(price),
+                ratio_P=Decimal("1"),
+            )
+            for offset, price in enumerate(prices)
+        ])
+        Alert.objects.create(symbol=self.symbol, scenario=self.scenario, date=start, alerts="A1")
+        return Backtest.objects.create(
+            name=f"Storage mode parity close={close_positions_at_end}",
+            scenario=self.scenario,
+            start_date=start,
+            end_date=start + timedelta(days=2),
+            capital_total=Decimal("1000"),
+            capital_per_ticker=Decimal("100"),
+            capital_mode="FIXED",
+            include_all_tickers=True,
+            signal_lines=[{"buy": ["A1"], "sell": ["B1"]}],
+            universe_snapshot=[self.symbol.ticker],
+            warmup_days=0,
+            close_positions_at_end=close_positions_at_end,
+        )
+
+    def _assert_storage_mode_financial_parity(self, backtest: Backtest, *, expected_sales: int) -> None:
+        detailed_result = run_backtest(backtest, large_result_mode=False).results
+        large_result = run_backtest(backtest, large_result_mode=True).results
+        kpi_result = run_backtest_kpi_only(backtest)
+
+        detailed_line = detailed_result["tickers"][self.symbol.ticker]["lines"][0]
+        large_line = large_result["tickers"][self.symbol.ticker]["lines"][0]
+        detailed_final = detailed_line["final"]
+        large_final = large_line["final"]
+        kpi_final = kpi_result[self.symbol.ticker]["lines"][0]["final"]
+
+        for field in [
+            "N",
+            "TRADABLE_DAYS",
+            "TRADABLE_DAYS_NOT_IN_POSITION",
+            "TRADABLE_DAYS_IN_POSITION_CLOSED",
+        ]:
+            self.assertEqual(detailed_final[field], large_final[field], field)
+            self.assertEqual(detailed_final[field], kpi_final[field], field)
+        for field in ["BT", "BMJ", "BMD"]:
+            detailed_value = None if detailed_final[field] is None else Decimal(detailed_final[field])
+            large_value = None if large_final[field] is None else Decimal(large_final[field])
+            kpi_value = None if kpi_final[field] is None else Decimal(kpi_final[field])
+            self.assertEqual(detailed_value, large_value, field)
+            self.assertEqual(detailed_value, kpi_value, field)
+
+        for field in ["PNL_AMOUNT", "FINAL_EQUITY"]:
+            self.assertEqual(Decimal(detailed_final[field]), Decimal(large_final[field]), field)
+        for field in ["TOTAL_PNL_AMOUNT", "FINAL_EQUITY"]:
+            self.assertEqual(
+                Decimal(detailed_result["portfolio"]["kpi"][field]),
+                Decimal(large_result["portfolio"]["kpi"][field]),
+                field,
+            )
+
+        sale_actions = {"SELL", "FORCED_SELL"}
+        detailed_sales = sum(event.get("action") in sale_actions for event in detailed_line["events"])
+        large_sales = sum(event.get("action") in sale_actions for event in large_line["events"])
+        self.assertEqual(detailed_sales, expected_sales)
+        self.assertEqual(large_sales, expected_sales)
+
     def _compute_alerts_with_slow_path(self, scenario: Scenario, closes: list[str]) -> list[str]:
         symbol = Symbol.objects.create(ticker=f"SLOW{Symbol.objects.count():04d}", exchange="NYSE", active=True)
         dates = self._create_bars_for_symbol(symbol, closes)
@@ -1087,6 +1158,30 @@ class EngineAndMetricsRegressionTests(TestCase):
         self.assertEqual(Decimal(final["BT"]), Decimal("0.2"))
         self.assertEqual(Decimal(result[self.symbol.ticker]["best_bmd"]), Decimal(final["BMD"]))
 
+    def test_forced_close_financial_kpis_match_all_result_modes(self):
+        bt = self._create_storage_mode_parity_backtest(close_positions_at_end=True)
+
+        self._assert_storage_mode_financial_parity(bt, expected_sales=1)
+
+        detailed_final = run_backtest(bt).results["tickers"][self.symbol.ticker]["lines"][0]["final"]
+        self.assertEqual(detailed_final["N"], 1)
+        self.assertEqual(detailed_final["TRADABLE_DAYS_IN_POSITION_CLOSED"], 2)
+        self.assertEqual(Decimal(detailed_final["BMD"]), Decimal("0.1"))
+        self.assertEqual(Decimal(detailed_final["BMJ"]), Decimal("0.2"))
+        self.assertEqual(Decimal(detailed_final["PNL_AMOUNT"]), Decimal("20"))
+
+    def test_open_position_financial_kpis_match_all_result_modes_without_forced_close(self):
+        bt = self._create_storage_mode_parity_backtest(close_positions_at_end=False)
+
+        self._assert_storage_mode_financial_parity(bt, expected_sales=0)
+
+        detailed_final = run_backtest(bt).results["tickers"][self.symbol.ticker]["lines"][0]["final"]
+        self.assertEqual(detailed_final["N"], 0)
+        self.assertEqual(detailed_final["TRADABLE_DAYS_IN_POSITION_CLOSED"], 3)
+        self.assertEqual(Decimal(detailed_final["BMD"]), Decimal("0"))
+        self.assertIsNone(detailed_final["BMJ"])
+        self.assertEqual(Decimal(detailed_final["PNL_AMOUNT"]), Decimal("0"))
+
     def test_incremental_and_full_indicator_calculations_match(self):
         dates = self._create_bars_for_symbol(self.symbol, ["10", "11", "12", "11", "13", "15", "14"])
 
@@ -1127,6 +1222,34 @@ class EngineAndMetricsRegressionTests(TestCase):
             ]:
                 self.assertEqual(getattr(inc, field), getattr(full, field), f"Mismatch on {field} @ {d}")
         self.assertEqual(inc_alerts, full_alerts)
+
+    def test_slope_vrai_matches_full_calculation_when_npente_exceeds_n2(self):
+        self.scenario.npente = 4
+        self.scenario.save(update_fields=["npente"])
+        dates = self._create_bars_for_symbol(self.symbol, ["10", "12", "14", "16", "18", "24"])
+
+        for trading_date in dates:
+            compute_for_symbol_scenario(self.symbol, self.scenario, trading_date)
+
+        incremental_slope = DailyMetric.objects.get(
+            symbol=self.symbol,
+            scenario=self.scenario,
+            date=dates[-1],
+        ).slope_vrai
+        self.assertIsNotNone(incremental_slope)
+        self.assertEqual(incremental_slope, (Decimal("24") - Decimal("12")) / Decimal("12"))
+
+        DailyMetric.objects.filter(symbol=self.symbol, scenario=self.scenario).delete()
+        Alert.objects.filter(symbol=self.symbol, scenario=self.scenario).delete()
+        bars = DailyBar.objects.filter(symbol=self.symbol).order_by("date")
+        compute_full_for_symbol_scenario(symbol=self.symbol, scenario=self.scenario, bars=bars)
+
+        full_slope = DailyMetric.objects.get(
+            symbol=self.symbol,
+            scenario=self.scenario,
+            date=dates[-1],
+        ).slope_vrai
+        self.assertEqual(full_slope, incremental_slope)
 
     def test_null_sell_threshold_preserves_historical_slope_alerts(self):
         scenario = Scenario.objects.create(

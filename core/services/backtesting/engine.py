@@ -948,6 +948,35 @@ def _build_shared_line_kpi_values(state_row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _account_for_forced_close_day(state_row: dict[str, Any], *, was_tradable: bool) -> None:
+    """Keep end-of-day holding counters consistent after a forced close."""
+    in_position_days = int(state_row.get("tradable_days_in_position") or 0)
+    if was_tradable and in_position_days > 0:
+        state_row["tradable_days_in_position"] = in_position_days - 1
+
+
+def _sync_daily_row_with_shared_line_kpis(row: dict[str, Any], state_row: dict[str, Any]) -> None:
+    """Project the state-backed line KPIs onto a retained detailed row."""
+    shared_kpis = _build_shared_line_kpi_values(state_row)
+    tradable_days = shared_kpis["TRADABLE_DAYS"]
+    not_in_position_days = shared_kpis["TRADABLE_DAYS_NOT_IN_POSITION"]
+    in_position_days = shared_kpis["TRADABLE_DAYS_IN_POSITION_CLOSED"]
+    row.update({
+        "N": shared_kpis["N"],
+        "S_G_N": None if shared_kpis["S_G_N"] is None else str(shared_kpis["S_G_N"]),
+        "BT": str(shared_kpis["BT"]),
+        "TRADABLE_DAYS": tradable_days,
+        "TRADABLE_DAYS_NOT_IN_POSITION": not_in_position_days,
+        "TRADABLE_DAYS_IN_POSITION_CLOSED": in_position_days,
+        "NB_JOUR_OUVRES": not_in_position_days,
+        "BUY_DAYS_CLOSED": in_position_days,
+        "BMJ": None if shared_kpis["BMJ"] is None else str(shared_kpis["BMJ"]),
+        "BMD": None if shared_kpis["BMD"] is None else str(shared_kpis["BMD"]),
+        "RATIO_NOT_IN_POSITION": None if tradable_days == 0 else str((Decimal(not_in_position_days) / Decimal(tradable_days)) * Decimal("100")),
+        "RATIO_IN_POSITION": None if tradable_days == 0 else str((Decimal(in_position_days) / Decimal(tradable_days)) * Decimal("100")),
+    })
+
+
 def _compute_portfolio_bt_ratio(equity_end: Decimal | None, invested_end: Decimal | None) -> Decimal | None:
     """Return the validated portfolio BT ratio.
 
@@ -3368,46 +3397,6 @@ def run_backtest(
         "on" if large_result_mode else "off",
     )
 
-    def _recompute_tradable_counters_from_rows(st: dict[str, Any]) -> None:
-        """Recompute cumulative tradable day counters from existing daily rows.
-
-        This is used as a safety net for cases where rows are mutated after the main
-        per-day accounting (ex: forced close at end). It keeps UI metrics consistent.
-        """
-        st["tradable_days"] = 0
-        st["tradable_days_in_position"] = 0
-        for row in st.get("daily_rows") or []:
-            is_tradable = bool(row.get("tradable"))
-            try:
-                shares_eod = int(row.get("shares") or 0)
-            except Exception:
-                shares_eod = 0
-            in_pos = shares_eod > 0
-            if is_tradable:
-                st["tradable_days"] += 1
-                if in_pos:
-                    st["tradable_days_in_position"] += 1
-            td = int(st["tradable_days"])
-            ip = int(st["tradable_days_in_position"])
-            nip = max(0, td - ip)
-
-            row["TRADABLE_DAYS"] = td
-            row["TRADABLE_DAYS_NOT_IN_POSITION"] = nip
-            row["TRADABLE_DAYS_IN_POSITION_CLOSED"] = ip
-            row["NB_JOUR_OUVRES"] = nip
-            row["BUY_DAYS_CLOSED"] = ip
-
-            if td > 0:
-                row["RATIO_NOT_IN_POSITION"] = str((Decimal(nip) / Decimal(td)) * Decimal("100"))
-                row["RATIO_IN_POSITION"] = str((Decimal(ip) / Decimal(td)) * Decimal("100"))
-            else:
-                row["RATIO_NOT_IN_POSITION"] = None
-                row["RATIO_IN_POSITION"] = None
-
-            BT = _to_dec(row.get("BT")) or Decimal("0")
-            row["BMJ"] = None if nip == 0 else str(BT / Decimal(nip))
-            row["BMD"] = None if ip == 0 else str(BT / Decimal(ip))
-
     # Forced close at end (per ticker,line) on last available price date
     if backtest.close_positions_at_end:
         for (ticker, li), st in state.items():
@@ -3439,6 +3428,13 @@ def run_backtest(
             if closed is None:
                 continue
             G_today, pnl_amount_today = closed
+            was_tradable, _, _ = _ratio_tradable(
+                ticker,
+                last_date,
+                price_by_date.get(last_date),
+                tdata["metrics"].get(last_date),
+            )
+            _account_for_forced_close_day(st, was_tradable=was_tradable)
             _merge_couloir_day_debug(
                 st,
                 couloir_sell_executed=True,
@@ -3483,8 +3479,7 @@ def run_backtest(
                 rows[-1]["BMD"] = None if BMD is None else str(BMD)
                 rows[-1]["BUY_DAYS_CLOSED"] = bmd_days
                 _apply_couloir_day_debug_to_last_row(st, last_date)
-                # Ensure tradable day counters remain consistent after mutating EOD shares.
-                _recompute_tradable_counters_from_rows(st)
+                _sync_daily_row_with_shared_line_kpis(rows[-1], st)
             elif rows:
                 N = st["trade_count"]
                 S_G_N = None if N == 0 else (st["sum_g"] / Decimal(N))
@@ -3539,7 +3534,7 @@ def run_backtest(
                     "BUY_DAYS_CLOSED": bmd_days,
                 })
                 _apply_couloir_day_debug_to_last_row(st, last_date)
-                _recompute_tradable_counters_from_rows(st)
+                _sync_daily_row_with_shared_line_kpis(rows[-1], st)
 
     all_warnings = _serialize_warnings(_collect_backtest_warnings(state))
 
@@ -3582,9 +3577,7 @@ def run_backtest(
             N = shared_kpis["N"]
             S_G_N = shared_kpis["S_G_N"]
             BT = shared_kpis["BT"]
-            # Day counters are derived from the end-of-day rows (see section 3.b above).
-            # They count "tradable" days (ratio_p >= X unless include_all) and whether a position
-            # is held at the end of the day (shares > 0).
+            # State counters track tradable days and whether a position is held at end of day.
             tradable_days = shared_kpis["TRADABLE_DAYS"]
             in_pos_days = shared_kpis["TRADABLE_DAYS_IN_POSITION_CLOSED"]
             not_in_pos_days = shared_kpis["TRADABLE_DAYS_NOT_IN_POSITION"]
@@ -4540,8 +4533,7 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
             if closed is None:
                 continue
             tradable, _, _ = _ratio_tradable(ticker, last_date, tdata["price_by_date"].get(last_date), tdata["metrics"].get(last_date))
-            if tradable and int(st.get("tradable_days_in_position") or 0) > 0:
-                st["tradable_days_in_position"] -= 1
+            _account_for_forced_close_day(st, was_tradable=tradable)
 
     # Build finals
     out: dict[str, dict[str, Any]] = {}
