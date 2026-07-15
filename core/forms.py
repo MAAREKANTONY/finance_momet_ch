@@ -62,6 +62,7 @@ TREND_FILTER_OPERATOR_CHOICES = [
 ]
 
 from .models import EmailRecipient, EmailSettings, Scenario, Symbol, Backtest, AlertDefinition, Universe, Study
+from .services.symbol_presentation import symbol_front_payload
 from .services.trend_filters import (
     TREND_FILTER_GM_CURRENT_KEY,
     TREND_FILTER_GM_MARKET_KEY,
@@ -623,17 +624,12 @@ class AlertDefinitionForm(forms.ModelForm):
 
 
 def _symbol_picker_payload(symbols):
-    return json.dumps([
-        {
-            "id": s.id,
-            "ticker": s.ticker,
-            "name": s.name or "",
-            "exchange": s.exchange or "",
-            "sector": getattr(s, "sector", "") or "",
-            "country": getattr(s, "country", "") or "",
-        }
-        for s in symbols
-    ])
+    return json.dumps([symbol_front_payload(symbol) for symbol in symbols])
+
+
+def _symbol_form_label(symbol: Symbol) -> str:
+    sector = str(getattr(symbol, "sector", "") or "").strip()
+    return f"{symbol.display_label} | Secteur: {sector}" if sector else symbol.display_label
 
 
 def _configure_symbol_picker(field, selected_symbols):
@@ -699,17 +695,7 @@ class ScenarioForm(forms.ModelForm):
             "CSI300 nécessite un CSV historique explicite, sans composition actuelle ni fallback provider."
         )
         self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
-        # Make the option label searchable (ticker + exchange + name)
-        def _label(sym: Symbol) -> str:
-            base = f"{sym.ticker}{(':'+sym.exchange) if sym.exchange else ''}"
-            extras = []
-            if sym.name:
-                extras.append(sym.name)
-            if getattr(sym, "sector", ""):
-                extras.append(f"Secteur: {sym.sector}")
-            return f"{base} — {' | '.join(extras)}" if extras else base
-
-        self.fields["symbols"].label_from_instance = _label
+        self.fields["symbols"].label_from_instance = _symbol_form_label
         selected_symbols = list(self.instance.symbols.all()) if self.instance.pk else []
         if not selected_symbols:
             initial_symbols = self.initial.get("symbols") if hasattr(self, "initial") else None
@@ -759,16 +745,7 @@ class UniverseForm(forms.ModelForm):
             self.fields["symbols"].required = False
             self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
 
-            def _label(sym: Symbol) -> str:
-                base = f"{sym.ticker}{(':'+sym.exchange) if sym.exchange else ''}"
-                extras = []
-                if sym.name:
-                    extras.append(sym.name)
-                if getattr(sym, "sector", ""):
-                    extras.append(f"Secteur: {sym.sector}")
-                return f"{base} — {' | '.join(extras)}" if extras else base
-
-            self.fields["symbols"].label_from_instance = _label
+            self.fields["symbols"].label_from_instance = _symbol_form_label
             selected_symbols = list(self.instance.symbols.all()) if self.instance.pk else []
             if not selected_symbols:
                 initial_symbols = self.initial.get("symbols") if hasattr(self, "initial") else None
@@ -944,16 +921,7 @@ class StudyScenarioForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         self.fields["symbols"].queryset = Symbol.objects.filter(active=True).order_by("ticker", "exchange")
 
-        def _label(sym: Symbol) -> str:
-            base = f"{sym.ticker}{(':'+sym.exchange) if sym.exchange else ''}"
-            extras = []
-            if sym.name:
-                extras.append(sym.name)
-            if getattr(sym, "sector", ""):
-                extras.append(f"Secteur: {sym.sector}")
-            return f"{base} — {' | '.join(extras)}" if extras else base
-
-        self.fields["symbols"].label_from_instance = _label
+        self.fields["symbols"].label_from_instance = _symbol_form_label
         selected_symbols = list(self.instance.symbols.all()) if self.instance.pk else []
         if selected_symbols:
             self.fields["symbols"].initial = selected_symbols

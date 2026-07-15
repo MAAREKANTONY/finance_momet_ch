@@ -108,7 +108,7 @@ def build_scenario_workbook_write_only(
             f"| Signal anti-chute RHD: fenêtre={getattr(scenario,'recent_high_drawdown_lookback_days',None)} repli_max={getattr(scenario,'recent_high_drawdown_max_drop_pct',None)} "
             f"| history_years={scenario.history_years}"
         ])
-        append_excel_row(ws, [f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
+        append_excel_row(ws, [f"Symbole: {sym.display_label}"])
         append_excel_row(ws, [])
 
         header = [

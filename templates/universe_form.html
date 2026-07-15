@@ -149,6 +149,9 @@
       id: Number(item.id),
       ticker: String(item.ticker || '').trim(),
       name: String(item.name || '').trim(),
+      name_en: String(item.name_en || '').trim(),
+      display_name: String(item.display_name || item.name_en || item.name || item.ticker || '').trim(),
+      display_label: String(item.display_label || item.ticker || '').trim(),
       exchange: String(item.exchange || '').trim(),
       sector: String(item.sector || '').trim(),
       country: String(item.country || '').trim(),
@@ -162,12 +165,12 @@
   function filteredSelectedItems(){
     const q = (selectedSearch.value || '').trim().toLowerCase();
     let items = Array.from(state.selectedMap.values()).sort((a,b) => {
-      const ka = `${a.ticker}|${a.exchange}|${a.name}`;
-      const kb = `${b.ticker}|${b.exchange}|${b.name}`;
+      const ka = `${a.display_label}|${a.ticker}`;
+      const kb = `${b.display_label}|${b.ticker}`;
       return ka.localeCompare(kb);
     });
     if (!q) return items;
-    return items.filter(item => [item.ticker, item.name, item.exchange, item.sector, item.country].join(' ').toLowerCase().includes(q));
+    return items.filter(item => [item.ticker, item.name, item.name_en, item.display_name, item.display_label, item.exchange, item.sector, item.country].join(' ').toLowerCase().includes(q));
   }
 
   function renderSelected(){
@@ -190,8 +193,8 @@
     selectedList.innerHTML = pageItems.map(item => `
       <div style="display:flex; justify-content:space-between; gap:10px; align-items:center; padding:8px 10px; border-bottom:1px solid #eee;">
         <div>
-          <strong>${escapeHtml(item.ticker)}</strong>
-          <span class="muted">${item.exchange ? ' — ' + escapeHtml(item.exchange) : ''}${item.name ? ' — ' + escapeHtml(item.name) : ''}${item.sector ? ' — ' + escapeHtml(item.sector) : ''}</span>
+          <strong>${escapeHtml(item.display_label || item.ticker)}</strong>
+          <span class="muted">${item.sector ? ' — ' + escapeHtml(item.sector) : ''}</span>
         </div>
         <button type="button" class="btn btn-remove-one" data-id="${item.id}">Retirer</button>
       </div>
@@ -217,8 +220,8 @@
     }
     filterPreview.innerHTML = state.filterPreviewItems.map(item => `
       <div style="padding:8px 10px; border-bottom:1px solid #eee;">
-        <strong>${escapeHtml(item.ticker)}</strong>
-        <span class="muted">${item.exchange ? ' — ' + escapeHtml(item.exchange) : ''}${item.name ? ' — ' + escapeHtml(item.name) : ''}${item.sector ? ' — ' + escapeHtml(item.sector) : ''}</span>
+        <strong>${escapeHtml(item.display_label || item.ticker)}</strong>
+        <span class="muted">${item.sector ? ' — ' + escapeHtml(item.sector) : ''}</span>
       </div>
     `).join('');
   }

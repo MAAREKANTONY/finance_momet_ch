@@ -75,6 +75,7 @@ from .services.china_benchmark_registry import supported_sector_benchmarks, unsu
 from .services.csi300_csv_generation import csi300_generation_artifact
 from .services.csi300_operations_status import build_csi300_operations_status
 from .services.symbol_enrichment import enrich_symbols_metadata
+from .services.symbol_presentation import symbol_display_label, symbol_front_payload
 from .services.backtesting.parquet_storage import parquet_storage_enabled
 from .services.backtesting.volume_guards import should_limit_excel, select_top_tickers_by_metric, excel_full_tickers_threshold, excel_top_n
 from .services.backtesting.engine import _compute_portfolio_bt_ratio, _to_dec
@@ -691,7 +692,7 @@ def _build_scenario_workbook(scenario: Scenario, symbols_qs, date_from: str = ""
             f"confirmation_jours={getattr(scenario,'rhd_ok_confirmation_days',None)} drawdown_max_reentree={getattr(scenario,'rhd_ok_reentry_max_drawdown',None)} "
             f"| history_years={scenario.history_years}"
         ])
-        append_excel_row(ws, [f"Ticker: {sym.ticker}  Exchange: {sym.exchange}  Name: {sym.name}"])
+        append_excel_row(ws, [f"Symbole: {sym.display_label}"])
         append_excel_row(ws, [])
 
         header = [
@@ -1512,6 +1513,7 @@ def _symbol_queryset_from_filters(*, active_only: bool = True, q: str = "", exch
         qs = qs.filter(
             Q(ticker__icontains=q)
             | Q(name__icontains=q)
+            | Q(name_en__icontains=q)
             | Q(exchange__icontains=q)
             | Q(sector__icontains=q)
             | Q(country__icontains=q)
@@ -1520,17 +1522,7 @@ def _symbol_queryset_from_filters(*, active_only: bool = True, q: str = "", exch
 
 
 def _serialize_symbol_items(symbols):
-    return [
-        {
-            "id": s.id,
-            "ticker": s.ticker,
-            "name": s.name or "",
-            "exchange": s.exchange or "",
-            "sector": s.sector or "",
-            "country": s.country or "",
-        }
-        for s in symbols
-    ]
+    return [symbol_front_payload(symbol) for symbol in symbols]
 
 
 def _universe_form_context(*, form, mode: str, universe=None):
@@ -1539,9 +1531,9 @@ def _universe_form_context(*, form, mode: str, universe=None):
         raw_ids = (form.data.get('symbols') or '').strip()
         ids = [int(part) for part in raw_ids.split(',') if part.strip().isdigit()]
         if ids:
-            selected_symbols = list(Symbol.objects.filter(id__in=ids).only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker', 'exchange'))
+            selected_symbols = list(Symbol.objects.filter(id__in=ids).only('id', 'ticker', 'name', 'name_en', 'exchange', 'sector', 'country').order_by('ticker', 'exchange'))
     elif universe is not None and getattr(universe, 'pk', None):
-        selected_symbols = list(universe.symbols.only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker', 'exchange'))
+        selected_symbols = list(universe.symbols.only('id', 'ticker', 'name', 'name_en', 'exchange', 'sector', 'country').order_by('ticker', 'exchange'))
     exchanges = list(Symbol.objects.filter(active=True).exclude(exchange='').order_by('exchange').values_list('exchange', flat=True).distinct())
     sectors = list(Symbol.objects.filter(active=True).exclude(sector='').order_by('sector').values_list('sector', flat=True).distinct())
     return {
@@ -1603,9 +1595,9 @@ def universe_symbols_json(request, pk: int):
     (works for both create & edit forms, without requiring the Scenario to exist yet).
     """
     universe = get_object_or_404(Universe, pk=pk)
-    symbols = list(universe.symbols.only("id", "ticker", "name", "exchange", "sector", "country").order_by("ticker"))
+    symbols = list(universe.symbols.only("id", "ticker", "name", "name_en", "exchange", "sector", "country").order_by("ticker"))
     ids = [s.id for s in symbols]
-    items = [{"id": s.id, "ticker": s.ticker, "name": s.name, "exchange": s.exchange, "sector": s.sector, "country": s.country} for s in symbols]
+    items = _serialize_symbol_items(symbols)
     return JsonResponse({"universe_id": universe.id, "ids": ids, "symbols": items})
 
 
@@ -1618,7 +1610,7 @@ def symbol_filter_preview(request: HttpRequest) -> JsonResponse:
     limit = max(1, min(limit, 500))
     include_all = str(request.GET.get("include_all") or "0").strip() in {"1", "true", "yes"}
 
-    qs = _symbol_queryset_from_filters(q=q, exchange=exchange, sector=sector).only("id", "ticker", "name", "exchange", "sector", "country").order_by("ticker", "exchange")
+    qs = _symbol_queryset_from_filters(q=q, exchange=exchange, sector=sector).only("id", "ticker", "name", "name_en", "exchange", "sector", "country").order_by("ticker", "exchange")
     total_count = qs.count()
     if include_all:
         symbols = list(qs)
@@ -2701,11 +2693,15 @@ def api_symbol_search(request):
         return JsonResponse({"error": str(e), "data": []}, status=400)
     out = []
     for it in items:
+        ticker = it.get("symbol") or it.get("ticker") or ""
+        exchange = it.get("exchange") or ""
+        name = it.get("instrument_name") or it.get("name") or ""
         out.append(
             {
-                "symbol": it.get("symbol") or it.get("ticker") or "",
-                "exchange": it.get("exchange") or "",
-                "name": it.get("instrument_name") or it.get("name") or "",
+                "symbol": ticker,
+                "exchange": exchange,
+                "name": name,
+                "display_label": symbol_display_label(ticker=ticker, exchange=exchange, name=name),
                 "instrument_type": it.get("instrument_type") or "",
                 "country": it.get("country") or "",
                 "currency": it.get("currency") or "",
@@ -2738,7 +2734,7 @@ def logs_page(request):
     level = (request.GET.get("level") or "").upper().strip()
     job = (request.GET.get("job") or "").strip()
 
-    qs = JobLog.objects.all().order_by("-created_at")
+    qs = JobLog.objects.select_related("scenario", "symbol").order_by("-created_at")
     if level in {"INFO", "WARNING", "ERROR"}:
         qs = qs.filter(level=level)
     if job:
@@ -3074,6 +3070,21 @@ def backtest_detail(request, pk: int):
     ]:
         latest_by_type[jt] = ProcessingJob.objects.filter(backtest=bt, job_type=jt).order_by("-created_at").first()
 
+    snapshot = bt.universe_snapshot or []
+    snapshot_labels = _symbol_display_labels_for_tickers(
+        (_ticker_from_universe_snapshot_entry(entry) for entry in snapshot),
+        universe_snapshot=snapshot,
+    )
+    universe_display_rows = [
+        {
+            **entry,
+            "display_label": snapshot_labels.get(_ticker_from_universe_snapshot_entry(entry), _ticker_from_universe_snapshot_entry(entry)),
+        }
+        if isinstance(entry, dict)
+        else {"ticker": str(entry or ""), "exchange": "", "sector": "", "display_label": snapshot_labels.get(str(entry or ""), str(entry or ""))}
+        for entry in snapshot
+    ]
+
     return render(
         request,
         "backtest_detail.html",
@@ -3081,6 +3092,7 @@ def backtest_detail(request, pk: int):
             "bt": bt,
             "jobs": jobs,
             "latest_by_type": latest_by_type,
+            "universe_display_rows": universe_display_rows,
             "dynamic_universe_readiness": _dynamic_universe_readiness_panel(bt),
             "is_couloir_mode": bool(couloir_effective_summary),
             "couloir_effective_summary": couloir_effective_summary,
@@ -3345,6 +3357,43 @@ def _ticker_from_universe_snapshot_entry(entry) -> str:
     return str(entry or "").strip()
 
 
+def _symbol_display_labels_for_tickers(tickers, *, universe_snapshot=None) -> dict[str, str]:
+    """Resolve front labels in one grouped query without changing stored ticker keys."""
+    ordered_tickers = []
+    seen = set()
+    for raw_ticker in tickers or []:
+        ticker = str(raw_ticker or "").strip()
+        if ticker and ticker not in seen:
+            seen.add(ticker)
+            ordered_tickers.append(ticker)
+    if not ordered_tickers:
+        return {}
+
+    exchange_hints = {}
+    for entry in universe_snapshot or []:
+        if not isinstance(entry, dict):
+            continue
+        ticker = str(entry.get("ticker") or "").strip()
+        exchange = str(entry.get("exchange") or "").strip()
+        if ticker and exchange:
+            exchange_hints.setdefault(ticker, exchange)
+
+    symbols = Symbol.objects.filter(ticker__in=ordered_tickers).only(
+        "ticker", "exchange", "name", "name_en"
+    ).order_by("ticker", "exchange", "id")
+    by_key = {}
+    by_ticker = {}
+    for symbol in symbols:
+        by_key[(symbol.ticker, symbol.exchange)] = symbol
+        by_ticker.setdefault(symbol.ticker, symbol)
+
+    labels = {}
+    for ticker in ordered_tickers:
+        symbol = by_key.get((ticker, exchange_hints.get(ticker, ""))) or by_ticker.get(ticker)
+        labels[ticker] = symbol.display_label if symbol else ticker
+    return labels
+
+
 def _backtest_snapshot_tickers(bt: Backtest, tickers_map: dict) -> list[str]:
     tickers = []
     seen = set()
@@ -3509,6 +3558,11 @@ def backtest_results(request, pk: int):
         messages.warning(request, "Aucun résultat disponible pour ce backtest (lance-le d'abord).")
         return redirect("backtest_detail", pk=pk)
 
+    ticker_display_labels = _symbol_display_labels_for_tickers(
+        set(tickers_map) | set(_backtest_snapshot_tickers(bt, tickers_map)),
+        universe_snapshot=bt.universe_snapshot,
+    )
+
     def _codes_to_label(v):
         if isinstance(v, (list, tuple)):
             return " + ".join(str(x) for x in v if str(x).strip())
@@ -3526,6 +3580,7 @@ def backtest_results(request, pk: int):
             if played and tk not in ticker_options_seen:
                 option = {
                     "ticker": tk,
+                    "display_label": ticker_display_labels.get(tk, tk),
                     "line_index": li,
                     "buy": _codes_to_label(l.get("buy")),
                     "sell": _codes_to_label(l.get("sell")),
@@ -3548,6 +3603,7 @@ def backtest_results(request, pk: int):
                 li = 1
             all_ticker_options.append({
                 "ticker": tk,
+                "display_label": ticker_display_labels.get(tk, tk),
                 "line_index": li,
                 "buy": _codes_to_label((line_for_option or {}).get("buy")),
                 "sell": _codes_to_label((line_for_option or {}).get("sell")),
@@ -3569,6 +3625,7 @@ def backtest_results(request, pk: int):
     else:
         ticker = next(iter(tickers_map.keys()))
     selected_ticker_option = requested_option or next((o for o in ticker_options if o["ticker"] == ticker), None)
+    selected_ticker_display_label = ticker_display_labels.get(ticker, ticker)
     tentry = tickers_map.get(ticker) or {}
 
     try:
@@ -3774,6 +3831,7 @@ def backtest_results(request, pk: int):
             final_row = _augment_row(dict(raw_final))
             global_line_rows.append({
                 "ticker": tk,
+                "display_label": ticker_display_labels.get(tk, tk),
                 "buy": buy_label,
                 "sell": sell_label,
                 "BT": final_row.get("BT"),
@@ -3791,6 +3849,14 @@ def backtest_results(request, pk: int):
 
     global_line_options = [global_line_options[k] for k in sorted(global_line_options.keys())]
     global_line_rows.sort(key=lambda r: (str(r.get("ticker") or "")))
+    result_warnings = [
+        {
+            **warning,
+            "display_label": ticker_display_labels.get(str(warning.get("ticker") or ""), str(warning.get("ticker") or "")),
+        }
+        for warning in ((results.get("meta") or {}).get("warnings") or [])
+        if isinstance(warning, dict)
+    ]
 
     return render(
         request,
@@ -3804,6 +3870,7 @@ def backtest_results(request, pk: int):
                 supported_history_start_for_backtest_display(bt)
             ),
             "ticker": ticker,
+            "ticker_display_label": selected_ticker_display_label,
             "line_index": line_index,
             "line": line,
             "is_couloir_mode": bool(couloir_effective_summary),
@@ -3832,6 +3899,7 @@ def backtest_results(request, pk: int):
             "global_line_index": global_line_index,
             "global_line_options": global_line_options,
             "global_line_rows": global_line_rows,
+            "result_warnings": result_warnings,
             "portfolio_kpi": port_kpi,
             "portfolio_daily": port_daily_for_ui,
             "portfolio_daily_json": json.dumps(port_daily_for_ui),
@@ -4959,7 +5027,7 @@ def symbol_search(request: HttpRequest) -> JsonResponse:
     if q:
         tokens = [tok.strip().upper() for tok in q.replace(';', ',').split(',') if tok.strip()]
         if len(tokens) >= 2:
-            exact_qs = qs.filter(ticker__in=tokens).only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker')
+            exact_qs = qs.filter(ticker__in=tokens).only('id', 'ticker', 'name', 'name_en', 'exchange', 'sector', 'country').order_by('ticker')
             found = list(exact_qs[:limit])
             found_tickers = {str(s.ticker).upper() for s in found}
             remaining = [tok for tok in tokens if tok not in found_tickers]
@@ -4968,10 +5036,11 @@ def symbol_search(request: HttpRequest) -> JsonResponse:
                 extra_qs = qs.exclude(id__in=[s.id for s in found]).filter(
                     Q(ticker__icontains=token)
                     | Q(name__icontains=token)
+                    | Q(name_en__icontains=token)
                     | Q(exchange__icontains=token)
                     | Q(sector__icontains=token)
                     | Q(country__icontains=token)
-                ).only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker')[: max(0, limit - len(found))]
+                ).only('id', 'ticker', 'name', 'name_en', 'exchange', 'sector', 'country').order_by('ticker')[: max(0, limit - len(found))]
                 qs = found + list(extra_qs)
             else:
                 qs = found
@@ -4980,29 +5049,20 @@ def symbol_search(request: HttpRequest) -> JsonResponse:
             qs = qs.filter(
                 Q(ticker__icontains=token)
                 | Q(name__icontains=token)
+                | Q(name_en__icontains=token)
                 | Q(exchange__icontains=token)
                 | Q(sector__icontains=token)
                 | Q(country__icontains=token)
-            ).only('id', 'ticker', 'name', 'exchange', 'sector', 'country').order_by('ticker')[:limit]
+            ).only('id', 'ticker', 'name', 'name_en', 'exchange', 'sector', 'country').order_by('ticker')[:limit]
     else:
         qs = []
 
     if hasattr(qs, 'only'):
-        qs = qs.only('id', 'ticker', 'name', 'exchange', 'sector', 'country')
+        qs = qs.only('id', 'ticker', 'name', 'name_en', 'exchange', 'sector', 'country')
         if not getattr(qs.query, 'is_sliced', False):
             qs = qs.order_by('ticker')
         qs = qs[:limit]
-    data = [
-        {
-            'id': s.id,
-            'ticker': s.ticker,
-            'name': s.name,
-            'exchange': s.exchange,
-            'sector': s.sector,
-            'country': s.country,
-        }
-        for s in qs
-    ]
+    data = _serialize_symbol_items(qs)
     return JsonResponse(data, safe=False)
 
 # --- Game Scenarios (Scénario de Jeu) ---
@@ -5112,7 +5172,16 @@ def game_scenario_detail(request: HttpRequest, pk: int):
         except Exception:
             return float("-inf")
 
-    rows_sorted = sorted(rows, key=_bmd_key, reverse=True)
+    row_labels = _symbol_display_labels_for_tickers((row.get("ticker") for row in rows if isinstance(row, dict)))
+    rows_sorted = sorted(
+        [
+            {**row, "display_label": row_labels.get(str(row.get("ticker") or ""), str(row.get("ticker") or ""))}
+            for row in rows
+            if isinstance(row, dict)
+        ],
+        key=_bmd_key,
+        reverse=True,
+    )
     return render(request, "game_scenario_detail.html", {"obj": obj, "snapshot": snapshot, "rows": rows_sorted})
 
 
@@ -6032,4 +6101,19 @@ def backtest_debug(request, pk: int):
         results_pretty = json.dumps(bt.results or {}, ensure_ascii=False, indent=2, default=str)
     except Exception:
         results_pretty = str(bt.results)
-    return render(request, "backtest_debug.html", {"bt": bt, "results_pretty": results_pretty})
+    ticker_labels = _symbol_display_labels_for_tickers(
+        ((bt.results or {}).get("tickers") or {}).keys(),
+        universe_snapshot=bt.universe_snapshot,
+    )
+    return render(
+        request,
+        "backtest_debug.html",
+        {
+            "bt": bt,
+            "results_pretty": results_pretty,
+            "ticker_display_rows": [
+                {"ticker": ticker, "display_label": label}
+                for ticker, label in ticker_labels.items()
+            ],
+        },
+    )

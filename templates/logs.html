@@ -51,7 +51,7 @@
           {% endif %}
         </td>
         <td>{{ log.scenario|default:"" }}</td>
-        <td>{{ log.symbol|default:"" }}</td>
+        <td>{% if log.symbol %}{{ log.symbol.display_label }}{% endif %}</td>
       </tr>
       {% empty %}
       <tr><td colspan="6" class="muted">Aucun log.</td></tr>

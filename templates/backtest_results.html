@@ -113,9 +113,9 @@
     Vérifiez que vos conditions SELL invalident naturellement vos conditions BUY.
   </div>
   <ul>
-    {% for warning in results.meta.warnings %}
+    {% for warning in result_warnings %}
       <li>
-        {{ warning.ticker }} L{{ warning.line_index }} :
+        {{ warning.display_label }} L{{ warning.line_index }} :
         SELL {{ warning.sell_date }} → BUY {{ warning.buy_date }}
       </li>
     {% endfor %}
@@ -328,7 +328,7 @@
       <tbody>
         {% for r in global_line_rows %}
         <tr>
-          <td>{{ r.ticker }}</td>
+          <td>{{ r.display_label }}</td>
           <td>{{ r.buy }}</td>
           <td>{{ r.sell }}</td>
           <td>{{ r.BT|pct:3 }}</td>
@@ -401,13 +401,13 @@
 
     {% if ticker_options %}
       <div style="display:flex; flex-direction:column; gap:6px; min-width:300px; max-width:520px;">
-        <div id="selectedTickerLineLabel" style="font-weight:600;">Ticker sélectionné : {{ ticker }} — L{{ line_index }}{% if selected_ticker_option and not selected_ticker_option.played %} — sans trade{% endif %}</div>
+        <div id="selectedTickerLineLabel" style="font-weight:600;">Ticker sélectionné : {{ ticker_display_label }} — L{{ line_index }}{% if selected_ticker_option and not selected_ticker_option.played %} — sans trade{% endif %}</div>
         <label for="tickerLineSearch">Rechercher un ticker</label>
         <input id="tickerLineSearch" type="search" placeholder="Rechercher un ticker…" autocomplete="off" aria-describedby="tickerLineHelp" aria-controls="tickerLineResults" style="min-width:300px;">
         <div id="tickerLineResults" class="ticker-line-results" hidden>
           {% for opt in ticker_options %}
-            <button type="button" class="ticker-line-option" data-value="{{ opt.ticker }}|{{ opt.line_index }}" data-ticker="{{ opt.ticker }}" data-line="{{ opt.line_index }}" data-label="{{ opt.ticker }} — L{{ opt.line_index }}{% if not opt.played %} — sans trade{% endif %}">
-              {{ opt.ticker }} — L{{ opt.line_index }}{% if not opt.played %} — sans trade{% endif %} <span class="muted">BUY {{ opt.buy }} / SELL {{ opt.sell }}</span>
+            <button type="button" class="ticker-line-option" data-value="{{ opt.ticker }}|{{ opt.line_index }}" data-ticker="{{ opt.ticker }}" data-line="{{ opt.line_index }}" data-label="{{ opt.display_label }} — L{{ opt.line_index }}{% if not opt.played %} — sans trade{% endif %}">
+              {{ opt.display_label }} — L{{ opt.line_index }}{% if not opt.played %} — sans trade{% endif %} <span class="muted">BUY {{ opt.buy }} / SELL {{ opt.sell }}</span>
             </button>
           {% endfor %}
           <div id="tickerLineNoResults" class="muted" hidden>Aucun ticker trouvé.</div>
@@ -506,7 +506,7 @@
 </details>
 
 <details class="card acc" id="backtest-details" open data-acc-key="summary">
-<summary class="acc-summary"><span class="acc-title">Synthèse — {{ ticker }} / L{{ line_index }}</span></summary>
+<summary class="acc-summary"><span class="acc-title">Synthèse — {{ ticker_display_label }} / L{{ line_index }}</span></summary>
 <div class="acc-body">
 <table>
     <tr>
@@ -955,7 +955,7 @@
     tickerLineOptions.forEach((option) => {
       const ticker = (option.dataset.ticker || "").toUpperCase();
       const label = (option.dataset.label || "").toUpperCase();
-      const matches = !query || ticker.startsWith(query) || label.startsWith(query);
+      const matches = !query || ticker.startsWith(query) || label.includes(query);
       option.hidden = !matches;
       option.style.display = matches ? "" : "none";
       option.setAttribute("aria-hidden", matches ? "false" : "true");

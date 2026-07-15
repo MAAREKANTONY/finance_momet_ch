@@ -14,6 +14,17 @@
   </div>
 </div>
 
+{% if ticker_display_rows %}
+<div class="card">
+  <h3>Libellés des symboles</h3>
+  <ul>
+    {% for row in ticker_display_rows %}
+      <li>{{ row.display_label }} <span class="muted">(clé technique : {{ row.ticker }})</span></li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
 <div class="card">
   <h3>Results JSON</h3>
   <pre style="white-space:pre-wrap;">{{ results_pretty }}</pre>

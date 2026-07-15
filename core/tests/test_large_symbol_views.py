@@ -2309,7 +2309,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.context["line_index"], 2)
         body = response.content.decode()
         self.assertIn('const currentTickerLineValue = "AAA|2";', body)
-        self.assertIn("Ticker sélectionné : AAA — L2", body)
+        self.assertIn("Ticker sélectionné : AAA.NYSE — L2", body)
         self.assertIn("navigateToTickerLineValue", body)
 
     def test_backtest_results_defaults_to_price_position_chart(self):
@@ -2485,7 +2485,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertIn("Afficher tous les tickers du scénario", body)
         self.assertIn("Mode debug : inclut aussi les tickers sans trade.", body)
         self.assertIn('data-value="BBB|1"', body)
-        self.assertIn("BBB — L1 — sans trade", body)
+        self.assertIn("BBB.NYSE — L1 — sans trade", body)
         self.assertIn("Tous les tickers du scénario, y compris sans trade.", body)
         self.assertIn('tickerLineSearch.addEventListener("input", filterTickerLineOptions);', body)
         self.assertIn('metricSelect.value = "PRICE_POS";', body)
@@ -2527,7 +2527,7 @@ class BacktestResultsRenderTests(TestCase):
         self.assertEqual(response.context["line_index"], 1)
         self.assertEqual(len(response.context["daily"]), 1)
         body = response.content.decode()
-        self.assertIn("Ticker sélectionné : BBB — L1 — sans trade", body)
+        self.assertIn("Ticker sélectionné : BBB.NYSE — L1 — sans trade", body)
         self.assertIn("Aucun trade pour ce ticker.", body)
         self.assertIn('const currentTickerLineValue = "BBB|1";', body)
 
