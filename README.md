@@ -201,6 +201,7 @@ Create a `.env` at project root (same level as `manage.py`):
 ```env
 # --- Django
 APP_VERSION=V7.0.3
+# Required outside Django tests and explicit development (DJANGO_DEBUG=1).
 DJANGO_SECRET_KEY=change-me
 DJANGO_DEBUG=0
 DJANGO_ALLOWED_HOSTS=localhost,127.0.0.1,example.com

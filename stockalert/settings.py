@@ -3,6 +3,7 @@ import sys
 from pathlib import Path
 
 from celery.schedules import crontab
+from django.core.exceptions import ImproperlyConfigured
 from dotenv import load_dotenv
 
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -14,8 +15,17 @@ APP_VERSION = os.getenv("APP_VERSION", "V7.0.72")
 # Load .env if present (does not override real env vars by default)
 load_dotenv(BASE_DIR / ".env", override=False)
 
-SECRET_KEY = os.getenv("DJANGO_SECRET_KEY", "dev-secret-key")
 DEBUG = os.getenv("DJANGO_DEBUG", "0") == "1"
+TESTING = any(arg in sys.argv for arg in ["test", "pytest"])
+
+SECRET_KEY = (os.getenv("DJANGO_SECRET_KEY") or "").strip()
+if not SECRET_KEY:
+    if TESTING or DEBUG:
+        SECRET_KEY = "dev-secret-key"
+    else:
+        raise ImproperlyConfigured(
+            "DJANGO_SECRET_KEY is required outside Django tests and explicit development (DJANGO_DEBUG=1)."
+        )
 
 def _csv_env(name: str, default: str = "") -> list[str]:
     raw = os.getenv(name, default)
@@ -78,7 +88,6 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "stockalert.wsgi.application"
 
-TESTING = any(arg in sys.argv for arg in ["test", "pytest"])
 USE_SQLITE_FOR_TESTS = os.getenv("DJANGO_TEST_USE_SQLITE", "1") == "1"
 
 if TESTING and USE_SQLITE_FOR_TESTS:
