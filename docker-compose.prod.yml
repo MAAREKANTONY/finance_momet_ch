@@ -43,6 +43,7 @@ services:
         condition: service_healthy
     volumes:
       - ./data:/data
+      - ${CSI300_ARTIFACTS_HOST_PATH:-/opt/stockalert/shared/csi300_artifacts}:/data/exports/csi300
     command: /app/docker/entrypoint.web.sh
 
   celery:
@@ -55,6 +56,7 @@ services:
         condition: service_healthy
     volumes:
       - ./data:/data
+      - ${CSI300_ARTIFACTS_HOST_PATH:-/opt/stockalert/shared/csi300_artifacts}:/data/exports/csi300
     command: celery -A stockalert worker -l info
 
   celery-beat:
