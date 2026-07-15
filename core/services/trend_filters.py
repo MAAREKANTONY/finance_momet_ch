@@ -8,6 +8,7 @@ from typing import Any
 
 from core.models import DailyBar, Symbol
 from core.services.china_benchmark_registry import csi300_market_benchmark_ticker
+from core.services.csi300_sector_gm import resolve_csi300_sector_benchmark
 from core.services.global_momentum import (
     DEFAULT_GLOBAL_MOMENTUM_NEUTRAL_BAND,
     regime_for_value,
@@ -136,6 +137,9 @@ def sector_benchmark_ticker_for_symbol(symbol: Symbol | None, *, universe_code: 
         return None
     ticker = str(getattr(symbol, "ticker", "") or "").strip().upper()
     if _is_china_a_share_symbol(symbol):
+        if str(universe_code or "").strip().upper() == _CSI300_UNIVERSE_CODE:
+            resolution = resolve_csi300_sector_benchmark(symbol)
+            return resolution.benchmark_ticker or None
         return None
     if ticker in _SECTOR_ETF_BY_NORMALIZED_SECTOR.values():
         return ticker

@@ -706,7 +706,7 @@ class DynamicUniverseReadinessTestCase(TestCase):
         self.assertTrue(check.details["requires_confirmation"])
         self.assertEqual(check.details["first_available_date"], longer_end.isoformat())
 
-    def test_csi300_gm_sector_is_blocked_for_us_sector_benchmarks(self):
+    def test_csi300_gm_sector_without_china_benchmark_is_not_ready(self):
         self._ready_csi300_member()
 
         report = check_dynamic_universe_readiness(
@@ -718,8 +718,99 @@ class DynamicUniverseReadinessTestCase(TestCase):
 
         check = self._check(report, "gm_sector_daily_bars")
         self.assertEqual(check.status, CHECK_ERROR)
-        self.assertIn("GM sectoriel non supporté pour CSI300 V1", check.message)
-        self.assertIn("Industrials et Utilities", check.message)
+        self.assertIn("aucun ticker", check.message)
+        self.assertNotIn("SPY", check.message)
+
+    def test_csi300_gm_sector_full_coverage_is_ready(self):
+        universe = self._csi300()
+        member = self._symbol("600519", exchange="SHG", sector="Consumer Defensive")
+        self._membership(universe, member)
+        self._coverage(universe, expected_member_count=1, actual_member_count=1, mapped_member_count=1)
+        self._bar_edges(member)
+        benchmark = self._symbol("159928", exchange="SHE", sector="")
+        self._bar_edges(benchmark)
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_sector=True,
+        )
+
+        check = self._check(report, "gm_sector_daily_bars")
+        self.assertEqual(check.status, CHECK_OK)
+        self.assertEqual(check.details["members_with_usable_sector_gm"], 1)
+        self.assertEqual(check.details["members_without_usable_sector_gm"], 0)
+        self.assertEqual(check.details["benchmarks_used"], ["159928.SHE"])
+        self.assertTrue(report.ready)
+
+    def test_csi300_gm_sector_partial_coverage_warns_and_requires_confirmation(self):
+        universe = self._csi300()
+        supported = self._symbol("600519", exchange="SHG", sector="Consumer Defensive")
+        unsupported = self._symbol("600000", exchange="SHG", sector="Industrials")
+        missing = self._symbol("000001", exchange="SHE", sector="")
+        for symbol in (supported, unsupported, missing):
+            self._membership(universe, symbol)
+            self._bar_edges(symbol)
+        self._coverage(universe, expected_member_count=3, actual_member_count=3, mapped_member_count=3)
+        benchmark = self._symbol("159928", exchange="SHE", sector="")
+        self._bar_edges(benchmark)
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_sector=True,
+        )
+
+        check = self._check(report, "gm_sector_daily_bars")
+        self.assertEqual(check.status, CHECK_WARNING)
+        self.assertEqual(report.status, REPORT_READY_WITH_WARNINGS)
+        self.assertTrue(report.ready)
+        self.assertTrue(check.details["requires_confirmation"])
+        self.assertEqual(check.details["members_with_usable_sector_gm"], 1)
+        self.assertEqual(check.details["members_without_sector"], 1)
+        self.assertEqual(check.details["members_with_unsupported_sector"], 1)
+        self.assertIn("leurs BUY dépendant du GM secteur pourront être bloqués", check.message)
+
+    def test_csi300_gm_sector_generic_sector_is_classified_without_fallback(self):
+        universe = self._csi300()
+        member = self._symbol("600519", exchange="SHG", sector="Other")
+        self._membership(universe, member)
+        self._coverage(universe, expected_member_count=1, actual_member_count=1, mapped_member_count=1)
+        self._bar_edges(member)
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_sector=True,
+        )
+
+        check = self._check(report, "gm_sector_daily_bars")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertEqual(check.details["members_with_generic_sector"], 1)
+        self.assertEqual(check.details["benchmarks_used"], [])
+
+    def test_csi300_gm_sector_existing_benchmark_without_ohlc_is_not_ready(self):
+        universe = self._csi300()
+        member = self._symbol("600519", exchange="SHG", sector="Consumer Defensive")
+        self._membership(universe, member)
+        self._coverage(universe, expected_member_count=1, actual_member_count=1, mapped_member_count=1)
+        self._bar_edges(member)
+        self._symbol("159928", exchange="SHE", sector="")
+
+        report = check_dynamic_universe_readiness(
+            universe="CSI300",
+            start=self.start,
+            end=self.end,
+            require_gm_sector=True,
+        )
+
+        check = self._check(report, "gm_sector_daily_bars")
+        self.assertEqual(check.status, CHECK_ERROR)
+        self.assertEqual(check.details["members_with_missing_benchmark_ohlc"], 1)
+        self.assertEqual(check.details["benchmarks_without_ohlc"], ["159928.SHE"])
 
 
 class DynamicUniverseReadinessCommandTests(TestCase):

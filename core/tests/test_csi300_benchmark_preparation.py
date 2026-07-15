@@ -31,6 +31,7 @@ from core.services.csi300_benchmark_preparation import (
     registry_summary,
 )
 from core.services.dynamic_universe_readiness import CHECK_ERROR, check_dynamic_universe_readiness
+from core.services.csi300_sector_gm import resolve_csi300_sector_benchmark
 from core.services.trend_filters import market_benchmark_ticker_for_symbol, sector_benchmark_ticker_for_symbol
 from core.tasks import prepare_csi300_benchmarks_job_task
 
@@ -95,6 +96,21 @@ class CSI300BenchmarkRegistryTests(TestCase):
         summary = registry_summary()
         self.assertEqual(summary["market"]["provider_symbol"], "000300.SHG")
         self.assertEqual(summary["sectors"]["Utilities"]["status"], STATUS_UNSUPPORTED)
+
+    def test_sector_resolution_has_three_explicit_mapping_states(self):
+        supported = Symbol(ticker="000001", exchange="SHE", sector="Financial Services")
+        unsupported = Symbol(ticker="600000", exchange="SHG", sector="Industrials")
+        missing = Symbol(ticker="600001", exchange="SHG", sector="")
+
+        supported_result = resolve_csi300_sector_benchmark(supported)
+        unsupported_result = resolve_csi300_sector_benchmark(unsupported)
+        missing_result = resolve_csi300_sector_benchmark(missing)
+
+        self.assertEqual(supported_result.provider_symbol, "159931.SHE")
+        self.assertTrue(supported_result.supported)
+        self.assertEqual(unsupported_result.reason, "SECTOR_UNSUPPORTED")
+        self.assertEqual(missing_result.reason, "SECTOR_MISSING")
+        self.assertNotIn("510300", str([supported_result, unsupported_result, missing_result]))
 
 
 class CSI300BenchmarkPreparationServiceTests(TestCase):
@@ -521,9 +537,9 @@ class CSI300BenchmarkIsolationTests(TestCase):
         self.assertIsNone(market_benchmark_ticker_for_symbol(symbol))
         self.assertEqual(market_benchmark_ticker_for_symbol(symbol, universe_code="CSI300"), "000300")
         self.assertIsNone(sector_benchmark_ticker_for_symbol(symbol))
-        self.assertIsNone(sector_benchmark_ticker_for_symbol(symbol, universe_code="CSI300"))
+        self.assertEqual(sector_benchmark_ticker_for_symbol(symbol, universe_code="CSI300"), "159931")
 
-    def test_csi300_readiness_gm_sector_block_remains(self):
+    def test_csi300_readiness_gm_sector_without_referential_remains_not_ready(self):
         report = check_dynamic_universe_readiness(
             universe="CSI300",
             start=date(2024, 8, 20),
@@ -532,8 +548,8 @@ class CSI300BenchmarkIsolationTests(TestCase):
         )
 
         check = next(item for item in report.checks if item.code == "gm_sector_daily_bars")
-        self.assertEqual(check.status, CHECK_ERROR)
-        self.assertIn("GM sectoriel non supporté pour CSI300 V1", check.message)
+        self.assertEqual(check.status, "SKIPPED")
+        self.assertIn("référentiel", check.message)
 
     def test_backtest_engine_does_not_call_csi300_benchmark_preparation(self):
         from core.services.backtesting import engine

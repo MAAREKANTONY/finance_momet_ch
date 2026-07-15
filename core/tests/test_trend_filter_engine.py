@@ -668,7 +668,7 @@ class TrendFilterEngineTests(TestCase):
         china_named_spy = Symbol.objects.create(ticker="SPY", exchange="SHG", country="US", active=True)
         self.assertIsNone(market_benchmark_ticker_for_symbol(china_named_spy))
 
-    def test_china_sector_benchmark_never_resolves_to_us_xl_etf(self):
+    def test_china_sector_benchmark_uses_csi300_registry_without_us_xl_fallback(self):
         china = Symbol.objects.create(
             ticker="000001",
             exchange="SHE",
@@ -679,7 +679,7 @@ class TrendFilterEngineTests(TestCase):
 
         self.assertEqual(sector_benchmark_ticker_for_symbol(self.symbol), "XLK")
         self.assertIsNone(sector_benchmark_ticker_for_symbol(china))
-        self.assertIsNone(sector_benchmark_ticker_for_symbol(china, universe_code="CSI300"))
+        self.assertEqual(sector_benchmark_ticker_for_symbol(china, universe_code="CSI300"), "159939")
         china_named_xlk = Symbol.objects.create(ticker="XLK", exchange="SHE", country="US", sector="Technology", active=True)
         self.assertIsNone(sector_benchmark_ticker_for_symbol(china_named_xlk))
 
@@ -754,6 +754,195 @@ class TrendFilterEngineTests(TestCase):
 
         self.assertEqual([row["action"] for row in daily], [None, None, None])
         self.assertIsNone(daily[1]["gm_buy_debug"]["families"]["market"].get("benchmark_ticker"))
+
+    def _csi300_sector_backtest(
+        self,
+        *,
+        sector: str,
+        signal_lines: list[dict],
+        alerts_by_offset: dict[int, str] | None = None,
+    ) -> Backtest:
+        self.scenario.universe_mode = Scenario.UniverseMode.CSI300_HISTORICAL_DYNAMIC
+        self.scenario.save(update_fields=["universe_mode"])
+        china = self._fresh_symbol(exchange="SHG", country="China", sector=sector)
+        return self._create_backtest(
+            symbol=china,
+            signal_lines=signal_lines,
+            prices=["10", "11", "12"],
+            alerts_by_offset=alerts_by_offset or {1: "Af"},
+        )
+
+    def _add_csi300_benchmark(self, ticker: str, exchange: str, prices: list[str]) -> Symbol:
+        benchmark = Symbol.objects.create(
+            ticker=ticker,
+            exchange=exchange,
+            country="China",
+            instrument_type="ETF",
+            active=True,
+        )
+        self._add_benchmark_fixture(
+            benchmark,
+            rows=[
+                {"date": self.start + timedelta(days=index), "open": price, "high": price, "low": price, "close": price}
+                for index, price in enumerate(prices)
+            ],
+        )
+        return benchmark
+
+    def test_csi300_sector_only_buy_passes_with_supported_local_benchmark(self):
+        self._add_csi300_benchmark("159939", "SHE", ["100", "110", "120"])
+        bt = self._csi300_sector_backtest(
+            sector="Technology",
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_market_gm_sector": "GM_POS",
+                "buy_market_operator": "AND",
+            }],
+        )
+
+        self.assertIn("BUY", {item for item in self._actions(bt) if item})
+
+    def test_csi300_sector_only_buy_fails_when_supported_benchmark_does_not_match(self):
+        self._add_csi300_benchmark("159939", "SHE", ["100", "90", "80"])
+        bt = self._csi300_sector_backtest(
+            sector="Technology",
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_market_gm_sector": "GM_POS",
+            }],
+        )
+
+        self.assertNotIn("BUY", {item for item in self._actions(bt) if item})
+
+    def test_csi300_sector_unavailable_blocks_buy_with_explicit_explainability(self):
+        bt = self._csi300_sector_backtest(
+            sector="Industrials",
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_market_gm_sector": "GM_POS",
+            }],
+        )
+
+        result = run_backtest(bt).results["tickers"][bt.universe_snapshot[0]]["lines"][0]
+
+        self.assertEqual(result["explain"]["buy_executed"], 0)
+        self.assertIn("GM_SECTOR_UNAVAILABLE", result["explain"]["blocked_counts"])
+        blocker = result["explain"]["last_blockers"][-1]
+        self.assertEqual(blocker["code"], "GM_SECTOR_UNAVAILABLE")
+        self.assertEqual(blocker["unavailable_reason"], "SECTOR_UNSUPPORTED")
+        self.assertEqual(blocker["canonical_sector"], "Industrials")
+
+    def test_csi300_sector_missing_ohlc_exposes_expected_benchmark(self):
+        Symbol.objects.create(ticker="159939", exchange="SHE", country="China", instrument_type="ETF", active=True)
+        bt = self._csi300_sector_backtest(
+            sector="Technology",
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_market_gm_sector": "GM_POS",
+            }],
+        )
+
+        result = run_backtest(bt).results["tickers"][bt.universe_snapshot[0]]["lines"][0]
+        blocker = result["explain"]["last_blockers"][-1]
+        self.assertEqual(blocker["code"], "GM_SECTOR_UNAVAILABLE")
+        self.assertEqual(blocker["unavailable_reason"], "BENCHMARK_OHLC_MISSING")
+        self.assertEqual(blocker["expected_benchmark"], "159939.SHE")
+
+    def test_csi300_or_allows_market_pass_when_sector_is_unavailable(self):
+        self._add_csi300_benchmark("000300", "SHG", ["100", "110", "120"])
+        bt = self._csi300_sector_backtest(
+            sector="Industrials",
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_market_gm_market": "GM_POS",
+                "buy_market_gm_sector": "GM_POS",
+                "buy_market_operator": "OR",
+            }],
+        )
+
+        daily = self._daily(bt)
+        self.assertIn("BUY", {row.get("action") for row in daily if row.get("action")})
+        buy_row = next(row for row in daily if row.get("action") == "BUY")
+        self.assertEqual(
+            buy_row["gm_buy_debug"]["families"]["sector"]["unavailable_reason"],
+            "SECTOR_UNSUPPORTED",
+        )
+
+    def test_csi300_and_blocks_when_sector_is_unavailable_even_if_market_passes(self):
+        self._add_csi300_benchmark("000300", "SHG", ["100", "110", "120"])
+        bt = self._csi300_sector_backtest(
+            sector="Industrials",
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_market_gm_market": "GM_POS",
+                "buy_market_gm_sector": "GM_POS",
+                "buy_market_operator": "AND",
+            }],
+        )
+
+        self.assertNotIn("BUY", {item for item in self._actions(bt) if item})
+
+    def test_csi300_or_blocks_when_market_fails_and_sector_is_unavailable(self):
+        self._add_csi300_benchmark("000300", "SHG", ["100", "90", "80"])
+        bt = self._csi300_sector_backtest(
+            sector="Industrials",
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_market_gm_market": "GM_POS",
+                "buy_market_gm_sector": "GM_POS",
+                "buy_market_operator": "OR",
+            }],
+        )
+
+        self.assertNotIn("BUY", {item for item in self._actions(bt) if item})
+
+    def test_csi300_unavailable_sector_sell_branch_does_not_force_sale(self):
+        bt = self._csi300_sector_backtest(
+            sector="Industrials",
+            alerts_by_offset={0: "Af"},
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "gm_sell_market_exit_conditions": {
+                    "operator": "AND",
+                    "sector": {"mode": "NEG"},
+                },
+            }],
+        )
+
+        actions = [item for item in self._actions(bt) if item]
+        self.assertEqual(actions, ["BUY"])
+
+    def test_csi300_sector_benchmark_requires_registry_exchange_and_never_falls_back(self):
+        self._add_csi300_benchmark("159939", "SHG", ["100", "120", "140"])
+        self._add_csi300_benchmark("159939", "SHE", ["100", "90", "80"])
+        self._add_csi300_benchmark("510300", "SHG", ["100", "120", "140"])
+        bt = self._csi300_sector_backtest(
+            sector="Technology",
+            signal_lines=[{
+                "trading_model": "LATCH_STATEFUL",
+                "buy": ["Af"],
+                "sell": [],
+                "buy_market_gm_sector": "GM_POS",
+            }],
+        )
+
+        self.assertNotIn("BUY", {item for item in self._actions(bt) if item})
 
     def test_csi300_gm_push_market_uses_000300_resolution(self):
         china = Symbol.objects.create(

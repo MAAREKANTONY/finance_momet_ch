@@ -398,6 +398,11 @@
                 {% if universe_meta.sector_benchmark_status %}
                   <tr><th>Benchmark secteur</th><td>{{ universe_meta.sector_benchmark_status }}</td></tr>
                 {% endif %}
+                {% if universe_meta.sector_gm.active %}
+                  <tr><th>GM secteur</th><td>Activé — mode(s) {{ universe_meta.sector_gm.operators|join:", " }} — couverture {{ universe_meta.sector_gm.members_with_usable_sector_gm }}/{{ universe_meta.sector_gm.symbols_considered }} — non couverts {{ universe_meta.sector_gm.members_without_usable_sector_gm }}</td></tr>
+                  <tr><th>Benchmarks secteur utilisés</th><td>{{ universe_meta.sector_gm.benchmarks_used|join:", "|default:"—" }}</td></tr>
+                  <tr><th>Couverture partielle</th><td>{% if universe_meta.sector_gm.partial_coverage_confirmed %}confirmée{% else %}non requise{% endif %} — aucun fallback</td></tr>
+                {% endif %}
               </tbody>
             </table>
             <div class="muted" style="margin-top:8px;">

@@ -310,7 +310,9 @@ def _du_check_message(check) -> str:
     if code == "gm_sector_daily_bars":
         if status == "SKIPPED":
             return "Filtre secteur non utilisé."
-        return "Les prix du filtre secteur sont disponibles." if status == "OK" else "Les prix du filtre secteur doivent être préparés."
+        if status == "OK":
+            return "Les prix du filtre secteur sont disponibles."
+        return getattr(check, "message", "Les prix du filtre secteur doivent être préparés.")
     return getattr(check, "message", "")
 
 
@@ -3904,6 +3906,19 @@ def _append_backtest_universe_settings_rows(ws, meta: dict) -> None:
     supported_history_start = supported_history_start_for_universe_meta(universe_meta)
     if supported_history_start:
         rows.append(("Historique supporté depuis", supported_history_start))
+    sector_gm = universe_meta.get("sector_gm") if isinstance(universe_meta.get("sector_gm"), dict) else {}
+    if sector_gm.get("active"):
+        rows.extend([
+            ("GM secteur statut", sector_gm.get("status")),
+            ("GM secteur modes", ", ".join(sector_gm.get("operators") or [])),
+            (
+                "GM secteur couverture",
+                f"{sector_gm.get('members_with_usable_sector_gm', 0)}/{sector_gm.get('symbols_considered', 0)}",
+            ),
+            ("GM secteur non couverts", sector_gm.get("members_without_usable_sector_gm")),
+            ("GM secteur benchmarks", ", ".join(sector_gm.get("benchmarks_used") or [])),
+            ("GM secteur fallback", "aucun"),
+        ])
     for key, value in rows:
         if value not in (None, ""):
             append_excel_row(ws, [key, value])
@@ -5523,10 +5538,6 @@ def trigger_page(request: HttpRequest):
                     }
                     try:
                         inputs["universe"] = _parse_trigger_dynamic_universe_code(inputs["universe"])
-                        if inputs["universe"] == CSI300_UNIVERSE_CODE and inputs["require_gm_sector"]:
-                            raise ValueError(
-                                "GM secteur CSI300 n'est pas encore supporté: Industrials et Utilities restent non couverts."
-                            )
                         readiness_start = _parse_trigger_date(inputs["start"], field_name="Start")
                         readiness_end = _parse_trigger_date(inputs["end"], field_name="End")
                         report = check_dynamic_universe_readiness(

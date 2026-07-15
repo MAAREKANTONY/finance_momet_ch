@@ -424,6 +424,22 @@ class CSI300OperationsDashboardTests(CSI300OperationsFixtureMixin, TestCase):
             close=1,
             volume=1,
         )
+        sector_benchmark = Symbol.objects.create(
+            ticker="159931",
+            exchange="SHE",
+            sector="Financials",
+            instrument_type="ETF",
+        )
+        for value_date in (date(2023, 1, 3), date(2023, 1, 4)):
+            DailyBar.objects.create(
+                symbol=sector_benchmark,
+                date=value_date,
+                open=1,
+                high=1,
+                low=1,
+                close=1,
+                volume=1,
+            )
 
         status = build_csi300_operations_status()
 
@@ -433,6 +449,9 @@ class CSI300OperationsDashboardTests(CSI300OperationsFixtureMixin, TestCase):
         self.assertEqual(status["metadata"]["name_en_present"], 2)
         self.assertEqual(status["ohlc"]["symbols_with_bars"], 1)
         self.assertEqual(status["ohlc"]["symbols_without_bars"], 1)
+        self.assertEqual(status["sector_gm"]["status"], "READY")
+        self.assertEqual(status["sector_gm"]["members_with_usable_sector_gm"], 2)
+        self.assertTrue(status["sector_gm"]["no_fallback"])
 
     def test_observability_reports_not_ready_for_snapshot_mismatch(self):
         universe, _batch, _symbols = self.create_universe(symbol_count=1)

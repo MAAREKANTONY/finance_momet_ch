@@ -111,6 +111,16 @@
           secteurs disponibles={{ csi300_operations.ohlc.sector_benchmarks_available }}/{{ csi300_benchmark_supported_count }}
         </td>
       </tr>
+      {% if csi300_operations.sector_gm %}
+      <tr>
+        <th>GM secteur</th>
+        <td>
+          {{ csi300_operations.sector_gm.status }} — couverts={{ csi300_operations.sector_gm.members_with_usable_sector_gm }}/{{ csi300_operations.sector_gm.symbols_considered }},
+          sans secteur={{ csi300_operations.sector_gm.members_without_sector }}, secteurs non supportés={{ csi300_operations.sector_gm.members_with_unsupported_sector }},
+          benchmarks disponibles={{ csi300_operations.sector_gm.benchmarks_available|length }}/{{ csi300_operations.sector_gm.supported_sector_count }} — aucun fallback
+        </td>
+      </tr>
+      {% endif %}
       <tr>
         <th>Jobs</th>
         <td>

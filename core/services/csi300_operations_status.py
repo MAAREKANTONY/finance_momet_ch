@@ -18,6 +18,7 @@ from core.models import (
 from core.services.china_benchmark_registry import expected_primary_benchmarks, provider_symbol_parts
 from core.services.csi300_csv_generation import latest_valid_csi300_generation
 from core.services.csi300_eodhd_metadata import GENERIC_SECTOR_VALUES
+from core.services.csi300_sector_gm import build_csi300_sector_gm_coverage
 from core.services.universe_resolver import CSI300_UNIVERSE_CODE
 
 
@@ -164,14 +165,14 @@ def build_csi300_operations_status() -> dict[str, Any]:
     if unmapped:
         referential_issues.append(f"{unmapped} membership(s) non mappé(s).")
 
-    symbols = list(Symbol.objects.filter(id__in=symbol_ids).values("id", "name_en", "sector"))
+    symbols = list(Symbol.objects.filter(id__in=symbol_ids).order_by("ticker", "exchange", "id"))
     generic_values = {value.upper() for value in GENERIC_SECTOR_VALUES}
-    names_present = sum(1 for row in symbols if str(row["name_en"] or "").strip())
-    sector_missing = sum(1 for row in symbols if not str(row["sector"] or "").strip())
+    names_present = sum(1 for symbol in symbols if str(symbol.name_en or "").strip())
+    sector_missing = sum(1 for symbol in symbols if not str(symbol.sector or "").strip())
     sector_generic = sum(
         1
-        for row in symbols
-        if str(row["sector"] or "").strip() and str(row["sector"] or "").strip().upper() in generic_values
+        for symbol in symbols
+        if str(symbol.sector or "").strip() and str(symbol.sector or "").strip().upper() in generic_values
     )
     sector_useful = len(symbols) - sector_missing - sector_generic
 
@@ -224,6 +225,19 @@ def build_csi300_operations_status() -> dict[str, Any]:
     if missing_benchmarks:
         warnings.append(f"Benchmarks sans OHLC : {', '.join(missing_benchmarks)}.")
 
+    sector_gm = {}
+    if snapshot_summary.get("coverage_start") and snapshot_summary.get("coverage_end"):
+        active_members_expected = int(
+            UniverseCoverageSnapshot.objects.filter(universe=universe).aggregate(value=Max("actual_member_count")).get("value")
+            or 0
+        )
+        sector_gm = build_csi300_sector_gm_coverage(
+            symbols=symbols,
+            coverage_start=snapshot_summary["coverage_start"],
+            coverage_end=snapshot_summary["coverage_end"],
+            active_members_expected=active_members_expected,
+        )
+
     overall_status = "NOT_READY" if referential_issues else ("READY_WITH_WARNINGS" if warnings else "READY")
     return {
         "status": overall_status,
@@ -257,6 +271,7 @@ def build_csi300_operations_status() -> dict[str, Any]:
             ],
             "benchmarks": benchmark_rows,
         },
+        "sector_gm": sector_gm,
         "jobs": {
             "active": active_jobs,
             "last_generation": _job_summary(generation_job),

@@ -139,6 +139,31 @@ class ExcelSerializationRegressionTests(SimpleTestCase):
         self.assertTrue(any("Univers actions analysées | 503" in row for row in flat))
         self.assertTrue(any("Univers source des données | manual_csv" in row for row in flat))
 
+    def test_backtest_exports_include_partial_csi300_sector_gm_coverage_without_fallback(self):
+        bt = self._make_backtest_stub()
+        bt.results["meta"]["universe"] = {
+            "mode": "CSI300_HISTORICAL_DYNAMIC",
+            "universe_code": "CSI300",
+            "coverage_start": "2023-01-03",
+            "coverage_end": "2026-06-30",
+            "sector_gm": {
+                "active": True,
+                "status": "READY_WITH_WARNINGS",
+                "operators": ["AND"],
+                "members_with_usable_sector_gm": 297,
+                "symbols_considered": 385,
+                "members_without_usable_sector_gm": 88,
+                "benchmarks_used": ["159928.SHE", "159939.SHE"],
+            },
+        }
+
+        wb, _ = _build_backtest_workbook_full(bt)
+        flat = self._sheet_flat_rows(wb, "Settings")
+
+        self.assertTrue(any("GM secteur statut | READY_WITH_WARNINGS" in row for row in flat))
+        self.assertTrue(any("GM secteur couverture | 297/385" in row for row in flat))
+        self.assertTrue(any("GM secteur fallback | aucun" in row for row in flat))
+
     def test_backtest_exports_include_csi300_effective_currency(self):
         bt = self._make_backtest_stub()
         bt.scenario.universe_mode = "CSI300_HISTORICAL_DYNAMIC"

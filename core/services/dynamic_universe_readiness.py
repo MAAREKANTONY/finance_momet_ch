@@ -6,7 +6,7 @@ from typing import Any
 import hashlib
 import json
 
-from django.db.models import Q
+from django.db.models import Max, Q
 
 from core.models import (
     Backtest,
@@ -31,6 +31,11 @@ from core.services.china_benchmark_registry import (
     csi300_market_benchmark_ticker,
 )
 from core.services.trend_filters import market_benchmark_ticker_for_symbol
+from core.services.csi300_sector_gm import (
+    SECTOR_GM_NOT_READY,
+    SECTOR_GM_READY_WITH_WARNINGS,
+    build_csi300_sector_gm_coverage,
+)
 from core.services.universe_resolver import (
     CSI300_UNIVERSE_CODE,
     ResolvedMembershipInterval,
@@ -375,7 +380,26 @@ def check_dynamic_universe_readiness(
         checks.append(_skipped_check("gm_market_daily_bars", "DailyBars GM_market", "GM_market non demandé."))
 
     if require_gm_sector:
-        checks.append(_check_gm_sector_daily_bars(universe_code, coverage_start, end))
+        active_members_expected = 0
+        if universe_obj is not None:
+            active_members_expected = int(
+                UniverseCoverageSnapshot.objects.filter(
+                    universe=universe_obj,
+                    coverage_date__gte=coverage_start,
+                    coverage_date__lte=end,
+                ).aggregate(value=Max("actual_member_count")).get("value")
+                or 0
+            )
+        checks.append(
+            _check_gm_sector_daily_bars(
+                universe_code,
+                coverage_start,
+                end,
+                symbols=symbols,
+                prerequisites_ready=bool(memberships and coverage_ready and mappings_ready),
+                active_members_expected=active_members_expected,
+            )
+        )
     else:
         checks.append(_skipped_check("gm_sector_daily_bars", "DailyBars GM_sector", "GM_sector non demandé."))
 
@@ -1049,17 +1073,70 @@ def _check_csi300_market_benchmark_daily_bars(*, coverage_start: date, end: date
     )
 
 
-def _check_gm_sector_daily_bars(universe_code: str, coverage_start: date, end: date) -> ReadinessCheck:
+def _check_gm_sector_daily_bars(
+    universe_code: str,
+    coverage_start: date,
+    end: date,
+    *,
+    symbols: list[Symbol] | None = None,
+    prerequisites_ready: bool = True,
+    active_members_expected: int = 0,
+) -> ReadinessCheck:
+    if universe_code == CSI300_UNIVERSE_CODE:
+        if not prerequisites_ready:
+            return _skipped_check(
+                "gm_sector_daily_bars",
+                "DailyBars GM_sector",
+                "Impossible d'évaluer le GM secteur tant que le référentiel et ses mappings ne sont pas prêts.",
+                actions=[PREPARE_CSI300_BENCHMARKS_ACTION],
+            )
+        coverage = build_csi300_sector_gm_coverage(
+            symbols=symbols or [],
+            coverage_start=coverage_start,
+            coverage_end=end,
+            active_members_expected=active_members_expected,
+        )
+        covered = coverage["members_with_usable_sector_gm"]
+        total = coverage["symbols_considered"]
+        if coverage["status"] == SECTOR_GM_NOT_READY:
+            return ReadinessCheck(
+                code="gm_sector_daily_bars",
+                label="DailyBars GM_sector",
+                status=CHECK_ERROR,
+                message=(
+                    "GM secteur CSI300 indisponible : aucun ticker ne possède à la fois "
+                    "un secteur supporté, un benchmark local et des OHLC exploitables. Aucun fallback n'est appliqué."
+                ),
+                details=coverage,
+                suggested_actions=[PREPARE_CSI300_BENCHMARKS_ACTION],
+                suggested_commands=[PREPARE_CSI300_BENCHMARKS_ACTION.command],
+            )
+        if coverage["status"] == SECTOR_GM_READY_WITH_WARNINGS:
+            return ReadinessCheck(
+                code="gm_sector_daily_bars",
+                label="DailyBars GM_sector",
+                status=CHECK_WARNING,
+                message=(
+                    f"Couverture GM secteur CSI300 partielle : {covered}/{total} ticker(s) historique(s) couvert(s), "
+                    f"{coverage['members_without_usable_sector_gm']} non couvert(s). "
+                    "Les tickers sans GM secteur exploitable resteront dans l'univers, mais leurs BUY dépendant "
+                    "du GM secteur pourront être bloqués. Aucun fallback n'est appliqué."
+                ),
+                details=coverage,
+            )
+        return ReadinessCheck(
+            code="gm_sector_daily_bars",
+            label="DailyBars GM_sector",
+            status=CHECK_OK,
+            message=f"GM secteur CSI300 prêt pour {covered}/{total} ticker(s); aucun fallback.",
+            details=coverage,
+        )
     if universe_code != SP500_UNIVERSE_CODE:
         return ReadinessCheck(
             code="gm_sector_daily_bars",
             label="DailyBars GM_sector",
             status=CHECK_ERROR,
-            message=(
-                f"GM sectoriel non supporté pour {universe_code} V1 : "
-                "les benchmarks sectoriels chinois ne sont pas encore activés, "
-                "Industrials et Utilities restent non couverts, et aucun fallback marché n'est appliqué."
-            ),
+            message=f"GM sectoriel non supporté pour {universe_code}.",
         )
     return _check_benchmark_daily_bars(
         code="gm_sector_daily_bars",
