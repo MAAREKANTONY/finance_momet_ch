@@ -255,7 +255,16 @@
   </div>
   <div style="margin-top:18px;">
     <canvas id="portfolioPnlChart" height="100"></canvas>
-    <div class="muted" style="margin-top:8px;">Courbe globale des gains / pertes (PnL global = Equity - Investi).</div>
+    <div class="muted" style="margin-top:8px;">Courbe globale des gains / pertes et du capital en fin de journée. Le PnL global est l’Equity moins le capital initial en capital fini, ou le capital alloué en capital illimité.</div>
+    <details style="margin-top:8px;">
+      <summary>Aide : capital investi et disponible</summary>
+      <p><b>Capital véritablement investi</b> : somme des quantités détenues × leur prix d’achat pour les positions encore ouvertes, après arrondi des quantités. Il exclut les liquidités allouées aux stratégies, reste stable si seuls les cours varient et diminue lors des ventes, y compris les clôtures forcées.</p>
+      <p><b>Capital disponible</b> : cash global non alloué + soldes en espèces des tickers/lignes + gains/pertes réalisés mis en réserve. Les gains/pertes latents sont exclus. En <b>REINVEST</b>, les résultats réalisés restent dans les soldes réinvestissables. En <b>FIXED</b>, le solde de chaque ligne est ramené à CT après une vente ; les gains/pertes sont comptés dans une réserve signée, incluse ici mais non réinvestie par la stratégie. Ce montant net peut donc différer du budget des prochains achats, voire être négatif.</p>
+      <p>En <b>capital illimité</b>, aucune réserve infinie n’est représentée : seules les liquidités des allocations déjà effectuées et leurs résultats réalisés sont comptés. Toutes les courbes utilisent la devise du backtest, sans conversion.</p>
+    </details>
+    {% if portfolio_capital_recalculation_required %}
+      <div class="muted" style="margin-top:8px;">Recalcul nécessaire : ce résultat ne contient pas toutes les données journalières du capital investi et disponible. Relancez le backtest pour compléter ces courbes ; les valeurs manquantes ne sont pas estimées.</div>
+    {% endif %}
   </div>
   <div style="margin-top:18px;">
     <h3 style="margin:0 0 8px;">Gains réalisés cumulés</h3>
@@ -813,6 +822,7 @@
 </div>
 </details>
 
+{{ portfolio_pnl_daily|json_script:"portfolio-pnl-daily" }}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
   // --- Accordion UX: keep the open/close state stable across refreshes ---
@@ -847,6 +857,7 @@
 
   const rows = {{ daily_json|safe }};
   const portRows = {{ portfolio_daily_json|default:"[]"|safe }};
+  const portfolioPnlRows = JSON.parse(document.getElementById("portfolio-pnl-daily").textContent);
   const realizedRows = {{ realized_gains_series_json|default:"[]"|safe }};
   function toNumber(v) {
     if (v === null || v === undefined || v === "") return null;
@@ -1026,17 +1037,34 @@
   }
 
   const pnlCanvas = document.getElementById("portfolioPnlChart");
-  if (pnlCanvas && portRows && portRows.length) {
-    const labels = portRows.map(r => r.date);
-    const pnl = portRows.map(r => toNumber(r.pnl_global));
+  if (pnlCanvas && portfolioPnlRows && portfolioPnlRows.length) {
+    const labels = portfolioPnlRows.map(r => r.date);
+    const pnl = portfolioPnlRows.map(r => toNumber(r.pnl_global));
+    const positionsCost = portfolioPnlRows.map(r => toNumber(r.positions_cost));
+    const availableCash = portfolioPnlRows.map(r => toNumber(r.available_cash));
+    const amountFormatter = new Intl.NumberFormat("fr-FR", {
+      {% if effective_currency %}style: "currency", currency: "{{ effective_currency|escapejs }}",{% endif %}
+      minimumFractionDigits: 2, maximumFractionDigits: 2
+    });
     const ctx = pnlCanvas.getContext("2d");
     new Chart(ctx, {
       type: "line",
-      data: { labels, datasets: [{ label: "PnL global", data: pnl }] },
+      data: { labels, datasets: [
+        { label: "PnL global", data: pnl, borderColor: "#2563eb", backgroundColor: "#2563eb" },
+        { label: "Capital véritablement investi", data: positionsCost, borderColor: "#d97706", backgroundColor: "#d97706" },
+        { label: "Capital disponible", data: availableCash, borderColor: "#059669", backgroundColor: "#059669" }
+      ] },
       options: {
         responsive: true,
-        spanGaps: true,
-        scales: { y: { type: "linear", title: { display: true, text: "{% if effective_currency %}P&L global ({{ effective_currency|escapejs }}){% else %}Gain / Perte{% endif %}" } } }
+        spanGaps: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: true },
+          tooltip: { callbacks: {
+            label: context => `${context.dataset.label} : ${amountFormatter.format(context.parsed.y)}`
+          } }
+        },
+        scales: { y: { type: "linear", title: { display: true, text: "Montant{% if effective_currency %} ({{ effective_currency|escapejs }}){% else %} (devise non renseignée){% endif %}" } } }
       }
     });
   }
