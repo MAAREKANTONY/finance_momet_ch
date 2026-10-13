@@ -2714,6 +2714,7 @@ def run_backtest(
 
         cash_allocated = Decimal("0")
         positions_value = Decimal("0")
+        positions_cost = Decimal("0")
         bank_total = Decimal("0")
 
         for (tk, _li), st in state.items():
@@ -2723,6 +2724,9 @@ def run_backtest(
             bank_total += Decimal(st.get("bank") or 0)
             shares = int(st.get("shares") or 0)
             if shares > 0:
+                # Cost of the actual rounded quantity, independent of market prices
+                # and of capital merely allocated to the strategy.
+                positions_cost += Decimal(shares) * Decimal(st["entry_price"])
                 px = data_by_ticker.get(tk, {}).get("price_by_date", {}).get(d)
                 if px is None:
                     px = last_price_by_ticker.get(tk)
@@ -2770,6 +2774,9 @@ def run_backtest(
                 "cash_allocated": str(cash_allocated),
                 "bank_total": str(bank_total),
                 "positions_value": str(positions_value),
+                "positions_cost": str(positions_cost),
+                # FIXED bank includes signed realized P&L; no unlimited reserve.
+                "available_cash": str(global_cash_val + cash_allocated + bank_total),
                 "equity": str(equity),
                 "invested": str(invested),
                 "pnl_global": str(pnl_global),
@@ -3398,6 +3405,7 @@ def run_backtest(
     )
 
     # Forced close at end (per ticker,line) on last available price date
+    forced_capital_adjustments: dict[str, tuple[Decimal, Decimal]] = {}
     if backtest.close_positions_at_end:
         for (ticker, li), st in state.items():
             if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
@@ -3417,6 +3425,8 @@ def run_backtest(
             close_d = _to_dec(price_by_date[last_date])
             if close_d is None:
                 continue
+            closing_cost = Decimal(st["shares"]) * Decimal(st["entry_price"])
+            closing_proceeds = Decimal(st["shares"]) * close_d
             closed = _close_open_position(
                 st,
                 close_price=close_d,
@@ -3427,6 +3437,11 @@ def run_backtest(
             )
             if closed is None:
                 continue
+            # Snapshots precede forced closes. Apply only the new capital fields,
+            # from this ticker's last price date through the remaining days.
+            adjustment_date = str(last_date)
+            cost, proceeds = forced_capital_adjustments.get(adjustment_date, (Decimal("0"), Decimal("0")))
+            forced_capital_adjustments[adjustment_date] = (cost + closing_cost, proceeds + closing_proceeds)
             G_today, pnl_amount_today = closed
             was_tradable, _, _ = _ratio_tradable(
                 ticker,
@@ -3535,6 +3550,16 @@ def run_backtest(
                 })
                 _apply_couloir_day_debug_to_last_row(st, last_date)
                 _sync_daily_row_with_shared_line_kpis(rows[-1], st)
+
+    if forced_capital_adjustments:
+        closed_cost = Decimal("0")
+        released_cash = Decimal("0")
+        for row in portfolio_daily:
+            cost, proceeds = forced_capital_adjustments.get(row["date"], (Decimal("0"), Decimal("0")))
+            closed_cost += cost
+            released_cash += proceeds
+            row["positions_cost"] = str(Decimal(row["positions_cost"]) - closed_cost)
+            row["available_cash"] = str(Decimal(row["available_cash"]) + released_cash)
 
     all_warnings = _serialize_warnings(_collect_backtest_warnings(state))
 
