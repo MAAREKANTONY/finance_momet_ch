@@ -1,0 +1,11 @@
+<fieldset style="margin-top:16px;">
+  <legend>Protection du portefeuille</legend>
+  <label for="{{ form.portfolio_protection_enabled.id_for_label }}">{{ form.portfolio_protection_enabled }} {{ form.portfolio_protection_enabled.label }}</label>
+  {{ form.portfolio_protection_enabled.errors }}
+  <div class="field">
+    <label for="{{ form.portfolio_drawdown_threshold.id_for_label }}">{{ form.portfolio_drawdown_threshold.label }}</label>
+    {{ form.portfolio_drawdown_threshold }}
+    {{ form.portfolio_drawdown_threshold.errors }}
+  </div>
+  {% include "partials/portfolio_protection_help.html" %}
+</fieldset>

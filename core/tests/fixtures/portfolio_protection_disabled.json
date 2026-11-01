@@ -1,0 +1,1038 @@
+{
+  "0-FIXED": {
+    "tickers": {
+      "AAA": [
+        {
+          "events": [
+            {
+              "date": "2024-01-01",
+              "action": "BUY",
+              "price_close": "33.330000"
+            },
+            {
+              "date": "2024-01-03",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "20.000000",
+              "action_G": "-0.3999399939993999399939993999",
+              "action_PNL_AMOUNT": "-39.990000"
+            },
+            {
+              "date": "2024-01-04",
+              "action": "BUY",
+              "price_close": "25.000000"
+            },
+            {
+              "date": "2024-01-06",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "15.000000",
+              "action_G": "-0.4",
+              "action_PNL_AMOUNT": "-40.000000"
+            }
+          ],
+          "final": {
+            "N": 2,
+            "S_G_N": "-0.3999699969996999699969997000",
+            "BT": "-0.7999399939993999399939993999",
+            "NB_JOUR_OUVRES": 2,
+            "TRADABLE_DAYS": 6,
+            "TRADABLE_DAYS_NOT_IN_POSITION": 2,
+            "TRADABLE_DAYS_IN_POSITION_CLOSED": 4,
+            "BMJ": "-0.3999699969996999699969997000",
+            "BMD": "-0.1999849984998499849984998500",
+            "BUY_DAYS_CLOSED": 4,
+            "RATIO_NOT_IN_POSITION": "33.33333333333333333333333333",
+            "RATIO_IN_POSITION": "66.66666666666666666666666667",
+            "cash_ticker_end": "100",
+            "PNL_AMOUNT": "-79.990000",
+            "TOTAL_GAIN_AMOUNT": "0",
+            "TOTAL_LOSS_AMOUNT": "-79.990000",
+            "AVG_TRADE_AMOUNT": "-39.995000",
+            "PROFIT_FACTOR_AMOUNT": "0E+6",
+            "MAX_GAIN_AMOUNT": null,
+            "MAX_LOSS_AMOUNT": "-40.000000",
+            "WIN_TRADES": 0,
+            "LOSS_TRADES": 2,
+            "FLAT_TRADES": 0,
+            "WIN_RATE_AMOUNT": "0",
+            "FINAL_EQUITY": "20.010000"
+          }
+        }
+      ],
+      "BBB": [
+        {
+          "events": [
+            {
+              "date": "2024-01-01",
+              "action": "BUY",
+              "price_close": "50.000000"
+            },
+            {
+              "date": "2024-01-03",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "65.000000",
+              "action_G": "0.3",
+              "action_PNL_AMOUNT": "30.000000"
+            },
+            {
+              "date": "2024-01-04",
+              "action": "BUY",
+              "price_close": "40.000000"
+            },
+            {
+              "date": "2024-01-06",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "50.000000",
+              "action_G": "0.25",
+              "action_PNL_AMOUNT": "20.000000"
+            }
+          ],
+          "final": {
+            "N": 2,
+            "S_G_N": "0.275",
+            "BT": "0.55",
+            "NB_JOUR_OUVRES": 2,
+            "TRADABLE_DAYS": 6,
+            "TRADABLE_DAYS_NOT_IN_POSITION": 2,
+            "TRADABLE_DAYS_IN_POSITION_CLOSED": 4,
+            "BMJ": "0.275",
+            "BMD": "0.1375",
+            "BUY_DAYS_CLOSED": 4,
+            "RATIO_NOT_IN_POSITION": "33.33333333333333333333333333",
+            "RATIO_IN_POSITION": "66.66666666666666666666666667",
+            "cash_ticker_end": "100",
+            "PNL_AMOUNT": "50.000000",
+            "TOTAL_GAIN_AMOUNT": "50.000000",
+            "TOTAL_LOSS_AMOUNT": "0",
+            "AVG_TRADE_AMOUNT": "25.000000",
+            "PROFIT_FACTOR_AMOUNT": null,
+            "MAX_GAIN_AMOUNT": "30.000000",
+            "MAX_LOSS_AMOUNT": null,
+            "WIN_TRADES": 2,
+            "LOSS_TRADES": 0,
+            "FLAT_TRADES": 0,
+            "WIN_RATE_AMOUNT": "100",
+            "FINAL_EQUITY": "150.000000"
+          }
+        }
+      ]
+    },
+    "portfolio": {
+      "kpi": {
+        "capital_total": "0",
+        "invested_end": "200",
+        "equity_end": "170.010000",
+        "N": 4,
+        "S_G_N": "-0.06248499849984998499849984998",
+        "BT": "-0.149950",
+        "TRADABLE_DAYS_NOT_IN_POSITION": 4,
+        "TRADABLE_DAYS_IN_POSITION_CLOSED": 8,
+        "BMJ": "-0.02499166666666666666666666667",
+        "BMD": "-0.01874375",
+        "NB_DAYS": 6,
+        "AVG_RATIO_IN_POSITION_PLAYED": "66.66666666666666666666666665",
+        "NB_PLAYED_TICKERS": 2,
+        "POSITIVE_BMD_TICKERS": 1,
+        "POSITIVE_BMD_AVG_GAIN": "0.1375",
+        "POSITIVE_BMD_AVG_RATIO_IN_POSITION": "66.66666666666666666666666667",
+        "NON_POSITIVE_BMD_TICKERS": 1,
+        "NON_POSITIVE_BMD_AVG_GAIN": "-0.1999849984998499849984998500",
+        "NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION": "66.66666666666666666666666667",
+        "max_drawdown": "-0.2916545143952335319361693263",
+        "TOTAL_PNL_AMOUNT": "-29.990000",
+        "TOTAL_RETURN_ON_CAPITAL": null,
+        "FINAL_EQUITY": "170.010000",
+        "TOTAL_GAIN_AMOUNT": "50.000000",
+        "TOTAL_LOSS_AMOUNT": "-79.990000",
+        "AVG_TRADE_AMOUNT": "-7.497500",
+        "PROFIT_FACTOR_AMOUNT": "0.6250781347668458557319664958",
+        "MAX_GAIN_AMOUNT": "30.000000",
+        "MAX_LOSS_AMOUNT": "-40.000000",
+        "TOTAL_TRADES": 4,
+        "WIN_TRADES": 2,
+        "LOSS_TRADES": 2,
+        "FLAT_TRADES": 0,
+        "WIN_RATE_AMOUNT": "50.0",
+        "max_drawdown_amount": "70.000000"
+      },
+      "daily": [
+        {
+          "date": "2024-01-01",
+          "global_cash": "0",
+          "cash_allocated": "0.010000",
+          "bank_total": "0",
+          "positions_value": "199.990000",
+          "positions_cost": "199.990000",
+          "available_cash": "0.010000",
+          "equity": "200.000000",
+          "invested": "200",
+          "pnl_global": "0.000000",
+          "portfolio_return_global": "0.000000",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "0"
+        },
+        {
+          "date": "2024-01-02",
+          "global_cash": "0",
+          "cash_allocated": "0.010000",
+          "bank_total": "0",
+          "positions_value": "240.000000",
+          "positions_cost": "199.990000",
+          "available_cash": "0.010000",
+          "equity": "240.010000",
+          "invested": "200",
+          "pnl_global": "40.010000",
+          "portfolio_return_global": "0.200050",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "0"
+        },
+        {
+          "date": "2024-01-03",
+          "global_cash": "0",
+          "cash_allocated": "200",
+          "bank_total": "-9.990000",
+          "positions_value": "0",
+          "positions_cost": "0",
+          "available_cash": "190.010000",
+          "equity": "190.010000",
+          "invested": "200",
+          "pnl_global": "-9.990000",
+          "portfolio_return_global": "-0.049950",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.2083246531394525228115495188"
+        },
+        {
+          "date": "2024-01-04",
+          "global_cash": "0",
+          "cash_allocated": "20.000000",
+          "bank_total": "-9.990000",
+          "positions_value": "180.000000",
+          "positions_cost": "180.000000",
+          "available_cash": "10.010000",
+          "equity": "190.010000",
+          "invested": "200",
+          "pnl_global": "-9.990000",
+          "portfolio_return_global": "-0.049950",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.2083246531394525228115495188"
+        },
+        {
+          "date": "2024-01-05",
+          "global_cash": "0",
+          "cash_allocated": "20.000000",
+          "bank_total": "-9.990000",
+          "positions_value": "210.000000",
+          "positions_cost": "180.000000",
+          "available_cash": "10.010000",
+          "equity": "220.010000",
+          "invested": "200",
+          "pnl_global": "20.010000",
+          "portfolio_return_global": "0.100050",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.08332986125578100912461980751"
+        },
+        {
+          "date": "2024-01-06",
+          "global_cash": "0",
+          "cash_allocated": "200",
+          "bank_total": "-29.990000",
+          "positions_value": "0",
+          "positions_cost": "0",
+          "available_cash": "170.010000",
+          "equity": "170.010000",
+          "invested": "200",
+          "pnl_global": "-29.990000",
+          "portfolio_return_global": "-0.149950",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.2916545143952335319361693263"
+        }
+      ]
+    }
+  },
+  "0-REINVEST": {
+    "tickers": {
+      "AAA": [
+        {
+          "events": [
+            {
+              "date": "2024-01-01",
+              "action": "BUY",
+              "price_close": "33.330000"
+            },
+            {
+              "date": "2024-01-03",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "20.000000",
+              "action_G": "-0.3999399939993999399939993999",
+              "action_PNL_AMOUNT": "-39.990000"
+            },
+            {
+              "date": "2024-01-04",
+              "action": "BUY",
+              "price_close": "25.000000"
+            },
+            {
+              "date": "2024-01-06",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "15.000000",
+              "action_G": "-0.4",
+              "action_PNL_AMOUNT": "-20.000000"
+            }
+          ],
+          "final": {
+            "N": 2,
+            "S_G_N": "-0.3999699969996999699969997000",
+            "BT": "-0.7999399939993999399939993999",
+            "NB_JOUR_OUVRES": 2,
+            "TRADABLE_DAYS": 6,
+            "TRADABLE_DAYS_NOT_IN_POSITION": 2,
+            "TRADABLE_DAYS_IN_POSITION_CLOSED": 4,
+            "BMJ": "-0.3999699969996999699969997000",
+            "BMD": "-0.1999849984998499849984998500",
+            "BUY_DAYS_CLOSED": 4,
+            "RATIO_NOT_IN_POSITION": "33.33333333333333333333333333",
+            "RATIO_IN_POSITION": "66.66666666666666666666666667",
+            "cash_ticker_end": "40.010000",
+            "PNL_AMOUNT": "-59.990000",
+            "TOTAL_GAIN_AMOUNT": "0",
+            "TOTAL_LOSS_AMOUNT": "-59.990000",
+            "AVG_TRADE_AMOUNT": "-29.995000",
+            "PROFIT_FACTOR_AMOUNT": "0E+6",
+            "MAX_GAIN_AMOUNT": null,
+            "MAX_LOSS_AMOUNT": "-39.990000",
+            "WIN_TRADES": 0,
+            "LOSS_TRADES": 2,
+            "FLAT_TRADES": 0,
+            "WIN_RATE_AMOUNT": "0",
+            "FINAL_EQUITY": "40.010000"
+          }
+        }
+      ],
+      "BBB": [
+        {
+          "events": [
+            {
+              "date": "2024-01-01",
+              "action": "BUY",
+              "price_close": "50.000000"
+            },
+            {
+              "date": "2024-01-03",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "65.000000",
+              "action_G": "0.3",
+              "action_PNL_AMOUNT": "30.000000"
+            },
+            {
+              "date": "2024-01-04",
+              "action": "BUY",
+              "price_close": "40.000000"
+            },
+            {
+              "date": "2024-01-06",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "50.000000",
+              "action_G": "0.25",
+              "action_PNL_AMOUNT": "30.000000"
+            }
+          ],
+          "final": {
+            "N": 2,
+            "S_G_N": "0.275",
+            "BT": "0.55",
+            "NB_JOUR_OUVRES": 2,
+            "TRADABLE_DAYS": 6,
+            "TRADABLE_DAYS_NOT_IN_POSITION": 2,
+            "TRADABLE_DAYS_IN_POSITION_CLOSED": 4,
+            "BMJ": "0.275",
+            "BMD": "0.1375",
+            "BUY_DAYS_CLOSED": 4,
+            "RATIO_NOT_IN_POSITION": "33.33333333333333333333333333",
+            "RATIO_IN_POSITION": "66.66666666666666666666666667",
+            "cash_ticker_end": "160.000000",
+            "PNL_AMOUNT": "60.000000",
+            "TOTAL_GAIN_AMOUNT": "60.000000",
+            "TOTAL_LOSS_AMOUNT": "0",
+            "AVG_TRADE_AMOUNT": "30.000000",
+            "PROFIT_FACTOR_AMOUNT": null,
+            "MAX_GAIN_AMOUNT": "30.000000",
+            "MAX_LOSS_AMOUNT": null,
+            "WIN_TRADES": 2,
+            "LOSS_TRADES": 0,
+            "FLAT_TRADES": 0,
+            "WIN_RATE_AMOUNT": "100",
+            "FINAL_EQUITY": "160.000000"
+          }
+        }
+      ]
+    },
+    "portfolio": {
+      "kpi": {
+        "capital_total": "0",
+        "invested_end": "200",
+        "equity_end": "200.010000",
+        "N": 4,
+        "S_G_N": "-0.06248499849984998499849984998",
+        "BT": "0.000050",
+        "TRADABLE_DAYS_NOT_IN_POSITION": 4,
+        "TRADABLE_DAYS_IN_POSITION_CLOSED": 8,
+        "BMJ": "0.000008333333333333333333333333333",
+        "BMD": "0.00000625",
+        "NB_DAYS": 6,
+        "AVG_RATIO_IN_POSITION_PLAYED": "66.66666666666666666666666665",
+        "NB_PLAYED_TICKERS": 2,
+        "POSITIVE_BMD_TICKERS": 1,
+        "POSITIVE_BMD_AVG_GAIN": "0.1375",
+        "POSITIVE_BMD_AVG_RATIO_IN_POSITION": "66.66666666666666666666666667",
+        "NON_POSITIVE_BMD_TICKERS": 1,
+        "NON_POSITIVE_BMD_AVG_GAIN": "-0.1999849984998499849984998500",
+        "NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION": "66.66666666666666666666666667",
+        "max_drawdown": "-0.2083246531394525228115495188",
+        "TOTAL_PNL_AMOUNT": "0.010000",
+        "TOTAL_RETURN_ON_CAPITAL": null,
+        "FINAL_EQUITY": "200.010000",
+        "TOTAL_GAIN_AMOUNT": "60.000000",
+        "TOTAL_LOSS_AMOUNT": "-59.990000",
+        "AVG_TRADE_AMOUNT": "0.002500",
+        "PROFIT_FACTOR_AMOUNT": "1.000166694449074845807634606",
+        "MAX_GAIN_AMOUNT": "30.000000",
+        "MAX_LOSS_AMOUNT": "-39.990000",
+        "TOTAL_TRADES": 4,
+        "WIN_TRADES": 2,
+        "LOSS_TRADES": 2,
+        "FLAT_TRADES": 0,
+        "WIN_RATE_AMOUNT": "50.0",
+        "max_drawdown_amount": "50.000000"
+      },
+      "daily": [
+        {
+          "date": "2024-01-01",
+          "global_cash": "0",
+          "cash_allocated": "0.010000",
+          "bank_total": "0",
+          "positions_value": "199.990000",
+          "positions_cost": "199.990000",
+          "available_cash": "0.010000",
+          "equity": "200.000000",
+          "invested": "200",
+          "pnl_global": "0.000000",
+          "portfolio_return_global": "0.000000",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "0"
+        },
+        {
+          "date": "2024-01-02",
+          "global_cash": "0",
+          "cash_allocated": "0.010000",
+          "bank_total": "0",
+          "positions_value": "240.000000",
+          "positions_cost": "199.990000",
+          "available_cash": "0.010000",
+          "equity": "240.010000",
+          "invested": "200",
+          "pnl_global": "40.010000",
+          "portfolio_return_global": "0.200050",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "0"
+        },
+        {
+          "date": "2024-01-03",
+          "global_cash": "0",
+          "cash_allocated": "190.010000",
+          "bank_total": "0",
+          "positions_value": "0",
+          "positions_cost": "0",
+          "available_cash": "190.010000",
+          "equity": "190.010000",
+          "invested": "200",
+          "pnl_global": "-9.990000",
+          "portfolio_return_global": "-0.049950",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.2083246531394525228115495188"
+        },
+        {
+          "date": "2024-01-04",
+          "global_cash": "0",
+          "cash_allocated": "20.010000",
+          "bank_total": "0",
+          "positions_value": "170.000000",
+          "positions_cost": "170.000000",
+          "available_cash": "20.010000",
+          "equity": "190.010000",
+          "invested": "200",
+          "pnl_global": "-9.990000",
+          "portfolio_return_global": "-0.049950",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.2083246531394525228115495188"
+        },
+        {
+          "date": "2024-01-05",
+          "global_cash": "0",
+          "cash_allocated": "20.010000",
+          "bank_total": "0",
+          "positions_value": "195.000000",
+          "positions_cost": "170.000000",
+          "available_cash": "20.010000",
+          "equity": "215.010000",
+          "invested": "200",
+          "pnl_global": "15.010000",
+          "portfolio_return_global": "0.075050",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.1041623265697262614057747594"
+        },
+        {
+          "date": "2024-01-06",
+          "global_cash": "0",
+          "cash_allocated": "200.010000",
+          "bank_total": "0",
+          "positions_value": "0",
+          "positions_cost": "0",
+          "available_cash": "200.010000",
+          "equity": "200.010000",
+          "invested": "200",
+          "pnl_global": "0.010000",
+          "portfolio_return_global": "0.000050",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.1666597225115620182492396150"
+        }
+      ]
+    }
+  },
+  "1000-FIXED": {
+    "tickers": {
+      "AAA": [
+        {
+          "events": [
+            {
+              "date": "2024-01-01",
+              "action": "BUY",
+              "price_close": "33.330000"
+            },
+            {
+              "date": "2024-01-03",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "20.000000",
+              "action_G": "-0.3999399939993999399939993999",
+              "action_PNL_AMOUNT": "-39.990000"
+            },
+            {
+              "date": "2024-01-04",
+              "action": "BUY",
+              "price_close": "25.000000"
+            },
+            {
+              "date": "2024-01-06",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "15.000000",
+              "action_G": "-0.4",
+              "action_PNL_AMOUNT": "-40.000000"
+            }
+          ],
+          "final": {
+            "N": 2,
+            "S_G_N": "-0.3999699969996999699969997000",
+            "BT": "-0.7999399939993999399939993999",
+            "NB_JOUR_OUVRES": 2,
+            "TRADABLE_DAYS": 6,
+            "TRADABLE_DAYS_NOT_IN_POSITION": 2,
+            "TRADABLE_DAYS_IN_POSITION_CLOSED": 4,
+            "BMJ": "-0.3999699969996999699969997000",
+            "BMD": "-0.1999849984998499849984998500",
+            "BUY_DAYS_CLOSED": 4,
+            "RATIO_NOT_IN_POSITION": "33.33333333333333333333333333",
+            "RATIO_IN_POSITION": "66.66666666666666666666666667",
+            "cash_ticker_end": "100",
+            "PNL_AMOUNT": "-79.990000",
+            "TOTAL_GAIN_AMOUNT": "0",
+            "TOTAL_LOSS_AMOUNT": "-79.990000",
+            "AVG_TRADE_AMOUNT": "-39.995000",
+            "PROFIT_FACTOR_AMOUNT": "0E+6",
+            "MAX_GAIN_AMOUNT": null,
+            "MAX_LOSS_AMOUNT": "-40.000000",
+            "WIN_TRADES": 0,
+            "LOSS_TRADES": 2,
+            "FLAT_TRADES": 0,
+            "WIN_RATE_AMOUNT": "0",
+            "FINAL_EQUITY": "20.010000"
+          }
+        }
+      ],
+      "BBB": [
+        {
+          "events": [
+            {
+              "date": "2024-01-01",
+              "action": "BUY",
+              "price_close": "50.000000"
+            },
+            {
+              "date": "2024-01-03",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "65.000000",
+              "action_G": "0.3",
+              "action_PNL_AMOUNT": "30.000000"
+            },
+            {
+              "date": "2024-01-04",
+              "action": "BUY",
+              "price_close": "40.000000"
+            },
+            {
+              "date": "2024-01-06",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "50.000000",
+              "action_G": "0.25",
+              "action_PNL_AMOUNT": "20.000000"
+            }
+          ],
+          "final": {
+            "N": 2,
+            "S_G_N": "0.275",
+            "BT": "0.55",
+            "NB_JOUR_OUVRES": 2,
+            "TRADABLE_DAYS": 6,
+            "TRADABLE_DAYS_NOT_IN_POSITION": 2,
+            "TRADABLE_DAYS_IN_POSITION_CLOSED": 4,
+            "BMJ": "0.275",
+            "BMD": "0.1375",
+            "BUY_DAYS_CLOSED": 4,
+            "RATIO_NOT_IN_POSITION": "33.33333333333333333333333333",
+            "RATIO_IN_POSITION": "66.66666666666666666666666667",
+            "cash_ticker_end": "100",
+            "PNL_AMOUNT": "50.000000",
+            "TOTAL_GAIN_AMOUNT": "50.000000",
+            "TOTAL_LOSS_AMOUNT": "0",
+            "AVG_TRADE_AMOUNT": "25.000000",
+            "PROFIT_FACTOR_AMOUNT": null,
+            "MAX_GAIN_AMOUNT": "30.000000",
+            "MAX_LOSS_AMOUNT": null,
+            "WIN_TRADES": 2,
+            "LOSS_TRADES": 0,
+            "FLAT_TRADES": 0,
+            "WIN_RATE_AMOUNT": "100",
+            "FINAL_EQUITY": "150.000000"
+          }
+        }
+      ]
+    },
+    "portfolio": {
+      "kpi": {
+        "capital_total": "1000",
+        "invested_end": "200",
+        "equity_end": "970.010000",
+        "N": 4,
+        "S_G_N": "-0.06248499849984998499849984998",
+        "BT": "3.850050",
+        "TRADABLE_DAYS_NOT_IN_POSITION": 4,
+        "TRADABLE_DAYS_IN_POSITION_CLOSED": 8,
+        "BMJ": "0.641675",
+        "BMD": "0.48125625",
+        "NB_DAYS": 6,
+        "AVG_RATIO_IN_POSITION_PLAYED": "66.66666666666666666666666665",
+        "NB_PLAYED_TICKERS": 2,
+        "POSITIVE_BMD_TICKERS": 1,
+        "POSITIVE_BMD_AVG_GAIN": "0.1375",
+        "POSITIVE_BMD_AVG_RATIO_IN_POSITION": "66.66666666666666666666666667",
+        "NON_POSITIVE_BMD_TICKERS": 1,
+        "NON_POSITIVE_BMD_AVG_GAIN": "-0.1999849984998499849984998500",
+        "NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION": "66.66666666666666666666666667",
+        "max_drawdown": "-0.06730704512456610994125056490",
+        "TOTAL_PNL_AMOUNT": "-29.990000",
+        "TOTAL_RETURN_ON_CAPITAL": "-0.029990",
+        "FINAL_EQUITY": "970.010000",
+        "TOTAL_GAIN_AMOUNT": "50.000000",
+        "TOTAL_LOSS_AMOUNT": "-79.990000",
+        "AVG_TRADE_AMOUNT": "-7.497500",
+        "PROFIT_FACTOR_AMOUNT": "0.6250781347668458557319664958",
+        "MAX_GAIN_AMOUNT": "30.000000",
+        "MAX_LOSS_AMOUNT": "-40.000000",
+        "TOTAL_TRADES": 4,
+        "WIN_TRADES": 2,
+        "LOSS_TRADES": 2,
+        "FLAT_TRADES": 0,
+        "WIN_RATE_AMOUNT": "50.0",
+        "max_drawdown_amount": "70.000000"
+      },
+      "daily": [
+        {
+          "date": "2024-01-01",
+          "global_cash": "800",
+          "cash_allocated": "0.010000",
+          "bank_total": "0",
+          "positions_value": "199.990000",
+          "positions_cost": "199.990000",
+          "available_cash": "800.010000",
+          "equity": "1000.000000",
+          "invested": "200",
+          "pnl_global": "0.000000",
+          "portfolio_return_global": "0.000000",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "0"
+        },
+        {
+          "date": "2024-01-02",
+          "global_cash": "800",
+          "cash_allocated": "0.010000",
+          "bank_total": "0",
+          "positions_value": "240.000000",
+          "positions_cost": "199.990000",
+          "available_cash": "800.010000",
+          "equity": "1040.010000",
+          "invested": "200",
+          "pnl_global": "40.010000",
+          "portfolio_return_global": "0.040010",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "0"
+        },
+        {
+          "date": "2024-01-03",
+          "global_cash": "800",
+          "cash_allocated": "200",
+          "bank_total": "-9.990000",
+          "positions_value": "0",
+          "positions_cost": "0",
+          "available_cash": "990.010000",
+          "equity": "990.010000",
+          "invested": "200",
+          "pnl_global": "-9.990000",
+          "portfolio_return_global": "-0.009990",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.04807646080326150710089326064"
+        },
+        {
+          "date": "2024-01-04",
+          "global_cash": "800",
+          "cash_allocated": "20.000000",
+          "bank_total": "-9.990000",
+          "positions_value": "180.000000",
+          "positions_cost": "180.000000",
+          "available_cash": "810.010000",
+          "equity": "990.010000",
+          "invested": "200",
+          "pnl_global": "-9.990000",
+          "portfolio_return_global": "-0.009990",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.04807646080326150710089326064"
+        },
+        {
+          "date": "2024-01-05",
+          "global_cash": "800",
+          "cash_allocated": "20.000000",
+          "bank_total": "-9.990000",
+          "positions_value": "210.000000",
+          "positions_cost": "180.000000",
+          "available_cash": "810.010000",
+          "equity": "1020.010000",
+          "invested": "200",
+          "pnl_global": "20.010000",
+          "portfolio_return_global": "0.020010",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.01923058432130460284035730426"
+        },
+        {
+          "date": "2024-01-06",
+          "global_cash": "800",
+          "cash_allocated": "200",
+          "bank_total": "-29.990000",
+          "positions_value": "0",
+          "positions_cost": "0",
+          "available_cash": "970.010000",
+          "equity": "970.010000",
+          "invested": "200",
+          "pnl_global": "-29.990000",
+          "portfolio_return_global": "-0.029990",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.06730704512456610994125056490"
+        }
+      ]
+    }
+  },
+  "1000-REINVEST": {
+    "tickers": {
+      "AAA": [
+        {
+          "events": [
+            {
+              "date": "2024-01-01",
+              "action": "BUY",
+              "price_close": "33.330000"
+            },
+            {
+              "date": "2024-01-03",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "20.000000",
+              "action_G": "-0.3999399939993999399939993999",
+              "action_PNL_AMOUNT": "-39.990000"
+            },
+            {
+              "date": "2024-01-04",
+              "action": "BUY",
+              "price_close": "25.000000"
+            },
+            {
+              "date": "2024-01-06",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "15.000000",
+              "action_G": "-0.4",
+              "action_PNL_AMOUNT": "-20.000000"
+            }
+          ],
+          "final": {
+            "N": 2,
+            "S_G_N": "-0.3999699969996999699969997000",
+            "BT": "-0.7999399939993999399939993999",
+            "NB_JOUR_OUVRES": 2,
+            "TRADABLE_DAYS": 6,
+            "TRADABLE_DAYS_NOT_IN_POSITION": 2,
+            "TRADABLE_DAYS_IN_POSITION_CLOSED": 4,
+            "BMJ": "-0.3999699969996999699969997000",
+            "BMD": "-0.1999849984998499849984998500",
+            "BUY_DAYS_CLOSED": 4,
+            "RATIO_NOT_IN_POSITION": "33.33333333333333333333333333",
+            "RATIO_IN_POSITION": "66.66666666666666666666666667",
+            "cash_ticker_end": "40.010000",
+            "PNL_AMOUNT": "-59.990000",
+            "TOTAL_GAIN_AMOUNT": "0",
+            "TOTAL_LOSS_AMOUNT": "-59.990000",
+            "AVG_TRADE_AMOUNT": "-29.995000",
+            "PROFIT_FACTOR_AMOUNT": "0E+6",
+            "MAX_GAIN_AMOUNT": null,
+            "MAX_LOSS_AMOUNT": "-39.990000",
+            "WIN_TRADES": 0,
+            "LOSS_TRADES": 2,
+            "FLAT_TRADES": 0,
+            "WIN_RATE_AMOUNT": "0",
+            "FINAL_EQUITY": "40.010000"
+          }
+        }
+      ],
+      "BBB": [
+        {
+          "events": [
+            {
+              "date": "2024-01-01",
+              "action": "BUY",
+              "price_close": "50.000000"
+            },
+            {
+              "date": "2024-01-03",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "65.000000",
+              "action_G": "0.3",
+              "action_PNL_AMOUNT": "30.000000"
+            },
+            {
+              "date": "2024-01-04",
+              "action": "BUY",
+              "price_close": "40.000000"
+            },
+            {
+              "date": "2024-01-06",
+              "action": "SELL",
+              "action_reason": "signal B1",
+              "price_close": "50.000000",
+              "action_G": "0.25",
+              "action_PNL_AMOUNT": "30.000000"
+            }
+          ],
+          "final": {
+            "N": 2,
+            "S_G_N": "0.275",
+            "BT": "0.55",
+            "NB_JOUR_OUVRES": 2,
+            "TRADABLE_DAYS": 6,
+            "TRADABLE_DAYS_NOT_IN_POSITION": 2,
+            "TRADABLE_DAYS_IN_POSITION_CLOSED": 4,
+            "BMJ": "0.275",
+            "BMD": "0.1375",
+            "BUY_DAYS_CLOSED": 4,
+            "RATIO_NOT_IN_POSITION": "33.33333333333333333333333333",
+            "RATIO_IN_POSITION": "66.66666666666666666666666667",
+            "cash_ticker_end": "160.000000",
+            "PNL_AMOUNT": "60.000000",
+            "TOTAL_GAIN_AMOUNT": "60.000000",
+            "TOTAL_LOSS_AMOUNT": "0",
+            "AVG_TRADE_AMOUNT": "30.000000",
+            "PROFIT_FACTOR_AMOUNT": null,
+            "MAX_GAIN_AMOUNT": "30.000000",
+            "MAX_LOSS_AMOUNT": null,
+            "WIN_TRADES": 2,
+            "LOSS_TRADES": 0,
+            "FLAT_TRADES": 0,
+            "WIN_RATE_AMOUNT": "100",
+            "FINAL_EQUITY": "160.000000"
+          }
+        }
+      ]
+    },
+    "portfolio": {
+      "kpi": {
+        "capital_total": "1000",
+        "invested_end": "200",
+        "equity_end": "1000.010000",
+        "N": 4,
+        "S_G_N": "-0.06248499849984998499849984998",
+        "BT": "4.000050",
+        "TRADABLE_DAYS_NOT_IN_POSITION": 4,
+        "TRADABLE_DAYS_IN_POSITION_CLOSED": 8,
+        "BMJ": "0.666675",
+        "BMD": "0.50000625",
+        "NB_DAYS": 6,
+        "AVG_RATIO_IN_POSITION_PLAYED": "66.66666666666666666666666665",
+        "NB_PLAYED_TICKERS": 2,
+        "POSITIVE_BMD_TICKERS": 1,
+        "POSITIVE_BMD_AVG_GAIN": "0.1375",
+        "POSITIVE_BMD_AVG_RATIO_IN_POSITION": "66.66666666666666666666666667",
+        "NON_POSITIVE_BMD_TICKERS": 1,
+        "NON_POSITIVE_BMD_AVG_GAIN": "-0.1999849984998499849984998500",
+        "NON_POSITIVE_BMD_AVG_RATIO_IN_POSITION": "66.66666666666666666666666667",
+        "max_drawdown": "-0.04807646080326150710089326064",
+        "TOTAL_PNL_AMOUNT": "0.010000",
+        "TOTAL_RETURN_ON_CAPITAL": "0.000010",
+        "FINAL_EQUITY": "1000.010000",
+        "TOTAL_GAIN_AMOUNT": "60.000000",
+        "TOTAL_LOSS_AMOUNT": "-59.990000",
+        "AVG_TRADE_AMOUNT": "0.002500",
+        "PROFIT_FACTOR_AMOUNT": "1.000166694449074845807634606",
+        "MAX_GAIN_AMOUNT": "30.000000",
+        "MAX_LOSS_AMOUNT": "-39.990000",
+        "TOTAL_TRADES": 4,
+        "WIN_TRADES": 2,
+        "LOSS_TRADES": 2,
+        "FLAT_TRADES": 0,
+        "WIN_RATE_AMOUNT": "50.0",
+        "max_drawdown_amount": "50.000000"
+      },
+      "daily": [
+        {
+          "date": "2024-01-01",
+          "global_cash": "800",
+          "cash_allocated": "0.010000",
+          "bank_total": "0",
+          "positions_value": "199.990000",
+          "positions_cost": "199.990000",
+          "available_cash": "800.010000",
+          "equity": "1000.000000",
+          "invested": "200",
+          "pnl_global": "0.000000",
+          "portfolio_return_global": "0.000000",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "0"
+        },
+        {
+          "date": "2024-01-02",
+          "global_cash": "800",
+          "cash_allocated": "0.010000",
+          "bank_total": "0",
+          "positions_value": "240.000000",
+          "positions_cost": "199.990000",
+          "available_cash": "800.010000",
+          "equity": "1040.010000",
+          "invested": "200",
+          "pnl_global": "40.010000",
+          "portfolio_return_global": "0.040010",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "0"
+        },
+        {
+          "date": "2024-01-03",
+          "global_cash": "800",
+          "cash_allocated": "190.010000",
+          "bank_total": "0",
+          "positions_value": "0",
+          "positions_cost": "0",
+          "available_cash": "990.010000",
+          "equity": "990.010000",
+          "invested": "200",
+          "pnl_global": "-9.990000",
+          "portfolio_return_global": "-0.009990",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.04807646080326150710089326064"
+        },
+        {
+          "date": "2024-01-04",
+          "global_cash": "800",
+          "cash_allocated": "20.010000",
+          "bank_total": "0",
+          "positions_value": "170.000000",
+          "positions_cost": "170.000000",
+          "available_cash": "820.010000",
+          "equity": "990.010000",
+          "invested": "200",
+          "pnl_global": "-9.990000",
+          "portfolio_return_global": "-0.009990",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.04807646080326150710089326064"
+        },
+        {
+          "date": "2024-01-05",
+          "global_cash": "800",
+          "cash_allocated": "20.010000",
+          "bank_total": "0",
+          "positions_value": "195.000000",
+          "positions_cost": "170.000000",
+          "available_cash": "820.010000",
+          "equity": "1015.010000",
+          "invested": "200",
+          "pnl_global": "15.010000",
+          "portfolio_return_global": "0.015010",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.02403823040163075355044663032"
+        },
+        {
+          "date": "2024-01-06",
+          "global_cash": "800",
+          "cash_allocated": "200.010000",
+          "bank_total": "0",
+          "positions_value": "0",
+          "positions_cost": "0",
+          "available_cash": "1000.010000",
+          "equity": "1000.010000",
+          "invested": "200",
+          "pnl_global": "0.010000",
+          "portfolio_return_global": "0.000010",
+          "avg_global_nglobal": null,
+          "gm_push_current": null,
+          "drawdown": "-0.03846116864260920568071460851"
+        }
+      ]
+    }
+  }
+}

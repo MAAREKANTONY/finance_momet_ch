@@ -56,6 +56,7 @@ from core.services.csi300_sector_gm import (
     resolve_csi300_sector_benchmark,
 )
 from core.services.backtest_currency import effective_currency_for_new_result
+from core.services.backtesting.portfolio_protection import PortfolioProtection, protection_threshold
 from tools.csi300_policy import CSI300_SUPPORTED_HISTORY_START_ISO
 from core.services.market_cap import preload_market_cap_series
 from core.services.couloir import (
@@ -1859,6 +1860,7 @@ def run_backtest(
     large_result_mode: bool = False,
     estimated_daily_rows: int | None = None,
     resolved_universe=None,
+    max_days: int | None = None,
 ) -> BacktestEngineResult:
 
     """
@@ -1866,6 +1868,8 @@ def run_backtest(
     - Adds global capital constraint (CP) and daily selection of new allocations by highest ratio_p.
     - Keeps per-(ticker,line) independent cash re-investment once allocated.
     """
+    threshold = protection_threshold(getattr(backtest, "settings", {}))
+    protection = PortfolioProtection(threshold) if threshold is not None else None
     logs: list[str] = []
 
     def _checkpoint():
@@ -2455,6 +2459,8 @@ def run_backtest(
 
     warmup_dates = [d for d in dates_sorted if (start_d is not None and d < start_d)]
     real_dates_sorted = [d for d in dates_sorted if (start_d is None or d >= start_d)]
+    if max_days and max_days > 0:
+        real_dates_sorted = real_dates_sorted[-int(max_days):]
     if not real_dates_sorted:
         return BacktestEngineResult(results={"error": "No market dates found in effective backtest range."}, logs=logs)
 
@@ -2698,14 +2704,12 @@ def run_backtest(
     max_drawdown: Decimal = Decimal("0")
     max_drawdown_amount: Decimal = Decimal("0")
 
-    def _snapshot_portfolio(d: date):
-        """Compute end-of-day portfolio snapshot.
+    def _value_portfolio(d: date):
+        """Value the current accounts at today's marks, without updating KPIs.
 
         Portfolio is the aggregation of all allocated (ticker,line) cash + market value,
         plus remaining global cash when CP is limited.
         """
-        nonlocal peak_equity, max_drawdown, max_drawdown_amount, invested_total
-
         # update last prices for tickers that have a bar today
         for tk, tdata in data_by_ticker.items():
             px = tdata["price_by_date"].get(d)
@@ -2743,6 +2747,12 @@ def run_backtest(
             capital_total = CP_raw
 
         equity = global_cash_val + cash_allocated + positions_value + bank_total
+        return global_cash_val, cash_allocated, positions_value, positions_cost, bank_total, invested, capital_total, equity
+
+    def _snapshot_portfolio(d: date):
+        nonlocal peak_equity, max_drawdown, max_drawdown_amount
+        (global_cash_val, cash_allocated, positions_value, positions_cost,
+         bank_total, invested, capital_total, equity) = _value_portfolio(d)
         # Finite-capital backtests have a stable portfolio baseline: the initial
         # capital. Unallocated global cash is part of equity, not profit.
         # Unlimited-capital backtests keep their historical dynamic baseline.
@@ -2791,6 +2801,12 @@ def run_backtest(
     engine_loop_started = time.monotonic()
     for d in real_dates_sorted:
         _checkpoint()
+        protection_block_buys = False
+        if protection:
+            protection_equity_before = _value_portfolio(d)[-1]
+            protection.check(d, protection_equity_before)
+            # Remains true on the completion day, even after pending is cleared.
+            protection_block_buys = protection.pending
 
         # 1) SELL phase (sell before buy)
         for (ticker, li), st in state.items():
@@ -2893,7 +2909,12 @@ def run_backtest(
             # Special sell mode: K1f crosses down either (1) 0 (B1f) or (2) the closest
             # "line above" among K1/K2/K3/K4 as of t-1.
             couloir_state = st.get("couloir_state")
-            if st["position_open"] and couloir_state is not None:
+            if protection and protection.pending:
+                if st["position_open"] and close_d.is_finite() and close_d > 0:
+                    _do_sell("PORTFOLIO_DRAWDOWN")
+                    _merge_couloir_day_debug(st, couloir_sell_executed=True,
+                                            couloir_sell_source="PORTFOLIO_DRAWDOWN", couloir_reset_after_sell=True)
+            elif st["position_open"] and couloir_state is not None:
                 couloir_sell_candidate = couloir_state.evaluate_sell_candidate(d, close_d)
                 _merge_couloir_day_debug(st, couloir_sell_candidate=bool(couloir_sell_candidate))
                 if couloir_sell_candidate:
@@ -2949,7 +2970,7 @@ def run_backtest(
                     _retain_non_invalidated_latch_signals_after_sell(st, invalidated_signals, previous_latch_state)
             elif st["position_open"] and _match_line_with_global_filter(day_alerts, latched_alerts, sell_codes, st["sell_logic"], gm_code, st["sell_gm_filter"], st["sell_gm_operator"]):
                 _do_sell(f"signal {_compose_condition_label(sell_codes, st['sell_logic'], st['sell_gm_filter'], st['sell_gm_operator'])}")
-            if st["position_open"] and G_today is None:
+            if st["position_open"] and G_today is None and not (protection and protection.pending):
                 gm_sell_evaluation = _gm_market_exit_sell_evaluation(st, ticker, d)
                 if gm_sell_evaluation.get("has_active") and gm_sell_evaluation.get("passed"):
                     _do_sell(
@@ -2965,7 +2986,7 @@ def run_backtest(
                         )
                     if _line_uses_progressive_explicit_sell_model(st):
                         _arm_reentry_warning_if_needed(st, sell_date=d, ticker=ticker, line_index=li + 1)
-            if st["position_open"] and G_today is None:
+            if st["position_open"] and G_today is None and not (protection and protection.pending):
                 gm_push_sell_evaluation = _gm_push_market_exit_sell_evaluation(st, ticker, d)
                 if gm_push_sell_evaluation.get("has_active") and gm_push_sell_evaluation.get("passed"):
                     _do_sell(
@@ -3070,6 +3091,8 @@ def run_backtest(
         # 2) BUY allocation selection phase (for not-yet-allocated strategies, limited CP)
         candidates_need_alloc = []
         for (ticker, li), st in state.items():
+            if protection_block_buys:
+                continue
             tdata = data_by_ticker.get(ticker)
             if not tdata:
                 continue
@@ -3165,16 +3188,30 @@ def run_backtest(
                 logs.append(f"ALLOC {ticker}[L{li+1}] on {d} ratio={ratio_pct}% global_cash={global_cash}")
 
         # also track invested capital for CP infinite allocations (immediate or ranked)
+        funding_today = Decimal("0")
         if CP_infinite:
             for (ticker, li), st in state.items():
                 if st.get("allocated") and st.get("_counted_alloc") is not True:
                     # allocated now (first time)
                     if CT > 0:
                         invested_total += CT
+                        funding_today += CT
                     st["_counted_alloc"] = True
+
+        if protection and funding_today:
+            protection.fund(d, protection_equity_before, funding_today)
 
         # 3) BUY execution phase (for allocated or already allocated strategies)
         for (ticker, li), st in state.items():
+            if protection_block_buys:
+                continue
+            if protection and protection.current is None:
+                # After insolvency, FIXED reserves remain signed. A new cycle
+                # needs positive net equity; allocations above may fund it.
+                if st["allocated"]:
+                    _record_explain_blocker(st, d, "PROTECTION_NO_POSITIVE_EQUITY",
+                                           "Protection : valeur nette insuffisante pour financer un nouveau cycle")
+                continue
             tdata = data_by_ticker.get(ticker)
             if not tdata:
                 continue
@@ -3393,6 +3430,16 @@ def run_backtest(
 
         # 4) Portfolio daily snapshot (end-of-day)
         _snapshot_portfolio(d)
+        if protection:
+            protection.observe(d, Decimal(portfolio_daily[-1]["equity"]))
+            fields = protection.daily_fields()
+            fields["protection_liquidation"] = any(
+                st.get("_sold_today") and st.get("_last_action_reason") == "PORTFOLIO_DRAWDOWN"
+                for st in state.values()
+            )
+            portfolio_daily[-1].update(fields)
+            if protection.pending and not any(st["position_open"] for st in state.values()):
+                protection.finish(d)
 
     logger.warning(
         "[backtest timing] step=engine_loop backtest_id=%s duration=%.3fs dates=%s states=%s loaded_tickers=%s large_result_mode=%s",
@@ -3408,6 +3455,9 @@ def run_backtest(
     forced_capital_adjustments: dict[str, tuple[Decimal, Decimal]] = {}
     if backtest.close_positions_at_end:
         for (ticker, li), st in state.items():
+            # A pending liquidation must never execute on an earlier, stale quote.
+            if protection and protection.pending:
+                continue
             if not st["position_open"] or st["entry_price"] is None or st["shares"] <= 0:
                 continue
             tdata = data_by_ticker.get(ticker)
@@ -3937,6 +3987,18 @@ def run_backtest(
         "daily": portfolio_daily,
     }
 
+    if protection:
+        cycles = list(protection.cycles)
+        if protection.current and real_dates_sorted:
+            reason = "PENDING_DRAWDOWN" if protection.pending else (
+                "END_BACKTEST" if backtest.close_positions_at_end else "OPEN_END"
+            )
+            cycles.append(protection.summary(real_dates_sorted[-1], reason))
+        results["portfolio"]["protection"] = {
+            "enabled": True, "threshold_pct": str(threshold), "cycles": cycles,
+            "pending_liquidation": protection.pending,
+        }
+
     return BacktestEngineResult(results=results, logs=logs)
 
 
@@ -3947,6 +4009,11 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
 
     Returns: {"TICKER": {"lines": [{"line_index":1, "BMD":"...", ...}, ...], "best_bmd":"..."}}
     """
+    if protection_threshold(getattr(backtest, "settings", {})) is not None:
+        result = run_backtest(backtest, checkpoint=checkpoint, large_result_mode=True,
+                              max_days=max_days).results
+        return result.get("tickers", {})
+
     logs: list[str] = []
 
     def _checkpoint():

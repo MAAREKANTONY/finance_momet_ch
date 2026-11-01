@@ -193,6 +193,8 @@
         </div>
       </div>
 
+      {% include "partials/portfolio_protection_fields.html" %}
+
       <div class="field" style="margin-top:16px;">
         <label for="{{ form.close_positions_at_end.id_for_label }}">
           {{ form.close_positions_at_end }} Clôturer les positions à la fin (recommandé)

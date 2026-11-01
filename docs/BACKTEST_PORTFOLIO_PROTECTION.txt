@@ -1,0 +1,204 @@
+Protection du portefeuille par drawdown et cycles — revue locale
+==============================================================
+
+Audit et base
+-------------
+Consignes : AGENTS.MD à la racine ; aucune autre consigne AGENTS imbriquée.
+Remote origin : git@github.com:MAAREKANTONY/finance_momet_ch.git.
+Après git fetch origin, main = origin/main =
+4f43e4624f8bb18f5342ed3c8ea5a823d42cfd6d.
+Workspace initial propre ; aucun commit local absent des références distantes
+(git log --branches --not --remotes). Les branches historiques sont intactes.
+Branche locale : feature/backtest-portfolio-drawdown-cycles.
+État lors de la revue initiale : aucun commit, push, merge ni déploiement.
+
+Constat : le drawdown existant des KPI utilise l'equity brute globale, sans
+neutraliser les apports du capital illimité et sans remise à zéro par cycle.
+Il ne peut donc pas servir de déclencheur à cette protection. Les stratégies
+avaient déjà une valorisation et une fonction commune de clôture réutilisables.
+Leurs formules financières et les formules des KPI sont conservées.
+
+Formule et conventions
+----------------------
+V = cash global fini + cash alloué + valeur de marché des positions + réserve
+FIXED signée. La réserve n'est jamais remise à zéro ni rendue réinvestissable.
+
+Au premier financement net positif du cycle : I = 100 et U = V / 100.
+Sans apport : I = V / U.
+Lors d'un apport externe A, après valorisation des positions au cours du jour :
+  U_après = U_avant + A / I_avant
+  V_après = V_avant + A
+  I_après = V_après / U_après = I_avant.
+En capital fini, allouer CT déplace du cash interne : aucun changement de U.
+En capital illimité, chaque première allocation CT effective est un apport ;
+les allocations du jour sont agrégées avant les achats, à valorisation identique.
+Un financement sans quantité achetable reste du cash effectivement alloué.
+Le premier apport constitue la valeur initiale, les suivants sont soustraits
+pour déterminer le PnL du cycle.
+
+H = maximum de I depuis le début du cycle ; DD = (H - I) / H.
+Déclenchement strict : (H - I) * 100 > H * seuil_pct.
+Les parts, l'indice et le sommet sont calculés en fractions rationnelles exactes
+à partir des montants Decimal. Les valeurs JSON sont converties en Decimal
+pour affichage uniquement. Aucune tolérance numérique ne modifie le seuil.
+Cela évite un faux dépassement lié à une division décimale périodique après
+un apport. Ce n'est ni un pourcentage du PnL maximal ni du capital investi.
+
+PnL_cycle = V_fin - V_début - apports ultérieurs du cycle.
+Après liquidation complète, ce montant est réalisé. Pour un cycle ouvert ou
+encore en liquidation, il inclut la valorisation des positions restantes.
+Les PnL réalisés, gains/pertes, compteurs de trades et soldes continuent à
+s'accumuler sur tout le backtest, y compris aux changements de cycle.
+
+Ordre quotidien (annoncé avant modification du moteur)
+-----------------------------------------------------
+1. Valoriser les comptes existants avec les cours du jour ou le dernier cours
+   connu pour les positions sans cotation ; aucun cours futur.
+2. Actualiser I/H et tester le dépassement avant les ventes et achats habituels.
+3. Si la protection est en liquidation, donner priorité à sa vente via
+   _close_open_position ; exécuter uniquement sur un cours courant positif.
+   Sinon, conserver les sorties Push, Couloir, GM et autres règles existantes.
+4. Si liquidation en attente : bloquer allocations et achats pour tout le jour,
+   même si la dernière position est vendue ce jour-là. Aucun double SELL.
+5. Sinon, conserver la sélection/allocation habituelle ; neutraliser les apports
+   illimités après les allocations et avant les achats, aux mêmes cours.
+6. Exécuter les achats habituels puis les compteurs et snapshots existants.
+7. Archiver le cycle si toutes ses positions ont été liquidées. Le lendemain,
+   repartir à 100 avec la valeur nette restante, sans changer les comptes.
+
+Si le capital net est épuisé après des pertes FIXED, conserver les réserves
+négatives. Les achats attendent une valeur nette positive permettant de
+financer un nouvel indice ; de nouveaux apports illimités peuvent la rétablir.
+
+Chemins d'exécution et stockage
+------------------------------
+- run_backtest_task / run_backtest_job_task -> run_backtest : même protection
+  pour toutes les méthodes et pour large_result_mode.
+- run_backtest_kpi_only : si la configuration de protection est explicitement
+  présente, délègue au moteur commun en mode sans lignes quotidiennes détaillées
+  (max_days conservé). Le chemin désactivé reste identique. Les jeux n'exposent
+  pas cette option ; aucun changement des tâches, de Celery ou de Redis.
+- JSON normal et JSON volumineux : cycles dans portfolio.protection,
+  index/sommet/drawdown/attente/marqueurs dans portfolio.daily,
+  motifs de ventes dans les événements conservés même en mode volumineux.
+- Déport json.gz : ne retire que les tableaux quotidiens par ticker ; les cycles,
+  les marqueurs et les événements restent dans le JSON du backtest.
+- Parquet optionnel existant : les lignes détaillées portent le motif de vente ;
+  le résumé des cycles reste dans le JSON. Aucun nouveau stockage obligatoire.
+- Configuration : settings.portfolio_protection = {enabled, threshold_pct}.
+  Absente = désactivée. Aucun changement de schéma ni migration.
+  BacktestForm valide 0 < seuil < 100, initialise la création/édition, sauvegarde
+  les paramètres et les inclut dans l'invalidation des résultats existants.
+  Les snapshots/restaurations et copies existants de settings les préservent.
+- Résultats UI : courbes existantes préservées, marqueurs de chaque exécution
+  de liquidation sur la courbe d'equity, tableau des cycles et aide partagée.
+  Les dates des marqueurs sont ajoutées aux points sous-échantillonnés.
+
+Fichiers de production
+----------------------
+core/services/backtesting/portfolio_protection.py : état et calcul de protection.
+core/services/backtesting/engine.py : valorisation partagée et intégration.
+core/forms.py : paramètres, validation, sauvegarde et invalidation.
+core/views.py : conservation des marqueurs sur les longues courbes.
+templates/backtest_create.html, templates/backtest_edit.html : rubrique.
+templates/backtest_detail.html : configuration activée/désactivée.
+templates/backtest_results.html : marqueurs, synthèse des cycles et aide.
+templates/partials/portfolio_protection_fields.html : champs communs.
+templates/partials/portfolio_protection_help.html : aide commune.
+
+Validation
+----------
+core/tests/test_portfolio_protection.py : tests métier, seuil exact après apport
+avec parts fractionnaires, quatre configurations de capital, cycles, cumul,
+cotations manquantes/nulles, concurrence, Couloir, warmup, absence de cours
+futurs, déport disque, mode volumineux/KPI-only, requêtes constantes,
+formulaires, restauration, invalidation et marqueurs sur longues courbes.
+core/tests/fixtures/portfolio_protection_disabled.json : référence produite
+directement avec le moteur git show 4f43e46:core/services/backtesting/engine.py,
+indépendamment du moteur modifié : transactions, tous les KPI de lignes et du
+portefeuille et snapshots journaliers en fini/illimité, FIXED/REINVEST.
+
+Commandes Git :
+  git status --short --branch
+  git remote -v
+  git fetch origin
+  git rev-parse origin/main
+  git log origin/main..HEAD --oneline
+  git log --branches --not --remotes --format=%h
+  git switch -c feature/backtest-portfolio-drawdown-cycles
+  git diff --check
+
+La commande prescrite a été tentée :
+  sudo docker compose exec web python tools/run_quality_gate.py
+Impossible de l'exécuter ici : sudo demande un mot de passe ; accès au socket
+Docker refusé pour l'utilisateur courant. Ce n'est pas un rejet auto-review.
+
+Alternative locale : environnement virtuel /tmp/stockalert-drawdown-venv,
+Python 3.14, Django 5.2.18, SQLite de test en mémoire. Dépendances du dépôt
+installées dans /tmp ; matplotlib 3.11.2 remplace 3.9.0 uniquement dans cet
+environnement (absence de roue 3.9.0 pour Python 3.14). requirements.txt intact.
+
+Commandes locales, préfixe P=/tmp/stockalert-drawdown-venv/bin/python :
+  P manage.py test core.tests.test_portfolio_protection core.tests.test_portfolio_capital --verbosity 1
+  P manage.py test core.tests.test_engine_and_metrics core.tests.test_forms core.tests.test_dynamic_universe_backtest core.tests.test_trend_filter_engine core.tests.test_market_cap_filter_engine core.tests.test_large_symbol_views --verbosity 1
+  P tools/run_quality_gate.py
+  P manage.py test core.tests --verbosity 1
+
+Résultats :
+  Tests ciblés protection/capital : 30 réussis.
+  Tests ciblés incluant le résolveur : 58 réussis.
+  Régressions moteur/formulaires/univers/filtres/vues : 476 réussis.
+  Quality gate local : compilation, audit architecture (0 violation),
+  5 tests architecture, 10 lancements de jobs, 31 robustesse, 24 exports : OK.
+  Suite complète finale : 1167 tests en 151.152 s, aucun échec, 2 ignorés
+  (assertions de schéma réservées à PostgreSQL).
+  Un premier passage de 1166 tests a identifié un import de résolution d'univers
+  interdit dans le moteur. Cet import a été retiré, la résolution restant dans
+  l'orchestration existante. La suite finale ci-dessus valide la correction.
+
+Limites de validation : pas d'exécution Docker/PostgreSQL dans cet environnement,
+pas de benchmark de production sur plusieurs milliers de tickers. La protection
+ajoute une valorisation en mémoire avant les actions, aucun appel fournisseur,
+aucune requête par ticker/jour, aucun calcul d'indicateur supplémentaire.
+Les exécutions restent au close, sans frais ni slippage, selon le moteur existant.
+Une liquidation sans nouvelle cotation en fin de backtest reste en attente ;
+elle n'est jamais antidatée par la clôture de fin de backtest.
+
+Journaux de validation locale :
+  /tmp/stockalert-drawdown-tests.log
+  /tmp/stockalert-drawdown-regressions.log
+  /tmp/stockalert-drawdown-quality.log
+  /tmp/stockalert-drawdown-full-suite.log
+Aucun échec restant lors de cette validation initiale. Les tests UI vérifiaient
+le rendu serveur ; la recette graphique a ensuite été complétée ci-dessous.
+
+Recette graphique validée
+------------------------
+Le graphique Equity / Drawdown définit explicitement les couleurs des lignes,
+des points et des légendes dans chaque dataset :
+  Equity : bleu #36A2EB.
+  Drawdown (%) : rouge/rose #FF6384.
+  Liquidation sur drawdown : triangles vert foncé #166534, remplissage et contour.
+La palette automatique ne détermine plus ces couleurs selon la présence des
+marqueurs. Vérification dans Chromium avec Chart.js 4.6.1 : protection activée
+et désactivée, couleurs réelles des lignes/points/légendes conformes, triangles
+conservés et séries de données identiques avant/après la correction d'affichage.
+
+Préparation de la publication
+----------------------------
+Après le GO de publication, nouveau fetch : origin/main reste sur 4f43e46.
+Seuls les 13 fichiers de cette mission sont inclus. Aucun déploiement autorisé
+ou effectué. Le gate Docker exige toujours une authentification sudo.
+Une validation finale utilise Python 3.12.16 comme la version mineure de la CI,
+avec les dépendances exactes de requirements.txt, notamment matplotlib 3.9.0,
+dans /tmp/stockalert-merge-venv. requirements.txt n'est pas modifié.
+
+Résultats avant publication sur le diff final, couleurs validées incluses :
+  python tools/run_quality_gate.py : succès, audit sans violation et 70 tests OK.
+  python manage.py test core.tests --verbosity 1 : 1167 tests en 146.330 s,
+  aucun échec, 2 tests PostgreSQL ignorés sous SQLite.
+  Vérification Chromium activée/désactivée : couleurs, points et légendes OK,
+  séries identiques avant/après correction des couleurs.
+  git diff --check : OK.
+Journaux : /tmp/stockalert-merge-quality.log et
+/tmp/stockalert-merge-full-suite.log.
