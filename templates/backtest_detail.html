@@ -16,6 +16,7 @@
         {% if effective_currency %}<tr><th>Devise effective</th><td><strong>{{ effective_currency }}</strong></td></tr>{% endif %}
         <tr><th>CP (capital total{% if effective_currency %}, {{ effective_currency }}{% endif %})</th><td>{{ bt.capital_total }}{% if bt.capital_total == 0 %} <span class="muted">(illimité)</span>{% endif %}</td></tr>
         <tr><th>CT (capital par action{% if effective_currency %}, {{ effective_currency }}{% endif %})</th><td>{{ bt.capital_per_ticker }}</td></tr>
+        <tr><th>Protection du portefeuille</th><td>{% if bt.settings.portfolio_protection.enabled %}Activée — seuil {{ bt.settings.portfolio_protection.threshold_pct }} %{% else %}Désactivée{% endif %}</td></tr>
         <tr><th>Mode capital</th><td>{{ bt.get_capital_mode_display }}</td></tr>
         <tr><th>X (seuil ratio_p %)</th><td>{{ bt.ratio_threshold }}</td></tr>
         <tr>

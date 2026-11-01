@@ -987,6 +987,12 @@ class SymbolImportForm(forms.Form):
 class BacktestForm(forms.ModelForm):
     """Create/Edit a Backtest configuration (engine results will be computed later)."""
 
+    portfolio_protection_enabled = forms.BooleanField(required=False, label="Activer la protection")
+    portfolio_drawdown_threshold = forms.DecimalField(
+        required=False, max_digits=8, decimal_places=4, label="Seuil de drawdown (%)",
+        widget=forms.NumberInput(attrs={"step": "0.0001"}),
+    )
+
     min_price = forms.DecimalField(required=False, min_value=0, label="Prix minimum")
     max_price = forms.DecimalField(required=False, min_value=0, label="Prix maximum")
     market_cap_min = forms.DecimalField(
@@ -1032,6 +1038,8 @@ class BacktestForm(forms.ModelForm):
             "capital_total",
             "capital_per_ticker",
             "capital_mode",
+            "portfolio_protection_enabled",
+            "portfolio_drawdown_threshold",
             "ratio_threshold",
             "include_all_tickers",
             "min_price",
@@ -1057,6 +1065,9 @@ class BacktestForm(forms.ModelForm):
         super().__init__(*args, **kwargs)
         settings = getattr(self.instance, "settings", None) or {}
         if isinstance(settings, dict):
+            protection = settings.get("portfolio_protection") or {}
+            self.fields["portfolio_protection_enabled"].initial = protection.get("enabled", False)
+            self.fields["portfolio_drawdown_threshold"].initial = protection.get("threshold_pct")
             self.fields["min_price"].initial = settings.get("min_price")
             self.fields["max_price"].initial = settings.get("max_price")
             self.fields["market_cap_min"].initial = settings.get(MARKET_CAP_MIN_KEY)
@@ -1094,6 +1105,19 @@ class BacktestForm(forms.ModelForm):
             cleaned.get("capital_per_ticker"),
         ):
             self.add_error(error.field, error.message)
+        threshold = cleaned.get("portfolio_drawdown_threshold")
+        enabled = cleaned.get("portfolio_protection_enabled", False)
+        if threshold is not None and not 0 < threshold < 100:
+            self.add_error("portfolio_drawdown_threshold", "Le seuil doit être strictement compris entre 0 et 100 %.")
+        elif enabled and threshold is None:
+            self.add_error("portfolio_drawdown_threshold", "Renseignez le seuil de protection.")
+        # Include settings in impact detection, so editing protection invalidates results.
+        settings = dict(self.instance.settings or {})
+        if enabled or threshold is not None:
+            settings["portfolio_protection"] = {"enabled": enabled, "threshold_pct": None if threshold is None else str(threshold)}
+        else:
+            settings.pop("portfolio_protection", None)
+        cleaned["settings"] = settings
         scenario = cleaned.get("scenario")
         try:
             validate_csi300_supported_history_start(
@@ -1114,7 +1138,7 @@ class BacktestForm(forms.ModelForm):
 
     def save(self, commit=True):
         obj = super().save(commit=False)
-        settings = dict(obj.settings or {})
+        settings = dict(self.cleaned_data["settings"])
         min_price = self.cleaned_data.get("min_price")
         max_price = self.cleaned_data.get("max_price")
         market_cap_min = self.cleaned_data.get("market_cap_min")

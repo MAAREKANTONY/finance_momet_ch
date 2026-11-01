@@ -249,6 +249,22 @@
     </tr>
   </table>
 
+  {% if results.portfolio.protection.enabled %}
+  <div style="margin-top:18px;">
+    <h3>Protection du portefeuille — cycles</h3>
+    <p>Seuil : {{ results.portfolio.protection.threshold_pct }} %.
+      {% if results.portfolio.protection.pending_liquidation %}<b>Liquidation en attente de cotation. Achats bloqués.</b>{% endif %}</p>
+    {% include "partials/portfolio_protection_help.html" %}
+    <table>
+      <thead><tr><th>Cycle</th><th>Début</th><th>Fin / dernière séance</th><th>Sommet de l'indice</th><th>Déclenchement</th><th>Drawdown déclencheur</th><th>PnL du cycle{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><th>Clôture / état</th></tr></thead>
+      <tbody>{% for cycle in results.portfolio.protection.cycles %}
+        <tr><td>{{ cycle.cycle }}</td><td>{{ cycle.start_date }}</td><td>{{ cycle.end_date }}</td><td>{{ cycle.peak_index|num:4 }}</td><td>{{ cycle.trigger_date|default:"—" }}</td><td>{{ cycle.trigger_drawdown|pct:4|default:"—" }}</td><td>{{ cycle.pnl|num:2 }}</td><td>{% if cycle.close_reason == "PORTFOLIO_DRAWDOWN" %}Liquidation sur drawdown{% elif cycle.close_reason == "PENDING_DRAWDOWN" %}Liquidation en attente{% elif cycle.close_reason == "END_BACKTEST" %}Fin du backtest{% else %}Ouvert en fin de backtest{% endif %}</td></tr>
+      {% empty %}<tr><td colspan="8">Aucun financement effectif.</td></tr>{% endfor %}</tbody>
+    </table>
+    <p class="muted">PnL du cycle = valeur finale − valeur initiale − apports du cycle. Il inclut le latent si le cycle reste ouvert ou en liquidation.</p>
+  </div>
+  {% endif %}
+
   <div style="margin-top:10px;">
     <canvas id="portfolioChart" height="120"></canvas>
     <div class="muted" style="margin-top:8px;">Equity curve + drawdown (ratio) sur la période.</div>
@@ -1021,8 +1037,11 @@
       data: {
         labels: pLabels,
         datasets: [
-          { label: "Equity", data: pEquity, yAxisID: "y" },
-          { label: "Drawdown (%)", data: pDd, yAxisID: "y1" },
+          { label: "Equity", data: pEquity, yAxisID: "y", borderColor: "#36A2EB", backgroundColor: "#36A2EB", pointBorderColor: "#36A2EB", pointBackgroundColor: "#36A2EB" },
+          { label: "Drawdown (%)", data: pDd, yAxisID: "y1", borderColor: "#FF6384", backgroundColor: "#FF6384", pointBorderColor: "#FF6384", pointBackgroundColor: "#FF6384" },
+          {% if results.portfolio.protection.enabled %}
+          { label: "Liquidation sur drawdown", data: portRows.map(r => r.protection_liquidation ? toNumber(r.equity) : null), yAxisID: "y", showLine: false, pointStyle: "triangle", pointRadius: 7, borderColor: "#166534", backgroundColor: "#166534", pointBorderColor: "#166534", pointBackgroundColor: "#166534" },
+          {% endif %}
         ]
       },
       options: {

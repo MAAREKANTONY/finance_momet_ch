@@ -3777,6 +3777,13 @@ def backtest_results(request, pk: int):
 
     # keep charts responsive without hiding the start of the backtest period
     port_daily_for_ui = _downsample_series_keep_full_period(port_daily, max_points=400)
+    # Keep every protection execution marker, including in long/offloaded runs.
+    if (results.get("portfolio") or {}).get("protection"):
+        selected_dates = {row["date"] for row in port_daily_for_ui}
+        port_daily_for_ui = sorted(
+            port_daily_for_ui + [row for row in port_daily if row.get("protection_liquidation") and row["date"] not in selected_dates],
+            key=lambda row: row["date"],
+        )
     realized_gains_series = _build_realized_gains_cumulative_series(results, initial_date=bt.start_date)
     realized_gains_series_for_ui = _downsample_series_keep_full_period(realized_gains_series, max_points=400)
     realized_gains_has_sales = any(
