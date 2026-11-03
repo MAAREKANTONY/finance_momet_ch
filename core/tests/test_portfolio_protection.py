@@ -3,6 +3,7 @@ from decimal import Decimal
 import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from django.contrib.auth import get_user_model
@@ -12,9 +13,10 @@ from django.test.utils import CaptureQueriesContext
 from django.urls import reverse
 
 from core.forms import BacktestForm
-from core.models import Alert, Backtest, DailyBar, DailyMetric, Scenario, Symbol
+from core.models import Alert, Backtest, DailyBar, DailyMetric, GameScenario, Scenario, Symbol
 from core.services.backtesting.engine import run_backtest, run_backtest_kpi_only
 from core.services.backtesting.portfolio_protection import PortfolioProtection, protection_threshold
+from core.services.game_scenarios.runner import run_game_scenario_now
 
 
 class ProtectionIndexTests(SimpleTestCase):
@@ -49,6 +51,34 @@ class ProtectionIndexTests(SimpleTestCase):
                 protection_threshold({"portfolio_protection": {"enabled": True, "threshold_pct": value}})
         self.assertIsNone(protection_threshold({}))
         self.assertIsNone(protection_threshold({"portfolio_protection": {"enabled": False, "threshold_pct": "bad"}}))
+
+
+class ProtectedKpiOnlyContractTests(SimpleTestCase):
+    def test_best_bmd_is_the_decimal_maximum_of_non_null_line_values(self):
+        cases = {
+            "NUMERIC": (["2", None, "10", "9"], "10"),
+            "PRECISE": (["0.10000000000000000001", "0.10000000000000000002"], "0.10000000000000000002"),
+            "ZERO": ([None, "-0.1", "0"], "0"),
+            "NEGATIVE": ([None, "-0.2", "-0.1"], "-0.1"),
+            "NULL": ([None, None], None),
+            "EMPTY": ([], None),
+        }
+        tickers = {
+            ticker: {"lines": [{"final": {"BMD": value}} for value in values]}
+            for ticker, (values, _expected) in cases.items()
+        }
+        tickers["NULL"]["lines"].append({"final": {}})
+        backtest = Backtest(settings={"portfolio_protection": {"enabled": True, "threshold_pct": "10"}})
+        checkpoint = lambda: None
+        with patch("core.services.backtesting.engine.run_backtest", return_value=SimpleNamespace(results={"tickers": tickers})) as detailed:
+            result = run_backtest_kpi_only(backtest, checkpoint=checkpoint, max_days=5)
+
+        detailed.assert_called_once_with(backtest, checkpoint=checkpoint, large_result_mode=True, max_days=5)
+        self.assertEqual(set(result), set(cases))
+        for ticker, (_values, expected) in cases.items():
+            with self.subTest(ticker=ticker):
+                self.assertIn("best_bmd", result[ticker])
+                self.assertEqual(result[ticker]["best_bmd"], expected)
 
 
 class PortfolioProtectionTests(TestCase):
@@ -327,6 +357,68 @@ class PortfolioProtectionTests(TestCase):
         self.assertEqual(full["portfolio"], large["portfolio"])
         self.assertEqual(full["tickers"]["AAA"]["lines"][0]["events"], large["tickers"]["AAA"]["lines"][0]["events"])
         self.assertEqual(full["tickers"]["AAA"]["lines"][0]["final"], run_backtest_kpi_only(bt)["AAA"]["lines"][0]["final"])
+
+    def best_bmd_backtest(self):
+        self.prices(self.a, ["100", "100", "110", "150", "150"])
+        self.signal(self.a, 0, "A1")
+        self.signal(self.a, 1, "A2")
+        self.signal(self.a, 3, "B1,B2")
+        return self.backtest(5, capital_total=0, signal_lines=[
+            {"buy": ["A3"], "sell": ["B3"], "trading_model": "LEGACY_DAILY"},
+            {"buy": ["A1"], "sell": ["B1"], "trading_model": "LEGACY_DAILY"},
+            {"buy": ["A2"], "sell": ["B2"], "trading_model": "LEGACY_DAILY"},
+        ])
+
+    def test_kpi_only_best_bmd_with_multiple_lines_with_and_without_protection(self):
+        bt = self.best_bmd_backtest()
+        for settings in ({}, {"portfolio_protection": {"enabled": False}}, bt.settings):
+            with self.subTest(settings=settings):
+                bt.settings = settings
+                entry = run_backtest_kpi_only(bt)["AAA"]
+                finals = [line["final"] for line in entry["lines"]]
+                self.assertIsNone(finals[0]["BMD"])
+                self.assertEqual(Decimal(finals[1]["BMD"]), Decimal("0.5") / 3)
+                self.assertEqual(finals[1]["TRADABLE_DAYS_IN_POSITION_CLOSED"], 3)
+                self.assertEqual(finals[2]["BMD"], "0.25")
+                self.assertEqual(finals[2]["TRADABLE_DAYS_IN_POSITION_CLOSED"], 2)
+                self.assertEqual(entry.get("best_bmd"), "0.25")
+
+    def test_protected_game_persists_best_bmd_and_presence_from_the_best_line(self):
+        bt = self.best_bmd_backtest()
+        self.b.active = False
+        self.b.save(update_fields=["active"])
+        DailyMetric.objects.filter(symbol=self.a, scenario=self.scenario).update(sum_slope=Decimal("0.2"))
+        game = GameScenario.objects.create(
+            name="Protected KPI game", engine_scenario=self.scenario, study_days=5,
+            capital_total=0, capital_per_ticker=1000, capital_mode="REINVEST",
+            signal_lines=bt.signal_lines, settings=bt.settings, close_positions_at_end=False,
+            tradability_threshold=20, slope_threshold=Decimal("0.1"), presence_threshold_pct=35,
+            today_results={"rows": [{"ticker": "STALE", "ok": False}]},
+        )
+
+        # Only the provider boundary is stubbed; scenario sync, depth/slope queries,
+        # the KPI-only engine and result persistence all use the local fixtures.
+        with patch("core.tasks._fetch_daily_bars_for_symbols", return_value={"symbols": 1, "bars": 0}), \
+             patch("core.tasks._compute_metrics_for_scenario") as compute_metrics:
+            result = run_game_scenario_now(game.id, skip_metrics=True)
+        compute_metrics.assert_not_called()
+
+        self.assertEqual(result, {"status": "ok", "date": str(self.day(4)), "count": 1})
+        game.refresh_from_db()
+        self.assertEqual(game.last_run_status, "ok")
+        self.assertIsNotNone(game.last_run_at)
+        self.assertEqual(game.last_run_message, f"Computed 1 tickers for {self.day(4)}")
+        self.assertEqual(game.today_results["date"], str(self.day(4)))
+        rows = game.today_results["rows"]
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["ticker"], "AAA")
+        self.assertEqual(row["bmd"], "0.25")
+        self.assertEqual(Decimal(row["avg_slope"]), Decimal("0.2"))
+        self.assertEqual(row["TRADABLE_DAYS"], 5)
+        self.assertEqual(row["TRADABLE_DAYS_IN_POSITION_CLOSED"], 2)
+        self.assertEqual(Decimal(row["RATIO_IN_POSITION"]), Decimal("40"))
+        self.assertIs(row["ok"], True)
 
     def test_protection_adds_no_database_queries_or_indicator_recalculation(self):
         self.prices(self.a, ["100", "95", "80"])
