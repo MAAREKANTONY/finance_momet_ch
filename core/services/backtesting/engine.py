@@ -4012,7 +4012,12 @@ def run_backtest_kpi_only(backtest: Backtest, checkpoint=None, *, max_days: int 
     if protection_threshold(getattr(backtest, "settings", {})) is not None:
         result = run_backtest(backtest, checkpoint=checkpoint, large_result_mode=True,
                               max_days=max_days).results
-        return result.get("tickers", {})
+        tickers_result = result.get("tickers", {})
+        for tentry in tickers_result.values():
+            bmd_values = (line.get("final", {}).get("BMD") for line in tentry.get("lines", []))
+            best_bmd = max((Decimal(str(bmd)) for bmd in bmd_values if bmd is not None), default=None)
+            tentry["best_bmd"] = None if best_bmd is None else str(best_bmd)
+        return tickers_result
 
     logs: list[str] = []
 
