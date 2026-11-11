@@ -3724,6 +3724,11 @@ def backtest_results(request, pk: int):
     portfolio = results.get("portfolio") or {}
     port_kpi = dict(portfolio.get("kpi") or {})
     port_daily = _portfolio_daily_with_net_pnl(results)
+    portfolio_cycle_pnl_has_daily = any(
+        all((value := _to_dec(row.get(field))) is not None and value.is_finite()
+            for field in ("protection_cycle_pnl", "protection_pnl_peak", "protection_pnl_bound"))
+        for row in port_daily
+    )
     portfolio_capital_recalculation_required = not port_daily or any(
         _to_dec(row.get(field)) is None
         for row in port_daily
@@ -3902,6 +3907,7 @@ def backtest_results(request, pk: int):
             "portfolio_daily_json": json.dumps(port_daily_for_ui),
             # This chart needs a point for every portfolio day, including trades.
             "portfolio_pnl_daily": port_daily,
+            "portfolio_cycle_pnl_has_daily": portfolio_cycle_pnl_has_daily,
             "portfolio_capital_recalculation_required": portfolio_capital_recalculation_required,
             "realized_gains_series": realized_gains_series_for_ui,
             "realized_gains_series_json": json.dumps(realized_gains_series_for_ui),

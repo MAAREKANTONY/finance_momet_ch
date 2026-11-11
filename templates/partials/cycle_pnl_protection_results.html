@@ -1,0 +1,22 @@
+{% load backtest_extras %}
+<div style="overflow:auto;">
+  <table>
+    <thead><tr><th>Cycle</th><th>Début</th><th>Fin / dernière séance</th>
+      <th>PnL du cycle (fin de séance)</th><th>Sommet du PnL</th><th>Borne de liquidation</th>
+      <th>Déclenchement</th><th>PnL au déclenchement</th><th>Sommet à la décision</th><th>Borne à la décision</th><th>Règle déclenchée</th><th>Clôture / état</th></tr></thead>
+    <tbody>{% for cycle in results.portfolio.protection.cycles %}
+      <tr><td>{{ cycle.cycle }}</td><td>{{ cycle.start_date }}</td><td>{{ cycle.end_date }}</td>
+        <td title="{{ cycle.pnl }}">{{ cycle.pnl|num:2 }}</td>
+        <td title="{{ cycle.pnl_peak }}">{{ cycle.pnl_peak|num:2 }}</td>
+        <td title="{{ cycle.pnl_bound }}">{{ cycle.pnl_bound|num:2 }}</td>
+        <td>{{ cycle.trigger_date|default:"—" }}</td>
+        <td title="{{ cycle.trigger_pnl }}">{{ cycle.trigger_pnl|num:2|default:"—" }}</td>
+        <td title="{{ cycle.trigger_peak_pnl }}">{{ cycle.trigger_peak_pnl|num:2|default:"—" }}</td>
+        <td title="{{ cycle.trigger_bound }}">{{ cycle.trigger_bound|num:2|default:"—" }}</td>
+        <td>{% if cycle.trigger_rule == "initial_loss" %}Perte initiale −L{% elif cycle.trigger_rule == "profit_retracement" %}Repli du bénéfice X %{% else %}—{% endif %}</td>
+        <td>{% if cycle.close_reason == "PORTFOLIO_DRAWDOWN" %}Liquidation sur PnL{% elif cycle.close_reason == "PENDING_DRAWDOWN" %}Liquidation en attente{% elif cycle.close_reason == "END_BACKTEST" %}Fin du backtest{% else %}Ouvert en fin de backtest{% endif %}</td></tr>
+      {% empty %}<tr><td colspan="12">Aucun financement effectif.</td></tr>{% endfor %}</tbody>
+  </table>
+</div>
+<p class="muted">Tous les montants sont exprimés en {{ effective_currency|default:"devise du backtest" }}, sans conversion.
+  Les valeurs exactes enregistrées sont disponibles au survol des cellules. Les colonnes de décision conservent le premier déclenchement, même si les ventes sont différées.</p>

@@ -1,11 +1,35 @@
 <fieldset style="margin-top:16px;">
   <legend>Protection du portefeuille</legend>
-  <label for="{{ form.portfolio_protection_enabled.id_for_label }}">{{ form.portfolio_protection_enabled }} {{ form.portfolio_protection_enabled.label }}</label>
-  {{ form.portfolio_protection_enabled.errors }}
-  <div class="field">
+  {{ form.portfolio_protection_enabled }}
+  <label for="{{ form.portfolio_protection_mode.id_for_label }}">{{ form.portfolio_protection_mode.label }}</label>
+  {{ form.portfolio_protection_mode }}
+  {{ form.portfolio_protection_mode.errors }}
+  <div class="field" data-protection-threshold>
     <label for="{{ form.portfolio_drawdown_threshold.id_for_label }}">{{ form.portfolio_drawdown_threshold.label }}</label>
     {{ form.portfolio_drawdown_threshold }}
     {{ form.portfolio_drawdown_threshold.errors }}
   </div>
+  <div class="field" data-protection-initial-loss>
+    <label for="{{ form.portfolio_initial_loss_amount.id_for_label }}">{{ form.portfolio_initial_loss_amount.label }}</label>
+    {{ form.portfolio_initial_loss_amount }}
+    {{ form.portfolio_initial_loss_amount.errors }}
+    <div class="muted">Montant L strictement positif, sans conversion de devise. Il protège le cycle avant son premier bénéfice positif.</div>
+  </div>
   {% include "partials/portfolio_protection_help.html" %}
+  <script>
+    (() => {
+      const fieldset = document.currentScript.closest("fieldset");
+      const mode = fieldset.querySelector("select");
+      const threshold = fieldset.querySelector("[data-protection-threshold]");
+      const loss = fieldset.querySelector("[data-protection-initial-loss]");
+      function updateProtectionFields() {
+        threshold.hidden = mode.value === "disabled";
+        loss.hidden = mode.value !== "cycle_pnl";
+        threshold.querySelector("input").disabled = threshold.hidden;
+        loss.querySelector("input").disabled = loss.hidden;
+      }
+      mode.addEventListener("change", updateProtectionFields);
+      updateProtectionFields();
+    })();
+  </script>
 </fieldset>

@@ -1,0 +1,57 @@
+  const cyclePnlCanvas = document.getElementById("cyclePnlProtectionChart");
+  if (cyclePnlCanvas && portfolioPnlRows.length) {
+    const config = JSON.parse(document.getElementById("cycle-pnl-protection").textContent);
+    const cycles = config.cycles || [];
+    // Reuse the full daily portfolio payload; never reconstruct cycle PnL from Equity in the browser.
+    const byDate = new Map(portfolioPnlRows.map(row => [row.date, row]));
+    const triggers = cycles.flatMap(cycle => {
+      const pnl = toNumber(cycle.trigger_pnl);
+      return cycle.trigger_date && pnl !== null ? [{x: cycle.trigger_date, y: pnl, cycle: cycle.cycle,
+        peak: cycle.trigger_peak_pnl, bound: cycle.trigger_bound, exactPnl: cycle.trigger_pnl}] : [];
+    });
+    const labels = [...new Set([...byDate.keys(), ...triggers.map(point => point.x),
+      ...cycles.map(cycle => cycle.start_date).filter(Boolean)])].sort();
+    const sameCycleColor = color => context => {
+      const before = byDate.get(labels[context.p0DataIndex])?.protection_cycle;
+      const after = byDate.get(labels[context.p1DataIndex])?.protection_cycle;
+      return before !== after ? "transparent" : color;
+    };
+    function cycleSeries(label, field, color, dash=[]) {
+      return {label, data: labels.map(date => toNumber(byDate.get(date)?.[field])),
+        borderColor: color, backgroundColor: color, borderDash: dash, pointRadius: 2,
+        segment: {borderColor: sameCycleColor(color)}};
+    }
+    const amount = value => new Intl.NumberFormat("fr-FR", {maximumFractionDigits: 6}).format(value);
+    const cycleBoundaries = {id: "pnlCycleBoundaries", beforeDatasetsDraw(chart) {
+      const {ctx, scales, chartArea} = chart;
+      ctx.save(); ctx.strokeStyle = "#94a3b8"; ctx.fillStyle = "#475569"; ctx.font = "11px sans-serif";
+      cycles.forEach(cycle => {
+        const index = labels.indexOf(cycle.start_date);
+        if (index < 0) return;
+        const x = scales.x.getPixelForValue(index);
+        ctx.setLineDash([3,5]); ctx.beginPath(); ctx.moveTo(x,chartArea.top); ctx.lineTo(x,chartArea.bottom); ctx.stroke();
+        ctx.fillText(`Cycle ${cycle.cycle}`,Math.min(x+4,chartArea.right-60),chartArea.top+14);
+      });
+      ctx.restore();
+    }};
+    new Chart(cyclePnlCanvas.getContext("2d"), {
+      type: "line", plugins: [cycleBoundaries],
+      data: {labels, datasets: [
+        cycleSeries("PnL du cycle (fin de séance)", "protection_cycle_pnl", "#7c3aed"),
+        cycleSeries("Sommet du PnL (avant ordres)", "protection_pnl_peak", "#64748b"),
+        cycleSeries("Borne de liquidation", "protection_pnl_bound", "#b91c1c", [6,4]),
+        {label: "Déclenchement (valeur de décision)", data: triggers, showLine: false, order: -1,
+          pointStyle: "rectRot", pointRadius: 7, borderColor: "#d97706", backgroundColor: "#d97706"}
+      ]},
+      options: {responsive: true, spanGaps: false,
+        scales: {y: {grace: "10%", title: {display: true, text: "Montant ({{ effective_currency|default:'devise du backtest'|escapejs }})"}}},
+        plugins: {tooltip: {callbacks: {
+          label: context => `${context.dataset.label} : ${amount(context.parsed.y)}`,
+          afterLabel: context => context.raw?.exactPnl != null
+            ? [`Cycle ${context.raw.cycle} — PnL exact : ${context.raw.exactPnl}`,
+               `Sommet à la décision : ${context.raw.peak}`, `Borne à la décision : ${context.raw.bound}`]
+            : `Cycle ${byDate.get(context.label)?.protection_cycle ?? "—"}`
+        }}}
+      }
+    });
+  }

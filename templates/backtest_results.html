@@ -217,7 +217,7 @@
   </nav>
 </div>
 
-{% if portfolio_kpi %}
+{% if portfolio_kpi or results.portfolio.protection.enabled %}
 <details class="card acc" open data-acc-key="portfolio">
 <summary class="acc-summary"><span class="acc-title">Synthèse portefeuille (global)</span></summary>
 <div class="acc-body">
@@ -252,15 +252,21 @@
   {% if results.portfolio.protection.enabled %}
   <div style="margin-top:18px;">
     <h3>Protection du portefeuille — cycles</h3>
-    <p>Seuil : {{ results.portfolio.protection.threshold_pct }} %.
+    <p>Mode enregistré : <b>{% if results.portfolio.protection.mode == "cycle_pnl" %}Repli du PnL par cycle{% else %}Recul de la valeur du portefeuille{% endif %}</b>.
+      Seuil X : {{ results.portfolio.protection.threshold_pct }} %.
+      {% if results.portfolio.protection.mode == "cycle_pnl" %}Perte initiale maximale L : {{ results.portfolio.protection.initial_loss_amount|num:2 }} {{ effective_currency|default:"(devise du backtest)" }}.{% endif %}
       {% if results.portfolio.protection.pending_liquidation %}<b>Liquidation en attente de cotation. Achats bloqués.</b>{% endif %}</p>
     {% include "partials/portfolio_protection_help.html" %}
+    {% if results.portfolio.protection.mode == "cycle_pnl" %}
+    {% include "partials/cycle_pnl_protection_results.html" %}
+    {% else %}
     <table>
       <thead><tr><th>Cycle</th><th>Début</th><th>Fin / dernière séance</th><th>Sommet de l'indice</th><th>Déclenchement</th><th>Drawdown déclencheur</th><th>PnL du cycle{% if effective_currency %} ({{ effective_currency }}){% endif %}</th><th>Clôture / état</th></tr></thead>
       <tbody>{% for cycle in results.portfolio.protection.cycles %}
         <tr><td>{{ cycle.cycle }}</td><td>{{ cycle.start_date }}</td><td>{{ cycle.end_date }}</td><td>{{ cycle.peak_index|num:4 }}</td><td>{{ cycle.trigger_date|default:"—" }}</td><td>{{ cycle.trigger_drawdown|pct:4|default:"—" }}</td><td>{{ cycle.pnl|num:2 }}</td><td>{% if cycle.close_reason == "PORTFOLIO_DRAWDOWN" %}Liquidation sur drawdown{% elif cycle.close_reason == "PENDING_DRAWDOWN" %}Liquidation en attente{% elif cycle.close_reason == "END_BACKTEST" %}Fin du backtest{% else %}Ouvert en fin de backtest{% endif %}</td></tr>
       {% empty %}<tr><td colspan="8">Aucun financement effectif.</td></tr>{% endfor %}</tbody>
     </table>
+    {% endif %}
     <p class="muted">PnL du cycle = valeur finale − valeur initiale − apports du cycle. Il inclut le latent si le cycle reste ouvert ou en liquidation.</p>
   </div>
   {% endif %}
@@ -269,6 +275,19 @@
     <canvas id="portfolioChart" height="120"></canvas>
     <div class="muted" style="margin-top:8px;">Equity curve + drawdown (ratio) sur la période.</div>
   </div>
+  {% if results.portfolio.protection.enabled and results.portfolio.protection.mode == "cycle_pnl" %}
+  <div style="margin-top:18px;">
+    <h3>PnL du cycle et borne de liquidation</h3>
+    {% if portfolio_cycle_pnl_has_daily %}
+    <canvas id="cyclePnlProtectionChart" height="120" role="img" aria-label="PnL du cycle, sommet, borne de liquidation et déclenchements"></canvas>
+    {% else %}
+    <p class="muted">Recalcul nécessaire : les valeurs journalières du PnL par cycle ne sont pas disponibles dans ce résultat.</p>
+    {% endif %}
+    <p class="muted">La courbe du PnL est enregistrée en fin de séance. Le sommet et la borne sont observés avant les ordres.
+      Les losanges orange marquent les déclenchements à leur valeur de décision ; les triangles verts du graphique Equity représentent les ventes exécutées, parfois différées faute de cotation.
+      Un changement de cycle remet le PnL et le sommet à zéro ; le PnL global et le cumul réalisé continuent.</p>
+  </div>
+  {% endif %}
   <div style="margin-top:18px;">
     <canvas id="portfolioPnlChart" height="100"></canvas>
     <div class="muted" style="margin-top:8px;">Courbe globale des gains / pertes et du capital en fin de journée. Le PnL global est l’Equity moins le capital initial en capital fini, ou le capital alloué en capital illimité.</div>
@@ -839,6 +858,9 @@
 </details>
 
 {{ portfolio_pnl_daily|json_script:"portfolio-pnl-daily" }}
+{% if results.portfolio.protection.enabled and results.portfolio.protection.mode == "cycle_pnl" %}
+{{ results.portfolio.protection|json_script:"cycle-pnl-protection" }}
+{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
   // --- Accordion UX: keep the open/close state stable across refreshes ---
@@ -1040,7 +1062,7 @@
           { label: "Equity", data: pEquity, yAxisID: "y", borderColor: "#36A2EB", backgroundColor: "#36A2EB", pointBorderColor: "#36A2EB", pointBackgroundColor: "#36A2EB" },
           { label: "Drawdown (%)", data: pDd, yAxisID: "y1", borderColor: "#FF6384", backgroundColor: "#FF6384", pointBorderColor: "#FF6384", pointBackgroundColor: "#FF6384" },
           {% if results.portfolio.protection.enabled %}
-          { label: "Liquidation sur drawdown", data: portRows.map(r => r.protection_liquidation ? toNumber(r.equity) : null), yAxisID: "y", showLine: false, pointStyle: "triangle", pointRadius: 7, borderColor: "#166534", backgroundColor: "#166534", pointBorderColor: "#166534", pointBackgroundColor: "#166534" },
+          { label: "Ventes exécutées (protection)", data: portRows.map(r => r.protection_liquidation ? toNumber(r.equity) : null), yAxisID: "y", showLine: false, pointStyle: "triangle", pointRadius: 7, borderColor: "#166534", backgroundColor: "#166534", pointBorderColor: "#166534", pointBackgroundColor: "#166534" },
           {% endif %}
         ]
       },
@@ -1054,6 +1076,10 @@
       }
     });
   }
+
+  {% if results.portfolio.protection.enabled and results.portfolio.protection.mode == "cycle_pnl" %}
+  {% include "partials/cycle_pnl_protection_chart.js.html" %}
+  {% endif %}
 
   const pnlCanvas = document.getElementById("portfolioPnlChart");
   if (pnlCanvas && portfolioPnlRows && portfolioPnlRows.length) {

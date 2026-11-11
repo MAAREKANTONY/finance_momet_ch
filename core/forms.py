@@ -72,6 +72,7 @@ from .services.trend_filters import (
     normalize_trend_filter_operator,
 )
 from .services.backtesting.capital_validation import validate_backtest_capital
+from .services.backtesting.portfolio_protection import VALUE_MODE, PNL_MODE
 from .services.backtest_currency import (
     EFFECTIVE_CURRENCY_SETTINGS_KEY,
     effective_currency_for_universe_mode,
@@ -987,10 +988,20 @@ class SymbolImportForm(forms.Form):
 class BacktestForm(forms.ModelForm):
     """Create/Edit a Backtest configuration (engine results will be computed later)."""
 
-    portfolio_protection_enabled = forms.BooleanField(required=False, label="Activer la protection")
+    # Keep accepting the former checkbox in existing clients/snapshots.
+    portfolio_protection_enabled = forms.BooleanField(required=False, label="Activer la protection", widget=forms.HiddenInput())
+    portfolio_protection_mode = forms.ChoiceField(
+        required=False, initial="disabled", label="Mode de protection",
+        choices=[("disabled", "Désactivée"), (VALUE_MODE, "Recul de la valeur du portefeuille"), (PNL_MODE, "Repli du PnL par cycle")],
+    )
     portfolio_drawdown_threshold = forms.DecimalField(
-        required=False, max_digits=8, decimal_places=4, label="Seuil de drawdown (%)",
+        required=False, max_digits=8, decimal_places=4, label="Seuil de repli X (%)",
         widget=forms.NumberInput(attrs={"step": "0.0001"}),
+    )
+    portfolio_initial_loss_amount = forms.DecimalField(
+        required=False, max_digits=24, decimal_places=6,
+        label="Perte initiale maximale L (montant dans la devise du backtest)",
+        widget=forms.NumberInput(attrs={"step": "0.01"}),
     )
 
     min_price = forms.DecimalField(required=False, min_value=0, label="Prix minimum")
@@ -1039,7 +1050,9 @@ class BacktestForm(forms.ModelForm):
             "capital_per_ticker",
             "capital_mode",
             "portfolio_protection_enabled",
+            "portfolio_protection_mode",
             "portfolio_drawdown_threshold",
+            "portfolio_initial_loss_amount",
             "ratio_threshold",
             "include_all_tickers",
             "min_price",
@@ -1067,7 +1080,9 @@ class BacktestForm(forms.ModelForm):
         if isinstance(settings, dict):
             protection = settings.get("portfolio_protection") or {}
             self.fields["portfolio_protection_enabled"].initial = protection.get("enabled", False)
+            self.fields["portfolio_protection_mode"].initial = (protection.get("mode") or VALUE_MODE) if protection.get("enabled") else "disabled"
             self.fields["portfolio_drawdown_threshold"].initial = protection.get("threshold_pct")
+            self.fields["portfolio_initial_loss_amount"].initial = protection.get("initial_loss_amount")
             self.fields["min_price"].initial = settings.get("min_price")
             self.fields["max_price"].initial = settings.get("max_price")
             self.fields["market_cap_min"].initial = settings.get(MARKET_CAP_MIN_KEY)
@@ -1106,15 +1121,30 @@ class BacktestForm(forms.ModelForm):
         ):
             self.add_error(error.field, error.message)
         threshold = cleaned.get("portfolio_drawdown_threshold")
-        enabled = cleaned.get("portfolio_protection_enabled", False)
+        mode = cleaned.get("portfolio_protection_mode") or "disabled"
+        if self.add_prefix("portfolio_protection_mode") not in self.data:
+            mode = VALUE_MODE if cleaned.get("portfolio_protection_enabled", False) else "disabled"
+        enabled = mode != "disabled"
+        cleaned["portfolio_protection_enabled"] = enabled
+        cleaned["portfolio_protection_mode"] = mode
+        initial_loss = cleaned.get("portfolio_initial_loss_amount")
         if threshold is not None and not 0 < threshold < 100:
             self.add_error("portfolio_drawdown_threshold", "Le seuil doit être strictement compris entre 0 et 100 %.")
         elif enabled and threshold is None:
             self.add_error("portfolio_drawdown_threshold", "Renseignez le seuil de protection.")
+        if mode == PNL_MODE and (initial_loss is None or initial_loss <= 0):
+            self.add_error("portfolio_initial_loss_amount", "Renseignez une perte initiale maximale L strictement positive, dans la devise du backtest.")
         # Include settings in impact detection, so editing protection invalidates results.
         settings = dict(self.instance.settings or {})
         if enabled or threshold is not None:
-            settings["portfolio_protection"] = {"enabled": enabled, "threshold_pct": None if threshold is None else str(threshold)}
+            previous = settings.get("portfolio_protection") or {}
+            protection = {"enabled": enabled, "threshold_pct": None if threshold is None else str(threshold)}
+            # Do not invalidate legacy results solely by adding an implicit mode.
+            if not previous or "mode" in previous or mode == PNL_MODE:
+                protection["mode"] = mode if enabled else VALUE_MODE
+            if mode == PNL_MODE:
+                protection["initial_loss_amount"] = None if initial_loss is None else str(initial_loss)
+            settings["portfolio_protection"] = protection
         else:
             settings.pop("portfolio_protection", None)
         cleaned["settings"] = settings

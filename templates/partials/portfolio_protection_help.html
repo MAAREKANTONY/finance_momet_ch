@@ -1,8 +1,14 @@
-<p class="muted">Désactivée par défaut. Le seuil doit être strictement compris entre 0 et 100 %.
-  La liquidation est déclenchée lorsque le recul depuis le sommet du cycle dépasse strictement ce seuil :
+<p class="muted">Désactivée par défaut. Le seuil X doit être strictement compris entre 0 et 100 %.</p>
+<p class="muted"><b>Recul de la valeur du portefeuille</b> : mode conservé pour les anciennes configurations protégées.
+  La liquidation est déclenchée lorsque le recul de l’indice depuis le sommet du cycle dépasse strictement le seuil :
   sommet 12 000, seuil 10 % → vente sous 10 800, pas à 10 800.
   En capital illimité, un indice de valeur de part (base 100 au premier financement) neutralise les apports :
-  ils ne créent pas de sommet et n'effacent pas le drawdown. Les liquidités et la réserve signée FIXED sont incluses.
-  Une position sans cours du jour attend sa prochaine cotation ; les achats restent bloqués jusqu'à la fin de la liquidation.
+  ils ne créent pas de sommet et n'effacent pas le drawdown. Les liquidités et la réserve signée FIXED sont incluses.</p>
+<p class="muted"><b>Repli du PnL par cycle</b> : avant les ordres, le PnL réalisé depuis le début du cycle et le PnL latent sont comparés au sommet du PnL du cycle.
+  Si ce sommet est positif, la borne est sommet × (1 − X/100). Exemple : sommet +2 000, X = 1 % → borne +1 980 ; pas de déclenchement à +1 980, déclenchement à +1 970.
+  Tant que le sommet reste à zéro, la borne est −L, où L est un montant strictement positif dans la devise du backtest : avec L = 100, pas de déclenchement à −100, déclenchement à −101.
+  Dès le premier sommet positif, la règle de repli sur le bénéfice remplace la limite −L.</p>
+<p class="muted">Dans les deux modes, les apports ne créent ni bénéfice ni sommet et une vente ordinaire transfère le latent au réalisé sans remettre le cycle à zéro.
+  Une position sans cours exécutable attend sa prochaine cotation ; les achats restent bloqués jusqu'à la fin de la liquidation.
   La reprise est possible au plus tôt à la séance suivante selon la méthode choisie.
-  Un nouveau cycle conserve les gains et pertes cumulés du backtest.</p>
+  En mode PnL, le cycle suivant repart avec un PnL et un sommet à zéro ; le PnL global et les gains/pertes réalisés cumulés continuent.</p>
