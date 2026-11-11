@@ -56,7 +56,7 @@ from core.services.csi300_sector_gm import (
     resolve_csi300_sector_benchmark,
 )
 from core.services.backtest_currency import effective_currency_for_new_result
-from core.services.backtesting.portfolio_protection import PortfolioProtection, protection_threshold
+from core.services.backtesting.portfolio_protection import build_portfolio_protection, protection_threshold
 from tools.csi300_policy import CSI300_SUPPORTED_HISTORY_START_ISO
 from core.services.market_cap import preload_market_cap_series
 from core.services.couloir import (
@@ -1868,8 +1868,7 @@ def run_backtest(
     - Adds global capital constraint (CP) and daily selection of new allocations by highest ratio_p.
     - Keeps per-(ticker,line) independent cash re-investment once allocated.
     """
-    threshold = protection_threshold(getattr(backtest, "settings", {}))
-    protection = PortfolioProtection(threshold) if threshold is not None else None
+    protection = build_portfolio_protection(getattr(backtest, "settings", {}))
     logs: list[str] = []
 
     def _checkpoint():
@@ -3995,9 +3994,11 @@ def run_backtest(
             )
             cycles.append(protection.summary(real_dates_sorted[-1], reason))
         results["portfolio"]["protection"] = {
-            "enabled": True, "threshold_pct": str(threshold), "cycles": cycles,
+            "enabled": True, "mode": protection.mode, "threshold_pct": str(protection.threshold), "cycles": cycles,
             "pending_liquidation": protection.pending,
         }
+        if protection.mode == "cycle_pnl":
+            results["portfolio"]["protection"]["initial_loss_amount"] = str(protection.initial_loss_amount)
 
     return BacktestEngineResult(results=results, logs=logs)
 
