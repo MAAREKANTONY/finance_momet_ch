@@ -1,6 +1,7 @@
 from datetime import date, timedelta
 from decimal import Decimal
 import json
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -484,3 +485,105 @@ class PortfolioProtectionTests(TestCase):
         self.assertContains(response, "Liquidation sur drawdown")
         self.assertEqual(len(response.context["portfolio_daily"]), 401)
         self.assertTrue(any(row.get("protection_liquidation") for row in response.context["portfolio_daily"]))
+
+    def chart_response(self, daily, protection, *, kpi=None):
+        self.client.force_login(get_user_model().objects.create_user(username=f"chart-reader-{Backtest.objects.count()}"))
+        bt = self.backtest(405)
+        bt.results = {"tickers": {"AAA": {"lines": [{"line_index": 1, "daily": [], "final": {}}]}},
+                      "portfolio": {"daily": daily, "kpi": {"capital_total": "1000"} if kpi is None else kpi,
+                                    "protection": protection}}
+        bt.save(update_fields=["results"])
+        with patch("core.views.build_diagnostic_chart_payload", return_value=None):
+            return self.client.get(reverse("backtest_results", args=[bt.pk]))
+
+    @staticmethod
+    def chart_json(response, element_id):
+        match = re.search(r'<script id="' + element_id + r'" type="application/json">(.*?)</script>', response.content.decode(), re.S)
+        return json.loads(match.group(1))
+
+    def test_protection_chart_reuses_full_daily_series_and_saved_threshold_and_cycles(self):
+        daily = [{"date": str(self.day(i)), "equity": "1000", "drawdown": "-0.1",
+                  "protection_drawdown": "0", "protection_cycle": 1 if i < 43 else 2,
+                  "protection_liquidation": i == 42} for i in range(405)]
+        daily[40]["protection_drawdown"] = "0.023"
+        daily[41]["protection_drawdown"] = None
+        protection = {"enabled": True, "threshold_pct": "1", "cycles": [
+            {"cycle": 1, "start_date": str(self.start), "trigger_date": str(self.day(40)),
+             "trigger_drawdown": "0.017", "end_date": str(self.day(42)), "close_reason": "PORTFOLIO_DRAWDOWN"},
+            {"cycle": 2, "start_date": str(self.day(43)), "trigger_date": str(self.day(100)),
+             "trigger_drawdown": "0.025", "close_reason": "PENDING_DRAWDOWN"},
+        ]}
+        response = self.chart_response(daily, protection)
+        self.assertContains(response, "Drawdown historique de l’Equity (%)")
+        self.assertContains(response, 'id="protectionDrawdownChart"')
+        self.assertContains(response, "Drawdown de protection par cycle")
+        self.assertContains(response, "fin de séance")
+        self.assertContains(response, "Ventes exécutées (protection)")
+        self.assertContains(response, "Elle déclenche lorsque le seuil est strictement dépassé.")
+        self.assertTrue(response.context["portfolio_protection_has_daily"])
+        self.assertEqual(self.chart_json(response, "portfolio-protection"), protection)
+        # The existing full JSON series is reused, including dates removed from
+        # the historical chart's 400-point sample; no second daily payload.
+        self.assertEqual(self.chart_json(response, "portfolio-pnl-daily"), daily)
+        self.assertLess(len(response.context["portfolio_daily"]), len(daily))
+        self.assertNotIn("daily", self.chart_json(response, "portfolio-protection"))
+        self.assertEqual(response.context["bt"].settings["portfolio_protection"]["threshold_pct"], "10")
+
+    def test_legacy_protected_result_without_drawdown_series_requests_recalculation(self):
+        for daily in ([], [{"date": str(self.start)}], [{"date": str(self.start), "protection_drawdown": None}],
+                      [{"date": str(self.start), "protection_drawdown": "NaN"}]):
+            with self.subTest(daily=daily):
+                response = self.chart_response(daily, {"enabled": True, "threshold_pct": "1", "cycles": []}, kpi={})
+                self.assertContains(response, "Drawdown de protection par cycle")
+                self.assertContains(response, "Recalcul nécessaire : la série quotidienne du drawdown de protection")
+                self.assertNotContains(response, 'id="protectionDrawdownChart"')
+
+    def test_zero_drawdown_is_available_and_unprotected_results_have_no_protection_chart(self):
+        daily = [{"date": str(self.start), "protection_drawdown": "0", "protection_cycle": 1}]
+        response = self.chart_response(daily, {"enabled": True, "threshold_pct": "1", "cycles": []})
+        self.assertContains(response, 'id="protectionDrawdownChart"')
+        for protection in ({}, {"enabled": False}):
+            with self.subTest(protection=protection):
+                response = self.chart_response(daily, protection)
+                self.assertContains(response, "Drawdown historique de l’Equity (%)")
+                self.assertNotContains(response, "Drawdown de protection par cycle")
+                self.assertNotContains(response, 'id="portfolio-protection"')
+
+    def test_protection_trigger_date_is_distinct_from_deferred_sales(self):
+        self.prices(self.a, ["100", None, None, "100"])
+        self.prices(self.b, ["100", "97", "97", "97"])
+        for symbol in (self.a, self.b):
+            self.signal(symbol, 0, "A1")
+        bt = self.backtest(4, capital_total=2000, universe_snapshot=["AAA", "BBB"],
+                           settings={"portfolio_protection": {"enabled": True, "threshold_pct": "1"}})
+        result = run_backtest(bt).results
+        protection = result["portfolio"]["protection"]
+        cycle = protection["cycles"][0]
+        self.assertEqual(cycle["trigger_date"], str(self.day(1)))
+        self.assertEqual(Decimal(cycle["trigger_drawdown"]), Decimal("0.015"))
+        sales = [row["date"] for row in result["portfolio"]["daily"] if row["protection_liquidation"]]
+        self.assertEqual(sales, [str(self.day(1)), str(self.day(3))])
+        response = self.chart_response(result["portfolio"]["daily"], protection)
+        self.assertEqual(self.chart_json(response, "portfolio-protection")["cycles"], protection["cycles"])
+        self.assertContains(response, "Déclenchement (valeur de décision)")
+
+    def test_pnl_mode_keeps_amount_chart_and_hides_value_drawdown_chart(self):
+        self.prices(self.a, ["100", "120", "119.8", "119.7"])
+        self.signal(self.a, 0, "A1")
+        bt = self.backtest(4, capital_total=10000, capital_per_ticker=10000,
+                           settings={"portfolio_protection": {"enabled": True, "mode": "cycle_pnl",
+                                                               "threshold_pct": "1", "initial_loss_amount": "100"}})
+        result = run_backtest(bt).results
+        protection = result["portfolio"]["protection"]
+        response = self.chart_response(result["portfolio"]["daily"], protection)
+        self.assertContains(response, 'id="cyclePnlProtectionChart"')
+        self.assertContains(response, "PnL du cycle et borne de liquidation")
+        self.assertContains(response, "Sommet du PnL")
+        self.assertContains(response, "Borne de liquidation")
+        self.assertNotContains(response, 'id="protectionDrawdownChart"')
+        self.assertNotContains(response, 'id="portfolio-protection"')
+        self.assertNotContains(response, "Recalcul nécessaire : la série quotidienne du drawdown de protection")
+        self.assertEqual(self.chart_json(response, "cycle-pnl-protection"), protection)
+        self.assertEqual(Decimal(protection["cycles"][0]["trigger_pnl"]), 1970)
+        self.assertEqual(Decimal(protection["cycles"][0]["trigger_bound"]), 1980)
+        self.assertEqual(self.chart_json(response, "portfolio-pnl-daily"), result["portfolio"]["daily"])
