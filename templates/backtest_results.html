@@ -273,7 +273,7 @@
 
   <div style="margin-top:10px;">
     <canvas id="portfolioChart" height="120"></canvas>
-    <div class="muted" style="margin-top:8px;">Equity curve + drawdown (ratio) sur la période.</div>
+    <div class="muted" style="margin-top:8px;">Equity (bleu) et drawdown historique de l’Equity (rose), mesuré depuis son sommet sur l’ensemble du backtest.{% if results.portfolio.protection.enabled %} Les triangles verts indiquent les ventes exécutées par la protection.{% endif %}</div>
   </div>
   {% if results.portfolio.protection.enabled and results.portfolio.protection.mode == "cycle_pnl" %}
   <div style="margin-top:18px;">
@@ -286,6 +286,18 @@
     <p class="muted">La courbe du PnL est enregistrée en fin de séance. Le sommet et la borne sont observés avant les ordres.
       Les losanges orange marquent les déclenchements à leur valeur de décision ; les triangles verts du graphique Equity représentent les ventes exécutées, parfois différées faute de cotation.
       Un changement de cycle remet le PnL et le sommet à zéro ; le PnL global et le cumul réalisé continuent.</p>
+  </div>
+  {% endif %}
+  {% if results.portfolio.protection.enabled and results.portfolio.protection.mode != "cycle_pnl" %}
+  <div style="margin-top:18px;">
+    <h3>Drawdown de protection par cycle</h3>
+    <p>La protection compare le recul de l’indice corrigé des apports à son sommet du cycle. Elle déclenche lorsque le seuil est strictement dépassé. Les ventes sont exécutées aux cours disponibles.</p>
+    {% if portfolio_protection_has_daily %}
+    <canvas id="protectionDrawdownChart" height="120" role="img" aria-label="Drawdown de protection par cycle, seuil enregistré et déclenchements"></canvas>
+    <div class="muted" style="margin-top:8px;">Courbe : drawdown de protection enregistré en fin de séance, après les opérations. Les losanges orange indiquent la valeur au moment du déclenchement. Les séparations indiquent les débuts de cycle. Les triangles verts du graphique Equity indiquent les ventes exécutées, qui peuvent être différées faute de cotation.</div>
+    {% else %}
+    <p class="muted">Recalcul nécessaire : la série quotidienne du drawdown de protection n’est pas disponible dans ce résultat. Relancez le backtest pour afficher cette courbe.</p>
+    {% endif %}
   </div>
   {% endif %}
   <div style="margin-top:18px;">
@@ -861,6 +873,9 @@
 {% if results.portfolio.protection.enabled and results.portfolio.protection.mode == "cycle_pnl" %}
 {{ results.portfolio.protection|json_script:"cycle-pnl-protection" }}
 {% endif %}
+{% if results.portfolio.protection.enabled and results.portfolio.protection.mode != "cycle_pnl" %}
+{{ results.portfolio.protection|json_script:"portfolio-protection" }}
+{% endif %}
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 <script>
   // --- Accordion UX: keep the open/close state stable across refreshes ---
@@ -1060,7 +1075,7 @@
         labels: pLabels,
         datasets: [
           { label: "Equity", data: pEquity, yAxisID: "y", borderColor: "#36A2EB", backgroundColor: "#36A2EB", pointBorderColor: "#36A2EB", pointBackgroundColor: "#36A2EB" },
-          { label: "Drawdown (%)", data: pDd, yAxisID: "y1", borderColor: "#FF6384", backgroundColor: "#FF6384", pointBorderColor: "#FF6384", pointBackgroundColor: "#FF6384" },
+          { label: "Drawdown historique de l’Equity (%)", data: pDd, yAxisID: "y1", borderColor: "#FF6384", backgroundColor: "#FF6384", pointBorderColor: "#FF6384", pointBackgroundColor: "#FF6384" },
           {% if results.portfolio.protection.enabled %}
           { label: "Ventes exécutées (protection)", data: portRows.map(r => r.protection_liquidation ? toNumber(r.equity) : null), yAxisID: "y", showLine: false, pointStyle: "triangle", pointRadius: 7, borderColor: "#166534", backgroundColor: "#166534", pointBorderColor: "#166534", pointBackgroundColor: "#166534" },
           {% endif %}
@@ -1071,7 +1086,7 @@
         spanGaps: true,
         scales: {
           y: { type: "linear", position: "left", title: { display: true, text: "Equity{% if effective_currency %} ({{ effective_currency|escapejs }}){% endif %}" } },
-          y1: { type: "linear", position: "right", title: { display: true, text: "Drawdown (%)" }, grid: { drawOnChartArea: false } },
+          y1: { type: "linear", position: "right", title: { display: true, text: "Drawdown historique de l’Equity (%)" }, grid: { drawOnChartArea: false } },
         }
       }
     });
@@ -1079,6 +1094,79 @@
 
   {% if results.portfolio.protection.enabled and results.portfolio.protection.mode == "cycle_pnl" %}
   {% include "partials/cycle_pnl_protection_chart.js.html" %}
+  {% endif %}
+
+  {% if results.portfolio.protection.enabled and results.portfolio.protection.mode != "cycle_pnl" %}
+  const protectionCanvas = document.getElementById("protectionDrawdownChart");
+  if (protectionCanvas && portfolioPnlRows.length) {
+    const protection = JSON.parse(document.getElementById("portfolio-protection").textContent);
+    const cycles = protection.cycles || [];
+    // Reuse the full daily payload already sent for the capital chart.
+    const dailyByDate = new Map(portfolioPnlRows.map(row => [row.date, row]));
+    const triggers = cycles.flatMap(cycle => {
+      const value = toNumber(cycle.trigger_drawdown);
+      return cycle.trigger_date && value !== null
+        ? [{x: cycle.trigger_date, y: -100 * value, cycle: cycle.cycle, trigger_drawdown: cycle.trigger_drawdown}]
+        : [];
+    });
+    const protectionLabels = [...new Set([...dailyByDate.keys(), ...triggers.map(point => point.x),
+      ...cycles.map(cycle => cycle.start_date).filter(Boolean)])].sort();
+    const protectionValues = protectionLabels.map(date => {
+      const row = dailyByDate.get(date);
+      const value = toNumber(row?.protection_drawdown);
+      return value === null || row?.protection_cycle === null ? null : -100 * value;
+    });
+    const threshold = toNumber(protection.threshold_pct);
+    const percent = value => new Intl.NumberFormat("fr-FR", {maximumFractionDigits: 8}).format(value) + " %";
+    const cycleBoundaries = {
+      id: "protectionCycleBoundaries",
+      beforeDatasetsDraw(chart) {
+        const {ctx, chartArea, scales} = chart;
+        ctx.save();
+        ctx.strokeStyle = "#94a3b8";
+        ctx.fillStyle = "#475569";
+        ctx.font = "11px sans-serif";
+        cycles.forEach(cycle => {
+          const index = protectionLabels.indexOf(cycle.start_date);
+          if (index < 0) return;
+          const x = scales.x.getPixelForValue(index);
+          ctx.setLineDash([3, 5]);
+          ctx.beginPath(); ctx.moveTo(x, chartArea.top); ctx.lineTo(x, chartArea.bottom); ctx.stroke();
+          ctx.fillText(`Cycle ${cycle.cycle}`, Math.min(x + 4, chartArea.right - 60), chartArea.top + 14);
+        });
+        ctx.restore();
+      }
+    };
+    new Chart(protectionCanvas.getContext("2d"), {
+      type: "line",
+      plugins: [cycleBoundaries],
+      data: { labels: protectionLabels, datasets: [
+        { label: "Drawdown de protection (fin de séance, %)", data: protectionValues,
+          borderColor: "#7c3aed", backgroundColor: "#7c3aed", pointRadius: 2,
+          segment: {borderColor: context => {
+            const before = dailyByDate.get(protectionLabels[context.p0DataIndex])?.protection_cycle;
+            const after = dailyByDate.get(protectionLabels[context.p1DataIndex])?.protection_cycle;
+            return before !== after ? "transparent" : "#7c3aed";
+          }} },
+        { label: "Seuil enregistré", data: protectionLabels.map(() => threshold === null ? null : -threshold),
+          borderColor: "#b91c1c", backgroundColor: "#b91c1c", borderDash: [6, 4], pointRadius: 0 },
+        { label: "Déclenchement (valeur de décision)", data: triggers, showLine: false,
+          order: -1, pointStyle: "rectRot", pointRadius: 7, borderColor: "#d97706", backgroundColor: "#d97706" }
+      ] },
+      options: {
+        responsive: true, spanGaps: false, layout: {padding: {top: 18}},
+        plugins: {tooltip: {callbacks: {
+          label: context => {
+            const cycle = context.raw?.cycle ?? dailyByDate.get(context.label)?.protection_cycle;
+            return `${context.dataset.label}${cycle != null ? ` — cycle ${cycle}` : ""} : ${percent(context.parsed.y)}`;
+          },
+          afterLabel: context => context.raw?.trigger_drawdown != null
+            ? `Drawdown enregistré (ratio) : ${context.raw.trigger_drawdown}` : ""
+        }}},
+        scales: {y: {max: 0, grace: "10%", title: {display: true, text: "Drawdown de protection (%)"}}}
+      }
+    });
+  }
   {% endif %}
 
   const pnlCanvas = document.getElementById("portfolioPnlChart");
